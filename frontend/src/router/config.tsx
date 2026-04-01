@@ -2,7 +2,6 @@ import type { RouteObject } from "react-router-dom";
 import NotFound from "../pages/NotFound";
 import Home from "../pages/home/page";
 import NewsPage from "../pages/news/page";
-import NewsDetailPage from "../pages/news/detail";
 import DashboardPage from "../pages/dashboard/page";
 import RiskRegisterPage from "../pages/risk-register/page";
 import DocumentsPage from "../pages/documents/page";
@@ -11,6 +10,7 @@ import DepartmentDetailPage from "../pages/departments/detail";
 import EventsPage from "../pages/events/page";
 import FeedbackPage from "../pages/feedback/page";
 import TrainingPlanPage from "../pages/training-plan/page";
+import ApprenticeshipTimeline from "../pages/apprenticeships-timeline/page";
 
 const routes: RouteObject[] = [
   {
@@ -20,10 +20,6 @@ const routes: RouteObject[] = [
   {
     path: "/news",
     element: <NewsPage />,
-  },
-  {
-    path: "/news/:id",
-    element: <NewsDetailPage />,
   },
   {
     path: "/dashboard",
@@ -56,6 +52,10 @@ const routes: RouteObject[] = [
   {
     path: "/training-plan",
     element: <TrainingPlanPage />,
+  },
+  {
+    path: "/apprenticeships-timeline",
+    element: <ApprenticeshipTimeline />,
   },
   {
     path: "*",

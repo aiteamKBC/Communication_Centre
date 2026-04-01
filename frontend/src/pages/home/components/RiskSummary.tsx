@@ -15,7 +15,7 @@ export default function RiskSummary() {
           <i className="ri-shield-cross-line text-kbc-navy text-2xl" />
         </div>
         <div className="text-center">
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-kbc-amber bg-amber-50 border border-amber-200 px-3 py-1 rounded-full mb-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-kbc-amber bg-kbc-amber/10 border border-kbc-amber/30 px-3 py-1 rounded-full mb-2">
             <span className="w-1.5 h-1.5 rounded-full bg-kbc-amber animate-pulse inline-block" />
             In Development
           </span>

@@ -7,27 +7,26 @@ export default function HeroSection() {
   return (
     <>
       <section className="w-full px-4 md:px-6 py-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-stretch">
 
           {/* Panel 1 — Alert / Important Notice */}
-          <div className="bg-kbc-red rounded-lg p-5 flex flex-col justify-between min-h-[160px]">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 flex items-center justify-center shrink-0 bg-white/20 rounded-lg">
-                <i className="ri-alarm-warning-line text-white text-xl" />
-              </div>
-              <div>
-                <p className="text-white font-bold text-sm leading-snug mb-1">
-                  IMPORTANT: Compliance Audit Due 30<sup>th</sup> April
-                </p>
-                <p className="text-white/80 text-xs leading-relaxed">
-                  Review required documents ASAP!
-                </p>
-              </div>
+          <div className="bg-kbc-red rounded-lg p-5 flex flex-col justify-between min-h-[200px]">
+            <div>
+              <span className="inline-flex items-center gap-1.5 bg-white/20 text-white text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
+                <i className="ri-alarm-warning-line text-xs" />
+                Urgent Notice
+              </span>
+              <p className="text-white font-bold text-sm leading-snug mb-2">
+                IMPORTANT: Compliance Audit Due 30<sup>th</sup> April
+              </p>
+              <p className="text-white/80 text-xs leading-relaxed">
+                Review required documents ASAP. All staff must complete their compliance checklist before the deadline.
+              </p>
             </div>
             <div className="mt-4">
               <Link
                 to="/documents"
-                className="inline-flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 border border-white/60 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
               >
                 View Details
                 <i className="ri-arrow-right-s-line text-sm" />
@@ -36,15 +35,15 @@ export default function HeroSection() {
           </div>
 
           {/* Panel 2 — Message from the Principal */}
-          <div className="relative rounded-lg overflow-hidden min-h-[160px] cursor-pointer group" onClick={() => setLeadershipOpen(true)}>
+          <div className="relative rounded-lg overflow-hidden min-h-[200px] cursor-pointer group" onClick={() => setLeadershipOpen(true)}>
             <img
               src="https://readdy.ai/api/search-image?query=confident%20mature%20British%20college%20principal%20in%20smart%20suit%20standing%20in%20modern%20bright%20office%2C%20warm%20professional%20smile%2C%20university%20setting%20with%20books%20and%20certificates%20visible%2C%20natural%20window%20light&width=600&height=340&seq=hero-principal-panel&orientation=landscape"
               alt="Message from Principal"
               className="absolute inset-0 w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-500"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-transparent" />
-            <div className="relative z-10 p-5 h-full flex flex-col justify-end">
-              <p className="text-white/80 text-xs font-medium mb-1">Message from the Principal</p>
+            <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-black/20" />
+            <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
+              <p className="text-white/80 text-xs font-medium mb-1 uppercase tracking-wide">Message from the Principal</p>
               <h3 className="text-white font-bold text-base leading-snug">
                 Building Our Future Together!
               </h3>
@@ -53,7 +52,7 @@ export default function HeroSection() {
           </div>
 
           {/* Panel 3 — Campaign / Learning */}
-          <div className="relative rounded-lg overflow-hidden min-h-[160px]">
+          <div className="relative rounded-lg overflow-hidden min-h-[200px]">
             <img
               src="https://readdy.ai/api/search-image?query=spring%20learning%20campaign%20education%20college%20background%2C%20light%20blue%20and%20white%20tones%2C%20graduation%20mortarboard%20cap%20and%20flowers%20on%20clean%20minimal%20desk%2C%20academic%20achievement%20symbols%2C%20fresh%20bright%20professional%20educational%20setting&width=600&height=340&seq=hero-campaign-panel&orientation=landscape"
               alt="Spring Learning Campaign"
@@ -61,8 +60,12 @@ export default function HeroSection() {
             />
             <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/80 via-transparent to-transparent" />
             <div className="absolute top-0 right-0 bottom-0 left-0 bg-kbc-navy/25" />
-            <div className="relative z-10 p-5 h-full flex flex-col justify-between">
+            <div className="relative z-10 p-5 h-full flex flex-col justify-between min-h-[200px]">
               <div>
+                <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
+                  <i className="ri-seedling-line text-xs" />
+                  Spring Campaign
+                </span>
                 <h3 className="text-white font-bold text-base leading-snug drop-shadow-sm">
                   Spring Learning Campaign
                 </h3>
@@ -71,7 +74,7 @@ export default function HeroSection() {
               <div>
                 <Link
                   to="/training-plan"
-                  className="inline-flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 border border-white/60 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
                 >
                   Learn More
                   <i className="ri-arrow-right-s-line text-sm" />
@@ -85,11 +88,12 @@ export default function HeroSection() {
       {/* Principal Modal */}
       {leadershipOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-          onClick={() => setLeadershipOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
         >
+          <div className="modal-backdrop" />
           <div
-            className="bg-white rounded-xl max-w-lg w-full p-7"
+            className="relative bg-white rounded-xl max-w-lg w-full p-7 shadow-2xl"
+            style={{ animation: 'fadeScaleIn 150ms ease' }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start gap-4 mb-5">
@@ -98,17 +102,23 @@ export default function HeroSection() {
                 alt="Principal"
                 className="w-16 h-16 rounded-full object-cover object-top border-2 border-kbc-navy shrink-0"
               />
-              <div>
+              <div className="flex-1">
                 <h3 className="font-bold text-kbc-navy text-base">Prof. David Kingsley</h3>
                 <p className="text-gray-500 text-xs">Principal &amp; CEO, Kent Business College</p>
                 <p className="text-gray-400 text-xs mt-0.5">29 March 2026</p>
               </div>
+              <button
+                onClick={() => setLeadershipOpen(false)}
+                className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-kbc-navy hover:bg-gray-100 rounded cursor-pointer transition-colors"
+              >
+                <i className="ri-close-line text-base" />
+              </button>
             </div>
             <p className="text-gray-700 text-sm leading-relaxed mb-3">
               Dear colleagues, as we enter the final term of this academic year, I want to acknowledge the outstanding commitment our staff have shown in the face of significant regulatory change and operational pressure.
             </p>
             <p className="text-gray-700 text-sm leading-relaxed mb-3">
-              Our Ofsted readiness work is progressing well, and I am encouraged by the engagement from every department. Our GDPR training completion must reach 100% by 5 April — please prioritise this.
+              Our Ofsted readiness work is progressing well, and I am encouraged by the engagement from every department. Our <strong>GDPR training completion must reach 100% by 5 April</strong> — please prioritise this.
             </p>
             <p className="text-gray-700 text-sm leading-relaxed mb-5">
               This platform is your central resource for all updates, deadlines, and priorities. Use it daily. Together, we will deliver an outstanding outcome for our students and community.

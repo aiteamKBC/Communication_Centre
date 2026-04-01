@@ -19,8 +19,24 @@ const avatarColors = [
 ];
 
 function timeAgo(dateStr: string): string {
-  const daysAgo = Math.floor(Math.random() * 10) + 1;
-  return `${daysAgo}-days ago`;
+  const parts = dateStr.trim().split(' ');
+  if (parts.length < 3) return dateStr;
+  const day = parseInt(parts[0], 10);
+  const months: Record<string, number> = {
+    Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+    Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+  };
+  const month = months[parts[1]];
+  const year = parseInt(parts[2], 10);
+  if (isNaN(day) || month === undefined || isNaN(year)) return dateStr;
+  const then = new Date(year, month, day);
+  const now = new Date(2026, 3, 1); // site reference date
+  const diffDays = Math.floor((now.getTime() - then.getTime()) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return '1 day ago';
+  if (diffDays < 7) return `${diffDays} days ago`;
+  if (diffDays < 14) return '1 week ago';
+  return `${Math.floor(diffDays / 7)} weeks ago`;
 }
 
 export default function NewsFeed() {
@@ -110,14 +126,12 @@ export default function NewsFeed() {
                 </div>
                 <div className="flex items-center justify-between mt-1.5">
                   <span className="text-xs text-gray-400">{timeAgo(item.date)}</span>
-                  {item.priority !== 'critical' && (
-                    <Link
-                      to={`/news/${item.id}`}
-                      className="text-xs text-kbc-navy font-medium hover:underline cursor-pointer whitespace-nowrap"
-                    >
-                      Read More &rsaquo;
-                    </Link>
-                  )}
+                  <Link
+                    to="/news"
+                    className="text-xs text-kbc-navy font-medium hover:underline cursor-pointer whitespace-nowrap"
+                  >
+                    Read More &rsaquo;
+                  </Link>
                 </div>
               </div>
             </div>

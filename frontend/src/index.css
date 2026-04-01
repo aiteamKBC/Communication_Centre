@@ -2,169 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --motion-duration-fast: 220ms;
-    --motion-duration-base: 320ms;
-    --motion-duration-slow: 460ms;
-    --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  html {
-    scroll-behavior: smooth;
-  }
-
-  body {
-    background:
-      radial-gradient(circle at top, rgba(15, 56, 110, 0.04), transparent 28%),
-      linear-gradient(180deg, #f8fafc 0%, #f8fafc 42%, #f3f4f6 100%);
-    color: #0f172a;
-  }
-
-  ::selection {
-    background: rgba(59, 130, 246, 0.22);
-    color: #0f172a;
-  }
-}
-
 @layer components {
-  .nav-sheet {
-    animation: nav-sheet-in 360ms var(--motion-ease);
-    transform-origin: top center;
-  }
-
   .modal-backdrop {
-    animation: modal-backdrop-in 220ms ease;
-  }
-
-  .modal-surface {
-    animation: modal-surface-in 280ms var(--motion-ease);
-    transform-origin: center;
-  }
-
-  .kbc-swal-popup {
-    border-radius: 1.25rem;
-    padding: 1.4rem;
-    box-shadow: 0 24px 60px -32px rgba(15, 23, 42, 0.42);
-  }
-
-  .kbc-swal-title {
-    color: #1b2a4a;
-    font-size: 1.2rem;
-    font-weight: 800;
-  }
-
-  .kbc-swal-html {
-    color: #64748b;
-    font-size: 0.95rem;
-    line-height: 1.6;
-  }
-
-  .kbc-swal-confirm,
-  .kbc-swal-cancel {
-    border-radius: 0.85rem;
-    padding: 0.78rem 1rem;
-    font-size: 0.85rem;
-    font-weight: 700;
-    min-width: 8.5rem;
-  }
-
-  .kbc-swal-confirm {
-    background: #1b2a4a;
-    color: #ffffff;
-  }
-
-  .kbc-swal-confirm:hover {
-    background: #274069;
-  }
-
-  .kbc-swal-cancel {
-    border: 1px solid rgba(148, 163, 184, 0.4);
-    background: #f8fafc;
-    color: #475569;
-  }
-
-  .kbc-swal-cancel:hover {
-    background: #f1f5f9;
-    color: #1b2a4a;
-  }
-
-  .site-footer::after {
-    content: '';
-    position: absolute;
-    inset: auto 10% 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
-    opacity: 0.7;
-  }
-
-  :where(button, a, input, select, textarea) {
-    transition:
-      color var(--motion-duration-fast) ease,
-      background-color var(--motion-duration-fast) ease,
-      border-color var(--motion-duration-fast) ease,
-      box-shadow var(--motion-duration-fast) ease,
-      transform var(--motion-duration-fast) ease;
-  }
-
-  :where(.bg-white.rounded-lg, .bg-white.rounded-xl, .bg-white.rounded-2xl, .bg-white.rounded-3xl):not([data-modal-surface]) {
-    transition:
-      box-shadow 320ms var(--motion-ease),
-      transform 320ms var(--motion-ease),
-      border-color 320ms ease;
-  }
-
-  :where(.bg-white.rounded-lg, .bg-white.rounded-xl, .bg-white.rounded-2xl, .bg-white.rounded-3xl):not([data-modal-surface]):hover {
-    box-shadow: 0 26px 52px -34px rgba(15, 23, 42, 0.26);
+    @apply absolute inset-0 backdrop-blur-md;
+    background: rgba(2, 6, 23, 0.38);
   }
 }
 
-@keyframes nav-sheet-in {
-  from {
-    opacity: 0;
-    transform: translateY(-16px) scale(0.98);
+@layer utilities {
+  @keyframes footer-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(18px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes modal-backdrop-in {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes modal-surface-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.985);
+  @keyframes footer-float {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(0, 10px, 0) scale(1.04);
+    }
   }
 
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 1ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 1ms !important;
-    scroll-behavior: auto !important;
+  @keyframes footer-glow {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.75;
+      transform: scale(1.08);
+    }
   }
 
+  .animate-footer-fade-up {
+    animation: footer-fade-up 0.65s ease both;
+  }
+
+  .animate-footer-float {
+    animation: footer-float 9s ease-in-out infinite;
+  }
+
+  .animate-footer-glow {
+    animation: footer-glow 7s ease-in-out infinite;
+  }
 }

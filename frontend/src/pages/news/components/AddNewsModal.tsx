@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react';
-import ModalPortal from '../../../components/feature/ModalPortal';
-import ModernSelect, { type ModernSelectOption } from '../../../components/feature/ModernSelect';
-import ModernDatePicker from '../../../components/feature/ModernDatePicker';
+import { useEffect, useRef, useState } from 'react';
+import ModernSelect from '../../../components/feature/ModernSelect';
 
 interface AddNewsModalProps {
   onClose: () => void;
@@ -9,9 +7,9 @@ interface AddNewsModalProps {
 
 const audiences = ['All Staff', 'Leadership', 'Budget Holders', 'New Starters', 'Marketing'];
 const categories = ['Compliance', 'Quality', 'Leadership', 'IT', 'Training', 'HR', 'Marketing', 'Finance', 'Estates', 'General'];
-const categoryOptions: ModernSelectOption[] = categories.map(item => ({ label: item, value: item }));
-const audienceOptions: ModernSelectOption[] = audiences.map(item => ({ label: item, value: item }));
-const priorityOptions: ModernSelectOption[] = [
+const audienceOptions = audiences.map(audience => ({ label: audience, value: audience }));
+const categoryOptions = categories.map(category => ({ label: category, value: category }));
+const priorityOptions = [
   { label: 'General', value: 'general' },
   { label: 'Important', value: 'important' },
   { label: 'Critical', value: 'critical' },
@@ -20,6 +18,7 @@ const priorityOptions: ModernSelectOption[] = [
 export default function AddNewsModal({ onClose }: AddNewsModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
+  const modalRef = useRef<HTMLDivElement | null>(null);
   const [newArticle, setNewArticle] = useState({
     title: '',
     date: '',
@@ -51,19 +50,15 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
   };
 
   return (
-    <ModalPortal>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        {/* Backdrop */}
-        <div
-          className="modal-backdrop absolute inset-0 bg-slate-950/35 backdrop-blur-[7px]"
-          onClick={onClose}
-        />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div className="modal-backdrop" />
 
-        {/* Modal */}
-        <div
-          data-modal-surface
-          className="modal-surface relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
-        >
+      {/* Modal */}
+      <div
+        ref={modalRef}
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-fade-in"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
           <div className="flex items-center gap-3">
@@ -110,19 +105,11 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
             {/* Date */}
             <div>
               <label className="block text-xs font-semibold text-kbc-navy mb-1.5">Publication Date</label>
-              <ModernDatePicker
+              <input
+                type="date"
                 value={newArticle.date}
-                onChange={value => setNewArticle({ ...newArticle, date: value })}
-              />
-            </div>
-
-            {/* Audience */}
-            <div>
-              <label className="block text-xs font-semibold text-kbc-navy mb-1.5">Audience</label>
-              <ModernSelect
-                value={newArticle.audience}
-                onChange={value => setNewArticle({ ...newArticle, audience: value })}
-                options={audienceOptions}
+                onChange={e => setNewArticle({ ...newArticle, date: e.target.value })}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 outline-none focus:border-kbc-navy transition-colors cursor-pointer"
               />
             </div>
 
@@ -134,6 +121,22 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
                 onChange={value => setNewArticle({ ...newArticle, category: value })}
                 options={categoryOptions}
                 placeholder="Select category..."
+                boundaryRef={modalRef}
+                menuMinWidth={250}
+                buttonClassName="min-h-[44px] rounded-2xl border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
+              />
+            </div>
+
+            {/* Audience */}
+            <div>
+              <label className="block text-xs font-semibold text-kbc-navy mb-1.5">Audience</label>
+              <ModernSelect
+                value={newArticle.audience}
+                onChange={value => setNewArticle({ ...newArticle, audience: value })}
+                options={audienceOptions}
+                boundaryRef={modalRef}
+                menuMinWidth={240}
+                buttonClassName="min-h-[44px] rounded-2xl border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
               />
             </div>
 
@@ -144,11 +147,14 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
                 value={newArticle.priority}
                 onChange={value => setNewArticle({ ...newArticle, priority: value })}
                 options={priorityOptions}
+                boundaryRef={modalRef}
+                menuMinWidth={220}
+                buttonClassName="min-h-[44px] rounded-2xl border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
               />
             </div>
 
             {/* Image URL */}
-            <div>
+            <div className="sm:col-span-2">
               <label className="block text-xs font-semibold text-kbc-navy mb-1.5">Image URL <span className="text-gray-400 font-normal">(optional)</span></label>
               <input
                 type="text"
@@ -159,7 +165,7 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
               />
             </div>
 
-            {/* Image URL */}
+            {/* Summary */}
             <div className="sm:col-span-2">
               <label className="block text-xs font-semibold text-kbc-navy mb-1.5">
                 Summary / Excerpt <span className="text-kbc-red">*</span>
@@ -217,8 +223,7 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
             </button>
           </div>
         </div>
-        </div>
       </div>
-    </ModalPortal>
+    </div>
   );
 }

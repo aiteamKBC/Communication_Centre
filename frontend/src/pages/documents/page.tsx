@@ -61,7 +61,7 @@ export default function DocumentsPage() {
         </div>
       </div>
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8">
+      <main className="max-w-7xl mx-auto w-full flex-1 px-4 md:px-6 py-8">
         {/* Type Tabs */}
         <div className="flex items-center gap-1 mb-5 flex-wrap">
           {(['all', 'policy', 'sop', 'template', 'form'] as const).map((tab) => (
@@ -171,8 +171,7 @@ export default function DocumentsPage() {
         </div>
       </main>
 
-      <Footer />
+      <Footer compact />
     </div>
   );
 }
-

@@ -2,13 +2,19 @@ import { Link } from 'react-router-dom';
 import { events } from '../../../mocks/events';
 
 const typeColors: Record<string, string> = {
-  online: 'bg-kbc-navy/10 text-kbc-navy',
-  offline: 'bg-green-50 text-kbc-green',
+  deadline: 'bg-red-50 text-kbc-red',
+  meeting: 'bg-kbc-navy/10 text-kbc-navy',
+  training: 'bg-green-50 text-kbc-green',
+  external: 'bg-kbc-amber/20 text-yellow-800',
+  'all-staff': 'bg-yellow-50 text-yellow-700',
 };
 
 const typeIcons: Record<string, string> = {
-  online: 'ri-wifi-line',
-  offline: 'ri-building-4-line',
+  deadline: 'ri-timer-line',
+  meeting: 'ri-group-line',
+  training: 'ri-book-open-line',
+  external: 'ri-building-line',
+  'all-staff': 'ri-team-line',
 };
 
 export default function UpcomingEventsSection() {
@@ -45,7 +51,7 @@ export default function UpcomingEventsSection() {
               <div className="flex items-center gap-1.5 mb-1.5">
                 <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${typeColors[event.type]} whitespace-nowrap`}>
                   <i className={`${typeIcons[event.type]} text-xs`} />
-                  {event.type.charAt(0).toUpperCase() + event.type.slice(1)}
+                  {event.type.replace('-', ' ')}
                 </span>
               </div>
               <h3 className="text-xs font-bold text-kbc-navy leading-snug mb-1 group-hover:text-kbc-navy-light">

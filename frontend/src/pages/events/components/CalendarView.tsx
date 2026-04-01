@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { CalendarEvent } from '../../../mocks/events';
 
 const MONTH_NAMES = [
@@ -13,8 +13,8 @@ const MONTH_ABBR: Record<string, number> = {
 };
 
 const typeStyle: Record<string, { pill: string; dot: string; label: string }> = {
-  online: { pill: 'bg-slate-100 text-slate-700 hover:bg-slate-200', dot: 'bg-slate-500', label: 'Online' },
-  offline: { pill: 'bg-green-100 text-green-700 hover:bg-green-200', dot: 'bg-green-500', label: 'Offline' },
+  online:  { pill: 'bg-green-100 text-green-700 hover:bg-green-200', dot: 'bg-green-500', label: 'Online' },
+  offline: { pill: 'bg-slate-100 text-slate-700 hover:bg-slate-200', dot: 'bg-slate-500', label: 'Offline' },
 };
 
 interface Props {
@@ -32,41 +32,12 @@ function parseEventDate(event: CalendarEvent): Date {
   return new Date(year, month, day);
 }
 
+// Today = 2026-03-30 as per project context
+const TODAY = new Date(2026, 2, 30);
+
 export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo }: Props) {
-  const [today, setToday] = useState(() => new Date());
-  const [current, setCurrent] = useState(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1);
-  });
+  const [current, setCurrent] = useState(new Date(2026, 3, 1)); // start at April 2026
   const [dayPopup, setDayPopup] = useState<{ day: number; events: CalendarEvent[] } | null>(null);
-  const previousTodayRef = useRef(today);
-
-  useEffect(() => {
-    const syncToday = () => {
-      setToday(new Date());
-    };
-
-    syncToday();
-    const intervalId = window.setInterval(syncToday, 60 * 1000);
-
-    return () => window.clearInterval(intervalId);
-  }, []);
-
-  useEffect(() => {
-    const previousToday = previousTodayRef.current;
-    const monthChanged =
-      previousToday.getFullYear() !== today.getFullYear() ||
-      previousToday.getMonth() !== today.getMonth();
-    const viewingPreviousTodayMonth =
-      current.getFullYear() === previousToday.getFullYear() &&
-      current.getMonth() === previousToday.getMonth();
-
-    if (monthChanged && viewingPreviousTodayMonth) {
-      setCurrent(new Date(today.getFullYear(), today.getMonth(), 1));
-    }
-
-    previousTodayRef.current = today;
-  }, [today, current]);
 
   useEffect(() => {
     if (jumpTo) {
@@ -98,13 +69,13 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
   while (cells.length % 7 !== 0) cells.push(null);
 
   const isToday = (day: number) =>
-    today.getFullYear() === year &&
-    today.getMonth() === month &&
-    today.getDate() === day;
+    TODAY.getFullYear() === year &&
+    TODAY.getMonth() === month &&
+    TODAY.getDate() === day;
 
   const prevMonth = () => setCurrent(new Date(year, month - 1, 1));
   const nextMonth = () => setCurrent(new Date(year, month + 1, 1));
-  const goToday = () => setCurrent(new Date(today.getFullYear(), today.getMonth(), 1));
+  const goToday = () => setCurrent(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1));
 
   const MAX_VISIBLE = 3;
 
@@ -168,14 +139,8 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
           return (
             <div
               key={idx}
-              className={`group min-h-[110px] border-r border-b border-gray-100 last:border-r-0 p-1.5 transition-colors ${
-                day
-                  ? 'bg-white hover:bg-kbc-amber/15'
-                  : 'bg-gray-50/40'
-              } ${
-                day && dayEvents.length > 0
-                  ? 'hover:shadow-[inset_0_0_0_1px_rgba(247,168,0,0.32)]'
-                  : ''
+              className={`min-h-[110px] border-r border-b border-gray-100 last:border-r-0 p-1.5 ${
+                day ? 'bg-white' : 'bg-gray-50/40'
               }`}
             >
               {day !== null && (
@@ -185,7 +150,7 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
                     className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-bold mb-1 select-none ${
                       isToday(day)
                         ? 'bg-kbc-navy text-white'
-                        : 'text-gray-600 group-hover:bg-white group-hover:text-kbc-navy group-hover:shadow-sm'
+                        : 'text-gray-600'
                     }`}
                   >
                     {day}
@@ -244,7 +209,6 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
       {dayPopup && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center p-4"
-          onClick={() => setDayPopup(null)}
         >
           <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
           <div

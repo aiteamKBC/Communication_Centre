@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
-import ModernSelect, { type ModernSelectOption } from '../../components/feature/ModernSelect';
+import ModernSelect from '../../components/feature/ModernSelect';
 
 const categories = [
   'General Feedback',
@@ -14,16 +14,16 @@ const categories = [
   'HR Query',
 ];
 
-const categoryOptions: ModernSelectOption[] = categories.map(item => ({ label: item, value: item }));
-const departmentOptions: ModernSelectOption[] = [
-  { label: 'Leadership & Executive', value: 'Leadership & Executive' },
-  { label: 'Human Resources', value: 'Human Resources' },
-  { label: 'Finance', value: 'Finance' },
-  { label: 'Quality & Standards', value: 'Quality & Standards' },
-  { label: 'Marketing & Partnerships', value: 'Marketing & Partnerships' },
-  { label: 'IT Services', value: 'IT Services' },
-  { label: 'Operations & Estates', value: 'Operations & Estates' },
-  { label: 'Compliance & Risk', value: 'Compliance & Risk' },
+const departmentOptions = [
+  'Select department...',
+  'Leadership & Executive',
+  'Human Resources',
+  'Finance',
+  'Quality & Standards',
+  'Marketing & Partnerships',
+  'IT Services',
+  'Operations & Estates',
+  'Compliance & Risk',
 ];
 
 export default function FeedbackPage() {
@@ -145,7 +145,10 @@ export default function FeedbackPage() {
                   <ModernSelect
                     value={form.category}
                     onChange={(value) => setForm({ ...form, category: value })}
-                    options={categoryOptions}
+                    options={categories.map((category) => ({ value: category, label: category }))}
+                    className="w-full"
+                    buttonClassName="min-h-[46px] rounded-2xl border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
+                    menuMinWidth={220}
                   />
                 </div>
                 <div>
@@ -153,8 +156,14 @@ export default function FeedbackPage() {
                   <ModernSelect
                     value={form.department}
                     onChange={(value) => setForm({ ...form, department: value })}
-                    options={departmentOptions}
+                    options={departmentOptions.map((department) => ({
+                      value: department === 'Select department...' ? '' : department,
+                      label: department,
+                    }))}
                     placeholder="Select department..."
+                    className="w-full"
+                    buttonClassName="min-h-[46px] rounded-2xl border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
+                    menuMinWidth={240}
                   />
                 </div>
               </div>

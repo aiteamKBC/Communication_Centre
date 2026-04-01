@@ -5,17 +5,17 @@ import Footer from '../../components/feature/Footer';
 import { cohorts, sessions, programmeComponents } from '../../mocks/training';
 
 const statusConfig = {
-  active: { label: 'Active', badge: 'bg-green-100 text-kbc-green', dot: 'bg-kbc-green' },
-  upcoming: { label: 'Upcoming', badge: 'bg-yellow-100 text-yellow-700', dot: 'bg-kbc-amber' },
+  active: { label: 'Active', badge: 'bg-kbc-green/10 text-kbc-green', dot: 'bg-kbc-green' },
+  upcoming: { label: 'Upcoming', badge: 'bg-kbc-amber/15 text-kbc-navy', dot: 'bg-kbc-amber' },
   completed: { label: 'Completed', badge: 'bg-gray-100 text-gray-500', dot: 'bg-gray-400' },
 };
 
 const sessionTypeConfig = {
   induction: { label: 'Induction', badge: 'bg-kbc-navy/10 text-kbc-navy', icon: 'ri-information-line' },
-  'live-session': { label: 'Live Session', badge: 'bg-green-100 text-kbc-green', icon: 'ri-video-line' },
-  workshop: { label: 'Workshop', badge: 'bg-kbc-amber/20 text-yellow-800', icon: 'ri-tools-line' },
-  assessment: { label: 'Assessment', badge: 'bg-red-100 text-kbc-red', icon: 'ri-award-line' },
-  review: { label: 'Progress Review', badge: 'bg-kbc-amber/20 text-yellow-800', icon: 'ri-user-star-line' },
+  'live-session': { label: 'Live Session', badge: 'bg-kbc-green/10 text-kbc-green', icon: 'ri-video-line' },
+  workshop: { label: 'Workshop', badge: 'bg-kbc-amber/15 text-kbc-navy', icon: 'ri-tools-line' },
+  assessment: { label: 'Assessment', badge: 'bg-kbc-red/10 text-kbc-red', icon: 'ri-award-line' },
+  review: { label: 'Progress Review', badge: 'bg-kbc-amber/15 text-kbc-navy', icon: 'ri-user-star-line' },
 };
 
 const deliveryConfig = {
@@ -26,8 +26,8 @@ const deliveryConfig = {
 
 const sessionStatusConfig = {
   scheduled: { label: 'Scheduled', badge: 'bg-kbc-navy/10 text-kbc-navy' },
-  completed: { label: 'Completed', badge: 'bg-green-50 text-kbc-green' },
-  cancelled: { label: 'Cancelled', badge: 'bg-red-50 text-kbc-red' },
+  completed: { label: 'Completed', badge: 'bg-kbc-green/10 text-kbc-green' },
+  cancelled: { label: 'Cancelled', badge: 'bg-kbc-red/10 text-kbc-red' },
 };
 
 export default function TrainingPlanPage() {
@@ -62,10 +62,10 @@ export default function TrainingPlanPage() {
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6">
+      <main className="max-w-7xl mx-auto px-4 md:px-6 py-8">
 
         {/* Stats Strip */}
-        <div className="mb-5 flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3 mb-6">
           <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
             <i className="ri-group-line text-kbc-amber text-sm" />
             <span className="text-kbc-navy text-xs font-semibold">{cohorts.filter(c => c.status === 'active').length} Active Cohorts</span>
@@ -81,15 +81,15 @@ export default function TrainingPlanPage() {
         </div>
 
         {/* ── Section 1: Cohort Overview Cards ── */}
-        <section className="mb-7">
-          <div className="mb-3 flex items-center justify-between">
+        <section className="mb-10">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-base font-bold text-kbc-navy">Cohort Calendar</h2>
               <p className="text-xs text-gray-400 mt-0.5">Select a cohort to view its session schedule and progress</p>
             </div>
           </div>
 
-          <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {cohorts.map(cohort => {
               const scfg = statusConfig[cohort.status];
               const isSelected = cohort.id === activeCohort;
@@ -97,16 +97,16 @@ export default function TrainingPlanPage() {
                 <button
                   key={cohort.id}
                   onClick={() => setActiveCohort(cohort.id)}
-                  className={`cursor-pointer rounded-xl border-2 bg-white p-3.5 text-left transition-all ${isSelected ? 'border-kbc-navy' : 'border-gray-100 hover:border-gray-300'}`}
+                  className={`text-left bg-white rounded-xl border-2 p-4 cursor-pointer transition-all ${isSelected ? 'border-kbc-navy' : 'border-gray-100 hover:border-gray-300'}`}
                 >
-                  <div className="mb-2.5 flex items-start justify-between gap-2">
+                  <div className="flex items-start justify-between mb-3 gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-bold text-kbc-navy leading-snug">{cohort.name}</p>
                       <p className="text-xs text-gray-500 mt-0.5 truncate">{cohort.programme}</p>
                     </div>
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${scfg.badge}`}>{scfg.label}</span>
                   </div>
-                  <div className="mb-2.5 grid grid-cols-2 gap-2 text-xs">
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
                     <div>
                       <p className="text-gray-400">Start</p>
                       <p className="font-semibold text-kbc-navy">{cohort.startDate}</p>
@@ -135,7 +135,7 @@ export default function TrainingPlanPage() {
                     </div>
                   )}
                   {isSelected && (
-                    <div className="mt-2.5 flex items-center gap-1 border-t border-kbc-navy/10 pt-2 text-kbc-navy">
+                    <div className="mt-3 pt-2 border-t border-kbc-navy/10 flex items-center gap-1 text-kbc-navy">
                       <i className="ri-arrow-down-s-line text-xs" />
                       <span className="text-xs font-semibold">Viewing sessions below</span>
                     </div>
@@ -146,13 +146,13 @@ export default function TrainingPlanPage() {
           </div>
 
           {/* Selected Cohort Details + Sessions */}
-          <div className="rounded-xl border border-gray-100 bg-white p-4">
-            <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <div className="bg-white rounded-xl border border-gray-100 p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
               <div>
                 <h3 className="text-sm font-bold text-kbc-navy">{selectedCohort.name} — Session Schedule</h3>
                 <p className="text-xs text-gray-400 mt-0.5">{selectedCohort.programme} &middot; {selectedCohort.deliveryMode} delivery</p>
               </div>
-              <div className="flex w-fit items-center gap-1 rounded-full bg-gray-100 px-1 py-1">
+              <div className="flex items-center gap-1 px-1 py-1 bg-gray-100 rounded-full w-fit">
                 {(['all', 'scheduled', 'completed', 'cancelled'] as const).map(f => (
                   <button
                     key={f}
@@ -166,23 +166,23 @@ export default function TrainingPlanPage() {
             </div>
 
             {filteredSessions.length > 0 ? (
-              <div className="flex flex-col gap-2.5">
+              <div className="flex flex-col gap-3">
                 {filteredSessions.map(session => {
                   const stcfg = sessionTypeConfig[session.type];
                   const dcfg = deliveryConfig[session.deliveryMode];
                   const sscfg = sessionStatusConfig[session.status];
                   return (
-                    <div key={session.id} className="rounded-xl border border-gray-100 p-3.5">
-                      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                    <div key={session.id} className="border border-gray-100 rounded-xl p-4">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
                         <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${stcfg.badge} whitespace-nowrap`}>
                           <i className={`${stcfg.icon} text-xs`} />
                           {stcfg.label}
                         </span>
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${sscfg.badge} whitespace-nowrap`}>{sscfg.label}</span>
                       </div>
-                      <h4 className="mb-1 text-sm font-bold text-kbc-navy">{session.title}</h4>
-                      <p className="mb-2 text-xs text-gray-500">{session.description}</p>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-gray-500">
+                      <h4 className="text-sm font-bold text-kbc-navy mb-1">{session.title}</h4>
+                      <p className="text-xs text-gray-500 mb-3">{session.description}</p>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                         <span className="flex items-center gap-1"><i className="ri-calendar-line text-gray-400" />{session.date}</span>
                         <span className="flex items-center gap-1"><i className="ri-time-line text-gray-400" />{session.time}</span>
                         <span className={`flex items-center gap-1 ${dcfg.color}`}><i className={dcfg.icon} />{dcfg.label}</span>
@@ -203,14 +203,14 @@ export default function TrainingPlanPage() {
 
         {/* ── Section 2: Programme Components ── */}
         <section>
-          <div className="mb-4">
+          <div className="mb-5">
             <h2 className="text-base font-bold text-kbc-navy">Programme Components</h2>
             <p className="text-xs text-gray-400 mt-0.5">The building blocks that make up every KBC apprenticeship and training programme</p>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {programmeComponents.map(comp => (
-              <div key={comp.id} className="rounded-xl border border-gray-100 bg-white p-3.5">
+              <div key={comp.id} className="bg-white rounded-xl border border-gray-100 p-4">
                 <div
                   className="w-10 h-10 rounded-xl flex items-center justify-center mb-3"
                   style={{ backgroundColor: `${comp.color}15` }}

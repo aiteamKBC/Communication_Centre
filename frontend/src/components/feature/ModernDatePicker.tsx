@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import ModalPortal from './ModalPortal';
 
 interface ModernDatePickerProps {
   value: string;
@@ -6,6 +8,7 @@ interface ModernDatePickerProps {
   placeholder?: string;
   className?: string;
   buttonClassName?: string;
+  boundaryRef?: RefObject<HTMLElement | null>;
 }
 
 const WEEK_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
@@ -60,12 +63,22 @@ export default function ModernDatePicker({
   placeholder = 'mm/dd/yyyy',
   className = '',
   buttonClassName = '',
+  boundaryRef,
 }: ModernDatePickerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const selectedDate = parseDateValue(value);
   const today = useMemo(() => new Date(), []);
   const [open, setOpen] = useState(false);
   const [visibleMonth, setVisibleMonth] = useState<Date>(() => selectedDate ?? today);
+  const [menuPosition, setMenuPosition] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
 
   useEffect(() => {
     if (selectedDate) {
@@ -74,8 +87,66 @@ export default function ModernDatePicker({
   }, [value]);
 
   useEffect(() => {
+    if (!open || !buttonRef.current) {
+      return;
+    }
+
+    const updateMenuPosition = () => {
+      if (!buttonRef.current) {
+        return;
+      }
+
+      const rect = buttonRef.current.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const viewportWidth = window.innerWidth;
+      const boundaryRect = boundaryRef?.current?.getBoundingClientRect();
+      const gap = 10;
+      const edgePadding = 12;
+      const desiredWidth = 304;
+      const horizontalStart = boundaryRect ? boundaryRect.left + edgePadding : edgePadding;
+      const horizontalEnd = boundaryRect ? boundaryRect.right - edgePadding : viewportWidth - edgePadding;
+      const maxAllowedWidth = Math.max(260, horizontalEnd - horizontalStart);
+      const width = Math.min(desiredWidth, maxAllowedWidth);
+      const spaceBelow = (boundaryRect ? boundaryRect.bottom : viewportHeight) - rect.bottom - edgePadding;
+      const spaceAbove = rect.top - (boundaryRect ? boundaryRect.top : 0) - edgePadding;
+      const openUpward = spaceBelow < 330 && spaceAbove > spaceBelow;
+      const left = Math.min(
+        Math.max(horizontalStart, rect.left),
+        Math.max(horizontalStart, horizontalEnd - width),
+      );
+      const maxHeight = Math.max(240, Math.min(360, (openUpward ? spaceAbove : spaceBelow) - gap));
+
+      setMenuPosition(
+        openUpward
+          ? {
+              bottom: Math.max(edgePadding, viewportHeight - rect.top + gap),
+              left,
+              width,
+              maxHeight,
+            }
+          : {
+              top: rect.bottom + gap,
+              left,
+              width,
+              maxHeight,
+            },
+      );
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    document.addEventListener('scroll', updateMenuPosition, true);
+
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      document.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [boundaryRef, open]);
+
+  useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false);
       }
     }
@@ -108,6 +179,7 @@ export default function ModernDatePicker({
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen(current => !current)}
         className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all ${
@@ -126,94 +198,107 @@ export default function ModernDatePicker({
         </span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-40 mt-2 w-[19rem] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-[0_18px_45px_-22px_rgba(15,23,42,0.45)] backdrop-blur">
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Pick a date</p>
-              <p className="text-sm font-bold text-kbc-navy">
-                {MONTH_NAMES[visibleMonth.getMonth()]} {visibleMonth.getFullYear()}
-              </p>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
-                aria-label="Previous month"
-              >
-                <i className="ri-arrow-left-s-line text-base" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
-                aria-label="Next month"
-              >
-                <i className="ri-arrow-right-s-line text-base" />
-              </button>
-            </div>
-          </div>
+      {open && menuPosition && (
+        <ModalPortal>
+          <div
+            ref={menuRef}
+            className="fixed z-[80] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-[0_18px_45px_-22px_rgba(15,23,42,0.45)] backdrop-blur"
+            style={{
+              top: menuPosition.top,
+              bottom: menuPosition.bottom,
+              left: menuPosition.left,
+              width: menuPosition.width,
+            }}
+          >
+            <div style={{ maxHeight: menuPosition.maxHeight }} className="overflow-y-auto pr-1">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Pick a date</p>
+                  <p className="text-sm font-bold text-kbc-navy">
+                    {MONTH_NAMES[visibleMonth.getMonth()]} {visibleMonth.getFullYear()}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
+                    aria-label="Previous month"
+                  >
+                    <i className="ri-arrow-left-s-line text-base" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
+                    aria-label="Next month"
+                  >
+                    <i className="ri-arrow-right-s-line text-base" />
+                  </button>
+                </div>
+              </div>
 
-          <div className="mb-2 grid grid-cols-7 gap-1">
-            {WEEK_DAYS.map(day => (
-              <span key={day} className="flex h-8 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                {day}
-              </span>
-            ))}
-          </div>
+              <div className="mb-2 grid grid-cols-7 gap-1">
+                {WEEK_DAYS.map(day => (
+                  <span key={day} className="flex h-8 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    {day}
+                  </span>
+                ))}
+              </div>
 
-          <div className="grid grid-cols-7 gap-1">
-            {dayCells.map(date => {
-              const isCurrentMonth = date.getMonth() === visibleMonth.getMonth();
-              const isSelected = selectedDate ? isSameDay(date, selectedDate) : false;
-              const isToday = isSameDay(date, today);
+              <div className="grid grid-cols-7 gap-1">
+                {dayCells.map(date => {
+                  const isCurrentMonth = date.getMonth() === visibleMonth.getMonth();
+                  const isSelected = selectedDate ? isSameDay(date, selectedDate) : false;
+                  const isToday = isSameDay(date, today);
 
-              return (
+                  return (
+                    <button
+                      key={date.toISOString()}
+                      type="button"
+                      onClick={() => {
+                        onChange(formatValue(date));
+                        setOpen(false);
+                      }}
+                      className={`flex h-9 items-center justify-center rounded-xl text-sm font-medium transition-all ${
+                        isSelected
+                          ? 'bg-kbc-navy text-white shadow-sm'
+                          : isToday
+                            ? 'bg-kbc-amber/15 text-kbc-navy'
+                            : isCurrentMonth
+                              ? 'text-slate-700 hover:bg-slate-100'
+                              : 'text-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      {date.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
                 <button
-                  key={date.toISOString()}
+                  type="button"
+                  onClick={() => onChange('')}
+                  className="text-xs font-semibold text-slate-400 hover:text-kbc-navy"
+                >
+                  Clear
+                </button>
+                <button
                   type="button"
                   onClick={() => {
-                    onChange(formatValue(date));
+                    onChange(formatValue(today));
+                    setVisibleMonth(today);
                     setOpen(false);
                   }}
-                  className={`flex h-9 items-center justify-center rounded-xl text-sm font-medium transition-all ${
-                    isSelected
-                      ? 'bg-kbc-navy text-white shadow-sm'
-                      : isToday
-                        ? 'bg-kbc-amber/15 text-kbc-navy'
-                        : isCurrentMonth
-                          ? 'text-slate-700 hover:bg-slate-100'
-                          : 'text-slate-300 hover:bg-slate-50'
-                  }`}
+                  className="text-xs font-semibold text-kbc-navy hover:text-kbc-navy-light"
                 >
-                  {date.getDate()}
+                  Today
                 </button>
-              );
-            })}
+              </div>
+            </div>
           </div>
-
-          <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-            <button
-              type="button"
-              onClick={() => onChange('')}
-              className="text-xs font-semibold text-slate-400 hover:text-kbc-navy"
-            >
-              Clear
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onChange(formatValue(today));
-                setVisibleMonth(today);
-                setOpen(false);
-              }}
-              className="text-xs font-semibold text-kbc-navy hover:text-kbc-navy-light"
-            >
-              Today
-            </button>
-          </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );

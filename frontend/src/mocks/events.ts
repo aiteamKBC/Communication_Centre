@@ -1,8 +1,8 @@
 export interface EventMedia {
   id: string;
-  name: string;
-  url: string;
   kind: 'image' | 'video';
+  url: string;
+  name: string;
 }
 
 export interface CalendarEvent {
@@ -11,15 +11,13 @@ export interface CalendarEvent {
   date: string;
   day: string;
   month: string;
-  department: string;
   type: 'online' | 'offline';
   time?: string;
   location?: string;
   description?: string;
-  organiser?: string;
   registrationLink?: string;
-  image?: string;
   media?: EventMedia[];
+  image?: string;
 }
 
 export const events: CalendarEvent[] = [];

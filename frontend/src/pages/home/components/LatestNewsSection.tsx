@@ -62,7 +62,7 @@ export default function LatestNewsSection() {
                 <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                   <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{item.department}</span>
                   <Link
-                    to={`/news/${item.id}`}
+                    to="/news"
                     className="flex items-center gap-1 text-xs font-semibold text-kbc-navy hover:underline cursor-pointer whitespace-nowrap"
                   >
                     Read More
