@@ -127,7 +127,10 @@ export default function NewsDetailModal({ item, onClose, onToggleAcknowledgement
             ) : (
               <button
                 type="button"
-                onClick={() => onToggleAcknowledgement(item.id)}
+                onClick={() => {
+                  onToggleAcknowledgement(item.id);
+                  onClose();
+                }}
                 className="rounded-xl bg-kbc-navy px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-kbc-navy-light"
               >
                 Acknowledge

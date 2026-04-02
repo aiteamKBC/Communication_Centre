@@ -17,7 +17,7 @@ function getFirstDayOfMonth(year: number, month: number) {
 
 const typeBadge: Record<string, string> = {
   Online: 'bg-kbc-navy-soft/10 text-kbc-navy-soft',
-  'In Person': 'bg-kbc-green/10 text-kbc-green',
+  Offline: 'bg-kbc-green/10 text-kbc-green',
 };
 
 function getFallbackMonth(today: Date) {
@@ -157,7 +157,7 @@ export default function EventsWidget() {
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-kbc-green inline-block" />
-              <span className="text-xs text-gray-500">In Person</span>
+              <span className="text-xs text-gray-500">Offline</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-kbc-amber inline-block" />
@@ -169,7 +169,7 @@ export default function EventsWidget() {
         {displayEvents.length > 0 ? (
           <div className="border-t border-gray-100 divide-y divide-gray-50">
             {displayEvents.slice(0, 3).map(event => {
-              const typeLabel = event.type === 'online' ? 'Online' : 'In Person';
+              const typeLabel = event.type === 'online' ? 'Online' : 'Offline';
               return (
                 <div key={event.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer group">
                   <div className="w-9 h-9 bg-kbc-navy rounded-lg flex flex-col items-center justify-center shrink-0">

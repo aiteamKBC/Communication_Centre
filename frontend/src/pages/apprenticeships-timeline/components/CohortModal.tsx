@@ -106,7 +106,7 @@ export default function CohortModal({ mode, groups, initialGroupIdx = 0, initial
         dateLbl:  initialRow.dateLbl,
         blks: initialRow.blks.map(b => {
           const { year, month } = fromIndex(b.s);
-          return { mod: b.mod, startYear: year, startMonth: month, duration: b.d };
+          return { mod: getModuleMeta(b.mod).lbl, startYear: year, startMonth: month, duration: b.d };
         }),
       };
     }
@@ -147,7 +147,7 @@ export default function CohortModal({ mode, groups, initialGroupIdx = 0, initial
       label:    data.label.trim(),
       dateLbl:  data.dateLbl.trim(),
       blks: data.blks.map(b => ({
-        mod: b.mod,
+        mod: b.mod.trim(),
         s:   mi(b.startYear, b.startMonth),
         d:   b.duration,
       })),
