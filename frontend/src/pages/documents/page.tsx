@@ -116,9 +116,14 @@ export default function DocumentsPage() {
             const tcfg = typeConfig[doc.type];
             const scfg = sensitivityConfig[doc.sensitivity];
             return (
-              <div key={doc.id} className="bg-white rounded-xl border border-gray-100 p-5 cursor-pointer hover:shadow-sm transition-shadow group">
-                <div className="flex items-start gap-3 mb-3">
-                  <div className={`w-10 h-10 rounded-xl ${tcfg.bg} flex items-center justify-center shrink-0`}>
+              <div
+                key={doc.id}
+                className="group relative cursor-pointer overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] p-5 transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]"
+              >
+                <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                <div className="absolute -right-8 -top-8 h-20 w-20 rounded-full bg-white/70 blur-2xl transition-transform duration-500 group-hover:scale-105" />
+                <div className="relative flex items-start gap-3 mb-3">
+                  <div className={`w-10 h-10 rounded-xl ${tcfg.bg} flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:scale-105`}>
                     <i className={`${tcfg.icon} text-lg`} style={{ color: tcfg.color }} />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -126,10 +131,10 @@ export default function DocumentsPage() {
                       <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: tcfg.color }}>{tcfg.label}</span>
                       <span className={`text-xs font-medium px-1.5 py-0.5 rounded-sm ${scfg.badge} whitespace-nowrap`}>{scfg.label}</span>
                     </div>
-                    <h3 className="text-sm font-bold text-kbc-navy leading-snug group-hover:text-kbc-navy-light">{doc.title}</h3>
+                    <h3 className="text-sm font-bold text-kbc-navy leading-snug transition-colors duration-300 group-hover:text-kbc-navy-light">{doc.title}</h3>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="relative grid grid-cols-2 gap-2 mb-3">
                   <div>
                     <p className="text-xs text-gray-400">Version</p>
                     <p className="text-xs font-semibold text-kbc-navy">{doc.version}</p>
@@ -147,13 +152,13 @@ export default function DocumentsPage() {
                     <p className="text-xs font-semibold text-kbc-navy">{doc.updatedDate}</p>
                   </div>
                 </div>
-                <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+                <div className="relative flex items-center justify-between pt-3 border-t border-gray-100">
                   <span className="text-xs text-gray-400">{doc.fileSize}</span>
                   <a
                     href={`https://kbccollege.sharepoint.com/sites/policies/documents/${doc.title.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-xs text-kbc-navy font-semibold hover:underline cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-1.5 text-xs text-kbc-navy font-semibold cursor-pointer whitespace-nowrap transition-all duration-300 group-hover:text-kbc-navy-light hover:underline"
                   >
                     <i className="ri-external-link-line text-sm" />
                     Open

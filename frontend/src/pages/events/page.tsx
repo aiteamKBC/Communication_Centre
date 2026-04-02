@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
+import { useSharedEvents } from '../../hooks/useSharedEvents';
 import { CalendarEvent } from '../../mocks/events';
 import EventDetailModal from './components/EventDetailModal';
 import AddEventModal from './components/AddEventModal';
@@ -15,13 +16,13 @@ function getCoverMedia(event: CalendarEvent) {
 }
 
 export default function EventsPage() {
-  const [allEvents, setAllEvents] = useState<CalendarEvent[]>([]);
+  const { events: allEvents, addEvent } = useSharedEvents();
   const [addEventOpen, setAddEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [calendarJump, setCalendarJump] = useState<Date | null>(null);
 
   const handleEventAdded = (event: CalendarEvent) => {
-    setAllEvents(prev => [...prev, event]);
+    addEvent(event);
     const parts = event.date.split(' ');
     const monthAbbrMap: Record<string, number> = {
       Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,

@@ -23,10 +23,10 @@ interface ScheduleRow {
 }
 
 // Programme colours use KBC navy family
-const ME_COLOR  = '#2E4482';
-const MM_COLOR  = '#3D5A99';
+const ME_COLOR  = '#B9871F';
+const MM_COLOR  = '#2F6CB6';
 const PCP_COLOR = '#1B2A4A';
-const MBA_COLOR = '#4A6DB0';
+const MBA_COLOR = '#5278C0';
 
 const INITIAL_ROWS: ScheduleRow[] = [
   {
@@ -344,16 +344,16 @@ export default function ScheduleTable() {
   };
 
   return (
-    <div className="bg-white rounded-xl overflow-hidden border border-gray-300">
+    <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-[0_14px_36px_-28px_rgba(15,23,42,0.24)]">
       {/* Section header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200" style={{ background: '#F9FAFB' }}>
+      <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3" style={{ background: '#F8FAFC' }}>
         <div>
-          <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
-          <p className="text-xs text-gray-400 mt-0.5">{rows.length} active sessions across all programmes</p>
+          <h3 className="text-sm font-extrabold tracking-wide text-kbc-navy">Session Schedule Table</h3>
+          <p className="mt-0.5 text-xs text-slate-400">{rows.length} active sessions across all programmes</p>
         </div>
         <button
           onClick={() => setModalState({ mode: 'add' })}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-white cursor-pointer transition-all hover:opacity-90 whitespace-nowrap"
+          className="flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-bold text-white cursor-pointer transition-all hover:opacity-90"
           style={{ background: '#1B2A4A' }}
         >
           <i className="ri-add-line" /> Add Session Row
@@ -366,30 +366,30 @@ export default function ScheduleTable() {
           <thead>
             {/* Super header */}
             <tr>
-              <th colSpan={3} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-wide text-white text-sm" style={{ background: '#1B2A4A' }}>
+              <th colSpan={3} className="border border-slate-300 py-3 text-center text-sm font-extrabold tracking-wide text-white" style={{ background: '#1B2A4A' }}>
                 Apprenticeship
               </th>
-              <th colSpan={6} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-widest text-sm" style={{ background: '#F7A800', color: '#1B2A4A' }}>
+              <th colSpan={6} className="border border-slate-300 py-3 text-center text-sm font-extrabold tracking-widest text-[#1B2A4A]" style={{ background: '#DDF5E7' }}>
                 2026
               </th>
-              <th className="border border-gray-300 text-center py-2.5 font-extrabold text-white text-xs" style={{ background: '#1B2A4A' }}>
+              <th className="border border-slate-300 py-3 text-center text-xs font-extrabold text-white" style={{ background: '#1B2A4A' }}>
                 Next Module
               </th>
-              <th className="border border-gray-200 text-center py-2.5 text-xs font-bold text-gray-400 bg-gray-50 w-16">
+              <th className="w-16 border border-slate-200 bg-slate-50 py-3 text-center text-xs font-bold text-slate-400">
                 Actions
               </th>
             </tr>
             {/* Column labels */}
             <tr style={{ background: '#F1F5F9' }}>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Cohort</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Programme</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 130 }}>Module</th>
+              <th className="border border-slate-200 px-3 py-2 text-left text-xs font-extrabold uppercase tracking-wide text-slate-600" style={{ minWidth: 80 }}>Cohort</th>
+              <th className="border border-slate-200 px-3 py-2 text-left text-xs font-extrabold uppercase tracking-wide text-slate-600" style={{ minWidth: 80 }}>Programme</th>
+              <th className="border border-slate-200 px-3 py-2 text-left text-xs font-extrabold uppercase tracking-wide text-slate-600" style={{ minWidth: 130 }}>Module</th>
               {DAY_COLS.map(d => (
                 <th key={d.key} className="border border-gray-200 px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide" style={{ background: d.headerBg, color: d.headerTx, minWidth: 140 }}>
                   {d.label}
                 </th>
               ))}
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 90 }}>Next Module</th>
+              <th className="border border-slate-200 px-3 py-2 text-left text-xs font-extrabold uppercase tracking-wide text-slate-600" style={{ minWidth: 90 }}>Next Module</th>
               <th className="border border-gray-200 px-3 py-2 text-center text-xs font-bold text-gray-400 bg-gray-50 w-16">—</th>
             </tr>
           </thead>
@@ -398,11 +398,11 @@ export default function ScheduleTable() {
               <tr
                 key={idx}
                 className="group/srow hover:brightness-95 transition-all"
-                style={{ background: row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB') }}
+                style={{ background: row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#FAFBFC') }}
               >
                 {/* Cohort */}
                 <td className="border border-gray-200 px-3 py-1.5">
-                  <span className="font-extrabold text-xs text-gray-700 whitespace-nowrap">{row.cohort}</span>
+                  <span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-1 text-xs font-extrabold text-gray-700">{row.cohort}</span>
                 </td>
                 {/* Programme */}
                 <td className="border border-gray-200 px-3 py-1.5">
@@ -433,17 +433,17 @@ export default function ScheduleTable() {
                     <div className="flex items-center justify-center gap-1 opacity-0 transition-opacity group-hover/srow:opacity-100">
                       <button
                         onClick={() => setModalState({ mode: 'edit', index: idx })}
-                        className="w-6 h-6 flex items-center justify-center rounded bg-kbc-navy/10 text-kbc-navy hover:scale-105 hover:bg-kbc-navy hover:text-white cursor-pointer transition-all"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-kbc-navy shadow-[0_10px_24px_-18px_rgba(15,23,42,0.32)] transition-all hover:-translate-y-0.5 hover:border-kbc-navy/20 hover:bg-kbc-navy hover:text-white"
                         title="Edit row"
                       >
-                        <i className="ri-edit-line text-sm" />
+                        <i className="ri-edit-line text-[13px]" />
                       </button>
                       <button
                         onClick={() => setDeleteIdx(idx)}
-                        className="w-6 h-6 flex items-center justify-center rounded text-gray-300 hover:text-red-400 hover:bg-red-50 cursor-pointer transition-all"
+                        className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-slate-400 shadow-[0_10px_24px_-18px_rgba(15,23,42,0.32)] transition-all hover:-translate-y-0.5 hover:border-red-200 hover:bg-red-500 hover:text-white"
                         title="Delete row"
                       >
-                        <i className="ri-delete-bin-line text-sm" />
+                        <i className="ri-delete-bin-line text-[13px]" />
                       </button>
                     </div>
                   )}

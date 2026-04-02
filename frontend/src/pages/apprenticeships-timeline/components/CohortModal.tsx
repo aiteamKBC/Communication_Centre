@@ -20,6 +20,38 @@ export const MS: Record<MKey, { lbl: string; bg: string; tx: string }> = {
   ai:     { lbl: 'AI Marketing',        bg: '#D4A900', tx: '#1B2A4A' },
 };
 
+const MODULE_ALIASES: Record<string, MKey> = Object.entries(MS).reduce((acc, [key, value]) => {
+  const normalizedKey = key.toLowerCase();
+  const normalizedLabel = value.lbl.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  acc[normalizedKey] = key as MKey;
+  acc[normalizedLabel] = key as MKey;
+  return acc;
+}, {} as Record<string, MKey>);
+
+const normalizeModuleValue = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+export const getModuleMeta = (mod: string): { lbl: string; bg: string; tx: string } => {
+  if (!mod.trim()) {
+    return {
+      lbl: '',
+      bg: '#CBD5E1',
+      tx: '#64748B',
+    };
+  }
+
+  const normalized = normalizeModuleValue(mod);
+  const matchedKey = MODULE_ALIASES[normalized];
+  if (matchedKey) {
+    return MS[matchedKey];
+  }
+
+  return {
+    lbl: mod.trim() || 'Custom Module',
+    bg: '#1B2A4A',
+    tx: '#FFFFFF',
+  };
+};
+
 export const mi = (y: number, m: number): number => (y - 2024) * 12 + (m - 1) - 7;
 
 const fromIndex = (s: number): { year: number; month: number } => ({
@@ -27,13 +59,13 @@ const fromIndex = (s: number): { year: number; month: number } => ({
   month: ((s + 7) % 12) + 1,
 });
 
-export interface Blk  { mod: MKey; s: number; d: number; }
+export interface Blk  { mod: string; s: number; d: number; }
 export interface CRow { label: string; dateLbl: string; blks: Blk[]; }
 export interface Group {
   name: string; sub: string; color: string; rowBg: string; rows: CRow[];
 }
 
-interface ModalBlk { mod: MKey; startYear: number; startMonth: number; duration: number; }
+interface ModalBlk { mod: string; startYear: number; startMonth: number; duration: number; }
 
 interface ModalData {
   groupIdx: number;
@@ -54,11 +86,7 @@ interface Props {
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const YEARS  = [2024, 2025, 2026, 2027];
 
-const DEFAULT_BLK: ModalBlk = { mod: 'pmp', startYear: 2025, startMonth: 1, duration: 4 };
-const MODULE_OPTIONS = (Object.keys(MS) as MKey[]).map((key) => ({
-  value: key,
-  label: MS[key].lbl,
-}));
+const DEFAULT_BLK: ModalBlk = { mod: '', startYear: 2025, startMonth: 1, duration: 4 };
 const YEAR_OPTIONS = YEARS.map((year) => ({
   value: String(year),
   label: String(year),
@@ -104,6 +132,11 @@ export default function CohortModal({ mode, groups, initialGroupIdx = 0, initial
     if (!data.label.trim())   errs.label   = 'Cohort label is required';
     if (!data.dateLbl.trim()) errs.dateLbl = 'Start date label is required';
     if (data.blks.length === 0) errs.blks  = 'Add at least one module block';
+    data.blks.forEach((blk, index) => {
+      if (!blk.mod.trim()) {
+        errs[`mod-${index}`] = 'Module name is required';
+      }
+    });
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -226,7 +259,7 @@ export default function CohortModal({ mode, groups, initialGroupIdx = 0, initial
 
             <div className="space-y-2">
               {data.blks.map((blk, bi) => {
-                const modInfo = MS[blk.mod];
+                const modInfo = getModuleMeta(blk.mod);
                 return (
                   <div key={bi} className="flex items-start gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50">
                     {/* colour pill */}
@@ -235,15 +268,18 @@ export default function CohortModal({ mode, groups, initialGroupIdx = 0, initial
                     {/* Module */}
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-gray-400 font-semibold mb-0.5">Module</p>
-                      <ModernSelect
+                      <input
+                        type="text"
                         value={blk.mod}
-                        onChange={(value) => updateBlk(bi, 'mod', value as MKey)}
-                        options={MODULE_OPTIONS}
-                        menuMinWidth={280}
-                        boundaryRef={panelRef}
-                        buttonClassName="min-h-[40px] rounded-xl border-gray-200 bg-white px-3 py-2 text-xs shadow-none hover:border-kbc-navy/20"
-                        menuClassName="rounded-2xl border-slate-200/90 p-2 shadow-[0_20px_40px_-24px_rgba(27,42,74,0.45)]"
+                        onChange={(event) => updateBlk(bi, 'mod', event.target.value)}
+                        placeholder="e.g. PMP"
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs shadow-none transition-all focus:outline-none focus:ring-2"
+                        style={{
+                          borderColor: errors[`mod-${bi}`] ? '#EF4444' : '#D1D5DB',
+                          '--tw-ring-color': selectedGroup?.color || '#1B2A4A',
+                        } as React.CSSProperties}
                       />
+                      {errors[`mod-${bi}`] && <p className="mt-1 text-xs text-red-500">{errors[`mod-${bi}`]}</p>}
                     </div>
 
                     {/* Start Year */}

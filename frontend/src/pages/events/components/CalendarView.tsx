@@ -1,16 +1,11 @@
 import { useState, useEffect } from 'react';
-import { CalendarEvent } from '../../../mocks/events';
+import { CalendarEvent, parseCalendarEventDate } from '../../../mocks/events';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-const MONTH_ABBR: Record<string, number> = {
-  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-  Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
-};
 
 const typeStyle: Record<string, { pill: string; dot: string; label: string }> = {
   online:  { pill: 'bg-green-100 text-green-700 hover:bg-green-200', dot: 'bg-green-500', label: 'Online' },
@@ -22,14 +17,6 @@ interface Props {
   onEventClick: (event: CalendarEvent) => void;
   onAddEvent: () => void;
   jumpTo?: Date | null;
-}
-
-function parseEventDate(event: CalendarEvent): Date {
-  const parts = event.date.split(' ');
-  const day = parseInt(parts[0], 10);
-  const month = MONTH_ABBR[parts[1]] ?? 0;
-  const year = parseInt(parts[2], 10);
-  return new Date(year, month, day);
 }
 
 // Today = 2026-03-30 as per project context
@@ -54,7 +41,7 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
   // Map events to days in current displayed month
   const eventsByDay: Record<number, CalendarEvent[]> = {};
   events.forEach(event => {
-    const d = parseEventDate(event);
+    const d = parseCalendarEventDate(event);
     if (d.getFullYear() === year && d.getMonth() === month) {
       const day = d.getDate();
       if (!eventsByDay[day]) eventsByDay[day] = [];

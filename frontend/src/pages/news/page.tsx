@@ -172,8 +172,9 @@ export default function NewsPage() {
                 return (
                   <div
                     key={item.id}
-                    className={`group bg-white rounded-xl border border-gray-100 border-l-4 ${cfg.border} ${cfg.bg} overflow-hidden cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]`}
+                    className={`group relative overflow-hidden rounded-xl border border-gray-100 border-l-4 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] ${cfg.border} ${cfg.bg} cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]`}
                   >
+                    <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                     <div className="flex items-start gap-0">
                       {item.image && (
                         <div className="w-28 sm:w-36 h-full min-h-[90px] overflow-hidden shrink-0">
@@ -184,7 +185,7 @@ export default function NewsPage() {
                           />
                         </div>
                       )}
-                      <div className="flex-1 min-w-0 p-4">
+                      <div className="relative flex-1 min-w-0 p-4">
                         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide ${cfg.badge}`}>
                             {cfg.label}
@@ -260,21 +261,22 @@ export default function NewsPage() {
               {filtered.map((item) => {
                 const cfg = priorityConfig[item.priority];
                 return (
-                  <article key={item.id} className="bg-white rounded-xl border border-gray-100 overflow-hidden group cursor-pointer hover:shadow-sm transition-shadow">
+                  <article key={item.id} className="group relative overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]">
+                    <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                     {item.image && (
                       <div className="w-full h-40 overflow-hidden">
                         <img src={item.image} alt={item.title} className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300" />
                       </div>
                     )}
-                    <div className="p-4">
+                    <div className="relative p-4">
                       <div className="flex items-center gap-2 mb-2">
                         <span className={`text-xs font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide ${cfg.badge}`}>
                           {cfg.label}
                         </span>
                         <span className="text-xs text-gray-400 ml-auto whitespace-nowrap">{item.date}</span>
                       </div>
-                      <h3 className="text-sm font-bold text-kbc-navy leading-snug mb-2 group-hover:text-kbc-navy-light line-clamp-2">{item.title}</h3>
-                      <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 mb-3">{item.excerpt}</p>
+                      <h3 className="text-sm font-bold text-kbc-navy leading-snug mb-2 transition-colors duration-300 group-hover:text-kbc-navy-light line-clamp-2">{item.title}</h3>
+                      <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 mb-3 transition-colors duration-300 group-hover:text-gray-600">{item.excerpt}</p>
                       <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                         <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{item.department}</span>
                         <button

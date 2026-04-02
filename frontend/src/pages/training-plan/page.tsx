@@ -30,6 +30,18 @@ const sessionStatusConfig = {
   cancelled: { label: 'Cancelled', badge: 'bg-kbc-red/10 text-kbc-red' },
 };
 
+const cohortSurfaceConfig = {
+  active: { tint: 'from-white via-slate-50 to-emerald-50/60', ring: 'border-emerald-100', glow: 'bg-emerald-400/60' },
+  upcoming: { tint: 'from-white via-amber-50/60 to-orange-50/80', ring: 'border-amber-100', glow: 'bg-kbc-amber/70' },
+  completed: { tint: 'from-white via-slate-50 to-slate-100/90', ring: 'border-slate-200', glow: 'bg-slate-300' },
+};
+
+const sessionCardConfig = {
+  scheduled: { border: 'border-l-kbc-navy', tint: 'from-white via-slate-50 to-indigo-50/60' },
+  completed: { border: 'border-l-kbc-green', tint: 'from-white via-emerald-50/35 to-white' },
+  cancelled: { border: 'border-l-kbc-red', tint: 'from-white via-red-50/40 to-white' },
+};
+
 export default function TrainingPlanPage() {
   const [activeCohort, setActiveCohort] = useState<string>(cohorts[0].id);
   const [sessionFilter, setSessionFilter] = useState<string>('all');
@@ -90,38 +102,52 @@ export default function TrainingPlanPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            {cohorts.map(cohort => {
+            {cohorts.map((cohort, index) => {
               const scfg = statusConfig[cohort.status];
               const isSelected = cohort.id === activeCohort;
+              const surface = cohortSurfaceConfig[cohort.status];
               return (
                 <button
                   key={cohort.id}
                   onClick={() => setActiveCohort(cohort.id)}
-                  className={`text-left bg-white rounded-xl border-2 p-4 cursor-pointer transition-all ${isSelected ? 'border-kbc-navy' : 'border-gray-100 hover:border-gray-300'}`}
+                  className={`animate-soft-card-rise group relative overflow-hidden rounded-xl border bg-gradient-to-br p-4 text-left cursor-pointer transition-all duration-300 ${
+                    isSelected
+                      ? 'border-kbc-navy shadow-[0_28px_60px_-38px_rgba(27,42,74,0.45)]'
+                      : `${surface.ring} hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_26px_52px_-30px_rgba(15,23,42,0.36)]`
+                  } ${surface.tint}`}
+                  style={{ animationDelay: `${index * 70}ms` }}
                 >
-                  <div className="flex items-start justify-between mb-3 gap-2">
+                  <div className={`absolute inset-x-0 top-0 h-1.5 ${surface.glow} ${isSelected ? 'opacity-100' : 'opacity-80 group-hover:opacity-100'} transition-opacity`} />
+                  <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),transparent_40%,rgba(255,255,255,0.22))] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                  <div className="absolute inset-y-0 right-0 w-32 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.95),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                  <div className="absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/75 blur-2xl transition-transform duration-500 group-hover:scale-110" />
+                  <div className="relative flex items-start justify-between mb-3 gap-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-kbc-navy leading-snug">{cohort.name}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">{cohort.programme}</p>
+                      <p className="text-sm font-bold text-kbc-navy leading-snug transition-colors duration-300 group-hover:text-kbc-navy-light">{cohort.name}</p>
+                      <p className="text-xs text-gray-500 mt-0.5 truncate transition-colors duration-300 group-hover:text-gray-600">{cohort.programme}</p>
                     </div>
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${scfg.badge}`}>{scfg.label}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-                    <div>
+                  <div className="relative grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div className="rounded-2xl border border-white/70 bg-white/75 px-3 py-2 shadow-[0_10px_20px_-18px_rgba(15,23,42,0.35)] backdrop-blur-sm">
                       <p className="text-gray-400">Start</p>
                       <p className="font-semibold text-kbc-navy">{cohort.startDate}</p>
                     </div>
-                    <div>
+                    <div className="rounded-2xl border border-white/70 bg-white/75 px-3 py-2 shadow-[0_10px_20px_-18px_rgba(15,23,42,0.35)] backdrop-blur-sm">
                       <p className="text-gray-400">End</p>
                       <p className="font-semibold text-kbc-navy">{cohort.endDate}</p>
                     </div>
-                    <div>
+                    <div className="rounded-2xl border border-white/70 bg-white/75 px-3 py-2 shadow-[0_10px_20px_-18px_rgba(15,23,42,0.35)] backdrop-blur-sm">
                       <p className="text-gray-400">Learners</p>
                       <p className="font-semibold text-kbc-navy">{cohort.learnerCount}</p>
                     </div>
+                    <div className="rounded-2xl border border-white/70 bg-white/75 px-3 py-2 shadow-[0_10px_20px_-18px_rgba(15,23,42,0.35)] backdrop-blur-sm">
+                      <p className="text-gray-400">Delivery</p>
+                      <p className="font-semibold capitalize text-kbc-navy">{cohort.deliveryMode}</p>
+                    </div>
                   </div>
                   {cohort.status !== 'upcoming' && (
-                    <div>
+                    <div className="relative rounded-2xl border border-white/70 bg-white/80 px-3 py-3 shadow-[0_10px_20px_-18px_rgba(15,23,42,0.35)] backdrop-blur-sm">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-xs text-gray-400">Programme Progress</span>
                         <span className="text-xs font-bold text-kbc-navy">{cohort.progress}%</span>
@@ -135,7 +161,7 @@ export default function TrainingPlanPage() {
                     </div>
                   )}
                   {isSelected && (
-                    <div className="mt-3 pt-2 border-t border-kbc-navy/10 flex items-center gap-1 text-kbc-navy">
+                    <div className="relative mt-3 pt-2 border-t border-kbc-navy/10 flex items-center gap-1 text-kbc-navy">
                       <i className="ri-arrow-down-s-line text-xs" />
                       <span className="text-xs font-semibold">Viewing sessions below</span>
                     </div>
@@ -146,13 +172,13 @@ export default function TrainingPlanPage() {
           </div>
 
           {/* Selected Cohort Details + Sessions */}
-          <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <div className="rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] p-5 shadow-[0_24px_60px_-42px_rgba(15,23,42,0.32)]">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
               <div>
                 <h3 className="text-sm font-bold text-kbc-navy">{selectedCohort.name} — Session Schedule</h3>
                 <p className="text-xs text-gray-400 mt-0.5">{selectedCohort.programme} &middot; {selectedCohort.deliveryMode} delivery</p>
               </div>
-              <div className="flex items-center gap-1 px-1 py-1 bg-gray-100 rounded-full w-fit">
+              <div className="flex items-center gap-1 px-1 py-1 bg-white border border-slate-200 rounded-full w-fit shadow-[0_10px_24px_-20px_rgba(15,23,42,0.3)]">
                 {(['all', 'scheduled', 'completed', 'cancelled'] as const).map(f => (
                   <button
                     key={f}
@@ -167,26 +193,39 @@ export default function TrainingPlanPage() {
 
             {filteredSessions.length > 0 ? (
               <div className="flex flex-col gap-3">
-                {filteredSessions.map(session => {
+                {filteredSessions.map((session, index) => {
                   const stcfg = sessionTypeConfig[session.type];
                   const dcfg = deliveryConfig[session.deliveryMode];
                   const sscfg = sessionStatusConfig[session.status];
+                  const cardCfg = sessionCardConfig[session.status];
                   return (
-                    <div key={session.id} className="border border-gray-100 rounded-xl p-4">
-                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <div
+                      key={session.id}
+                      className={`animate-soft-card-rise group relative overflow-hidden rounded-xl border border-l-4 border-gray-100 bg-gradient-to-r p-4 transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)] ${cardCfg.border} ${cardCfg.tint}`}
+                      style={{ animationDelay: `${index * 65}ms` }}
+                    >
+                      <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                      <div className="relative flex flex-wrap items-center gap-2 mb-2">
                         <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${stcfg.badge} whitespace-nowrap`}>
                           <i className={`${stcfg.icon} text-xs`} />
                           {stcfg.label}
                         </span>
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${sscfg.badge} whitespace-nowrap`}>{sscfg.label}</span>
                       </div>
-                      <h4 className="text-sm font-bold text-kbc-navy mb-1">{session.title}</h4>
-                      <p className="text-xs text-gray-500 mb-3">{session.description}</p>
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
-                        <span className="flex items-center gap-1"><i className="ri-calendar-line text-gray-400" />{session.date}</span>
-                        <span className="flex items-center gap-1"><i className="ri-time-line text-gray-400" />{session.time}</span>
-                        <span className={`flex items-center gap-1 ${dcfg.color}`}><i className={dcfg.icon} />{dcfg.label}</span>
-                        <span className="flex items-center gap-1"><i className="ri-map-pin-line text-gray-400" />{session.location}</span>
+                      <div className="relative flex gap-4">
+                        <div className="hidden sm:flex w-12 h-12 shrink-0 items-center justify-center rounded-2xl border border-white/70 bg-white/75 shadow-[0_14px_30px_-24px_rgba(15,23,42,0.42)] transition-transform duration-500 group-hover:scale-105">
+                          <i className={`${stcfg.icon} text-lg text-kbc-navy`} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="text-sm font-bold text-kbc-navy mb-1 transition-colors duration-300 group-hover:text-kbc-navy-light">{session.title}</h4>
+                          <p className="text-xs text-gray-500 mb-3 leading-relaxed transition-colors duration-300 group-hover:text-gray-600">{session.description}</p>
+                          <div className="flex flex-wrap items-center gap-2.5 text-xs text-gray-500">
+                            <span className="flex items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 shadow-[0_10px_24px_-20px_rgba(15,23,42,0.24)]"><i className="ri-calendar-line text-gray-400" />{session.date}</span>
+                            <span className="flex items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 shadow-[0_10px_24px_-20px_rgba(15,23,42,0.24)]"><i className="ri-time-line text-gray-400" />{session.time}</span>
+                            <span className={`flex items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 shadow-[0_10px_24px_-20px_rgba(15,23,42,0.24)] ${dcfg.color}`}><i className={dcfg.icon} />{dcfg.label}</span>
+                            <span className="flex items-center gap-1 rounded-full bg-white/80 px-2.5 py-1 shadow-[0_10px_24px_-20px_rgba(15,23,42,0.24)]"><i className="ri-map-pin-line text-gray-400" />{session.location}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   );
@@ -209,23 +248,27 @@ export default function TrainingPlanPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {programmeComponents.map(comp => (
-              <div key={comp.id} className="bg-white rounded-xl border border-gray-100 p-4">
+            {programmeComponents.map((comp, index) => (
+              <div
+                key={comp.id}
+                className="animate-soft-card-rise group rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] p-4 transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]"
+                style={{ animationDelay: `${index * 55}ms` }}
+              >
                 <div
-                  className="w-10 h-10 rounded-xl flex items-center justify-center mb-3"
+                  className="w-11 h-11 rounded-2xl flex items-center justify-center mb-3 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.34)] transition-transform duration-500 group-hover:scale-105"
                   style={{ backgroundColor: `${comp.color}15` }}
                 >
                   <i className={`${comp.icon} text-lg`} style={{ color: comp.color }} />
                 </div>
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-xs font-bold text-kbc-navy leading-snug">{comp.title}</h3>
+                  <h3 className="text-xs font-bold text-kbc-navy leading-snug transition-colors duration-300 group-hover:text-kbc-navy-light">{comp.title}</h3>
                 </div>
-                <p className="text-xs text-gray-500 leading-relaxed mb-3">{comp.description}</p>
+                <p className="text-xs text-gray-500 leading-relaxed mb-3 transition-colors duration-300 group-hover:text-gray-600">{comp.description}</p>
                 <div className="flex items-center justify-between text-xs mb-3">
-                  <span className="text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{comp.type}</span>
+                  <span className="text-gray-400 bg-slate-100 px-2.5 py-1 rounded-full">{comp.type}</span>
                   <span className="text-gray-500 font-medium">{comp.duration}</span>
                 </div>
-                <div className="pt-3 border-t border-gray-50">
+                <div className="pt-3 border-t border-slate-100">
                   <p className="text-xs font-semibold text-kbc-navy mb-1.5">Key Activities</p>
                   <ul className="flex flex-col gap-1">
                     {comp.activities.map((act, i) => (
