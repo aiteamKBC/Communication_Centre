@@ -9,6 +9,7 @@ Frontend application for the Kent Business College Communication Centre.
 - Vite
 - Tailwind CSS
 - React Router
+- Django
 
 ## Project Structure
 
