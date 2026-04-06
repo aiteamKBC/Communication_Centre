@@ -1,0 +1,24 @@
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/out/
+frontend/.DS_Store
+frontend/*.log
+
+# Python
+backend/__pycache__/
+backend/**/*.pyc
+backend/.venv/
+backend/venv/
+
+# Local data
+backend/db.sqlite3
+
+# Secrets
+backend/.env
+backend/login/.env.login
+
+# Logs and OS files
+*.log
+.DS_Store
+

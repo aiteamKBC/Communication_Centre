@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .modal-backdrop {
+    @apply absolute inset-0 backdrop-blur-md;
+    background: rgba(2, 6, 23, 0.38);
+  }
+}
+
+@layer utilities {
+  @keyframes soft-card-rise {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 18px, 0);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes footer-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(18px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes footer-float {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(0, 10px, 0) scale(1.04);
+    }
+  }
+
+  @keyframes footer-glow {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.75;
+      transform: scale(1.08);
+    }
+  }
+
+  .animate-footer-fade-up {
+    animation: footer-fade-up 0.65s ease both;
+  }
+
+  .animate-soft-card-rise {
+    animation: soft-card-rise 0.55s ease both;
+  }
+
+  .animate-footer-float {
+    animation: footer-float 9s ease-in-out infinite;
+  }
+
+  .animate-footer-glow {
+    animation: footer-glow 7s ease-in-out infinite;
+  }
+}

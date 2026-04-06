@@ -1,0 +1,153 @@
+export interface Risk {
+  id: string;
+  riskId: string;
+  description: string;
+  level: 'high' | 'medium' | 'low';
+  impact: number;
+  likelihood: number;
+  owner: string;
+  department: string;
+  mitigation: string;
+  reviewDate: string;
+  status: 'open' | 'mitigated' | 'closed';
+}
+
+export const risks: Risk[] = [
+  {
+    id: '1',
+    riskId: 'RSK-001',
+    description: 'Ofsted inspection with inadequate outcome due to incomplete SAR and insufficient evidence of learner progress.',
+    level: 'high',
+    impact: 5,
+    likelihood: 3,
+    owner: 'Sarah Mitchell',
+    department: 'Quality & Standards',
+    mitigation: 'Accelerate SAR completion, conduct internal mock inspection, brief all department heads, and collate learner outcome evidence packs.',
+    reviewDate: '1 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '2',
+    riskId: 'RSK-002',
+    description: 'GDPR data breach risk due to staff non-compliance with updated data handling procedures following policy revision.',
+    level: 'high',
+    impact: 5,
+    likelihood: 4,
+    owner: 'James Okonkwo',
+    department: 'Compliance',
+    mitigation: 'Mandatory training deadline set, DPO audit scheduled, legacy data mapped and flagged for deletion review.',
+    reviewDate: '5 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '3',
+    riskId: 'RSK-003',
+    description: 'Key staff attrition risk — three senior curriculum leads have expressed interest in external opportunities.',
+    level: 'high',
+    impact: 4,
+    likelihood: 4,
+    owner: 'Helen Davies',
+    department: 'HR',
+    mitigation: 'Retention conversations initiated, competitive pay review requested from Finance, succession planning templates distributed.',
+    reviewDate: '15 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '4',
+    riskId: 'RSK-004',
+    description: 'Financial risk: underspend in capital budget may result in loss of ESFA funding allocation for 2026–27.',
+    level: 'high',
+    impact: 5,
+    likelihood: 2,
+    owner: 'Raj Patel',
+    department: 'Finance',
+    mitigation: 'Capital projects pipeline reviewed, procurement for IT infrastructure approved, spending trajectory updated.',
+    reviewDate: '8 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '5',
+    riskId: 'RSK-005',
+    description: 'MIS system upgrade delayed — risk of data integrity issues if legacy system continues beyond planned decommission date.',
+    level: 'medium',
+    impact: 3,
+    likelihood: 3,
+    owner: 'Priya Sharma',
+    department: 'IT Services',
+    mitigation: 'Parallel-run period extended by 4 weeks. Legacy system backups increased to daily. Vendor SLA reviewed.',
+    reviewDate: '30 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '6',
+    riskId: 'RSK-006',
+    description: 'Work placement programme undersubscribed — risk of not meeting ESFA T-Level employer engagement KPIs.',
+    level: 'medium',
+    impact: 3,
+    likelihood: 4,
+    owner: 'Lisa Thornton',
+    department: 'Marketing',
+    mitigation: 'Targeted employer outreach campaign launched, partnerships with local business network reactivated.',
+    reviewDate: '20 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '7',
+    riskId: 'RSK-007',
+    description: 'Prevent Duty training completion rate below threshold — risk of non-compliance with statutory requirements.',
+    level: 'medium',
+    impact: 4,
+    likelihood: 3,
+    owner: 'Amara Bello',
+    department: 'HR & Safeguarding',
+    mitigation: 'Mandatory completion deadline communicated. Line manager escalation process activated for non-completers.',
+    reviewDate: '30 Apr 2026',
+    status: 'open',
+  },
+  {
+    id: '8',
+    riskId: 'RSK-008',
+    description: 'Estates condition survey identifies deferred maintenance backlog that could affect building compliance certificates.',
+    level: 'medium',
+    impact: 3,
+    likelihood: 2,
+    owner: 'Mark Bridges',
+    department: 'Estates',
+    mitigation: 'Priority maintenance schedule drafted. External contractor engaged for fire safety and electrical compliance.',
+    reviewDate: '15 May 2026',
+    status: 'open',
+  },
+  {
+    id: '9',
+    riskId: 'RSK-009',
+    description: 'Social media reputational risk from student grievance escalation on public channels.',
+    level: 'low',
+    impact: 2,
+    likelihood: 2,
+    owner: 'Lisa Thornton',
+    department: 'Marketing',
+    mitigation: 'Social media monitoring tool in place. Communications protocol for PR incidents reviewed and updated.',
+    reviewDate: '30 May 2026',
+    status: 'mitigated',
+  },
+  {
+    id: '10',
+    riskId: 'RSK-010',
+    description: 'Car park surface deterioration creating minor slip and trip hazard for staff and visitors.',
+    level: 'low',
+    impact: 2,
+    likelihood: 3,
+    owner: 'Mark Bridges',
+    department: 'Estates',
+    mitigation: 'Resurfacing works scheduled 3–7 April. Temporary signage and barriers in place.',
+    reviewDate: '10 Apr 2026',
+    status: 'mitigated',
+  },
+];
+
+export const riskSummary = {
+  high: risks.filter(r => r.level === 'high' && r.status === 'open').length,
+  medium: risks.filter(r => r.level === 'medium' && r.status === 'open').length,
+  low: risks.filter(r => r.level === 'low').length,
+  total: risks.length,
+};
