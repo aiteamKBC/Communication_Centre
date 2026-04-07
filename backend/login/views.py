@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core import signing
 from django.db.models import Q
-from django.http import HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
+from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from .access import get_user_access_payload
@@ -51,6 +51,76 @@ def _decode_json_response(error: HTTPError) -> dict:
 		return json.loads(body)
 	except Exception:
 		return {}
+
+
+def microsoft_popup_bridge(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	html = """<!doctype html>
+<html lang=\"en\">
+	<head>
+		<meta charset=\"utf-8\" />
+		<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+		<title>Microsoft Sign-in</title>
+		<style>
+			body {
+				margin: 0;
+				font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+				background: #f8fafc;
+				color: #475569;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+			}
+			.card {
+				background: #ffffff;
+				border: 1px solid #e2e8f0;
+				border-radius: 12px;
+				padding: 16px 18px;
+				font-size: 14px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class=\"card\">Completing Microsoft sign-in...</div>
+		<script>
+			(function () {
+				var params = new URLSearchParams(window.location.search || "");
+				var payload = {
+					ms_auth: params.get("ms_auth"),
+					ms_user: params.get("ms_user"),
+					ms_error: params.get("ms_error")
+				};
+
+				try {
+					window.localStorage.setItem("kbc-ms-auth-result", JSON.stringify(payload));
+				} catch (e) {
+					// Ignore storage failures and still try postMessage.
+				}
+
+				if (window.opener && !window.opener.closed) {
+					window.opener.postMessage(
+						{
+							source: "kbc-ms-auth",
+							ms_auth: payload.ms_auth,
+							ms_user: payload.ms_user,
+							ms_error: payload.ms_error
+						},
+						"*"
+					);
+				}
+
+				window.setTimeout(function () {
+					window.close();
+				}, 150);
+			})();
+		</script>
+	</body>
+</html>
+"""
+
+	return HttpResponse(html)
 
 
 @csrf_exempt
