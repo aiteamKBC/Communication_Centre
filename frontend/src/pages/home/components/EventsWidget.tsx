@@ -101,9 +101,19 @@ export default function EventsWidget() {
             <button onClick={prevMonth} className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-kbc-navy cursor-pointer transition-colors">
               <i className="ri-arrow-left-s-line text-sm" />
             </button>
-            <span className="text-xs font-bold text-kbc-navy">
-              {MONTHS[calMonth]} {calYear}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-kbc-navy">
+                {MONTHS[calMonth]} {calYear}
+              </span>
+              {(calMonth !== today.getMonth() || calYear !== today.getFullYear()) && (
+                <button
+                  onClick={() => { setCalMonth(today.getMonth()); setCalYear(today.getFullYear()); }}
+                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-kbc-amber/20 text-kbc-navy hover:bg-kbc-amber/40 transition-colors cursor-pointer"
+                >
+                  Today
+                </button>
+              )}
+            </div>
             <button onClick={nextMonth} className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-kbc-navy cursor-pointer transition-colors">
               <i className="ri-arrow-right-s-line text-sm" />
             </button>

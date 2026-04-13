@@ -5,7 +5,7 @@ import ModernDatePicker from '../../../components/feature/ModernDatePicker';
 interface Props {
   open: boolean;
   onClose: () => void;
-  onEventAdded: (event: CalendarEvent) => void;
+  onEventAdded: (event: CalendarEvent) => Promise<void>;
 }
 
 const EVENT_TYPES = [
@@ -31,7 +31,9 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [form, setForm] = useState(emptyForm);
   const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<{ title?: string; date?: string }>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -98,24 +100,35 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     setForm(prev => ({ ...prev, media: prev.media.filter(item => item.id !== mediaId) }));
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const errs = validate();
     if (Object.keys(errs).length > 0) { setErrors(errs); return; }
     setErrors({});
+    setSaveError(null);
     const newEvent = buildEvent();
-    onEventAdded(newEvent);
-    setSubmitted(true);
-    setForm(emptyForm);
-    setTimeout(() => {
-      setSubmitted(false);
-      onClose();
-    }, 2200);
+
+    try {
+      setSaving(true);
+      await onEventAdded(newEvent);
+      setSubmitted(true);
+      setForm(emptyForm);
+      setTimeout(() => {
+        setSubmitted(false);
+        onClose();
+      }, 2200);
+    } catch {
+      setSaveError('Could not save event to the database. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleClose = () => {
     setForm(emptyForm);
     setErrors({});
+    setSaveError(null);
     setSubmitted(false);
+    setSaving(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
     onClose();
   };
@@ -159,6 +172,12 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
                 <p className="text-xs font-bold text-green-700">Event added to the calendar!</p>
                 <p className="text-xs text-green-600 mt-0.5">Navigate to the event&apos;s month to see it on the calendar.</p>
               </div>
+            </div>
+          )}
+
+          {saveError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-5">
+              <p className="text-xs font-semibold text-red-700">{saveError}</p>
             </div>
           )}
 
@@ -345,10 +364,11 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
           </button>
           <button
             onClick={handleSubmit}
+            disabled={saving}
             className="flex items-center gap-1.5 bg-kbc-navy text-white text-xs font-bold px-5 py-2.5 rounded-lg cursor-pointer hover:bg-kbc-navy-light transition-colors whitespace-nowrap"
           >
             <i className="ri-calendar-check-line text-xs" />
-            Add to Calendar
+            {saving ? 'Saving...' : 'Add to Calendar'}
           </button>
         </div>
       </div>

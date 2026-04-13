@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import ModernSelect from '../../../components/feature/ModernSelect';
+import type { NewNewsPayload } from '../useNewsAcknowledgements';
 
 interface AddNewsModalProps {
   onClose: () => void;
+  onArticleAdded: (payload: NewNewsPayload) => Promise<void>;
 }
 
 const audiences = ['All Staff', 'Leadership', 'Budget Holders', 'New Starters', 'Marketing'];
@@ -15,9 +17,10 @@ const priorityOptions = [
   { label: 'Critical', value: 'critical' },
 ];
 
-export default function AddNewsModal({ onClose }: AddNewsModalProps) {
+export default function AddNewsModal({ onClose, onArticleAdded }: AddNewsModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const [newArticle, setNewArticle] = useState({
     title: '',
@@ -35,10 +38,23 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
     return () => { document.body.style.overflow = ''; };
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!newArticle.title || !newArticle.summary) return;
-    setSubmitting(true);
-    setTimeout(() => {
+
+    try {
+      setSubmitting(true);
+      setSubmitError(null);
+      await onArticleAdded({
+        title: newArticle.title,
+        date: newArticle.date,
+        category: newArticle.category,
+        summary: newArticle.summary,
+        content: newArticle.content,
+        imageUrl: newArticle.imageUrl,
+        audience: newArticle.audience,
+        priority: newArticle.priority as NewNewsPayload['priority'],
+      });
+
       setSubmitting(false);
       setSubmitDone(true);
       setNewArticle({ title: '', date: '', category: '', summary: '', content: '', imageUrl: '', audience: 'All Staff', priority: 'general' });
@@ -46,7 +62,10 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
         setSubmitDone(false);
         onClose();
       }, 2500);
-    }, 800);
+    } catch {
+      setSubmitting(false);
+      setSubmitError('Could not save this news article to the database.');
+    }
   };
 
   return (
@@ -84,6 +103,13 @@ export default function AddNewsModal({ onClose }: AddNewsModalProps) {
             <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-5">
               <i className="ri-checkbox-circle-line text-kbc-green text-base" />
               <span className="text-xs text-kbc-green font-semibold">Article submitted for review and will be published after approval.</span>
+            </div>
+          )}
+
+          {submitError && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-5">
+              <i className="ri-error-warning-line text-red-600 text-base" />
+              <span className="text-xs text-red-700 font-semibold">{submitError}</span>
             </div>
           )}
 

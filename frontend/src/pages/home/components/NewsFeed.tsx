@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { newsItems } from '../../../mocks/news';
+import { useNewsAcknowledgements } from '../../news/useNewsAcknowledgements';
 
 const tabs = [
   { key: 'all', label: 'All Staff' },
@@ -40,6 +40,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function NewsFeed() {
+  const { items: newsItems, loading, error } = useNewsAcknowledgements();
   const [activeTab, setActiveTab] = useState('all');
   const [page, setPage] = useState(0);
 
@@ -96,6 +97,16 @@ export default function NewsFeed() {
 
       {/* News Items */}
       <div className="divide-y divide-gray-50">
+        {error && (
+          <div className="px-4 py-3 text-xs text-red-700 bg-red-50 border-b border-red-100">
+            {error}
+          </div>
+        )}
+        {loading && (
+          <div className="px-4 py-6 text-xs text-gray-500">
+            Loading latest news...
+          </div>
+        )}
         {displayed.map((item, idx) => {
           const cfg = priorityConfig[item.priority];
           const avatarBg = avatarColors[idx % avatarColors.length];

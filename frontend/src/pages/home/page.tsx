@@ -22,11 +22,8 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Hero — 3 Panels */}
       <div className="max-w-screen-xl mx-auto">
         <HeroSection />
-
-        {/* Quick Links */}
         <QuickActions />
 
         {/* Main 3-column grid */}
@@ -34,7 +31,7 @@ export default function Home() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
             {/* Left column — Latest News (3/12) */}
-            <div className="lg:col-span-3">
+            <div className="lg:col-span-3 flex flex-col gap-4">
               <NewsFeed />
             </div>
 

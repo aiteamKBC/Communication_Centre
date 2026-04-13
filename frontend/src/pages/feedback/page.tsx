@@ -28,6 +28,7 @@ const departmentOptions = [
 
 export default function FeedbackPage() {
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -38,10 +39,39 @@ export default function FeedbackPage() {
     anonymous: false,
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.message.trim()) return;
-    setSubmitted(true);
+
+    setSubmitting(true);
+    try {
+      const payload = {
+        name: form.anonymous ? '' : form.name.trim(),
+        email: form.anonymous ? '' : form.email.trim(),
+        category: form.category,
+        department: form.department,
+        priority: form.priority,
+        message: form.message.trim(),
+        anonymous: form.anonymous,
+      };
+
+      const response = await fetch('/api/feedback/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Unable to save feedback.');
+      }
+
+      setSubmitted(true);
+    } catch (error) {
+      window.alert(`Failed to submit feedback. ${String(error)}`);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -211,10 +241,10 @@ export default function FeedbackPage() {
               {/* Submit */}
               <button
                 type="submit"
-                disabled={!form.message.trim()}
+                disabled={submitting || !form.message.trim()}
                 className="w-full bg-kbc-navy text-white font-bold text-sm py-3 rounded-lg cursor-pointer hover:bg-kbc-navy-light disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
               >
-                Submit Feedback
+                {submitting ? 'Submitting...' : 'Submit Feedback'}
               </button>
             </form>
           </div>

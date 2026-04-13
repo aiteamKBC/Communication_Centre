@@ -15,15 +15,15 @@ const typeStyle: Record<string, { pill: string; dot: string; label: string }> = 
 interface Props {
   events: CalendarEvent[];
   onEventClick: (event: CalendarEvent) => void;
-  onAddEvent: () => void;
+  onAddEvent?: () => void;
+  canManageEvents?: boolean;
   jumpTo?: Date | null;
 }
 
-// Today = 2026-03-30 as per project context
-const TODAY = new Date(2026, 2, 30);
+const TODAY = new Date();
 
-export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo }: Props) {
-  const [current, setCurrent] = useState(new Date(2026, 3, 1)); // start at April 2026
+export default function CalendarView({ events, onEventClick, onAddEvent, canManageEvents = true, jumpTo }: Props) {
+  const [current, setCurrent] = useState(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1));
   const [dayPopup, setDayPopup] = useState<{ day: number; events: CalendarEvent[] } | null>(null);
 
   useEffect(() => {
@@ -97,13 +97,15 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={onAddEvent}
-            className="flex items-center gap-1.5 bg-kbc-amber text-kbc-navy text-xs font-bold px-3.5 py-2 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
-          >
-            <i className="ri-add-line text-sm" />
-            Add Event
-          </button>
+          {canManageEvents && (
+            <button
+              onClick={onAddEvent}
+              className="flex items-center gap-1.5 bg-kbc-amber text-kbc-navy text-xs font-bold px-3.5 py-2 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
+            >
+              <i className="ri-add-line text-sm" />
+              Add Event
+            </button>
+          )}
         </div>
       </div>
 
@@ -188,7 +190,11 @@ export default function CalendarView({ events, onEventClick, onAddEvent, jumpTo 
             <i className="ri-calendar-2-line text-xl text-gray-400" />
           </div>
           <p className="text-sm font-semibold text-gray-500">No events yet</p>
-          <p className="text-xs text-gray-400 mt-1">Click <strong>&quot;+ Add Event&quot;</strong> to schedule your first event</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {canManageEvents
+              ? <>Click <strong>&quot;+ Add Event&quot;</strong> to schedule your first event</>
+              : 'Events will appear here when published by an authorised user.'}
+          </p>
         </div>
       )}
 

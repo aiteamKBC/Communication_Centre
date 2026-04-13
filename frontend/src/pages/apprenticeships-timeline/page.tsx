@@ -1,242 +1,337 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import CohortModal, { MS, mi, Group, CRow, getModuleMeta } from './components/CohortModal';
-import ScheduleTable from './components/ScheduleTable';
-
-// ── Timeline config ───────────────────────────────────────────────────────
-const T    = 41;
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-const pl   = (s: number) => `${(clamp(s, 0, T) / T) * 100}%`;
-const pw   = (s: number, d: number) => `${(Math.min(d, T - s) / T) * 100}%`;
-const pwn  = (s: number, d: number) => (Math.min(d, T - s) / T) * 100;
-const getCurrentTimelineIndex = () => {
-  const now = new Date();
-  return mi(now.getFullYear(), now.getMonth() + 1);
-};
-const getCurrentTimelineLabel = () => {
-  const now = new Date();
-  return now.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
-};
-
-const MONTH_LABELS = [
-  'Aug','Sep','Oct','Nov','Dec',
-  'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
-  'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
-  'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
-];
-
-// All year bands in the same navy family
-const YEAR_CFG = [
-  { yr:'2024', span:5,  bg:'#1B2A4A', qts:[{q:'Q3',s:3},{q:'Q4',s:2}] },
-  { yr:'2025', span:12, bg:'#243560', qts:[{q:'Q1',s:3},{q:'Q2',s:3},{q:'Q3',s:3},{q:'Q4',s:3}] },
-  { yr:'2026', span:12, bg:'#2E4482', qts:[{q:'Q1',s:3},{q:'Q2',s:3},{q:'Q3',s:3},{q:'Q4',s:3}] },
-  { yr:'2027', span:12, bg:'#3D5A99', qts:[{q:'Q1',s:3},{q:'Q2',s:3},{q:'Q3',s:3},{q:'Q4',s:3}] },
-];
-
-const LEFT_W = 228;
-
-interface CohortAccent {
-  chipBg: string;
-  chipText: string;
-  dateBg: string;
-  dateText: string;
-  surface: string;
-  border: string;
-}
-
-const COHORT_COLOR_FAMILIES: CohortAccent[][] = [
-  [
-    { chipBg:'#1B2A4A', chipText:'#FFFFFF', dateBg:'#243560', dateText:'#FFFFFF', surface:'rgba(27,42,74,0.04)', border:'rgba(27,42,74,0.14)' },
-    { chipBg:'#243560', chipText:'#FFFFFF', dateBg:'#2E4482', dateText:'#FFFFFF', surface:'rgba(36,53,96,0.045)', border:'rgba(36,53,96,0.14)' },
-    { chipBg:'#2E4482', chipText:'#FFFFFF', dateBg:'#3D5A99', dateText:'#FFFFFF', surface:'rgba(46,68,130,0.05)', border:'rgba(46,68,130,0.14)' },
-    { chipBg:'#3D5A99', chipText:'#FFFFFF', dateBg:'#5270B3', dateText:'#FFFFFF', surface:'rgba(61,90,153,0.05)', border:'rgba(61,90,153,0.14)' },
-  ],
-  [
-    { chipBg:'#8D6811', chipText:'#FFFFFF', dateBg:'#A07718', dateText:'#FFFFFF', surface:'rgba(141,104,17,0.045)', border:'rgba(141,104,17,0.14)' },
-    { chipBg:'#A07718', chipText:'#FFFFFF', dateBg:'#B9871F', dateText:'#FFFFFF', surface:'rgba(160,119,24,0.05)', border:'rgba(160,119,24,0.14)' },
-    { chipBg:'#B9871F', chipText:'#FFFFFF', dateBg:'#C9982E', dateText:'#FFFFFF', surface:'rgba(185,135,31,0.05)', border:'rgba(185,135,31,0.14)' },
-    { chipBg:'#C9982E', chipText:'#FFFFFF', dateBg:'#D7AB49', dateText:'#FFFFFF', surface:'rgba(201,152,46,0.055)', border:'rgba(201,152,46,0.14)' },
-    { chipBg:'#D7AB49', chipText:'#1B2A4A', dateBg:'#E3BD68', dateText:'#1B2A4A', surface:'rgba(215,171,73,0.055)', border:'rgba(215,171,73,0.14)' },
-  ],
-  [
-    { chipBg:'#2F6CB6', chipText:'#FFFFFF', dateBg:'#467DC1', dateText:'#FFFFFF', surface:'rgba(47,108,182,0.045)', border:'rgba(47,108,182,0.14)' },
-    { chipBg:'#467DC1', chipText:'#FFFFFF', dateBg:'#5C8FD0', dateText:'#FFFFFF', surface:'rgba(70,125,193,0.05)', border:'rgba(70,125,193,0.14)' },
-    { chipBg:'#5C8FD0', chipText:'#FFFFFF', dateBg:'#77A5DC', dateText:'#FFFFFF', surface:'rgba(92,143,208,0.05)', border:'rgba(92,143,208,0.14)' },
-    { chipBg:'#77A5DC', chipText:'#FFFFFF', dateBg:'#92BAE6', dateText:'#FFFFFF', surface:'rgba(119,165,220,0.055)', border:'rgba(119,165,220,0.14)' },
-  ],
-];
-
-const getCohortAccent = (groupIdx: number, rowIdx: number): CohortAccent => {
-  const family = COHORT_COLOR_FAMILIES[groupIdx % COHORT_COLOR_FAMILIES.length];
-  return family[rowIdx % family.length];
-};
-
-// Programme colours — all from the KBC navy-amber family
-const INITIAL_GROUPS: Group[] = [
-  {
-    name:'Project Control\nProfessional L6 (PCP)',
-    sub:'2024 – 2027', color:'#1B2A4A', rowBg:'#F6F8FC',
-    rows:[
-      { label:'Cohort 1 - G1', dateLbl:'Aug 2024', blks:[
-        {mod:'pmp',s:mi(2024,8),d:5},{mod:'pmiSP',s:mi(2025,1),d:5},
-        {mod:'evm',s:mi(2025,6),d:4},{mod:'risk',s:mi(2025,10),d:3},{mod:'ppc',s:mi(2026,1),d:3},
-      ]},
-      { label:'Cohort 2 - G2', dateLbl:'Jan 2025', blks:[
-        {mod:'pmp',s:mi(2025,1),d:5},{mod:'pmiSP',s:mi(2025,6),d:4},
-        {mod:'evm',s:mi(2025,10),d:3},{mod:'risk',s:mi(2026,1),d:3},{mod:'ppc',s:mi(2026,4),d:3},
-      ]},
-      { label:'Cohort 3 - G1', dateLbl:'May 2025', blks:[
-        {mod:'pmp',s:mi(2025,5),d:5},{mod:'pmiSP',s:mi(2025,10),d:4},
-        {mod:'evm',s:mi(2026,2),d:3},{mod:'risk',s:mi(2026,5),d:3},{mod:'ppc',s:mi(2026,8),d:3},
-      ]},
-      { label:'Cohort 4 - G1', dateLbl:'Oct 2025', blks:[
-        {mod:'pmp',s:mi(2025,10),d:5},{mod:'pmiSP',s:mi(2026,3),d:4},
-        {mod:'evm',s:mi(2026,7),d:3},{mod:'risk',s:mi(2026,10),d:3},{mod:'ppc',s:mi(2027,1),d:3},
-      ]},
-    ],
-  },
-  {
-    name:'Marketing Executive\nL4 (ME)',
-    sub:'2025 – 2026', color:'#B9871F', rowBg:'#FFF8EC',
-    rows:[
-      { label:'Cohort 1 - G1', dateLbl:'Jan 2025', blks:[
-        {mod:'impact',s:mi(2025,1),d:4},{mod:'social',s:mi(2025,5),d:3},{mod:'tech',s:mi(2025,8),d:2},
-      ]},
-      { label:'Cohort 2 - G4', dateLbl:'May 2025', blks:[
-        {mod:'impact',s:mi(2025,5),d:4},{mod:'social',s:mi(2025,9),d:3},{mod:'tech',s:mi(2025,12),d:2},
-      ]},
-      { label:'Cohort 3 - G1', dateLbl:'Jul 2025', blks:[
-        {mod:'impact',s:mi(2025,7),d:4},{mod:'social',s:mi(2025,11),d:3},{mod:'tech',s:mi(2026,2),d:2},
-      ]},
-      { label:'Cohort 4 - G2', dateLbl:'Oct 2025', blks:[
-        {mod:'impact',s:mi(2025,10),d:4},{mod:'social',s:mi(2026,2),d:3},{mod:'tech',s:mi(2026,5),d:2},
-      ]},
-      { label:'Cohort 5 - G2', dateLbl:'Jan 2026', blks:[
-        {mod:'impact',s:mi(2026,1),d:4},{mod:'social',s:mi(2026,5),d:3},
-      ]},
-    ],
-  },
-  {
-    name:'Marketing Manager\nL6 (MM)',
-    sub:'2025 – 2026', color:'#2F6CB6', rowBg:'#F3F8FE',
-    rows:[
-      { label:'Cohort 1 - G1', dateLbl:'May 2025', blks:[
-        {mod:'strat',s:mi(2025,5),d:5},{mod:'comm',s:mi(2025,10),d:3},
-        {mod:'cust',s:mi(2026,1),d:4},{mod:'ai',s:mi(2026,5),d:3},
-      ]},
-      { label:'Cohort 1 - G3', dateLbl:'Oct 2025', blks:[
-        {mod:'strat',s:mi(2025,10),d:5},{mod:'comm',s:mi(2026,3),d:3},{mod:'cust',s:mi(2026,6),d:4},
-      ]},
-      { label:'Cohort 1 - G3', dateLbl:'Jan 2026', blks:[
-        {mod:'strat',s:mi(2026,1),d:5},{mod:'comm',s:mi(2026,6),d:3},
-      ]},
-    ],
-  },
-];
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey } from './types';
+import { INITIAL_GROUPS, DEFAULT_HOLIDAYS, MS } from './data';
+import GanttTimeline from './components/GanttTimeline';
+import CohortModal from './components/CohortModal';
+import HolidayManager from './components/HolidayManager';
+import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
+import useAccessControl from '@/hooks/useAccessControl';
 
 type ModalState =
   | { open: false }
   | { open: true; mode: 'add'; defaultGroupIdx: number }
-  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CRow };
+  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow };
 
-interface DeleteConfirm { groupIdx: number; rowIdx: number; }
-
-// ── Timeline sub-components ───────────────────────────────────────────────
-function TimelineHeaders() {
-  return (
-    <>
-      <div className="flex" style={{ borderBottom:'1px solid #CBD5E1', background:'#FFFFFF' }}>
-        <div style={{ width:LEFT_W, flexShrink:0, borderRight:'1px solid #CBD5E1', background:'#FFFFFF' }} />
-        <div className="flex-1 flex">
-          {YEAR_CFG.map(y => (
-            <div key={y.yr} className="text-center font-extrabold py-2.5 border-r tracking-widest"
-              style={{ flex:y.span, borderColor:'#CBD5E1', background:'#FFFFFF', color:'#111827', fontSize:'18px', letterSpacing:'0.04em' }}>
-              {y.yr}
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="flex" style={{ borderBottom:'1px solid #E5E7EB' }}>
-        <div style={{ width:LEFT_W, flexShrink:0, borderRight:'1px solid #CBD5E1', background:'#FFFFFF' }} />
-        <div className="flex-1 flex">
-          {YEAR_CFG.map(y =>
-            y.qts.map((qt, qi) => (
-              <div key={`${y.yr}${qt.q}`} className="text-center font-bold py-1 border-r border-gray-300"
-                style={{ flex:qt.s, fontSize:'11px', color:'#111827', background:qi%2===0?'#E5E7EB':'#F8FAFC' }}>
-                {qt.q}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-      <div className="flex" style={{ borderBottom:'1px solid #D1D5DB' }}>
-        <div style={{ width:LEFT_W, flexShrink:0, borderRight:'1px solid #CBD5E1', background:'#FFFFFF' }} />
-        <div className="flex-1 flex">
-          {MONTH_LABELS.map((m, i) => (
-            <div key={i} className="text-center py-1 border-r border-gray-200"
-              style={{ flex:1, background:'#FFFFFF' }}>
-              <span className="font-semibold" style={{ fontSize:'11px', color:'#1F2937' }}>{m}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </>
-  );
+interface TrainingPlanItem {
+  cohortName: string;
+  program: string;
+  startingDateLabel: string;
+  moduleName: string;
+  tutorName: string;
+  startDate: string;
+  endDate: string;
+  sessionsNumber: string;
+  sessionWeekDay: string;
+  sessionStartTime: string;
+  sessionEndTime: string;
+  notes: string;
 }
 
-// ── Page ─────────────────────────────────────────────────────────────────
-function NowLine({ showLabel }: { showLabel: boolean }) {
-  const nowIndex = getCurrentTimelineIndex();
+const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 
-  return (
-    <div className="absolute top-0 bottom-0 pointer-events-none z-30"
-      style={{ left:pl(nowIndex), borderLeft:'2px dashed #F7A800' }}>
-      {showLabel && (
-        <div className="absolute -top-px left-0" style={{ transform:'translateX(-50%)' }}>
-          <div className="flex flex-col items-center">
-            <span className="font-bold px-1.5 py-px rounded whitespace-nowrap"
-              style={{ fontSize:'8px', background:'#F7A800', color:'#1B2A4A' }}>
-              Now
-            </span>
-            <div style={{ width:0, height:0, borderLeft:'4px solid transparent', borderRight:'4px solid transparent', borderTop:'5px solid #F7A800' }} />
-          </div>
-        </div>
-      )}
-    </div>
+function splitPersistedNotes(raw: string): { holidayIds: string[]; notes: string } {
+  const value = (raw || '').trim();
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX)) {
+    return { holidayIds: [], notes: raw || '' };
+  }
+
+  const firstLineBreak = value.indexOf('\n');
+  const markerLine = firstLineBreak >= 0 ? value.slice(0, firstLineBreak) : value;
+  const noteBody = firstLineBreak >= 0 ? value.slice(firstLineBreak + 1) : '';
+  const encoded = markerLine.slice(HOLIDAY_MARKER_PREFIX.length);
+  const holidayIds = encoded
+    .split('|')
+    .map(item => item.trim())
+    .filter(Boolean);
+
+  return { holidayIds, notes: noteBody };
+}
+
+function joinPersistedNotes(notes: string, holidayIds: string[]): string {
+  if (!holidayIds.length) {
+    return notes;
+  }
+  const marker = `${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`;
+  return notes ? `${marker}\n${notes}` : marker;
+}
+
+const DAY_ALIASES: Record<string, WeekDayKey> = {
+  saturday: 'saturday',
+  sat: 'saturday',
+  monday: 'monday',
+  mon: 'monday',
+  tuesday: 'tuesday',
+  tue: 'tuesday',
+  tues: 'tuesday',
+  wednesday: 'wednesday',
+  wed: 'wednesday',
+  thursday: 'thursday',
+  thu: 'thursday',
+  thur: 'thursday',
+  thurs: 'thursday',
+  friday: 'friday',
+  fri: 'friday',
+};
+
+const moduleKeyByLabel: Record<string, MKey> = Object.entries(MS).reduce((acc, [key, value]) => {
+  acc[value.lbl.toLowerCase()] = key as MKey;
+  return acc;
+}, {} as Record<string, MKey>);
+
+function inferGroupId(program: string): string {
+  const p = program.toLowerCase();
+  if (p.includes('pcp') || p.includes('project control')) return 'pcp';
+  if (p.includes('mm') || p.includes('marketing manager')) return 'mm';
+  if (p.includes('me') || p.includes('marketing executive')) return 'me';
+  return 'pcp';
+}
+
+function parseDays(value: string): WeekDayKey[] {
+  const tokens = value
+    .split(/[|,;/]+/)
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
+  const mapped = tokens
+    .map(token => DAY_ALIASES[token])
+    .filter((item): item is WeekDayKey => Boolean(item));
+  return Array.from(new Set(mapped));
+}
+
+function toProgrammeLabel(group: ProgrammeGroup): string {
+  const first = group.name.split('\n')[0].trim();
+  const code = group.name.match(/\(([^)]+)\)/)?.[1] || first;
+  const level = group.name.match(/L\d+/)?.[0] || '';
+  return `${code} ${level}`.trim();
+}
+
+function emptyGroupsTemplate(): ProgrammeGroup[] {
+  return INITIAL_GROUPS.map(group => ({ ...group, rows: [] }));
+}
+
+function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[] {
+  const templatesById = new Map(INITIAL_GROUPS.map(group => [group.id, { ...group, rows: [] as CohortRow[] }]));
+  const cohortIndex = new Map<string, CohortRow>();
+
+  items.forEach((item, index) => {
+    const groupId = inferGroupId(item.program || '');
+    const group = templatesById.get(groupId);
+    if (!group) {
+      return;
+    }
+
+    const cohortKey = `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
+    let cohort = cohortIndex.get(cohortKey);
+    if (!cohort) {
+      cohort = {
+        id: `db-row-${groupId}-${cohortIndex.size + 1}`,
+        label: item.cohortName || 'Cohort',
+        dateLbl: item.startingDateLabel || '',
+        intake: 'Intake 1',
+        quarter: 'Q1 2026',
+        blks: [],
+      };
+      cohortIndex.set(cohortKey, cohort);
+      group.rows.push(cohort);
+    }
+
+    const modKey = moduleKeyByLabel[(item.moduleName || '').toLowerCase()] || 'pmp';
+    const sessions = Math.max(1, Number.parseInt(item.sessionsNumber || '1', 10) || 1);
+    const parsedNotes = splitPersistedNotes(item.notes || '');
+    if (parsedNotes.holidayIds.length && (!cohort.holidayIds || cohort.holidayIds.length === 0)) {
+      cohort.holidayIds = parsedNotes.holidayIds;
+    }
+    cohort.blks.push({
+      id: `db-blk-${index + 1}`,
+      mod: modKey,
+      tutor: item.tutorName || '',
+      startDate: item.startDate || '2026-01-01',
+      endDate: item.endDate || item.startDate || '2026-01-01',
+      sessions,
+      days: parseDays(item.sessionWeekDay || ''),
+      sessionStartTime: item.sessionStartTime || '09:00',
+      sessionEndTime: item.sessionEndTime || '11:00',
+      notes: parsedNotes.notes || '',
+    });
+  });
+
+  return INITIAL_GROUPS.map(group => templatesById.get(group.id) || { ...group, rows: [] });
+}
+
+function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
+  return groups.flatMap(group =>
+    group.rows.flatMap(row =>
+      row.blks.map(block => ({
+        cohortName: row.label,
+        program: toProgrammeLabel(group),
+        startingDateLabel: row.dateLbl,
+        moduleName: MS[block.mod]?.lbl || block.mod,
+        tutorName: block.tutor,
+        startDate: block.startDate,
+        endDate: block.endDate,
+        sessionsNumber: String(block.sessions),
+        sessionWeekDay: (block.days || []).join(', '),
+        sessionStartTime: block.sessionStartTime || '09:00',
+        sessionEndTime: block.sessionEndTime || '11:00',
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || []),
+      })),
+    ),
   );
 }
 
 export default function ApprenticeshipTimeline() {
-  const [groups, setGroups]         = useState<Group[]>(INITIAL_GROUPS);
-  const [modal,  setModal]          = useState<ModalState>({ open: false });
-  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm | null>(null);
-  const currentTimelineLabel = getCurrentTimelineLabel();
-  const handleSave = (groupIdx: number, row: CRow, prevGroupIdx?: number) => {
-    setGroups(prev => {
-      const next = prev.map(g => ({ ...g, rows: [...g.rows] }));
-      if (modal.open && modal.mode === 'edit') {
-        const pgi = prevGroupIdx ?? groupIdx;
-        next[pgi].rows.splice(modal.rowIdx, 1);
-        const insertAt = (groupIdx === pgi) ? modal.rowIdx : next[groupIdx].rows.length;
-        next[groupIdx].rows.splice(insertAt, 0, row);
-      } else {
-        next[groupIdx].rows.push(row);
+  const { canManageCohorts } = useAccessControl();
+  const [groups,   setGroups]   = useState<ProgrammeGroup[]>(emptyGroupsTemplate());
+  const [holidays, setHolidays] = useState<Holiday[]>(DEFAULT_HOLIDAYS);
+  const [modal,    setModal]    = useState<ModalState>({ open: false });
+  const [showHolidayMgr, setShowHolidayMgr] = useState(false);
+  const [zoom, setZoom] = useState<ZoomLevel>('month');
+  const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
+  const [addDropdownOpen, setAddDropdownOpen] = useState(false);
+  const addDropdownRef = useRef<HTMLDivElement>(null);
+  const skipPersistRef = useRef(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTrainingPlan() {
+      try {
+        const response = await fetch('/api/training-plan/');
+        if (!response.ok) {
+          return;
+        }
+
+        const items = (await response.json()) as TrainingPlanItem[];
+        if (!Array.isArray(items) || cancelled) {
+          return;
+        }
+
+        skipPersistRef.current = true;
+        setGroups(buildGroupsFromTrainingRows(items));
+      } catch {
+        // Keep initial in-memory data if loading fails.
       }
-      return next;
+    }
+
+    void loadTrainingPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+
+    const controller = new AbortController();
+    const payload = { items: flattenGroupsForApi(groups) };
+
+    // Do not POST an empty items array — that would wipe the database on the server.
+    if (!Array.isArray(payload.items) || payload.items.length === 0) {
+      return () => controller.abort();
+    }
+
+    void fetch('/api/training-plan/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    }).catch(() => {
+      // Silent fail for now; UI keeps working offline.
     });
+
+    return () => controller.abort();
+  }, [groups]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (addDropdownRef.current && !addDropdownRef.current.contains(e.target as Node)) {
+        setAddDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleSave = (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
+    if (!canManageCohorts) {
+      return;
+    }
+
+    // Build next state synchronously so we can persist immediately and ensure UI updates.
+    const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
+    if (modal.open && modal.mode === 'edit') {
+      const pgi = prevGroupIdx ?? groupIdx;
+      next[pgi].rows.splice(modal.rowIdx, 1);
+      const insertAt = groupIdx === pgi ? modal.rowIdx : next[groupIdx].rows.length;
+      next[groupIdx].rows.splice(insertAt, 0, row);
+    } else {
+      next[groupIdx].rows.push(row);
+    }
+
+    setGroups(next);
     setModal({ open: false });
+
+    // Persistence is handled by the groups effect to avoid duplicate concurrent writes.
   };
 
-  const handleDelete = (groupIdx: number, rowIdx: number) => {
+  const handleDeleteRow = (groupIdx: number, rowIdx: number) => {
+    if (!canManageCohorts) {
+      return;
+    }
+
     setGroups(prev => prev.map((g, gi) =>
       gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : g
     ));
-    setDeleteConfirm(null);
   };
 
-  const totalCohorts = groups.reduce((s, g) => s + g.rows.length, 0);
+  const handleEditRow = (groupIdx: number, rowIdx: number) => {
+    if (!canManageCohorts) {
+      return;
+    }
+
+    const row = groups[groupIdx].rows[rowIdx];
+    setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row });
+  };
+
+  const totalCohorts  = groups.reduce((s, g) => s + g.rows.length, 0);
+  const totalSessions = groups.reduce((s, g) =>
+    s + g.rows.reduce((rs, r) => rs + r.blks.reduce((bs, b) => bs + b.sessions, 0), 0), 0);
+  const holidayCount  = holidays.length;
+
+  const todaySessions = useMemo(() => {
+    const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const;
+    const today = new Date();
+    const todayKey = dayNames[today.getDay()];
+    const tStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const sessions: Array<{ cohortName: string; program: string; moduleName: string; tutor: string; startTime?: string; endTime?: string }> = [];
+
+    groups.forEach(g => {
+      g.rows.forEach(r => {
+        r.blks.forEach(b => {
+          if (!b.days || !b.days.length) return;
+          if (!b.days.includes(todayKey as any)) return;
+          const start = new Date(b.startDate + 'T00:00:00').getTime();
+          const end = new Date(b.endDate + 'T23:59:59').getTime();
+          if (tStart < start || tStart > end) return;
+          sessions.push({
+            cohortName: r.label,
+            program: toProgrammeLabel(g),
+            moduleName: MS[b.mod]?.lbl || b.mod,
+            tutor: b.tutor || '',
+            startTime: b.sessionStartTime,
+            endTime: b.sessionEndTime,
+          });
+        });
+      });
+    });
+
+    return sessions;
+  }, [groups]);
 
   return (
     <div className="min-h-screen bg-kbc-bg font-sans">
@@ -251,242 +346,187 @@ export default function ApprenticeshipTimeline() {
             <i className="ri-arrow-right-s-line" />
             <Link to="/events" className="hover:text-kbc-navy transition-colors cursor-pointer">Events</Link>
             <i className="ri-arrow-right-s-line" />
-            <span className="text-kbc-navy font-semibold">Cohort Timeline</span>
+            <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            {/* Title block */}
-            <div className="flex items-center gap-4">
-              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-                style={{ background:'#1B2A4A' }}>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
                 <i className="ri-time-line text-white text-base" />
               </div>
               <div>
                 <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
-                  Apprenticeships Cohort Timeline & Programme Structure
+                  Apprenticeships Training Plan
                 </h1>
-                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2024 - 2027</p>
-              </div>
-              {/* Stats pills */}
-              <div className="hidden md:flex items-center gap-2 ml-3">
-                {[
-                  { label:`${groups.length} Programmes` },
-                  { label:`${totalCohorts} Cohorts` },
-                  { label:`${currentTimelineLabel} Live` },
-                ].map((s, i) => (
-                  <span key={i} className="px-2.5 py-1 rounded-full text-xs font-semibold border"
-                    style={{ background:'#F0F4FF', color:'#2E4482', borderColor:'#D5DFF7' }}>
-                    {s.label}
-                  </span>
-                ))}
+                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2024 – 2027</p>
               </div>
             </div>
 
-            {/* Add cohort button */}
-            <div className="min-w-[220px]">
-              <button
-                onClick={() => setModal({ open: true, mode: 'add', defaultGroupIdx: 0 })}
-                className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl bg-[#1B2A4A] px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-18px_rgba(14,30,57,0.42)] transition-all hover:bg-[#243560]"
-              >
-                <i className="ri-add-line text-base" />
-                Add New Cohort
-              </button>
+            <div className="hidden md:flex items-center gap-2 ml-3 flex-wrap">
+              {[
+                { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
+                { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
+                { icon: 'ri-stack-line',       label: `${totalSessions} Sessions` },
+                { icon: 'ri-calendar-event-line', label: `${holidayCount} Holidays` },
+                { icon: 'ri-live-line',        label: 'Apr 2026 Live' },
+              ].map((s, i) => (
+                <span key={i} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border"
+                  style={{ background: '#F0F4FF', color: '#2E4482', borderColor: '#D5DFF7' }}>
+                  <i className={`${s.icon} text-xs`} />
+                  {s.label}
+                </span>
+              ))}
             </div>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2 items-center">
+            {canManageCohorts && (
+              <button
+                onClick={() => setShowHolidayMgr(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                <i className="ri-calendar-event-line" />
+                Holidays
+              </button>
+            )}
+
+            {canManageCohorts && (
+              <div className="relative" ref={addDropdownRef}>
+                <button
+                  onClick={() => setAddDropdownOpen(v => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                  style={{ background: '#1B2A4A' }}>
+                  <i className="ri-add-line" />
+                  Add Cohort
+                  {addDropdownOpen ? (
+                    <i className="ri-arrow-up-s-line ml-0.5" />
+                  ) : (
+                    <i className="ri-arrow-down-s-line ml-0.5" />
+                  )}
+                </button>
+                {addDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                    <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                      Select Programme
+                    </p>
+                    {groups.map((g, gi) => (
+                      <button
+                        key={gi}
+                        onClick={() => {
+                          setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+                          setAddDropdownOpen(false);
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                        <div>
+                          <p className="text-xs font-bold text-gray-800 leading-tight">
+                            {g.name.split('\n')[0]}
+                          </p>
+                          <p className="text-xs text-gray-400 leading-tight">
+                            {g.name.split('\n')[1] || ''} · {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <main className="max-w-screen-xl mx-auto px-4 md:px-6 py-5 space-y-4">
 
-        {/* GANTT CARD */}
-        <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_14px_36px_-28px_rgba(15,23,42,0.24)]">
-          <div className="border-b border-slate-200 bg-white px-6 py-4">
-            <h2 className="text-lg font-extrabold tracking-tight text-kbc-navy md:text-[1.5rem]">
-              Apprenticeships Cohort Timeline & Programme Structure
-            </h2>
-            <p className="mt-1 text-xs text-slate-400">Programme Structure 2024 - 2027</p>
-          </div>
-          <div className="overflow-x-auto">
-            <div style={{ minWidth:'1040px' }}>
-              <TimelineHeaders />
-
-              {groups.map((grp, gi) => (
-                <div key={gi} className="flex"
-                  style={{ borderBottom:`1px solid ${grp.color}24`, background:'#FFFFFF' }}>
-
-                  {/* Clean left programme label — no chevron, just a left border accent */}
-                  <div className="relative shrink-0 border-r border-slate-200 px-4 py-2"
-                    style={{ width:LEFT_W, minHeight:`${Math.max(grp.rows.length,1)*52}px`, background:'#FFFFFF' }}>
-                    <div className="absolute left-0 top-0 bottom-0 w-1.5 rounded-r"
-                      style={{ background: grp.color }} />
-                    <div className="flex h-full items-center">
-                      <div className="pl-2">
-                        <p className="font-extrabold leading-tight" style={{ fontSize:'11px', color: grp.color }}>
-                          {grp.name.split('\n').map((l, i) => <span key={i} className="block">{l}</span>)}
-                        </p>
-                        <p className="mt-1 font-medium text-slate-400" style={{ fontSize:'9px' }}>{grp.sub}</p>
-                      </div>
-                    </div>
+        {/* Today's Sessions */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
+          {todaySessions.length === 0 ? (
+            <p className="text-xs text-gray-400 mt-2">No sessions yet. Add cohorts and module blocks to populate this schedule.</p>
+          ) : (
+            <ul className="mt-3 divide-y">
+              {todaySessions.map((s, i) => (
+                <li key={i} className="flex items-center justify-between py-2">
+                  <div>
+                    <p className="text-sm font-semibold">{s.moduleName}</p>
+                    <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
+                    {s.tutor && <p className="text-xs text-gray-400">{s.tutor}</p>}
                   </div>
-
-                  {/* Cohort rows */}
-                  <div className="flex-1">
-                    {grp.rows.length === 0 && (
-                      <div className="flex items-center justify-center" style={{ height:'52px' }}>
-                        <span className="text-xs text-gray-300 italic">No cohorts yet</span>
-                      </div>
-                    )}
-                    {grp.rows.map((row, ri) => {
-                      const first  = row.blks[0];
-                      const last   = row.blks[row.blks.length - 1];
-                      const rowEnd = last ? last.s + last.d : 0;
-                      const isDeleting = deleteConfirm?.groupIdx === gi && deleteConfirm?.rowIdx === ri;
-                      const cohortAccent = getCohortAccent(gi, ri);
-
-                      return (
-                        <div key={ri} className="relative group/row"
-                          style={{
-                            height:'52px',
-                            borderTop: ri > 0 ? `1px solid ${cohortAccent.border}` : 'none',
-                            background:'transparent',
-                          }}>
-                          <NowLine showLabel={gi===0 && ri===0} />
-                          {/* Quarter stripe */}
-                          <div className="absolute inset-0 flex pointer-events-none">
-                            {YEAR_CFG.map(y =>
-                              y.qts.map((qt, qi) => (
-                                <div key={`${y.yr}${qt.q}`}
-                                  style={{ flex:qt.s, background:qi%2!==0?'rgba(0,0,0,0.010)':'transparent' }} />
-                              ))
-                            )}
-                          </div>
-
-                          {/* Month gridlines */}
-                          <div className="absolute inset-0 flex pointer-events-none">
-                            {MONTH_LABELS.map((_, i) => (
-                              <div key={i} className="flex-1 border-r"
-                                style={{ borderColor:i%3===2?'rgba(0,0,0,0.05)':'rgba(0,0,0,0.02)' }} />
-                            ))}
-                          </div>
-
-                          {/* Start date label */}
-                          {first && first.s >= 0 && (
-                            <div className="absolute z-20"
-                              style={{ left:pl(first.s), top:'1px', transform:'translateX(-50%)', whiteSpace:'nowrap' }}>
-                              <span className="font-semibold rounded px-1.5 py-px leading-none"
-                                style={{ fontSize:'7px', background:cohortAccent.dateBg, color:cohortAccent.dateText, display:'inline-block' }}>
-                                {row.dateLbl}
-                              </span>
-                            </div>
-                          )}
-
-                          {/* Module bars */}
-                          {row.blks.map((blk, bi) => {
-                            const mod  = getModuleMeta(blk.mod);
-                            const wPct = pwn(blk.s, blk.d);
-                            return (
-                              <div key={bi} title={`${row.label} · ${mod.lbl}`}
-                                className="absolute flex items-center justify-center overflow-hidden z-10 cursor-default"
-                                style={{
-                                  left:pl(blk.s), width:pw(blk.s,blk.d),
-                                  top:'14px', bottom:'10px',
-                                  background:mod.bg,
-                                  borderRadius:'8px',
-                                }}>
-                                {wPct > 4 && (
-                                  <span className="font-semibold truncate select-none px-1"
-                                    style={{ color:mod.tx, fontSize:'8px', lineHeight:1.1 }}>
-                                    {wPct > 7 ? mod.lbl : mod.lbl.split(' ')[0]}
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })}
-
-                          {/* Cohort label + edit/delete */}
-                          {last && (
-                            <div className="absolute z-20 flex items-center gap-1"
-                              style={{ left:`calc(${pl(rowEnd)} + 4px)`, top:'50%', transform:'translateY(-50%)', whiteSpace:'nowrap' }}>
-                              <span className="font-bold rounded px-2 py-0.5"
-                                style={{ fontSize:'8.5px', background:cohortAccent.chipBg, color:cohortAccent.chipText }}>
-                                {row.label}
-                              </span>
-                              <div className="flex items-center gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
-                                <button
-                                  onClick={() => setModal({ open:true, mode:'edit', groupIdx:gi, rowIdx:ri, row })}
-                                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-kbc-navy shadow-[0_10px_24px_-18px_rgba(15,23,42,0.32)] transition-all hover:-translate-y-0.5 hover:border-kbc-navy/20 hover:bg-kbc-navy hover:text-white"
-                                  title="Edit">
-                                  <i className="ri-edit-line text-[13px]" />
-                                </button>
-                                <button
-                                  onClick={() => setDeleteConfirm({ groupIdx:gi, rowIdx:ri })}
-                                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-slate-400 shadow-[0_10px_24px_-18px_rgba(15,23,42,0.32)] transition-all hover:-translate-y-0.5 hover:border-red-200 hover:bg-red-500 hover:text-white"
-                                  title="Delete">
-                                  <i className="ri-delete-bin-line text-[13px]" />
-                                </button>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Delete confirm overlay */}
-                          {isDeleting && (
-                            <div className="absolute inset-0 z-40 flex items-center justify-end pr-4"
-                              style={{ background:'rgba(249,250,251,0.97)' }}>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-600 font-medium text-xs">
-                                  Remove <strong className="text-kbc-navy">{row.label}</strong>?
-                                </span>
-                                <button onClick={() => handleDelete(gi, ri)}
-                                  className="px-3 py-1 rounded text-xs font-bold text-white cursor-pointer"
-                                  style={{ background:'#1B2A4A' }}>
-                                  Remove
-                                </button>
-                                <button onClick={() => setDeleteConfirm(null)}
-                                  className="px-3 py-1 rounded text-xs font-semibold text-gray-500 bg-gray-200 hover:bg-gray-300 cursor-pointer">
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                  <div className="text-right">
+                    <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
                   </div>
-                </div>
+                </li>
               ))}
-
-              {/* Legend */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
-                <span className="shrink-0 text-xs font-bold uppercase tracking-wider text-gray-500">Legend</span>
-                {(Object.entries(MS) as [string, { lbl:string; bg:string; tx:string }][]).map(([k, v]) => (
-                  <span key={k} className="flex items-center gap-1.5 whitespace-nowrap" style={{ fontSize:'10px', color:'#475569' }}>
-                    <span className="inline-block rounded-full shrink-0" style={{ width:18, height:9, background:v.bg }} />
-                    {v.lbl}
-                  </span>
-                ))}
-                <span className="ml-auto flex items-center gap-1.5 whitespace-nowrap" style={{ fontSize:'10px', color:'#475569' }}>
-                  <span className="inline-block shrink-0" style={{ width:14, borderTop:'2px dashed #F7A800' }} />
-                  {`Now (${currentTimelineLabel})`}
-                </span>
-              </div>
-            </div>
-          </div>
+            </ul>
+          )}
         </div>
 
-        {/* Session Schedule Table */}
-        <ScheduleTable />
+        {/* Tab switcher */}
+        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1 w-fit">
+          {([
+            { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
+            { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
+          ] as const).map(tab => (
+            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
+              style={{
+                background: activeTab === tab.key ? '#1B2A4A' : 'transparent',
+                color:      activeTab === tab.key ? '#fff'    : '#6B7280',
+              }}>
+              <i className={tab.icon} />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* GANTT CARD */}
+        {activeTab === 'gantt' && (
+          <div className="bg-white rounded-xl overflow-hidden border border-gray-200">
+            <GanttTimeline
+              groups={groups}
+              holidays={holidays}
+              zoom={zoom}
+              onZoomChange={setZoom}
+              onAddRow={(gi) => {
+                if (!canManageCohorts) {
+                  return;
+                }
+                setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+              }}
+              onEditRow={handleEditRow}
+              onDeleteRow={handleDeleteRow}
+              canManageCohorts={canManageCohorts}
+            />
+          </div>
+        )}
+
+        {/* SESSION SCHEDULE */}
+        {activeTab === 'schedule' && (
+          <ScheduleTable groups={groups} />
+        )}
 
       </main>
       <Footer />
 
-      {modal.open && (
+      {/* Modals */}
+      {canManageCohorts && modal.open && (
         <CohortModal
           mode={modal.mode}
           groups={groups}
+          holidays={holidays}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           onSave={handleSave}
           onClose={() => setModal({ open: false })}
+        />
+      )}
+
+      {canManageCohorts && showHolidayMgr && (
+        <HolidayManager
+          holidays={holidays}
+          onUpdate={setHolidays}
+          onClose={() => setShowHolidayMgr(false)}
         />
       )}
     </div>

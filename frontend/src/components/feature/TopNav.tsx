@@ -50,7 +50,7 @@ const navLinks = [
 
   { label: 'News & Announcements', path: '/news' },
 
-  { label: 'Internal Dashboard', path: '/dashboard' },
+  { label: 'Internal Dashboards', path: '/dashboard' },
 
   { label: 'Risk Register', path: '/risk-register' },
 
@@ -58,11 +58,9 @@ const navLinks = [
 
   { label: 'Policies', path: '/documents' },
 
-  { label: 'Training Plan', path: '/training-plan' },
 
   { label: 'Events', path: '/events' },
-
-  { label: 'Cohort Timeline', path: '/apprenticeships-timeline' },
+  { label: 'Training Plan', path: '/training-plan' },
 
 ];
 
@@ -79,6 +77,8 @@ export default function TopNav() {
   const [scrolled, setScrolled] = useState(false);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userName, setUserName] = useState<string | null>(null);
+  const [userPhoto, setUserPhoto] = useState<string | null>(null);
 
 
 
@@ -95,8 +95,43 @@ export default function TopNav() {
     setIsAuthenticated(hasAuthSession());
 
   }, [location.pathname]);
+  
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) {
+      setUserName(null);
+      setUserPhoto(null);
+      return;
+    }
 
+    try {
+      const parsed = JSON.parse(raw);
+      const rawName = parsed?.displayName || parsed?.name || parsed?.username || parsed?.email || null;
+      setUserName(rawName ? formatDisplayName(rawName) : null);
+      setUserPhoto(parsed?.photo || parsed?.avatar || parsed?.profileImage || null);
+    } catch {
+      setUserName(null);
+      setUserPhoto(null);
+    }
+  }, [location.pathname]);
 
+  function formatDisplayName(raw: string): string {
+    // If it contains '@' it's an email — extract first two dot-separated parts before '@'
+    const local = raw.includes('@') ? raw.split('@')[0] : raw;
+    const parts = (local ?? '').split(/[.\s_-]+/).filter(Boolean);
+    // Take only first two words, capitalise each
+    return parts
+      .slice(0, 2)
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  function getInitials(name?: string | null) {
+    if (!name) return '';
+    const parts = name.trim().split(/\s+/);
+    return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase();
+  }
 
   useEffect(() => {
 
@@ -150,7 +185,7 @@ export default function TopNav() {
 
     try {
 
-      await fetch('http://127.0.0.1:8000/api/auth/logout/', {
+      await fetch('/api/auth/logout/', {
 
         method: 'POST',
 
@@ -296,63 +331,41 @@ export default function TopNav() {
           {/* Right Actions */}
 
           <div className="flex items-center gap-1 shrink-0">
-
             {isAuthenticated ? (
+              <>
+                <div data-nav-reveal className="hidden md:flex items-center gap-3 mr-2">
+                  <div className="text-sm font-semibold text-kbc-navy truncate max-w-[200px]">{userName || 'Account'}</div>
+                </div>
 
-              <button
-
-                type="button"
-
-                data-nav-reveal
-
-                onClick={handleLogout}
-
-                className="hidden md:inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-600 hover:text-white"
-
-              >
-
-                <i className="ri-logout-box-r-line text-sm" />
-
-                Logout
-
-              </button>
-
+                <button
+                  type="button"
+                  data-nav-reveal
+                  onClick={handleLogout}
+                  className="hidden md:inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm hover:-translate-y-0.5 hover:border-red-300 hover:bg-red-600 hover:text-white"
+                >
+                  <i className="ri-logout-box-r-line text-sm" />
+                  Logout
+                </button>
+              </>
             ) : (
-
               <Link
-
                 to="/login"
-
                 data-nav-reveal
-
                 className="hidden md:inline-flex items-center gap-1 rounded-full border border-kbc-navy/15 bg-white/90 px-3 py-1.5 text-xs font-semibold text-kbc-navy shadow-sm hover:-translate-y-0.5 hover:border-kbc-navy/35 hover:bg-kbc-navy hover:text-white"
-
               >
-
                 <i className="ri-login-circle-line text-sm" />
-
                 Login
-
               </Link>
-
             )}
-
             {/* Mobile Hamburger */}
 
             <button
-
               data-nav-reveal
-
               className="lg:hidden w-9 h-9 flex items-center justify-center rounded-full border border-slate-200 bg-white/90 text-gray-600 shadow-sm cursor-pointer transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-300 hover:text-kbc-navy"
-
               onClick={() => setMobileOpen(!mobileOpen)}
-
             >
-
               <i className={`text-lg ${mobileOpen ? 'ri-close-line' : 'ri-menu-line'}`} />
-
             </button>
-
           </div>
 
         </div>

@@ -7,6 +7,7 @@ import { CalendarEvent } from '../../mocks/events';
 import EventDetailModal from './components/EventDetailModal';
 import AddEventModal from './components/AddEventModal';
 import CalendarView from './components/CalendarView';
+import useAccessControl from '../../hooks/useAccessControl';
 
 function getCoverMedia(event: CalendarEvent) {
   if (event.media?.length) return event.media[0];
@@ -16,13 +17,18 @@ function getCoverMedia(event: CalendarEvent) {
 }
 
 export default function EventsPage() {
-  const { events: allEvents, addEvent } = useSharedEvents();
+  const { events: allEvents, loading, error, addEvent } = useSharedEvents();
+  const { canManageEvents } = useAccessControl();
   const [addEventOpen, setAddEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [calendarJump, setCalendarJump] = useState<Date | null>(null);
 
-  const handleEventAdded = (event: CalendarEvent) => {
-    addEvent(event);
+  const handleEventAdded = async (event: CalendarEvent) => {
+    if (!canManageEvents) {
+      return;
+    }
+
+    await addEvent(event);
     const parts = event.date.split(' ');
     const monthAbbrMap: Record<string, number> = {
       Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -60,10 +66,21 @@ export default function EventsPage() {
 
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-8">
         <section className="mb-10">
+          {error && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {error}
+            </div>
+          )}
           <CalendarView
             events={allEvents}
             onEventClick={setSelectedEvent}
-            onAddEvent={() => setAddEventOpen(true)}
+            onAddEvent={() => {
+              if (!canManageEvents) {
+                return;
+              }
+              setAddEventOpen(true);
+            }}
+            canManageEvents={canManageEvents}
             jumpTo={calendarJump}
           />
         </section>
@@ -76,7 +93,12 @@ export default function EventsPage() {
             </div>
           </div>
 
-          {allEvents.length > 0 ? (
+          {loading ? (
+            <div className="text-center py-16 text-gray-400 bg-white rounded-xl border border-gray-100">
+              <p className="text-sm font-semibold text-gray-500 mb-1">Loading events...</p>
+              <p className="text-xs text-gray-400">Fetching events from the database.</p>
+            </div>
+          ) : allEvents.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
               {allEvents.map(event => {
                 const iconMap: Record<CalendarEvent['type'], string> = {
@@ -193,7 +215,7 @@ export default function EventsPage() {
 
       <EventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
       <AddEventModal
-        open={addEventOpen}
+        open={canManageEvents && addEventOpen}
         onClose={() => setAddEventOpen(false)}
         onEventAdded={handleEventAdded}
       />

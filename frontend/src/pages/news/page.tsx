@@ -7,6 +7,7 @@ import AddNewsModal from './components/AddNewsModal';
 import NewsDetailModal from './components/NewsDetailModal';
 import { useNewsAcknowledgements } from './useNewsAcknowledgements';
 import type { NewsItem } from '../../mocks/news';
+import useAccessControl from '../../hooks/useAccessControl';
 
 const priorityConfig = {
   critical: { label: 'Critical', border: 'border-l-kbc-red', bg: 'bg-red-50', badge: 'bg-kbc-red text-white', dot: 'bg-kbc-red' },
@@ -23,7 +24,8 @@ const audienceOptions = [
 const departmentOptions = deptsList.map((item) => ({ value: item, label: item }));
 
 export default function NewsPage() {
-  const { items, toggleAcknowledgement } = useNewsAcknowledgements();
+  const { items, loading, error, toggleAcknowledgement, addNews } = useNewsAcknowledgements();
+  const { canManageNews } = useAccessControl();
   const [priority, setPriority] = useState<string>('all');
   const [audience, setAudience] = useState<string>('all');
   const [dept, setDept] = useState<string>('All Departments');
@@ -45,11 +47,11 @@ export default function NewsPage() {
 
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans">
+    <div className="min-h-screen bg-gray-50 font-sans flex flex-col">
       <TopNav />
 
       {/* Add News Modal */}
-      {adminOpen && <AddNewsModal onClose={() => setAdminOpen(false)} />}
+      {canManageNews && adminOpen && <AddNewsModal onClose={() => setAdminOpen(false)} onArticleAdded={addNews} />}
       {selectedItem && (
         <NewsDetailModal
           item={selectedItem}
@@ -76,18 +78,25 @@ export default function NewsPage() {
                 <p className="text-gray-400 text-xs mt-0.5">All institutional communications, alerts, and updates for KBC staff.</p>
               </div>
             </div>
-            <button
-              onClick={() => setAdminOpen(true)}
-              className="flex items-center gap-2 bg-kbc-amber text-kbc-navy text-xs font-bold px-4 py-2.5 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
-            >
-              <i className="ri-add-circle-line text-base" />
-              Add News Article
-            </button>
+            {canManageNews && (
+              <button
+                onClick={() => setAdminOpen(true)}
+                className="flex items-center gap-2 bg-kbc-amber text-kbc-navy text-xs font-bold px-4 py-2.5 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
+              >
+                <i className="ri-add-circle-line text-base" />
+                Add News Article
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-8">
+      <main className="max-w-7xl mx-auto px-4 md:px-6 py-8 flex-1 w-full">
+        {error && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            {error}
+          </div>
+        )}
 
         {/* Alert Summary Strip */}
         <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -167,6 +176,11 @@ export default function NewsPage() {
           {/* List View */}
           {viewMode === 'list' && (
             <div className="flex flex-col gap-3">
+              {loading && (
+                <div className="rounded-xl border border-gray-100 bg-white px-4 py-8 text-center text-sm text-gray-500">
+                  Loading news from the database...
+                </div>
+              )}
               {filtered.map((item) => {
                 const cfg = priorityConfig[item.priority];
                 return (
@@ -258,6 +272,11 @@ export default function NewsPage() {
           {/* Grid View */}
           {viewMode === 'grid' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {loading && (
+                <div className="col-span-3 rounded-xl border border-gray-100 bg-white px-4 py-8 text-center text-sm text-gray-500">
+                  Loading news from the database...
+                </div>
+              )}
               {filtered.map((item) => {
                 const cfg = priorityConfig[item.priority];
                 return (

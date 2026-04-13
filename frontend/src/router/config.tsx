@@ -9,8 +9,9 @@ import DepartmentsPage from "../pages/departments/page";
 import DepartmentDetailPage from "../pages/departments/detail";
 import EventsPage from "../pages/events/page";
 import FeedbackPage from "../pages/feedback/page";
-import TrainingPlanPage from "../pages/training-plan/page";
 import ApprenticeshipTimeline from "../pages/apprenticeships-timeline/page";
+import LoginPage from "../pages/login/page";
+import MicrosoftPopupCallbackPage from "../pages/login/microsoft-popup";
 
 const routes: RouteObject[] = [
   {
@@ -50,8 +51,20 @@ const routes: RouteObject[] = [
     element: <FeedbackPage />,
   },
   {
+    path: "/login",
+    element: <LoginPage />,
+  },
+  {
+    path: "/login/microsoft-popup",
+    element: <MicrosoftPopupCallbackPage />,
+  },
+  {
+    path: "/employer_dashboard/*",
+    element: <NotFound />,
+  },
+  {
     path: "/training-plan",
-    element: <TrainingPlanPage />,
+    element: <ApprenticeshipTimeline />,
   },
   {
     path: "/apprenticeships-timeline",
