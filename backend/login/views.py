@@ -139,11 +139,10 @@ def login_view(request):
 		return HttpResponseBadRequest('identifier and password are required.')
 
 	user_model = get_user_model()
-	user = (
-		user_model.objects.using('login_db')
-		.filter(Q(username__iexact=identifier) | Q(email__iexact=identifier))
-		.first()
-	)
+	queryset = user_model.objects.using('login_db')
+	user = queryset.filter(email__iexact=identifier).first()
+	if user is None:
+		user = queryset.filter(username__iexact=identifier).first()
 
 	if not user or not check_password(password, user.password) or not user.is_active:
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)

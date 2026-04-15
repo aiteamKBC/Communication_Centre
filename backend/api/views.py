@@ -4,14 +4,14 @@ import os
 from datetime import date, datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from django.http import HttpResponseBadRequest, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import EventData, Feedback, News, TrainingPlan
+from .models import EventData, Feedback, News, TrainingPlan, TrainingPlanHoliday
 
 
 def serialize_event(event: EventData) -> dict:
@@ -178,6 +178,25 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 	}
 
 
+TRAINING_PLAN_HOLIDAY_COLORS = {
+	'bank-holiday': '#F0FFF4',
+	'term-break': '#E8F4FD',
+	'non-teaching': '#FFF0F0',
+	'holiday': '#FFFBEB',
+}
+
+
+def serialize_training_plan_holiday(item: TrainingPlanHoliday) -> dict:
+	return {
+		'id': str(item.id),
+		'label': item.label,
+		'startDate': item.start_date.isoformat(),
+		'endDate': item.end_date.isoformat(),
+		'type': item.type or 'holiday',
+		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
+	}
+
+
 FEEDBACK_METADATA_HEADER = '--- Submission metadata ---'
 
 
@@ -314,6 +333,55 @@ def training_plan(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
+@csrf_exempt
+def training_plan_holidays(request):
+	if request.method == 'GET':
+		records = TrainingPlanHoliday.objects.all().order_by('start_date', 'end_date', 'id')
+		return JsonResponse([serialize_training_plan_holiday(item) for item in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		items = payload.get('items') if isinstance(payload, dict) else None
+		if not isinstance(items, list):
+			return HttpResponseBadRequest('Payload must include an items array.')
+
+		TrainingPlanHoliday.objects.all().delete()
+		created = []
+		for row in items:
+			if not isinstance(row, dict):
+				continue
+
+			label = str(row.get('label', '')).strip()
+			start_date = parse_date(str(row.get('startDate', '')).strip())
+			end_date = parse_date(str(row.get('endDate', '')).strip())
+			holiday_type = str(row.get('type', 'holiday')).strip() or 'holiday'
+			color = str(row.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(holiday_type, '#FFFBEB')
+
+			if not label or start_date is None or end_date is None:
+				continue
+
+			if end_date < start_date:
+				continue
+
+			created.append(
+				TrainingPlanHoliday.objects.create(
+					label=label,
+					start_date=start_date,
+					end_date=end_date,
+					type=holiday_type,
+					color=color,
+				)
+			)
+
+		return JsonResponse({'saved': len(created)})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
 def _decode_http_error(error: HTTPError) -> dict:
 	try:
 		return json.loads(error.read().decode('utf-8'))
@@ -329,8 +397,12 @@ def _graph_json(method: str, url: str, *, token: str | None = None, payload: byt
 		req_headers.update(headers)
 
 	request = Request(url, data=payload, headers=req_headers, method=method)
+	# Ignore shell-level proxy variables for Microsoft Graph/Auth calls.
+	# In local environments these may be intentionally poisoned (e.g. 127.0.0.1:9),
+	# which breaks outbound OAuth/token requests for SharePoint document sync.
+	opener = build_opener(ProxyHandler({}))
 	try:
-		with urlopen(request, timeout=20) as response:
+		with opener.open(request, timeout=20) as response:
 			data = response.read().decode('utf-8')
 			return json.loads(data) if data else {}
 	except HTTPError as error:

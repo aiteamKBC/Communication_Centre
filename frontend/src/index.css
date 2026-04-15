@@ -4,8 +4,19 @@
 
 @layer components {
   .modal-backdrop {
-    @apply absolute inset-0 backdrop-blur-md;
-    background: rgba(2, 6, 23, 0.38);
+    @apply absolute inset-0 backdrop-blur-lg;
+    background: rgba(2, 6, 23, 0.46);
+  }
+}
+
+@layer utilities {
+  .scrollbar-hidden {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
   }
 }
 

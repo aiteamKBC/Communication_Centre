@@ -192,6 +192,7 @@ export default function ApprenticeshipTimeline() {
   const [addDropdownOpen, setAddDropdownOpen] = useState(false);
   const addDropdownRef = useRef<HTMLDivElement>(null);
   const skipPersistRef = useRef(true);
+  const skipHolidayPersistRef = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,6 +223,34 @@ export default function ApprenticeshipTimeline() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadTrainingPlanHolidays() {
+      try {
+        const response = await fetch('/api/training-plan-holidays/');
+        if (!response.ok) {
+          return;
+        }
+
+        const items = (await response.json()) as Holiday[];
+        if (!Array.isArray(items) || cancelled || items.length === 0) {
+          return;
+        }
+
+        skipHolidayPersistRef.current = true;
+        setHolidays(items);
+      } catch {
+        // Keep default in-memory holidays if loading fails.
+      }
+    }
+
+    void loadTrainingPlanHolidays();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (skipPersistRef.current) {
       skipPersistRef.current = false;
       return;
@@ -246,6 +275,27 @@ export default function ApprenticeshipTimeline() {
 
     return () => controller.abort();
   }, [groups]);
+
+  useEffect(() => {
+    if (skipHolidayPersistRef.current) {
+      skipHolidayPersistRef.current = false;
+      return;
+    }
+
+    const controller = new AbortController();
+    const payload = { items: holidays };
+
+    void fetch('/api/training-plan-holidays/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    }).catch(() => {
+      // Silent fail for now; UI keeps working with the last loaded holiday data.
+    });
+
+    return () => controller.abort();
+  }, [holidays]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -349,8 +399,8 @@ export default function ApprenticeshipTimeline() {
             <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-3">
+          <div className="flex items-start justify-between gap-4 flex-wrap xl:flex-nowrap">
+            <div className="flex items-center gap-3 min-w-0">
               <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
                 <i className="ri-time-line text-white text-base" />
               </div>
@@ -377,10 +427,65 @@ export default function ApprenticeshipTimeline() {
                 </span>
               ))}
             </div>
+
+            <div className="hidden xl:flex items-center gap-2 ml-auto">
+              {canManageCohorts && (
+                <button
+                  onClick={() => setShowHolidayMgr(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                  style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                  <i className="ri-calendar-event-line" />
+                  Holidays
+                </button>
+              )}
+
+              {canManageCohorts && (
+                <div className="relative" ref={addDropdownRef}>
+                  <button
+                    onClick={() => setAddDropdownOpen(v => !v)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                    style={{ background: '#1B2A4A' }}>
+                    <i className="ri-add-line" />
+                    Add Cohort
+                    {addDropdownOpen ? (
+                      <i className="ri-arrow-up-s-line ml-0.5" />
+                    ) : (
+                      <i className="ri-arrow-down-s-line ml-0.5" />
+                    )}
+                  </button>
+                  {addDropdownOpen && (
+                    <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                      <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                        Select Programme
+                      </p>
+                      {groups.map((g, gi) => (
+                        <button
+                          key={gi}
+                          onClick={() => {
+                            setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+                            setAddDropdownOpen(false);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                          <div>
+                            <p className="text-xs font-bold text-gray-800 leading-tight">
+                              {g.name.split('\n')[0]}
+                            </p>
+                            <p className="text-xs text-gray-400 leading-tight">
+                              {g.name.split('\n')[1] || ''} Â· {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                            </p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Action buttons */}
-          <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex flex-wrap gap-2 items-center xl:hidden">
             {canManageCohorts && (
               <button
                 onClick={() => setShowHolidayMgr(true)}

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 
 const actions = [
   {
-    label: 'Policies & Guides',
+    label: 'Policies',
     icon: 'ri-file-list-3-line',
     path: '/documents',
     bgColor: 'bg-kbc-navy',
@@ -10,7 +10,7 @@ const actions = [
     hoverColor: 'hover:bg-kbc-navy-light',
   },
   {
-    label: 'Report a Risk',
+    label: 'Risk Register',
     icon: 'ri-error-warning-line',
     path: '/risk-register',
     bgColor: 'bg-kbc-red',
@@ -18,7 +18,7 @@ const actions = [
     hoverColor: 'hover:opacity-90',
   },
   {
-    label: 'IT Help Desk',
+    label: 'Departments',
     icon: 'ri-computer-line',
     path: '/departments/it',
     bgColor: 'bg-kbc-navy-soft',
@@ -26,7 +26,7 @@ const actions = [
     hoverColor: 'hover:bg-kbc-navy-mid',
   },
   {
-    label: 'Project Hub',
+    label: 'Internal Dashboards',
     icon: 'ri-folder-chart-line',
     path: '/dashboard',
     bgColor: 'bg-kbc-amber',

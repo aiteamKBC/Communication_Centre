@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { ProgrammeGroup, CohortRow, ModuleBlock, MKey, WeekDayKey, Holiday } from '../types';
 import { MS } from '../data';
 import { formatDate } from '../utils';
+import DateField from './DateField';
 
 interface Props {
   mode: 'add' | 'edit';
@@ -258,8 +259,9 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
   const selectedGroup = groups[data.groupIdx];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}>
-      <div className="bg-white rounded-xl w-full mx-4 flex flex-col overflow-hidden" style={{ maxWidth: 720, maxHeight: '92vh' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="modal-backdrop" onClick={onClose} />
+      <div className="relative bg-white rounded-xl w-full flex flex-col overflow-hidden shadow-2xl" style={{ maxWidth: 720, maxHeight: '92vh' }}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
@@ -434,19 +436,23 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Start Date</label>
-                            <input type="date" value={blk.startDate}
-                              onChange={e => updateBlk(blk.id, 'startDate', e.target.value)}
-                              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                              style={{ borderColor: errors[`blk_start_${bi}`] ? '#EF4444' : '#E5E7EB' }} />
-                            {errors[`blk_start_${bi}`] && <p className="text-red-500 text-xs mt-1">{errors[`blk_start_${bi}`]}</p>}
+                            <DateField
+                              value={blk.startDate}
+                              onChange={value => updateBlk(blk.id, 'startDate', value)}
+                              placeholder="Choose start date"
+                              error={errors[`blk_start_${bi}`]}
+                              accentColor={modInfo.bg}
+                            />
                           </div>
                           <div>
                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">End Date</label>
-                            <input type="date" value={blk.endDate}
-                              onChange={e => updateBlk(blk.id, 'endDate', e.target.value)}
-                              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                              style={{ borderColor: errors[`blk_end_${bi}`] ? '#EF4444' : '#E5E7EB' }} />
-                            {errors[`blk_end_${bi}`] && <p className="text-red-500 text-xs mt-1">{errors[`blk_end_${bi}`]}</p>}
+                            <DateField
+                              value={blk.endDate}
+                              onChange={value => updateBlk(blk.id, 'endDate', value)}
+                              placeholder="Choose end date"
+                              error={errors[`blk_end_${bi}`]}
+                              accentColor={modInfo.bg}
+                            />
                           </div>
                         </div>
 

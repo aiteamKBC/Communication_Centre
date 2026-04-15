@@ -23,6 +23,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),
     path('api/auth/', include('login.urls')),
+    path('', include('api.urls')),
+    path('', include('login.urls')),
     path('login/microsoft-popup', microsoft_popup_bridge, name='ms-popup-bridge-no-slash'),
     path('login/microsoft-popup/', microsoft_popup_bridge, name='ms-popup-bridge'),
 ]

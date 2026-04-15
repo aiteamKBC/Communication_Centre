@@ -57,6 +57,20 @@ class TrainingPlan(models.Model):
 		managed = False
 
 
+class TrainingPlanHoliday(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	label = models.TextField(blank=True, default='')
+	start_date = models.DateField()
+	end_date = models.DateField()
+	type = models.CharField(max_length=50, blank=True, default='holiday')
+	color = models.CharField(max_length=32, blank=True, default='#FFFBEB')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'training_plan_holidays'
+
+
 class Feedback(models.Model):
 	id = models.BigAutoField(primary_key=True, db_column='Feedback ID')
 	username = models.TextField(db_column='Username', blank=True, default='')

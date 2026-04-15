@@ -47,8 +47,7 @@ export default function DashboardPage() {
               >
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div>
-                    <p className="text-sm uppercase tracking-[0.2em] text-kbc-amber font-semibold">External</p>
-                    <h2 className="mt-2 text-lg font-bold text-kbc-navy">{link.title}</h2>
+                    <h2 className="text-lg font-bold text-kbc-navy">{link.title}</h2>
                   </div>
                   <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-kbc-navy text-white">
                     <i className="ri-external-link-line text-lg" />

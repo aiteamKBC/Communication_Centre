@@ -9,7 +9,6 @@ function isAllowedMsMessageOrigin(origin: string): boolean {
     return true;
   }
 
-  // Accept localhost/127.0.0.1 as equivalent for local development.
   const swapped = window.location.origin.includes('localhost')
     ? window.location.origin.replace('localhost', '127.0.0.1')
     : window.location.origin.replace('127.0.0.1', 'localhost');

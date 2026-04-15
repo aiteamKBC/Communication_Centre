@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Holiday } from '../types';
 import { formatDate } from '../utils';
+import DateField from './DateField';
 
 interface Props {
   holidays: Holiday[];
@@ -75,8 +76,9 @@ export default function HolidayManager({ holidays, onUpdate, onClose }: Props) {
   const filtered = filter === 'all' ? list : list.filter(h => h.type === filter);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}>
-      <div className="bg-white rounded-xl w-full mx-4 flex flex-col overflow-hidden" style={{ maxWidth: 760, maxHeight: '90vh' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="modal-backdrop" onClick={onClose} />
+      <div className="relative bg-white rounded-xl w-full flex flex-col overflow-hidden shadow-2xl" style={{ maxWidth: 760, maxHeight: '90vh' }}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
@@ -96,7 +98,7 @@ export default function HolidayManager({ holidays, onUpdate, onClose }: Props) {
                 {editId ? 'Edit Period' : 'Add New Period'}
               </h3>
             </div>
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+            <div className="scrollbar-hidden flex-1 overflow-y-auto px-5 py-4 space-y-3">
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Name</label>
                 <input
@@ -132,26 +134,24 @@ export default function HolidayManager({ holidays, onUpdate, onClose }: Props) {
 
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Start Date</label>
-                <input
-                  type="date"
+                <DateField
                   value={form.startDate}
-                  onChange={e => setForm(p => ({ ...p, startDate: e.target.value }))}
-                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                  style={{ borderColor: errors.startDate ? '#EF4444' : '#D1D5DB' }}
+                  onChange={value => setForm(p => ({ ...p, startDate: value }))}
+                  placeholder="Choose start date"
+                  error={errors.startDate}
+                  accentColor={TYPE_OPTIONS.find(t => t.value === form.type)?.color || '#1B2A4A'}
                 />
-                {errors.startDate && <p className="text-red-500 text-xs mt-1">{errors.startDate}</p>}
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">End Date</label>
-                <input
-                  type="date"
+                <DateField
                   value={form.endDate}
-                  onChange={e => setForm(p => ({ ...p, endDate: e.target.value }))}
-                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                  style={{ borderColor: errors.endDate ? '#EF4444' : '#D1D5DB' }}
+                  onChange={value => setForm(p => ({ ...p, endDate: value }))}
+                  placeholder="Choose end date"
+                  error={errors.endDate}
+                  accentColor={TYPE_OPTIONS.find(t => t.value === form.type)?.color || '#1B2A4A'}
                 />
-                {errors.endDate && <p className="text-red-500 text-xs mt-1">{errors.endDate}</p>}
               </div>
             </div>
 
@@ -195,8 +195,19 @@ export default function HolidayManager({ holidays, onUpdate, onClose }: Props) {
               )}
               {filtered.map(h => {
                 const badge = TYPE_BADGE[h.type];
+                const isEditing = editId === h.id;
                 return (
-                  <div key={h.id} className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 bg-white hover:border-gray-300 transition-colors group">
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => handleEdit(h)}
+                    className="group flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-all"
+                    style={{
+                      borderColor: isEditing ? badge.color : '#E5E7EB',
+                      background: isEditing ? `${badge.bg}` : '#FFFFFF',
+                      boxShadow: isEditing ? `0 0 0 1px ${badge.color}20` : undefined,
+                    }}
+                  >
                     <div className="w-1 self-stretch rounded-full shrink-0" style={{ background: badge.color }} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -205,23 +216,41 @@ export default function HolidayManager({ holidays, onUpdate, onClose }: Props) {
                           style={{ background: badge.bg, color: badge.color }}>
                           {badge.label}
                         </span>
+                        {isEditing && (
+                          <span
+                            className="px-2 py-0.5 rounded-full text-[11px] font-bold shrink-0"
+                            style={{ background: '#1B2A4A', color: '#fff' }}
+                          >
+                            Editing
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-gray-400 mt-0.5">
                         {formatDate(h.startDate)}
                         {h.startDate !== h.endDate && <> &rarr; {formatDate(h.endDate)}</>}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => handleEdit(h)}
+                    <div className={`flex items-center gap-1 transition-opacity ${isEditing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleEdit(h);
+                        }}
                         className="w-7 h-7 flex items-center justify-center rounded text-gray-400 hover:text-kbc-navy hover:bg-gray-100 cursor-pointer transition-colors">
                         <i className="ri-edit-line text-sm" />
                       </button>
-                      <button onClick={() => handleDelete(h.id)}
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleDelete(h.id);
+                        }}
                         className="w-7 h-7 flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-colors">
                         <i className="ri-delete-bin-line text-sm" />
                       </button>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
