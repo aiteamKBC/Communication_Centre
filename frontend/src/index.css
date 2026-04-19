@@ -7,6 +7,91 @@
     @apply absolute inset-0 backdrop-blur-lg;
     background: rgba(2, 6, 23, 0.46);
   }
+
+  .kbc-swal-popup {
+    @apply rounded-2xl border border-slate-200 shadow-2xl;
+    width: min(32rem, calc(100vw - 2rem));
+    padding: 1.75rem 1.5rem 1.5rem;
+  }
+
+  .kbc-swal-popup-success {
+    width: min(26rem, calc(100vw - 2rem));
+    padding: 1.5rem 1.25rem 1.25rem;
+  }
+
+  .kbc-swal-title {
+    @apply text-slate-800 font-extrabold;
+    font-size: 1.75rem;
+    line-height: 1.1;
+  }
+
+  .kbc-swal-title-success {
+    font-size: 1rem;
+    line-height: 1.35;
+    text-align: center;
+  }
+
+  .kbc-swal-html {
+    @apply text-slate-600;
+    font-size: 1rem;
+    line-height: 1.5;
+    margin-top: 0.5rem;
+  }
+
+  .kbc-swal-html-success {
+    font-size: 0.92rem;
+    line-height: 1.45;
+    text-align: center;
+  }
+
+  .kbc-swal-confirm,
+  .kbc-swal-cancel {
+    @apply inline-flex items-center justify-center rounded-xl font-bold transition-all;
+    min-width: 9.5rem;
+    min-height: 2.75rem;
+    padding: 0.75rem 1.125rem;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+  }
+
+  .kbc-swal-confirm {
+    background: #dc2626;
+    color: #fff;
+    box-shadow: 0 12px 24px rgba(220, 38, 38, 0.18);
+  }
+
+  .kbc-swal-confirm:hover {
+    background: #b91c1c;
+  }
+
+  .kbc-swal-confirm-success {
+    min-width: 7.5rem;
+    min-height: 2.5rem;
+    padding: 0.65rem 1rem;
+    background: #1b7f5a;
+    color: #fff;
+    box-shadow: 0 12px 24px rgba(27, 127, 90, 0.18);
+  }
+
+  .kbc-swal-confirm-success:hover {
+    background: #166649;
+  }
+
+  .kbc-swal-cancel {
+    background: #f8fafc;
+    color: #334155;
+    border-color: #cbd5e1;
+  }
+
+  .kbc-swal-cancel:hover {
+    background: #e2e8f0;
+  }
+
+  .swal2-actions {
+    @apply flex items-center justify-center gap-3 flex-wrap;
+    width: 100%;
+    margin-top: 1.5rem;
+  }
 }
 
 @layer utilities {

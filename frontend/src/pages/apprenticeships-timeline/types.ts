@@ -50,7 +50,7 @@ export interface Holiday {
   label: string;
   startDate: string;   // ISO
   endDate: string;     // ISO
-  type: 'bank-holiday' | 'term-break' | 'non-teaching' | 'holiday';
+  type: string;
   color: string;
 }
 

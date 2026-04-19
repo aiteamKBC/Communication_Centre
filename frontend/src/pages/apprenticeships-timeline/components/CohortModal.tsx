@@ -3,6 +3,8 @@ import type { ProgrammeGroup, CohortRow, ModuleBlock, MKey, WeekDayKey, Holiday 
 import { MS } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
+import SelectField from './SelectField';
+import ModernTimeField from './ModernTimeField';
 
 interface Props {
   mode: 'add' | 'edit';
@@ -10,7 +12,7 @@ interface Props {
   holidays: Holiday[];
   initialGroupIdx?: number;
   initialRow?: CohortRow;
-  onSave: (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => void;
+  onSave: (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => boolean | Promise<boolean>;
   onClose: () => void;
 }
 
@@ -63,6 +65,28 @@ const inferWeekDayFromIsoDate = (isoDate: string): WeekDayKey => {
   }
   return JS_DAY_TO_KEY[d.getDay()] || 'monday';
 };
+
+const MODULE_GROUP_HINTS: Record<MKey, string> = {
+  pmp: 'Project controls and planning fundamentals',
+  pmiSP: 'Specialist practice and delivery methods',
+  evm: 'Earned value and portfolio visibility',
+  risk: 'Risk frameworks and mitigation planning',
+  ppc: 'PMO operations and programme controls',
+  impact: 'Campaign impact and planning foundations',
+  social: 'Social channels, publishing, and reach',
+  tech: 'Marketing technology and tooling',
+  strat: 'Strategic marketing direction and positioning',
+  comm: 'Commercial communication and growth',
+  cust: 'Customer journey and audience insight',
+  ai: 'AI-enabled marketing workflows',
+};
+
+const MODULE_OPTIONS = (Object.keys(MS) as MKey[]).map(key => ({
+  value: key,
+  label: MS[key].lbl,
+  description: MODULE_GROUP_HINTS[key],
+  color: MS[key].bg,
+}));
 
 function isIsoDate(value: string): boolean {
   if (!value) {
@@ -126,6 +150,7 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [expandedBlk, setExpandedBlk] = useState<string | null>(data.blks[0]?.id || null);
+  const [isSaving, setIsSaving] = useState(false);
 
   const rangedBlocks = data.blks.filter(b => isIsoDate(b.startDate) && isIsoDate(b.endDate) && b.startDate <= b.endDate);
   const hasDateRange = rangedBlocks.length > 0;
@@ -139,12 +164,6 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
   const holidaysInRange = hasDateRange
     ? holidays.filter(h => isIsoDate(h.startDate) && isIsoDate(h.endDate) && overlapsRange(rangeStart, rangeEnd, h.startDate, h.endDate))
     : [];
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   useEffect(() => {
     if (!hasDateRange) {
@@ -231,8 +250,8 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
     return Object.keys(errs).length === 0;
   };
 
-  const handleSave = () => {
-    if (!validate()) return;
+  const handleSave = async () => {
+    if (!validate() || isSaving) return;
     const row: CohortRow = {
       id: initialRow?.id || `row-${Date.now()}`,
       label:   data.label.trim(),
@@ -253,14 +272,19 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
         notes: b.notes.trim() || undefined,
       } as ModuleBlock)),
     };
-    onSave(data.groupIdx, row, mode === 'edit' ? initialGroupIdx : undefined);
+    setIsSaving(true);
+    try {
+      await onSave(data.groupIdx, row, mode === 'edit' ? initialGroupIdx : undefined);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const selectedGroup = groups[data.groupIdx];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="modal-backdrop" onClick={onClose} />
+      <div className="modal-backdrop" />
       <div className="relative bg-white rounded-xl w-full flex flex-col overflow-hidden shadow-2xl" style={{ maxWidth: 720, maxHeight: '92vh' }}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ background: '#1B2A4A' }}>
@@ -272,7 +296,7 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
               {mode === 'add' ? 'Define cohort details, tutor assignments, and module schedule' : 'Update cohort details, tutors, dates, and modules'}
             </p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={onClose} disabled={isSaving} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <i className="ri-close-line text-lg" />
           </button>
         </div>
@@ -416,12 +440,13 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
                         {/* Module select */}
                         <div>
                           <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module</label>
-                          <select value={blk.mod} onChange={e => updateBlk(blk.id, 'mod', e.target.value as MKey)}
-                            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white cursor-pointer focus:outline-none">
-                            {(Object.keys(MS) as MKey[]).map(k => (
-                              <option key={k} value={k}>{MS[k].lbl}</option>
-                            ))}
-                          </select>
+                          <SelectField
+                            value={blk.mod}
+                            onChange={value => updateBlk(blk.id, 'mod', value as MKey)}
+                            options={MODULE_OPTIONS}
+                            placeholder="Choose module"
+                            accentColor={modInfo.bg}
+                          />
                         </div>
 
                         {/* Tutor */}
@@ -497,23 +522,21 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Session Start Time</label>
-                            <input
-                              type="time"
+                            <ModernTimeField
                               value={blk.sessionStartTime}
-                              onChange={e => updateBlk(blk.id, 'sessionStartTime', e.target.value)}
-                              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                              style={{ borderColor: errors[`blk_time_start_${bi}`] ? '#EF4444' : '#E5E7EB' }}
+                              onChange={nextValue => updateBlk(blk.id, 'sessionStartTime', nextValue)}
+                              error={errors[`blk_time_start_${bi}`]}
+                              accentColor={modInfo.bg}
                             />
                             {errors[`blk_time_start_${bi}`] && <p className="text-red-500 text-xs mt-1">{errors[`blk_time_start_${bi}`]}</p>}
                           </div>
                           <div>
                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Session End Time</label>
-                            <input
-                              type="time"
+                            <ModernTimeField
                               value={blk.sessionEndTime}
-                              onChange={e => updateBlk(blk.id, 'sessionEndTime', e.target.value)}
-                              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                              style={{ borderColor: errors[`blk_time_end_${bi}`] ? '#EF4444' : '#E5E7EB' }}
+                              onChange={nextValue => updateBlk(blk.id, 'sessionEndTime', nextValue)}
+                              error={errors[`blk_time_end_${bi}`]}
+                              accentColor={modInfo.bg}
                             />
                             {errors[`blk_time_end_${bi}`] && <p className="text-red-500 text-xs mt-1">{errors[`blk_time_end_${bi}`]}</p>}
                           </div>
@@ -545,13 +568,15 @@ export default function CohortModal({ mode, groups, holidays, initialGroupIdx = 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50">
           <button onClick={onClose}
-            className="px-5 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 cursor-pointer transition-all">
+            disabled={isSaving}
+            className="px-5 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed">
             Cancel
           </button>
-          <button onClick={handleSave}
-            className="px-6 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all"
+          <button onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="px-6 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ background: selectedGroup?.color || '#1B2A4A' }}>
-            {mode === 'add' ? 'Add Cohort' : 'Save Changes'}
+            {isSaving ? 'Saving...' : mode === 'add' ? 'Add Cohort' : 'Save Changes'}
           </button>
         </div>
       </div>

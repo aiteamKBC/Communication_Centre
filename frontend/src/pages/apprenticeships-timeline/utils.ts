@@ -5,6 +5,13 @@ export const TIMELINE_START = new Date('2024-08-01');
 export const TIMELINE_END   = new Date('2027-07-31');
 export const TOTAL_DAYS     = Math.ceil((TIMELINE_END.getTime() - TIMELINE_START.getTime()) / 86400000);
 
+export function toLocalIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function dateToOffset(dateStr: string): number {
   const d = new Date(dateStr);
   return Math.max(0, Math.ceil((d.getTime() - TIMELINE_START.getTime()) / 86400000));
@@ -112,7 +119,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
       const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-      cols.push({ key: `y${y}`, label: String(y), startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: days * 0.8 });
+      cols.push({ key: `y${y}`, label: String(y), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 0.8 });
     }
   } else if (zoom === 'intake') {
     // Intake = ~4 months, 3 intakes per year

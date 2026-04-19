@@ -3,6 +3,7 @@ import Footer from '../../components/feature/Footer';
 import HeroSection from './components/HeroSection';
 import QuickActions from './components/QuickActions';
 import NewsFeed from './components/NewsFeed';
+import TodaysSessions from './components/TodaysSessions';
 import PrioritySnapshot from './components/PrioritySnapshot';
 import RiskSummary from './components/RiskSummary';
 import EventsWidget from './components/EventsWidget';
@@ -33,6 +34,7 @@ export default function Home() {
             {/* Left column — Latest News (3/12) */}
             <div className="lg:col-span-3 flex flex-col gap-4">
               <NewsFeed />
+              <TodaysSessions />
             </div>
 
             {/* Middle column — Priority + Risk (6/12) */}

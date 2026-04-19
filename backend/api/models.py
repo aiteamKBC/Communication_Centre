@@ -71,6 +71,37 @@ class TrainingPlanHoliday(models.Model):
 		db_table = 'training_plan_holidays'
 
 
+class UrgentNotice(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	title = models.TextField(blank=True, default='')
+	body = models.TextField(blank=True, default='')
+	is_active = models.BooleanField(default=False)
+	publication_date = models.DateField(null=True, blank=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'urgent_notices'
+
+
+class LeadershipMessage(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	card_title = models.TextField(blank=True, default='')
+	card_teaser = models.TextField(blank=True, default='')
+	author_name = models.CharField(max_length=150, blank=True, default='')
+	author_role = models.CharField(max_length=200, blank=True, default='')
+	is_active = models.BooleanField(default=False)
+	publication_date = models.DateField(null=True, blank=True)
+	body = models.TextField(blank=True, default='')
+	cover_image_url = models.TextField(blank=True, default='')
+	profile_image_url = models.TextField(blank=True, default='')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'leadership_messages'
+
+
 class Feedback(models.Model):
 	id = models.BigAutoField(primary_key=True, db_column='Feedback ID')
 	username = models.TextField(db_column='Username', blank=True, default='')

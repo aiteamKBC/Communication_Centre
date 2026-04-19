@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey } from './types';
-import { INITIAL_GROUPS, DEFAULT_HOLIDAYS, MS } from './data';
+import { INITIAL_GROUPS, MS } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
 import useAccessControl from '@/hooks/useAccessControl';
+import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 
 type ModalState =
   | { open: false }
@@ -184,15 +185,16 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
 export default function ApprenticeshipTimeline() {
   const { canManageCohorts } = useAccessControl();
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(emptyGroupsTemplate());
-  const [holidays, setHolidays] = useState<Holiday[]>(DEFAULT_HOLIDAYS);
+  const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [modal,    setModal]    = useState<ModalState>({ open: false });
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
   const [addDropdownOpen, setAddDropdownOpen] = useState(false);
   const addDropdownRef = useRef<HTMLDivElement>(null);
+  const [trainingPlanSaveState, setTrainingPlanSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [trainingPlanSaveMessage, setTrainingPlanSaveMessage] = useState('Waiting for changes');
   const skipPersistRef = useRef(true);
-  const skipHolidayPersistRef = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,7 +211,6 @@ export default function ApprenticeshipTimeline() {
           return;
         }
 
-        skipPersistRef.current = true;
         setGroups(buildGroupsFromTrainingRows(items));
       } catch {
         // Keep initial in-memory data if loading fails.
@@ -233,14 +234,13 @@ export default function ApprenticeshipTimeline() {
         }
 
         const items = (await response.json()) as Holiday[];
-        if (!Array.isArray(items) || cancelled || items.length === 0) {
+        if (!Array.isArray(items) || cancelled) {
           return;
         }
 
-        skipHolidayPersistRef.current = true;
         setHolidays(items);
       } catch {
-        // Keep default in-memory holidays if loading fails.
+        // Keep the current in-memory holidays if loading fails.
       }
     }
 
@@ -251,65 +251,143 @@ export default function ApprenticeshipTimeline() {
   }, []);
 
   useEffect(() => {
-    if (skipPersistRef.current) {
-      skipPersistRef.current = false;
-      return;
-    }
+    return;
 
     const controller = new AbortController();
     const payload = { items: flattenGroupsForApi(groups) };
 
     // Do not POST an empty items array — that would wipe the database on the server.
-    if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    if (!Array.isArray(payload.items)) {
       return () => controller.abort();
     }
 
-    void fetch('/api/training-plan/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    }).catch(() => {
-      // Silent fail for now; UI keeps working offline.
-    });
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving cohorts...');
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/training-plan/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          const errorText = (await response.text()).trim();
+          throw new Error(errorText || `Request failed with status ${response.status}`);
+        }
+
+        setTrainingPlanSaveState('saved');
+        setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : 'Unknown save error';
+        setTrainingPlanSaveState('error');
+        setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
+
+        void kbcSwal.fire({
+          title: 'Cohort Not Saved',
+          html: `The latest cohort change is visible on screen, but it did not reach the database.<br /><br /><strong>Details:</strong> ${message}`,
+          icon: 'error',
+          confirmButtonText: 'OK',
+        });
+      }
+    })();
 
     return () => controller.abort();
   }, [groups]);
 
-  useEffect(() => {
-    if (skipHolidayPersistRef.current) {
-      skipHolidayPersistRef.current = false;
-      return;
+  const persistTrainingPlan = async (nextGroups: ProgrammeGroup[]) => {
+    const payload = { items: flattenGroupsForApi(nextGroups) };
+
+    if (!Array.isArray(payload.items)) {
+      return false;
     }
 
-    const controller = new AbortController();
-    const payload = { items: holidays };
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving cohorts...');
 
-    void fetch('/api/training-plan-holidays/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    }).catch(() => {
-      // Silent fail for now; UI keeps working with the last loaded holiday data.
-    });
+    try {
+      const response = await fetch('/api/training-plan/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-    return () => controller.abort();
-  }, [holidays]);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (addDropdownRef.current && !addDropdownRef.current.contains(e.target as Node)) {
-        setAddDropdownOpen(false);
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
       }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
 
-  const handleSave = (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      await kbcSwal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: 'Cohort saved successfully',
+        showConfirmButton: false,
+        timer: 2200,
+        timerProgressBar: true,
+      });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
+
+      await kbcSwal.fire({
+        title: 'Cohort Not Saved',
+        html: `The latest cohort change was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+
+      return false;
+    }
+  };
+
+  const persistHolidays = async (nextHolidays: Holiday[]) => {
+    const payload = { items: nextHolidays };
+
+    try {
+      const response = await fetch('/api/training-plan-holidays/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
+
+      setHolidays(nextHolidays);
+      await kbcSuccessSwal.fire({
+        icon: 'success',
+        title: 'Holiday periods saved successfully',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      await kbcSwal.fire({
+        title: 'Holiday Periods Not Saved',
+        html: `The latest holiday changes were not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
+  const handleSave = async (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
     if (!canManageCohorts) {
-      return;
+      return false;
     }
 
     // Build next state synchronously so we can persist immediately and ensure UI updates.
@@ -323,20 +401,32 @@ export default function ApprenticeshipTimeline() {
       next[groupIdx].rows.push(row);
     }
 
+    const saved = await persistTrainingPlan(next);
+    if (!saved) {
+      return false;
+    }
+
     setGroups(next);
     setModal({ open: false });
 
-    // Persistence is handled by the groups effect to avoid duplicate concurrent writes.
+    return true;
   };
 
-  const handleDeleteRow = (groupIdx: number, rowIdx: number) => {
+  const handleDeleteRow = async (groupIdx: number, rowIdx: number) => {
     if (!canManageCohorts) {
       return;
     }
 
-    setGroups(prev => prev.map((g, gi) =>
-      gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : g
-    ));
+    const next = groups.map((g, gi) =>
+      gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
+    );
+
+    const saved = await persistTrainingPlan(next);
+    if (!saved) {
+      return;
+    }
+
+    setGroups(next);
   };
 
   const handleEditRow = (groupIdx: number, rowIdx: number) => {
@@ -429,7 +519,7 @@ export default function ApprenticeshipTimeline() {
             </div>
 
             <div className="hidden xl:flex items-center gap-2 ml-auto">
-              {canManageCohorts && (
+              {false && canManageCohorts && (
                 <button
                   onClick={() => setShowHolidayMgr(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
@@ -439,7 +529,7 @@ export default function ApprenticeshipTimeline() {
                 </button>
               )}
 
-              {canManageCohorts && (
+              {false && canManageCohorts && (
                 <div className="relative" ref={addDropdownRef}>
                   <button
                     onClick={() => setAddDropdownOpen(v => !v)}
@@ -496,7 +586,7 @@ export default function ApprenticeshipTimeline() {
               </button>
             )}
 
-            {canManageCohorts && (
+            {false && canManageCohorts && (
               <div className="relative" ref={addDropdownRef}>
                 <button
                   onClick={() => setAddDropdownOpen(v => !v)}
@@ -543,7 +633,6 @@ export default function ApprenticeshipTimeline() {
       </div>
 
       <main className="max-w-screen-xl mx-auto px-4 md:px-6 py-5 space-y-4">
-
         {/* Today's Sessions */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
@@ -593,6 +682,7 @@ export default function ApprenticeshipTimeline() {
               holidays={holidays}
               zoom={zoom}
               onZoomChange={setZoom}
+              onManageHolidays={() => setShowHolidayMgr(true)}
               onAddRow={(gi) => {
                 if (!canManageCohorts) {
                   return;
@@ -630,7 +720,7 @@ export default function ApprenticeshipTimeline() {
       {canManageCohorts && showHolidayMgr && (
         <HolidayManager
           holidays={holidays}
-          onUpdate={setHolidays}
+          onSave={persistHolidays}
           onClose={() => setShowHolidayMgr(false)}
         />
       )}

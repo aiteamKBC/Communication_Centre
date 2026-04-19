@@ -1,17 +1,20 @@
 import base64
 import json
 import os
+import uuid
 from datetime import date, datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
+from django.conf import settings
+from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import EventData, Feedback, News, TrainingPlan, TrainingPlanHoliday
+from .models import EventData, Feedback, LeadershipMessage, News, TrainingPlan, TrainingPlanHoliday, UrgentNotice
 
 
 def serialize_event(event: EventData) -> dict:
@@ -93,6 +96,40 @@ def serialize_news(item: News) -> dict:
 	}
 
 
+def serialize_urgent_notice(item: UrgentNotice) -> dict:
+	return {
+		'id': str(item.id),
+		'title': item.title,
+		'body': item.body or '',
+		'isActive': bool(item.is_active),
+		'date': item.publication_date.isoformat() if item.publication_date else '',
+	}
+
+
+def serialize_leadership_message(item: LeadershipMessage) -> dict:
+	return {
+		'id': str(item.id),
+		'cardTitle': item.card_title or '',
+		'authorName': item.author_name or '',
+		'authorRole': item.author_role or '',
+		'isActive': bool(item.is_active),
+		'date': item.publication_date.isoformat() if item.publication_date else '',
+		'body': item.body or '',
+		'coverImageUrl': item.cover_image_url or '',
+		'profileImageUrl': item.profile_image_url or '',
+	}
+
+
+def _save_uploaded_image(uploaded_file, folder: str) -> str:
+	original_name = str(getattr(uploaded_file, 'name', '') or 'upload')
+	_, extension = os.path.splitext(original_name)
+	safe_extension = extension.lower()[:10] if extension else '.jpg'
+	filename = f'{uuid.uuid4().hex}{safe_extension}'
+	relative_path = os.path.join('uploads', folder, filename).replace('\\', '/')
+	stored_path = default_storage.save(relative_path, uploaded_file)
+	return f'{settings.MEDIA_URL}{stored_path}'.replace('//', '/')
+
+
 @csrf_exempt
 def news(request):
 	if request.method == 'GET':
@@ -132,6 +169,232 @@ def news(request):
 		return JsonResponse(serialize_news(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def urgent_notice(request):
+	if request.method == 'GET':
+		if request.GET.get('list') == '1':
+			records = UrgentNotice.objects.order_by('created_at', 'id')
+			return JsonResponse([serialize_urgent_notice(item) for item in records], safe=False)
+
+		record = (
+			UrgentNotice.objects
+			.order_by('-is_active', '-created_at', '-id')
+			.first()
+		)
+		if not record:
+			return JsonResponse({}, status=404)
+		return JsonResponse(serialize_urgent_notice(record))
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		title = str(payload.get('title', '')).strip()
+		body = str(payload.get('body', '')).strip()
+		publication_date_raw = str(payload.get('publicationDate', '')).strip()
+
+		if not title or not body:
+			return HttpResponseBadRequest('Both title and body are required.')
+
+		publication_date = parse_date(publication_date_raw) if publication_date_raw else timezone.now().date()
+		if publication_date_raw and publication_date is None:
+			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
+
+		should_activate = not UrgentNotice.objects.filter(is_active=True).exists()
+
+		record = UrgentNotice.objects.create(
+			title=title,
+			body=body,
+			is_active=should_activate,
+			publication_date=publication_date,
+		)
+
+		return JsonResponse(serialize_urgent_notice(record), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def urgent_notice_detail(request, notice_id: int):
+	try:
+		record = UrgentNotice.objects.get(pk=notice_id)
+	except UrgentNotice.DoesNotExist:
+		return JsonResponse({'detail': 'Urgent notice not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_urgent_notice(record))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		title = str(payload.get('title', record.title)).strip()
+		body = str(payload.get('body', record.body)).strip()
+		publication_date_raw = str(payload.get('publicationDate', record.publication_date.isoformat() if record.publication_date else '')).strip()
+		is_active = bool(payload.get('isActive', record.is_active))
+
+		if not title or not body:
+			return HttpResponseBadRequest('Both title and body are required.')
+
+		publication_date = parse_date(publication_date_raw) if publication_date_raw else None
+		if publication_date_raw and publication_date is None:
+			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
+
+		record.title = title
+		record.body = body
+		if is_active:
+			UrgentNotice.objects.exclude(pk=record.pk).update(is_active=False)
+		record.is_active = is_active
+		record.publication_date = publication_date
+		record.save()
+		return JsonResponse(serialize_urgent_notice(record))
+
+	if request.method == 'DELETE':
+		was_active = record.is_active
+		record.delete()
+		if was_active:
+			next_notice = UrgentNotice.objects.order_by('-created_at', '-id').first()
+			if next_notice:
+				UrgentNotice.objects.exclude(pk=next_notice.pk).update(is_active=False)
+				next_notice.is_active = True
+				next_notice.save(update_fields=['is_active'])
+		return JsonResponse({'deleted': True})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def leadership_message(request):
+	if request.method == 'GET':
+		if request.GET.get('list') == '1':
+			records = LeadershipMessage.objects.order_by('-is_active', '-created_at', '-id')
+			return JsonResponse([serialize_leadership_message(item) for item in records], safe=False)
+
+		record = (
+			LeadershipMessage.objects
+			.order_by('-is_active', '-created_at', '-id')
+			.first()
+		)
+		if not record:
+			return JsonResponse({}, status=404)
+		return JsonResponse(serialize_leadership_message(record))
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		card_title = str(payload.get('cardTitle', '')).strip()
+		body = str(payload.get('body', '')).strip()
+		publication_date_raw = str(payload.get('publicationDate', '')).strip()
+		cover_image_url = str(payload.get('coverImageUrl', '')).strip()
+		profile_image_url = str(payload.get('profileImageUrl', '')).strip()
+
+		if not card_title or not body:
+			return HttpResponseBadRequest('Both cardTitle and body are required.')
+
+		if not cover_image_url or not profile_image_url:
+			return HttpResponseBadRequest('Both coverImageUrl and profileImageUrl are required.')
+
+		publication_date = parse_date(publication_date_raw) if publication_date_raw else timezone.now().date()
+		if publication_date_raw and publication_date is None:
+			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
+
+		LeadershipMessage.objects.update(is_active=False)
+		record = LeadershipMessage.objects.create(
+			card_title=card_title,
+			card_teaser='Click to read the full message',
+			author_name=str(payload.get('authorName', '')).strip() or 'Prof. David Kingsley',
+			author_role=str(payload.get('authorRole', '')).strip() or 'Principal & CEO, Kent Business College',
+			is_active=True,
+			publication_date=publication_date,
+			body=body,
+			cover_image_url=cover_image_url,
+			profile_image_url=profile_image_url,
+		)
+
+		return JsonResponse(serialize_leadership_message(record), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def leadership_message_detail(request, message_id: int):
+	try:
+		record = LeadershipMessage.objects.get(pk=message_id)
+	except LeadershipMessage.DoesNotExist:
+		return JsonResponse({'detail': 'Leadership message not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_leadership_message(record))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		card_title = str(payload.get('cardTitle', record.card_title)).strip()
+		body = str(payload.get('body', record.body)).strip()
+		publication_date_raw = str(payload.get('publicationDate', record.publication_date.isoformat() if record.publication_date else '')).strip()
+		cover_image_url = str(payload.get('coverImageUrl', record.cover_image_url)).strip()
+		profile_image_url = str(payload.get('profileImageUrl', record.profile_image_url)).strip()
+		is_active = bool(payload.get('isActive', record.is_active))
+
+		if not card_title or not body:
+			return HttpResponseBadRequest('Both cardTitle and body are required.')
+
+		if not cover_image_url or not profile_image_url:
+			return HttpResponseBadRequest('Both coverImageUrl and profileImageUrl are required.')
+
+		publication_date = parse_date(publication_date_raw) if publication_date_raw else None
+		if publication_date_raw and publication_date is None:
+			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
+
+		record.card_title = card_title
+		record.card_teaser = 'Click to read the full message'
+		record.author_name = str(payload.get('authorName', record.author_name)).strip() or 'Prof. David Kingsley'
+		record.author_role = str(payload.get('authorRole', record.author_role)).strip() or 'Principal & CEO, Kent Business College'
+		if is_active:
+			LeadershipMessage.objects.exclude(pk=record.pk).update(is_active=False)
+		record.is_active = is_active
+		record.publication_date = publication_date
+		record.body = body
+		record.cover_image_url = cover_image_url
+		record.profile_image_url = profile_image_url
+		record.save()
+		return JsonResponse(serialize_leadership_message(record))
+
+	if request.method == 'DELETE':
+		record.delete()
+		return JsonResponse({'deleted': True})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def upload_image(request):
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	uploaded_file = request.FILES.get('file')
+	folder = str(request.POST.get('folder', 'general')).strip().lower() or 'general'
+
+	if uploaded_file is None:
+		return HttpResponseBadRequest('A file field is required.')
+
+	if not str(getattr(uploaded_file, 'content_type', '')).startswith('image/'):
+		return HttpResponseBadRequest('Only image uploads are allowed.')
+
+	file_url = _save_uploaded_image(uploaded_file, folder)
+	return JsonResponse({'url': file_url}, status=201)
 
 
 @csrf_exempt
@@ -185,6 +448,9 @@ TRAINING_PLAN_HOLIDAY_COLORS = {
 	'holiday': '#FFFBEB',
 }
 
+TRAINING_PLAN_HOLIDAY_TYPE_MARKER = '__holiday_type__:'
+TRAINING_PLAN_HOLIDAY_TYPE_DATE = date(2099, 1, 1)
+
 
 def serialize_training_plan_holiday(item: TrainingPlanHoliday) -> dict:
 	return {
@@ -193,6 +459,16 @@ def serialize_training_plan_holiday(item: TrainingPlanHoliday) -> dict:
 		'startDate': item.start_date.isoformat(),
 		'endDate': item.end_date.isoformat(),
 		'type': item.type or 'holiday',
+		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
+	}
+
+
+def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
+	label = item.label[len(TRAINING_PLAN_HOLIDAY_TYPE_MARKER):].strip() if item.label.startswith(TRAINING_PLAN_HOLIDAY_TYPE_MARKER) else (item.type or 'holiday')
+	return {
+		'id': str(item.id),
+		'value': item.type or 'holiday',
+		'label': label,
 		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
 	}
 
@@ -286,6 +562,7 @@ def feedback(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
+@csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
 		records = TrainingPlan.objects.all().order_by('id')
@@ -302,9 +579,6 @@ def training_plan(request):
 			return HttpResponseBadRequest('Payload must include an items array.')
 
 		# If client posted an empty list, do not clear the table — ignore to avoid accidental wipe.
-		if len(items) == 0:
-			return JsonResponse({'saved': 0})
-
 		# Replace table content with the latest timeline state from the frontend.
 		TrainingPlan.objects.all().delete()
 		created = []
@@ -336,7 +610,7 @@ def training_plan(request):
 @csrf_exempt
 def training_plan_holidays(request):
 	if request.method == 'GET':
-		records = TrainingPlanHoliday.objects.all().order_by('start_date', 'end_date', 'id')
+		records = TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('start_date', 'end_date', 'id')
 		return JsonResponse([serialize_training_plan_holiday(item) for item in records], safe=False)
 
 	if request.method == 'POST':
@@ -349,7 +623,7 @@ def training_plan_holidays(request):
 		if not isinstance(items, list):
 			return HttpResponseBadRequest('Payload must include an items array.')
 
-		TrainingPlanHoliday.objects.all().delete()
+		TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
 		created = []
 		for row in items:
 			if not isinstance(row, dict):
@@ -378,6 +652,42 @@ def training_plan_holidays(request):
 			)
 
 		return JsonResponse({'saved': len(created)})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_holiday_types(request):
+	if request.method == 'GET':
+		records = TrainingPlanHoliday.objects.filter(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('type', 'id')
+		return JsonResponse([serialize_training_plan_holiday_type(item) for item in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+		type_value = str(payload.get('value', '')).strip()
+		label = str(payload.get('label', '')).strip()
+		color = str(payload.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(type_value, '#FFFBEB')
+
+		if not type_value or not label:
+			return HttpResponseBadRequest('Both value and label are required.')
+
+		record, _ = TrainingPlanHoliday.objects.update_or_create(
+			type=type_value,
+			label=f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}',
+			defaults={
+				'start_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
+				'end_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
+				'color': color,
+			},
+		)
+		return JsonResponse(serialize_training_plan_holiday_type(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

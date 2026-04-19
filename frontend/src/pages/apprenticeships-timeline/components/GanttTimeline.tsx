@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock } from '../types';
 import { MS } from '../data';
+import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
   formatDate, formatDateShort, durationWeeks, getHolidayOverlaps,
-  ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel,
+  ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
 const LEFT_W = 220;
@@ -25,6 +26,7 @@ interface Props {
   holidays: Holiday[];
   zoom: ZoomLevel;
   onZoomChange: (z: ZoomLevel) => void;
+  onManageHolidays?: () => void;
   onAddRow: (groupIdx: number) => void;
   onEditRow: (groupIdx: number, rowIdx: number) => void;
   onDeleteRow: (groupIdx: number, rowIdx: number) => void;
@@ -33,7 +35,8 @@ interface Props {
 
 // ── View window per zoom level ────────────────────────────────────────────
 function getDefaultViewWindow(zoom: ZoomLevel): { start: Date; end: Date } {
-  const now = new Date('2026-04-02');
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
   if (zoom === 'year')   return { start: new Date('2024-01-01'), end: new Date('2027-12-31') };
   if (zoom === 'intake') return { start: new Date('2024-08-01'), end: new Date('2027-07-31') };
   if (zoom === 'month')  return { start: new Date('2024-08-01'), end: new Date('2027-07-31') };
@@ -138,9 +141,8 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
 }
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, onAddRow, onEditRow, onDeleteRow, canManageCohorts = true }: Props) {
+export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, onManageHolidays, onAddRow, onEditRow, onDeleteRow, canManageCohorts = true }: Props) {
   const [tooltip, setTooltip]           = useState<TooltipData | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<{ gi: number; ri: number } | null>(null);
   const [viewWindow, setViewWindow]     = useState(() => getDefaultViewWindow(zoom));
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -153,8 +155,25 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
   const cols = useMemo(() => generateColumns(zoom, viewWindow.start, viewWindow.end), [zoom, viewWindow]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
 
-  const nowDate = '2026-04-02';
+  const nowDate = toLocalIsoDate(new Date());
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
+
+  const handleDeleteRequest = useCallback(async (groupIdx: number, rowIdx: number, cohortLabel: string) => {
+    const result = await kbcSwal.fire({
+      title: 'Delete Cohort?',
+      html: `The cohort <strong>${cohortLabel}</strong> will be removed from the training plan and database.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete Cohort',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (result.isConfirmed) {
+      onDeleteRow(groupIdx, rowIdx);
+    }
+  }, [onDeleteRow]);
 
   // ── Holiday overlay positions ─────────────────────────────────────────
   const holidayPositions = useMemo(() =>
@@ -380,6 +399,16 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
           </button>
         </div>
 
+        {canManageCohorts && onManageHolidays && (
+          <button
+            onClick={onManageHolidays}
+            className="ml-2 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+            style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+            <i className="ri-calendar-event-line" />
+            Holidays
+          </button>
+        )}
+
         {/* View window nav for week/day */}
         {(zoom === 'week' || zoom === 'day') && (
           <div className="flex items-center gap-1 ml-auto">
@@ -479,8 +508,6 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
 
               {/* ── Cohort rows ────────────────────────────────────────── */}
               {grp.rows.map((row, ri) => {
-                const isDeleting = deleteConfirm?.gi === gi && deleteConfirm?.ri === ri;
-
                 return (
                   <div key={row.id} className="flex relative"
                     style={{ height: ROW_H, borderBottom: `1px solid ${grp.color}18`, background: grp.rowBg }}>
@@ -526,7 +553,7 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
                             <i className="ri-edit-line" style={{ fontSize: '9px' }} />
                           </button>
                           <button
-                            onClick={() => setDeleteConfirm({ gi, ri })}
+                            onClick={() => { void handleDeleteRequest(gi, ri, row.label); }}
                             title="Delete cohort"
                             className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
                             style={{ background: '#F3F4F6', color: '#9CA3AF' }}>
@@ -623,27 +650,6 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
                           </div>
                         );
                       })}
-
-                      {/* Delete confirm overlay */}
-                      {isDeleting && (
-                        <div className="absolute inset-0 z-40 flex items-center justify-end pr-4"
-                          style={{ background: 'rgba(249,250,251,0.97)' }}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-600 font-medium text-xs">
-                              Remove <strong className="text-kbc-navy">{row.label}</strong>?
-                            </span>
-                            <button onClick={() => { onDeleteRow(gi, ri); setDeleteConfirm(null); }}
-                              className="px-3 py-1 rounded text-xs font-bold text-white cursor-pointer"
-                              style={{ background: '#EF4444' }}>
-                              Remove
-                            </button>
-                            <button onClick={() => setDeleteConfirm(null)}
-                              className="px-3 py-1 rounded text-xs font-semibold text-gray-500 bg-gray-200 hover:bg-gray-300 cursor-pointer">
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
                 );

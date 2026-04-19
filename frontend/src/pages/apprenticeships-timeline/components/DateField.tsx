@@ -67,6 +67,7 @@ export default function DateField({
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const hasValue = Boolean(value);
   const selectedDate = useMemo(() => parseIsoDate(value), [value]);
   const today = useMemo(() => {
@@ -93,7 +94,10 @@ export default function DateField({
     }
 
     const handleClickOutside = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const clickedTrigger = wrapperRef.current?.contains(target);
+      const clickedPopover = popoverRef.current?.contains(target);
+      if (!clickedTrigger && !clickedPopover) {
         setOpen(false);
       }
     };
@@ -226,6 +230,7 @@ export default function DateField({
 
       {open && createPortal(
         <div
+          ref={popoverRef}
           className="fixed z-[120]"
           style={{
             top: popoverStyle.top,

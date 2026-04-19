@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
+import ModernSelect from '../../components/feature/ModernSelect';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,16 @@ type PolicyDocument = {
   size: number;
   extension: string;
   webUrl: string;
+};
+
+type FolderTheme = {
+  accent: string;
+  soft: string;
+  text: string;
+  border: string;
+  dot: string;
+  badge: string;
+  selectButton: string;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -144,17 +155,101 @@ const categoryConfig: Record<DocCategory, { dot: string; badge: string }> = {
   Confidential: { dot: 'bg-red-500',     badge: 'bg-red-50 text-red-700 border border-red-200' },
 };
 
-const accentByCategory: Record<DocCategory, string> = {
-  Public:       'bg-emerald-400',
-  Internal:     'bg-blue-400',
-  Confidential: 'bg-red-400',
+const CATEGORIES: Array<DocCategory | 'All'> = ['All', 'Public', 'Internal', 'Confidential'];
+
+const filterCardStyles: Record<DocCategory | 'All', { active: string; idle: string; dot: string }> = {
+  All: {
+    active: 'border-kbc-navy bg-kbc-navy text-white shadow-sm shadow-kbc-navy/20',
+    idle: 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100',
+    dot: 'bg-kbc-navy',
+  },
+  Public: {
+    active: 'border-emerald-300 bg-emerald-500 text-white shadow-sm shadow-emerald-500/20',
+    idle: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+    dot: 'bg-emerald-500',
+  },
+  Internal: {
+    active: 'border-blue-300 bg-blue-500 text-white shadow-sm shadow-blue-500/20',
+    idle: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100',
+    dot: 'bg-blue-500',
+  },
+  Confidential: {
+    active: 'border-red-300 bg-red-500 text-white shadow-sm shadow-red-500/20',
+    idle: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100',
+    dot: 'bg-red-500',
+  },
 };
 
-const CATEGORIES: Array<DocCategory | 'All'> = ['All', 'Public', 'Internal', 'Confidential'];
+const folderThemePalette: FolderTheme[] = [
+  {
+    accent: 'bg-sky-500',
+    soft: 'bg-sky-50',
+    text: 'text-sky-700',
+    border: 'border-sky-200',
+    dot: 'bg-sky-500',
+    badge: 'bg-sky-100 text-sky-700',
+    selectButton: 'border-sky-200 bg-sky-50/70 text-sky-900',
+  },
+  {
+    accent: 'bg-emerald-500',
+    soft: 'bg-emerald-50',
+    text: 'text-emerald-700',
+    border: 'border-emerald-200',
+    dot: 'bg-emerald-500',
+    badge: 'bg-emerald-100 text-emerald-700',
+    selectButton: 'border-emerald-200 bg-emerald-50/70 text-emerald-900',
+  },
+  {
+    accent: 'bg-amber-500',
+    soft: 'bg-amber-50',
+    text: 'text-amber-700',
+    border: 'border-amber-200',
+    dot: 'bg-amber-500',
+    badge: 'bg-amber-100 text-amber-700',
+    selectButton: 'border-amber-200 bg-amber-50/70 text-amber-900',
+  },
+  {
+    accent: 'bg-fuchsia-500',
+    soft: 'bg-fuchsia-50',
+    text: 'text-fuchsia-700',
+    border: 'border-fuchsia-200',
+    dot: 'bg-fuchsia-500',
+    badge: 'bg-fuchsia-100 text-fuchsia-700',
+    selectButton: 'border-fuchsia-200 bg-fuchsia-50/70 text-fuchsia-900',
+  },
+  {
+    accent: 'bg-cyan-500',
+    soft: 'bg-cyan-50',
+    text: 'text-cyan-700',
+    border: 'border-cyan-200',
+    dot: 'bg-cyan-500',
+    badge: 'bg-cyan-100 text-cyan-700',
+    selectButton: 'border-cyan-200 bg-cyan-50/70 text-cyan-900',
+  },
+  {
+    accent: 'bg-rose-500',
+    soft: 'bg-rose-50',
+    text: 'text-rose-700',
+    border: 'border-rose-200',
+    dot: 'bg-rose-500',
+    badge: 'bg-rose-100 text-rose-700',
+    selectButton: 'border-rose-200 bg-rose-50/70 text-rose-900',
+  },
+];
+
+const defaultFolderTheme: FolderTheme = {
+  accent: 'bg-kbc-navy',
+  soft: 'bg-slate-50',
+  text: 'text-slate-700',
+  border: 'border-slate-200',
+  dot: 'bg-kbc-navy',
+  badge: 'bg-slate-100 text-slate-700',
+  selectButton: 'border-slate-200 bg-white text-slate-900',
+};
 
 // ─── Document Card ────────────────────────────────────────────────────────────
 
-function PolicyCard({ doc }: { doc: PolicyDocument }) {
+function PolicyCard({ doc, folderTheme }: { doc: PolicyDocument; folderTheme: FolderTheme }) {
   const cat = categoryConfig[doc.category];
 
   return (
@@ -165,7 +260,7 @@ function PolicyCard({ doc }: { doc: PolicyDocument }) {
       className="flex flex-col rounded-xl border border-gray-200 bg-white hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 overflow-hidden cursor-pointer"
     >
       {/* Colour accent strip */}
-      <div className={`h-1 w-full ${accentByCategory[doc.category]}`} />
+      <div className={`h-1 w-full ${folderTheme.accent}`} />
 
       <div className="flex flex-col flex-1 p-4 gap-3">
         {/* Folder type + Category row */}
@@ -174,7 +269,8 @@ function PolicyCard({ doc }: { doc: PolicyDocument }) {
             <i className="ri-file-text-line text-white text-sm" />
           </div>
           <div className="flex flex-col">
-            <span className="text-[10px] font-bold tracking-widest text-gray-400 uppercase leading-tight truncate max-w-[110px]">
+            <span className={`inline-flex w-fit max-w-[150px] items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase leading-tight ${folderTheme.soft} ${folderTheme.text}`}>
+              <span className={`h-2 w-2 rounded-full ${folderTheme.dot}`} />
               {doc.topFolder}
             </span>
             <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full w-fit mt-0.5 ${cat.badge}`}>
@@ -304,6 +400,43 @@ export default function DocumentsPage() {
   }, [allDocs, activeFolder, activeCategory, search]);
 
   const tabs: string[] = ['All', ...topFolders];
+  const folderThemes = useMemo<Record<string, FolderTheme>>(
+    () =>
+      Object.fromEntries(
+        tabs.map((tab, index) => [
+          tab,
+          tab === 'All' ? defaultFolderTheme : folderThemePalette[index % folderThemePalette.length],
+        ]),
+      ),
+    [tabs],
+  );
+  const folderOptions = useMemo(
+    () =>
+      tabs.map(tab => {
+        const isAll = tab === 'All';
+        const count = folderCounts[tab];
+        return {
+          value: tab,
+          label:
+            count !== undefined && count > 0
+              ? `${isAll ? 'All Documents' : tab} (${count})`
+              : isAll
+                ? 'All Documents'
+                : tab,
+        };
+      }),
+    [folderCounts, tabs],
+  );
+  const activeFolderTheme = folderThemes[activeFolder] ?? defaultFolderTheme;
+  const categoryCounts = useMemo(
+    () => ({
+      All: allDocs.length,
+      Public: allDocs.filter(doc => doc.category === 'Public').length,
+      Internal: allDocs.filter(doc => doc.category === 'Internal').length,
+      Confidential: allDocs.filter(doc => doc.category === 'Confidential').length,
+    }),
+    [allDocs],
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans flex flex-col">
@@ -332,97 +465,83 @@ export default function DocumentsPage() {
       </div>
 
       {/* Tab Bar — dynamic from SharePoint top-level folders */}
-      <div className="bg-white border-b border-gray-200 px-4 md:px-6">
-        <div className="max-w-7xl mx-auto flex items-center gap-0.5 overflow-x-auto scrollbar-hide">
-          {loading && tabs.length === 1 ? (
-            /* Skeleton tabs while first load */
-            <div className="flex items-center gap-3 py-3 px-1">
-              {[120, 90, 80, 100, 75].map(w => (
-                <div key={w} className="h-4 rounded bg-gray-100 animate-pulse" style={{ width: w }} />
-              ))}
-            </div>
-          ) : (
-            tabs.map(tab => {
-              const isAll = tab === 'All';
-              const isActive = activeFolder === tab;
-              const count = folderCounts[tab];
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setActiveFolder(tab)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
-                    isActive
-                      ? 'border-kbc-navy text-kbc-navy'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <i className={`${isAll ? 'ri-file-list-3-line' : 'ri-folder-2-line'} text-base`} />
-                  {isAll ? 'All Documents' : tab}
-                  {count !== undefined && count > 0 && (
-                    <span className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold min-w-[18px] ${
-                      isActive ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-600'
-                    }`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
-      </div>
-
       <main className="max-w-7xl mx-auto w-full flex-1 px-4 md:px-6 py-6">
         {/* Filter Bar */}
         <div className="bg-white rounded-xl border border-gray-100 px-4 py-3 mb-5 flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 min-w-[220px] flex-1">
+          {loading && tabs.length === 1 ? (
+            <div className="h-11 min-w-[260px] flex-1 rounded-xl bg-gray-100 animate-pulse md:max-w-sm" />
+          ) : (
+            <div className="flex min-w-[260px] flex-1 items-center md:max-w-sm">
+              <ModernSelect
+                value={activeFolder}
+                options={folderOptions}
+                onChange={setActiveFolder}
+                className="min-w-[220px] flex-1"
+                buttonClassName={`min-h-11 text-sm ${activeFolderTheme.selectButton}`}
+                menuClassName="w-full"
+                renderValue={option => {
+                  const theme = folderThemes[option?.value ?? 'All'] ?? defaultFolderTheme;
+                  return (
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${theme.dot}`} />
+                      <span className="truncate">{option?.label ?? 'All Documents'}</span>
+                    </span>
+                  );
+                }}
+                renderOption={(option, selected) => {
+                  const theme = folderThemes[option.value] ?? defaultFolderTheme;
+                  return (
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${selected ? 'bg-white/90' : theme.dot}`} />
+                      <span className="truncate">{option.label}</span>
+                    </span>
+                  );
+                }}
+              />
+            </div>
+          )}
+
+          <div className="w-px h-5 bg-gray-200 hidden xl:block" />
+
+          <div className="flex min-w-[220px] flex-1 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 shadow-sm shadow-slate-200/40 transition-colors focus-within:border-kbc-navy/30 focus-within:bg-white">
             <i className="ri-search-line text-gray-400 text-sm shrink-0" />
             <input
               type="text"
               placeholder="Search documents..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="text-sm text-gray-700 outline-none placeholder-gray-400 w-full"
+              className="w-full bg-transparent text-sm text-gray-700 outline-none placeholder-gray-400"
             />
           </div>
 
           <div className="w-px h-5 bg-gray-200 hidden sm:block" />
 
-          <div className="flex items-center gap-1">
-            {CATEGORIES.map(cat => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setActiveCategory(cat)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  activeCategory === cat
-                    ? 'bg-kbc-navy text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            {CATEGORIES.map(cat => {
+              const isActive = activeCategory === cat;
+              const styles = filterCardStyles[cat];
+
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setActiveCategory(cat)}
+                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${
+                    isActive ? styles.active : styles.idle
+                  }`}
+                >
+                  <span className={`h-2.5 w-2.5 rounded-full ${isActive ? 'bg-white/90' : styles.dot}`} />
+                  <span>{cat}</span>
+                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-none ${
+                    isActive ? 'bg-white/15 text-white' : 'bg-white/80 text-current'
+                  }`}>
+                    {categoryCounts[cat]}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
-          <div className="w-px h-5 bg-gray-200 hidden sm:block" />
-
-          <div className="flex items-center gap-3 ml-auto">
-            {!loading && (
-              <span className="text-xs text-gray-500 whitespace-nowrap">
-                {filteredDocs.length} document{filteredDocs.length !== 1 ? 's' : ''}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => void loadDocuments(false)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-kbc-navy hover:bg-gray-50"
-            >
-              <i className={`ri-refresh-line text-sm ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
         </div>
 
         {/* Content */}
@@ -448,12 +567,8 @@ export default function DocumentsPage() {
           </div>
         ) : (
           <>
-            {data?.source?.siteName && (
+            {data?.source && (
               <div className="flex items-center gap-2 mb-4 flex-wrap">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-kbc-navy/10 text-kbc-navy px-2.5 py-1 text-xs font-semibold">
-                  <i className="ri-link-m text-sm" />
-                  {data.source.siteName}
-                </span>
                 {data.source.folderWebUrl && (
                   <a
                     href={data.source.folderWebUrl}
@@ -464,15 +579,16 @@ export default function DocumentsPage() {
                     Open in SharePoint →
                   </a>
                 )}
-                <span className="ml-auto text-xs text-gray-400">
-                  Updated {formatShortDate(data.fetchedAt)}
-                </span>
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredDocs.map(doc => (
-                <PolicyCard key={doc.id} doc={doc} />
+                <PolicyCard
+                  key={doc.id}
+                  doc={doc}
+                  folderTheme={folderThemes[doc.topFolder] ?? defaultFolderTheme}
+                />
               ))}
             </div>
           </>

@@ -48,16 +48,16 @@ export default function EventsPage() {
           <div className="flex items-center gap-2 text-gray-400 text-xs mb-2">
             <Link to="/" className="hover:text-kbc-navy cursor-pointer">Home</Link>
             <span>/</span>
-            <span className="text-kbc-navy font-medium">Events &amp; Deadlines</span>
+            <span className="text-kbc-navy font-medium">Events</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-kbc-navy rounded flex items-center justify-center shrink-0">
               <i className="ri-calendar-event-line text-white text-base" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-kbc-navy">Events &amp; Deadlines</h1>
+              <h1 className="text-lg font-bold text-kbc-navy">Events</h1>
               <p className="text-gray-400 text-xs mt-0.5">
-                All upcoming institutional events, training sessions, meetings, and key deadlines.
+                All upcoming institutional events, training sessions, and meetings.
               </p>
             </div>
           </div>

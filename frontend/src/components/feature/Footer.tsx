@@ -16,7 +16,7 @@ const footerLinks = [
     links: [
       { label: 'Policies & Guides', path: '/documents' },
       { label: 'Training Plan', path: '/training-plan' },
-      { label: 'Events & Deadlines', path: '/events' },
+      { label: 'Events', path: '/events' },
       { label: 'Project Hub', path: '/dashboard' },
       { label: 'IT Help', path: '/departments/it' },
     ],

@@ -12,6 +12,8 @@ import FeedbackPage from "../pages/feedback/page";
 import ApprenticeshipTimeline from "../pages/apprenticeships-timeline/page";
 import LoginPage from "../pages/login/page";
 import MicrosoftPopupCallbackPage from "../pages/login/microsoft-popup";
+import UrgentNoticePage from "../pages/urgent-notice/page";
+import LeadershipMessagePage from "../pages/leadership-message/page";
 
 const routes: RouteObject[] = [
   {
@@ -65,6 +67,14 @@ const routes: RouteObject[] = [
   {
     path: "/training-plan",
     element: <ApprenticeshipTimeline />,
+  },
+  {
+    path: "/urgent-notice/new",
+    element: <UrgentNoticePage />,
+  },
+  {
+    path: "/leadership-message/new",
+    element: <LeadershipMessagePage />,
   },
   {
     path: "/apprenticeships-timeline",

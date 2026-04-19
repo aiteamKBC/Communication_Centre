@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { RefObject } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import ModalPortal from './ModalPortal';
 
 export type ModernSelectOption = {
@@ -18,6 +18,8 @@ interface ModernSelectProps {
   inlineMenu?: boolean;
   menuMinWidth?: number;
   boundaryRef?: RefObject<HTMLElement | null>;
+  renderValue?: (option: ModernSelectOption | undefined) => ReactNode;
+  renderOption?: (option: ModernSelectOption, selected: boolean) => ReactNode;
 }
 
 export default function ModernSelect({
@@ -31,6 +33,8 @@ export default function ModernSelect({
   inlineMenu = false,
   menuMinWidth = 0,
   boundaryRef,
+  renderValue,
+  renderOption,
 }: ModernSelectProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -134,6 +138,7 @@ export default function ModernSelect({
   }, [boundaryRef, inlineMenu, menuMinWidth, open]);
 
   const selectedOption = options.find(option => option.value === value);
+  const selectedValueContent = renderValue?.(selectedOption) ?? selectedOption?.label ?? placeholder;
   const toggleOpen = () => {
     setOpen(current => {
       const next = !current;
@@ -159,7 +164,7 @@ export default function ModernSelect({
         aria-expanded={open}
       >
         <span className={`min-w-0 flex-1 truncate text-sm font-medium ${selectedOption ? 'text-slate-700' : 'text-slate-400'}`}>
-          {selectedOption?.label ?? placeholder}
+          {selectedValueContent}
         </span>
         <span className={`flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-transform ${open ? 'rotate-180 bg-kbc-navy/5 text-kbc-navy' : ''}`}>
           <i className="ri-arrow-down-s-line text-lg" />
@@ -195,7 +200,9 @@ export default function ModernSelect({
                   }`}>
                     <i className="ri-check-line" />
                   </span>
-                  <span className="truncate text-sm font-medium">{option.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {renderOption ? renderOption(option, selected) : option.label}
+                  </span>
                 </button>
               );
             })}
@@ -242,7 +249,9 @@ export default function ModernSelect({
                     }`}>
                       <i className="ri-check-line" />
                     </span>
-                    <span className="truncate text-sm font-medium">{option.label}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {renderOption ? renderOption(option, selected) : option.label}
+                    </span>
                   </button>
                 );
               })}
