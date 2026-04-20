@@ -16,9 +16,10 @@ backend/db.sqlite3
 
 # Secrets
 backend/.env
+backend/.env.local
 backend/login/.env.login
+backend/login/.env.login.local
 
 # Logs and OS files
 *.log
 .DS_Store
-

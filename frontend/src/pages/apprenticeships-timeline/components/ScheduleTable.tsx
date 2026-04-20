@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import type { ProgrammeGroup, WeekDayKey } from '../types';
-import { MS } from '../data';
+import { getModuleMeta } from '../data';
 
 interface SessionCell {
   trainer: string;
@@ -96,8 +96,8 @@ function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
     .flatMap(group =>
       group.rows.flatMap(row =>
         row.blks.map((blk, idx) => {
-          const moduleName = MS[blk.mod]?.lbl || blk.mod;
-          const nextModule = row.blks[idx + 1] ? (MS[row.blks[idx + 1].mod]?.lbl || row.blks[idx + 1].mod) : 'EPA';
+          const moduleName = getModuleMeta(blk.mod).lbl;
+          const nextModule = row.blks[idx + 1] ? getModuleMeta(row.blks[idx + 1].mod).lbl : 'EPA';
           const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
           const trainer = blk.tutor?.trim() || 'TBD';
           const startTime = blk.sessionStartTime || '09:00';

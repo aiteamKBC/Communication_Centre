@@ -1,4 +1,4 @@
-import type { ModuleMeta, MKey, ProgrammeGroup, Holiday } from './types';
+import type { ModuleMeta, MKey, ModuleValue, ProgrammeGroup, Holiday } from './types';
 
 // ── Module colour registry ────────────────────────────────────────────────
 export const MS: Record<MKey, ModuleMeta> = {
@@ -15,6 +15,24 @@ export const MS: Record<MKey, ModuleMeta> = {
   cust:   { lbl: 'Customer Journey',    bg: '#A07800', tx: '#fff' },
   ai:     { lbl: 'AI Marketing',        bg: '#D4A900', tx: '#1B2A4A' },
 };
+
+const DEFAULT_MODULE_META: ModuleMeta = {
+  lbl: '',
+  bg: '#CBD5E1',
+  tx: '#1F2937',
+};
+
+export function getModuleMeta(moduleValue: ModuleValue): ModuleMeta {
+  if (moduleValue in MS) {
+    return MS[moduleValue as MKey];
+  }
+
+  const trimmedValue = typeof moduleValue === 'string' ? moduleValue.trim() : '';
+  return {
+    ...DEFAULT_MODULE_META,
+    lbl: trimmedValue || 'Untitled Module',
+  };
+}
 
 // ── Default holidays ──────────────────────────────────────────────────────
 export const DEFAULT_HOLIDAYS: Holiday[] = [

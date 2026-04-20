@@ -1,3 +1,8 @@
+$Local = $false
+if ($args -contains "-Local" -or $args -contains "-local") {
+    $Local = $true
+}
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -17,6 +22,12 @@ if ($existingConnection) {
         Write-Output "Backend is already listening on 127.0.0.1:8000 with PID $($existingProcess.Id)."
         exit 0
     }
+}
+
+if ($Local) {
+    $env:DJANGO_ENV = "local"
+} else {
+    Remove-Item Env:DJANGO_ENV -ErrorAction SilentlyContinue
 }
 
 $arguments = @(
@@ -42,3 +53,8 @@ if (-not $listeningConnection) {
 }
 
 Write-Output "Backend started on 127.0.0.1:8000 with PID $($process.Id)."
+if ($Local) {
+    Write-Output "Backend environment: local (.env.local / optional .env.login.local)."
+} else {
+    Write-Output "Backend environment: default (.env / .env.login)."
+}

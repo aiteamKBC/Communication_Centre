@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import SafeImage from '../../../components/feature/SafeImage';
 import { newsItems } from '../../../mocks/news';
 
 const priorityConfig = {
@@ -35,11 +36,12 @@ export default function LatestNewsSection() {
             >
               {/* Image */}
               {item.image && (
-                <div className="w-full h-40 overflow-hidden">
-                  <img
+                <div className="w-full h-40 overflow-hidden bg-slate-100">
+                  <SafeImage
                     src={item.image}
                     alt={item.title}
                     className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
+                    fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
                   />
                 </div>
               )}

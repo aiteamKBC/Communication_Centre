@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
+import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import { useNewsAcknowledgements } from './useNewsAcknowledgements';
@@ -76,8 +77,13 @@ export default function NewsDetailPage() {
       <main className="flex-1 max-w-5xl mx-auto w-full px-4 md:px-6 py-8">
         <article className="bg-white rounded-2xl border border-gray-100 overflow-hidden shadow-sm">
           {article.image && (
-            <div className="w-full h-64 sm:h-80 overflow-hidden">
-              <img src={article.image} alt={article.title} className="w-full h-full object-cover object-top" />
+            <div className="w-full h-64 sm:h-80 overflow-hidden bg-slate-100">
+              <SafeImage
+                src={article.image}
+                alt={article.title}
+                className="w-full h-full object-cover object-top"
+                fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
+              />
             </div>
           )}
 

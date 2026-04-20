@@ -49,8 +49,19 @@ def parse_database_url(database_url: str) -> dict:
     }
 
 
-load_env_file(BASE_DIR / '.env')
-load_env_file(BASE_DIR / 'login' / '.env.login')
+DJANGO_ENV = os.getenv('DJANGO_ENV', '').strip().lower()
+IS_LOCAL_ENV = DJANGO_ENV == 'local'
+
+if IS_LOCAL_ENV:
+    load_env_file(BASE_DIR / '.env.local')
+    login_env_local = BASE_DIR / 'login' / '.env.login.local'
+    if login_env_local.exists():
+        load_env_file(login_env_local)
+    else:
+        load_env_file(BASE_DIR / 'login' / '.env.login')
+else:
+    load_env_file(BASE_DIR / '.env')
+    load_env_file(BASE_DIR / 'login' / '.env.login')
 
 
 # Quick-start development settings - unsuitable for production

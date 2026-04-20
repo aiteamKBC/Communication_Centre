@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
+import SafeImage from '../../../components/feature/SafeImage';
 
 type UrgentNoticeState = {
   id?: string;
@@ -168,15 +169,12 @@ export default function HeroSection() {
               }
             }}
           >
-            {leadershipMessage?.coverImageUrl ? (
-              <img
-                src={leadershipMessage.coverImageUrl}
-                alt="Message from Principal"
-                className="absolute inset-0 w-full h-full object-contain bg-slate-100 group-hover:scale-105 transition-transform duration-500"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-[linear-gradient(135deg,#1e3a8a_0%,#0f172a_55%,#1e293b_100%)]" />
-            )}
+            <SafeImage
+              src={leadershipMessage?.coverImageUrl}
+              alt="Message from Principal"
+              className="absolute inset-0 w-full h-full object-contain bg-slate-100 group-hover:scale-105 transition-transform duration-500"
+              fallback={<div className="absolute inset-0 bg-[linear-gradient(135deg,#1e3a8a_0%,#0f172a_55%,#1e293b_100%)]" aria-hidden="true" />}
+            />
             <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-black/20" />
             <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
               <p className="text-white/80 text-xs font-medium mb-1 uppercase tracking-wide">Message from the Principal</p>
@@ -276,17 +274,16 @@ export default function HeroSection() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start gap-4 mb-5">
-              {leadershipMessage.profileImageUrl ? (
-                <img
-                  src={leadershipMessage.profileImageUrl}
-                  alt="Principal"
-                  className="w-16 h-16 rounded-full object-cover object-top border-2 border-kbc-navy shrink-0"
-                />
-              ) : (
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 border-kbc-navy bg-slate-100 text-kbc-navy">
-                  <i className="ri-user-3-line text-2xl" />
-                </div>
-              )}
+              <SafeImage
+                src={leadershipMessage.profileImageUrl}
+                alt="Principal"
+                className="w-16 h-16 rounded-full object-cover object-top border-2 border-kbc-navy shrink-0"
+                fallback={(
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 border-kbc-navy bg-slate-100 text-kbc-navy" aria-hidden="true">
+                    <i className="ri-user-3-line text-2xl" />
+                  </div>
+                )}
+              />
               <div className="flex-1">
                 <h3 className="font-bold text-kbc-navy text-base">{leadershipMessage.authorName}</h3>
                 <p className="text-gray-500 text-xs">{leadershipMessage.authorRole}</p>

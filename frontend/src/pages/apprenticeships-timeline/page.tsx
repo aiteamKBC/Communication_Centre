@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey } from './types';
-import { INITIAL_GROUPS, MS } from './data';
+import { INITIAL_GROUPS, MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
@@ -138,7 +138,7 @@ function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[
       group.rows.push(cohort);
     }
 
-    const modKey = moduleKeyByLabel[(item.moduleName || '').toLowerCase()] || 'pmp';
+    const modKey = moduleKeyByLabel[(item.moduleName || '').toLowerCase()] || item.moduleName || 'Untitled Module';
     const sessions = Math.max(1, Number.parseInt(item.sessionsNumber || '1', 10) || 1);
     const parsedNotes = splitPersistedNotes(item.notes || '');
     if (parsedNotes.holidayIds.length && (!cohort.holidayIds || cohort.holidayIds.length === 0)) {
@@ -168,7 +168,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         cohortName: row.label,
         program: toProgrammeLabel(group),
         startingDateLabel: row.dateLbl,
-        moduleName: MS[block.mod]?.lbl || block.mod,
+        moduleName: getModuleMeta(block.mod).lbl,
         tutorName: block.tutor,
         startDate: block.startDate,
         endDate: block.endDate,
@@ -461,7 +461,7 @@ export default function ApprenticeshipTimeline() {
           sessions.push({
             cohortName: r.label,
             program: toProgrammeLabel(g),
-            moduleName: MS[b.mod]?.lbl || b.mod,
+            moduleName: getModuleMeta(b.mod).lbl,
             tutor: b.tutor || '',
             startTime: b.sessionStartTime,
             endTime: b.sessionEndTime,

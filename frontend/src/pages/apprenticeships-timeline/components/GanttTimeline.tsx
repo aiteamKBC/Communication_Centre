@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock } from '../types';
-import { MS } from '../data';
+import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
@@ -53,7 +53,7 @@ function getDefaultViewWindow(zoom: ZoomLevel): { start: Date; end: Date } {
 
 // ── Tooltip ───────────────────────────────────────────────────────────────
 function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
-  const mod = MS[data.blk.mod];
+  const mod = getModuleMeta(data.blk.mod);
   const weeks = durationWeeks(data.blk.startDate, data.blk.endDate);
   const hasHolidays = data.holidays.length > 0;
 
@@ -598,7 +598,7 @@ export default function GanttTimeline({ groups, holidays, zoom, onZoomChange, on
                       {row.blks.map(blk => {
                         const pos = getBlockPosition(blk.startDate, blk.endDate, cols);
                         if (!pos) return null;
-                        const mod = MS[blk.mod];
+                        const mod = getModuleMeta(blk.mod);
                         const overlaps = getHolidayOverlaps(blk, holidays);
                         const hasOverlap = overlaps.length > 0;
 

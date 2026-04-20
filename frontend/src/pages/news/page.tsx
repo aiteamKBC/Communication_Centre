@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import ModernSelect from '../../components/feature/ModernSelect';
@@ -191,11 +192,12 @@ export default function NewsPage() {
                     <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                     <div className="flex items-start gap-0">
                       {item.image && (
-                        <div className="w-28 sm:w-36 h-full min-h-[90px] overflow-hidden shrink-0">
-                          <img
+                        <div className="w-28 sm:w-36 h-full min-h-[90px] overflow-hidden shrink-0 bg-slate-100">
+                          <SafeImage
                             src={item.image}
                             alt={item.title}
                             className="w-full h-full object-cover object-top transition-transform duration-500 group-hover:scale-105"
+                            fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
                           />
                         </div>
                       )}
@@ -283,8 +285,13 @@ export default function NewsPage() {
                   <article key={item.id} className="group relative overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]">
                     <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                     {item.image && (
-                      <div className="w-full h-40 overflow-hidden">
-                        <img src={item.image} alt={item.title} className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300" />
+                      <div className="w-full h-40 overflow-hidden bg-slate-100">
+                        <SafeImage
+                          src={item.image}
+                          alt={item.title}
+                          className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
+                          fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
+                        />
                       </div>
                     )}
                     <div className="relative p-4">

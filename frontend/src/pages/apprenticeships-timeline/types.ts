@@ -5,6 +5,8 @@ export type MKey =
   | 'impact' | 'social' | 'tech'
   | 'strat' | 'comm' | 'cust' | 'ai';
 
+export type ModuleValue = MKey | string;
+
 export interface ModuleMeta {
   lbl: string;
   bg: string;
@@ -15,7 +17,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 
 export interface ModuleBlock {
   id: string;
-  mod: MKey;
+  mod: ModuleValue;
   tutor: string;
   startDate: string;   // ISO: "2025-01-06"
   endDate: string;     // ISO: "2025-05-30"

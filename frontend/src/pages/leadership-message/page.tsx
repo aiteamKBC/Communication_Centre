@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Footer from '../../components/feature/Footer';
+import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 
@@ -595,20 +596,19 @@ export default function LeadershipMessagePage() {
                   </label>
                   <div className="flex h-full flex-col rounded-[1.5rem] border border-slate-200 bg-white p-3">
                     <div className="mb-3 h-36 overflow-hidden rounded-2xl bg-slate-100">
-                      {form.coverImageUrl ? (
-                        <img
-                          src={form.coverImageUrl}
-                          alt="Cover preview"
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)] text-slate-400">
-                          <div className="text-center">
-                            <i className="ri-image-line text-3xl" />
-                            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em]">No cover image</p>
+                      <SafeImage
+                        src={form.coverImageUrl}
+                        alt="Cover preview"
+                        className="h-full w-full object-cover"
+                        fallback={(
+                          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)] text-slate-400" aria-hidden="true">
+                            <div className="text-center">
+                              <i className="ri-image-line text-3xl" />
+                              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em]">No cover image</p>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      />
                     </div>
                     <div className="grid gap-2">
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90">
@@ -639,18 +639,17 @@ export default function LeadershipMessagePage() {
                   <div className="flex h-full flex-col rounded-[1.5rem] border border-slate-200 bg-white p-3">
                     <div className="mb-3 h-36 overflow-hidden rounded-2xl bg-slate-100">
                       <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]">
-                        {form.profileImageUrl ? (
-                          <img
-                            src={form.profileImageUrl}
-                            alt="Profile preview"
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="text-center text-slate-400">
-                            <i className="ri-user-3-line text-3xl" />
-                            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em]">No profile image</p>
-                          </div>
-                        )}
+                        <SafeImage
+                          src={form.profileImageUrl}
+                          alt="Profile preview"
+                          className="h-full w-full object-cover"
+                          fallback={(
+                            <div className="text-center text-slate-400" aria-hidden="true">
+                              <i className="ri-user-3-line text-3xl" />
+                              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em]">No profile image</p>
+                            </div>
+                          )}
+                        />
                       </div>
                     </div>
                     <div className="grid gap-2">

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import SafeImage from '../../../components/feature/SafeImage';
 import type { NewsItem } from '../../../mocks/news';
 
 interface NewsDetailModalProps {
@@ -81,7 +82,12 @@ export default function NewsDetailModal({ item, onClose, onToggleAcknowledgement
         <div className="overflow-y-auto px-6 py-6">
           {item.image && (
             <div className="mb-6 overflow-hidden rounded-[24px] border border-slate-100 bg-slate-50">
-              <img src={item.image} alt={item.title} className="h-72 w-full object-cover object-center" />
+              <SafeImage
+                src={item.image}
+                alt={item.title}
+                className="h-72 w-full object-cover object-center"
+                fallback={<div className="h-72 w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
+              />
             </div>
           )}
 
