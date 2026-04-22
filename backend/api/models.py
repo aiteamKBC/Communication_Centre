@@ -71,6 +71,36 @@ class TrainingPlanHoliday(models.Model):
 		db_table = 'training_plan_holidays'
 
 
+class TrainingPlanModuleDefinition(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	module_id = models.CharField(max_length=150, unique=True)
+	name = models.CharField(max_length=255)
+	default_sessions = models.PositiveIntegerField(default=1)
+	bg = models.CharField(max_length=32, default='#4A6DB0')
+	tx = models.CharField(max_length=32, default='#ffffff')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'training_plan_module_definitions'
+
+
+class TrainingPlanProgramConfig(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	program_id = models.CharField(max_length=150, unique=True)
+	name = models.CharField(max_length=255)
+	sub = models.TextField(blank=True, default='')
+	color = models.CharField(max_length=32, default='#1B2A4A')
+	row_bg = models.CharField(max_length=64, default='rgba(27,42,74,0.04)')
+	is_builtin = models.BooleanField(default=False)
+	is_hidden = models.BooleanField(default=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'training_plan_program_configs'
+
+
 class UrgentNotice(models.Model):
 	id = models.BigAutoField(primary_key=True)
 	title = models.TextField(blank=True, default='')

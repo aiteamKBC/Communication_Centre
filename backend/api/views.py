@@ -10,11 +10,12 @@ from urllib.request import ProxyHandler, Request, build_opener
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse
+from django.db import transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import EventData, Feedback, LeadershipMessage, News, TrainingPlan, TrainingPlanHoliday, UrgentNotice
+from .models import EventData, Feedback, LeadershipMessage, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
 
 
 def serialize_event(event: EventData) -> dict:
@@ -473,6 +474,28 @@ def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
 	}
 
 
+def serialize_training_plan_module_definition(item: TrainingPlanModuleDefinition) -> dict:
+	return {
+		'id': item.module_id,
+		'name': item.name,
+		'defaultSessions': int(item.default_sessions),
+		'bg': item.bg,
+		'tx': item.tx,
+	}
+
+
+def serialize_training_plan_program_config(item: TrainingPlanProgramConfig) -> dict:
+	return {
+		'id': item.program_id,
+		'name': item.name,
+		'sub': item.sub,
+		'color': item.color,
+		'rowBg': item.row_bg,
+		'isBuiltIn': bool(item.is_builtin),
+		'isHidden': bool(item.is_hidden),
+	}
+
+
 FEEDBACK_METADATA_HEADER = '--- Submission metadata ---'
 
 
@@ -623,10 +646,11 @@ def training_plan_holidays(request):
 		if not isinstance(items, list):
 			return HttpResponseBadRequest('Payload must include an items array.')
 
-		TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
-		created = []
+		validated_items = []
+		invalid_count = 0
 		for row in items:
 			if not isinstance(row, dict):
+				invalid_count += 1
 				continue
 
 			label = str(row.get('label', '')).strip()
@@ -636,22 +660,48 @@ def training_plan_holidays(request):
 			color = str(row.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(holiday_type, '#FFFBEB')
 
 			if not label or start_date is None or end_date is None:
+				invalid_count += 1
 				continue
 
 			if end_date < start_date:
+				invalid_count += 1
 				continue
 
-			created.append(
-				TrainingPlanHoliday.objects.create(
-					label=label,
-					start_date=start_date,
-					end_date=end_date,
-					type=holiday_type,
-					color=color,
-				)
+			validated_items.append({
+				'label': label,
+				'start_date': start_date,
+				'end_date': end_date,
+				'type': holiday_type,
+				'color': color,
+			})
+
+		if invalid_count:
+			return JsonResponse(
+				{
+					'detail': 'Some holiday periods were invalid and were not saved.',
+					'saved': 0,
+					'received': len(items),
+				},
+				status=400,
 			)
 
-		return JsonResponse({'saved': len(created)})
+		with transaction.atomic():
+			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
+			created = [
+				TrainingPlanHoliday.objects.create(
+					label=item['label'],
+					start_date=item['start_date'],
+					end_date=item['end_date'],
+					type=item['type'],
+					color=item['color'],
+				)
+				for item in validated_items
+			]
+
+		return JsonResponse({
+			'saved': len(created),
+			'items': [serialize_training_plan_holiday(item) for item in created],
+		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
@@ -688,6 +738,164 @@ def training_plan_holiday_types(request):
 			},
 		)
 		return JsonResponse(serialize_training_plan_holiday_type(record), status=201)
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+		type_value = str(payload.get('value', '')).strip()
+		label = str(payload.get('label', '')).strip()
+		color = str(payload.get('color', '')).strip()
+
+		if not type_value or not label:
+			return HttpResponseBadRequest('Both value and label are required.')
+
+		try:
+			record = TrainingPlanHoliday.objects.get(
+				type=type_value,
+				label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER,
+			)
+		except TrainingPlanHoliday.DoesNotExist:
+			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+
+		record.label = f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}'
+		if color:
+			record.color = color
+		record.save(update_fields=['label', 'color'])
+		return JsonResponse(serialize_training_plan_holiday_type(record))
+
+	if request.method == 'DELETE':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+		type_value = str(payload.get('value', '')).strip()
+		if not type_value:
+			return HttpResponseBadRequest('value is required.')
+
+		deleted, _ = TrainingPlanHoliday.objects.filter(
+			type=type_value,
+			label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER,
+		).delete()
+		if not deleted:
+			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+		return JsonResponse({'deleted': True})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_modules(request):
+	if request.method == 'GET':
+		records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
+		return JsonResponse([serialize_training_plan_module_definition(item) for item in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		items = payload.get('items') if isinstance(payload, dict) else None
+		if not isinstance(items, list):
+			return HttpResponseBadRequest('Payload must include an items array.')
+
+		validated_items = []
+		for row in items:
+			if not isinstance(row, dict):
+				continue
+
+			module_id = str(row.get('id', '')).strip()
+			name = str(row.get('name', '')).strip()
+			bg = str(row.get('bg', '')).strip() or '#4A6DB0'
+			tx = str(row.get('tx', '')).strip() or '#ffffff'
+			try:
+				default_sessions = max(1, int(row.get('defaultSessions', 1) or 1))
+			except (TypeError, ValueError):
+				default_sessions = 1
+
+			if not module_id or not name:
+				continue
+
+			validated_items.append({
+				'module_id': module_id,
+				'name': name,
+				'default_sessions': default_sessions,
+				'bg': bg,
+				'tx': tx,
+			})
+
+		with transaction.atomic():
+			TrainingPlanModuleDefinition.objects.all().delete()
+			created = [
+				TrainingPlanModuleDefinition.objects.create(**item)
+				for item in validated_items
+			]
+
+		return JsonResponse({
+			'saved': len(created),
+			'items': [serialize_training_plan_module_definition(item) for item in created],
+		})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_program_configs(request):
+	if request.method == 'GET':
+		records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
+		return JsonResponse([serialize_training_plan_program_config(item) for item in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		items = payload.get('items') if isinstance(payload, dict) else None
+		if not isinstance(items, list):
+			return HttpResponseBadRequest('Payload must include an items array.')
+
+		validated_items = []
+		for row in items:
+			if not isinstance(row, dict):
+				continue
+
+			program_id = str(row.get('id', '')).strip()
+			name = str(row.get('name', '')).strip()
+			if not program_id or not name:
+				continue
+
+			validated_items.append({
+				'program_id': program_id,
+				'name': name,
+				'sub': str(row.get('sub', '')).strip(),
+				'color': str(row.get('color', '')).strip() or '#1B2A4A',
+				'row_bg': str(row.get('rowBg', '')).strip() or 'rgba(27,42,74,0.04)',
+				'is_builtin': bool(row.get('isBuiltIn')),
+				'is_hidden': bool(row.get('isHidden')),
+			})
+
+		with transaction.atomic():
+			TrainingPlanProgramConfig.objects.all().delete()
+			created = [
+				TrainingPlanProgramConfig.objects.create(**item)
+				for item in validated_items
+			]
+
+		return JsonResponse({
+			'saved': len(created),
+			'items': [serialize_training_plan_program_config(item) for item in created],
+		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

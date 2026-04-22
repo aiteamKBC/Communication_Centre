@@ -2,11 +2,14 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram } from './types';
 import { INITIAL_GROUPS, MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
+import AddModuleModal from './components/AddModuleModal';
+import AddProgramModal from './components/AddProgramModal';
+import ManageProgramModal from './components/ManageProgramModal';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
@@ -14,7 +17,13 @@ import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 type ModalState =
   | { open: false }
   | { open: true; mode: 'add'; defaultGroupIdx: number }
-  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow };
+  | { open: true; mode: 'add'; defaultGroupIdx: number; lockGroupSelection: true }
+  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string };
+
+type ProgramModalState =
+  | { open: false }
+  | { open: true; mode: 'add' }
+  | { open: true; mode: 'edit'; programId: string };
 
 interface TrainingPlanItem {
   cohortName: string;
@@ -32,31 +41,78 @@ interface TrainingPlanItem {
 }
 
 const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
+const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
+const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
+const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX)) {
-    return { holidayIds: [], notes: raw || '' };
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX)) {
+    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, notes: raw || '' };
   }
 
-  const firstLineBreak = value.indexOf('\n');
-  const markerLine = firstLineBreak >= 0 ? value.slice(0, firstLineBreak) : value;
-  const noteBody = firstLineBreak >= 0 ? value.slice(firstLineBreak + 1) : '';
-  const encoded = markerLine.slice(HOLIDAY_MARKER_PREFIX.length);
-  const holidayIds = encoded
-    .split('|')
-    .map(item => item.trim())
-    .filter(Boolean);
+  const lines = value.split('\n');
+  const noteLines: string[] = [];
+  const holidayIds = new Set<string>();
+  let cohortColor: string | undefined;
+  let moduleColor: string | undefined;
+  let cohortEndDate: string | undefined;
+  let readingMarkers = true;
 
-  return { holidayIds, notes: noteBody };
+  lines.forEach(line => {
+    if (readingMarkers && line.startsWith(HOLIDAY_MARKER_PREFIX)) {
+      line
+        .slice(HOLIDAY_MARKER_PREFIX.length)
+        .split('|')
+        .map(item => item.trim())
+        .filter(Boolean)
+        .forEach(item => holidayIds.add(item));
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(COHORT_COLOR_MARKER_PREFIX)) {
+      const nextColor = line.slice(COHORT_COLOR_MARKER_PREFIX.length).trim();
+      cohortColor = nextColor || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(MODULE_COLOR_MARKER_PREFIX)) {
+      const nextColor = line.slice(MODULE_COLOR_MARKER_PREFIX.length).trim();
+      moduleColor = nextColor || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(COHORT_END_DATE_MARKER_PREFIX)) {
+      const nextEndDate = line.slice(COHORT_END_DATE_MARKER_PREFIX.length).trim();
+      cohortEndDate = nextEndDate || undefined;
+      return;
+    }
+
+    readingMarkers = false;
+    noteLines.push(line);
+  });
+
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[]): string {
-  if (!holidayIds.length) {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string): string {
+  const markers: string[] = [];
+  if (holidayIds.length) {
+    markers.push(`${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`);
+  }
+  if (cohortColor) {
+    markers.push(`${COHORT_COLOR_MARKER_PREFIX}${cohortColor}`);
+  }
+  if (moduleColor) {
+    markers.push(`${MODULE_COLOR_MARKER_PREFIX}${moduleColor}`);
+  }
+  if (cohortEndDate) {
+    markers.push(`${COHORT_END_DATE_MARKER_PREFIX}${cohortEndDate}`);
+  }
+  if (!markers.length) {
     return notes;
   }
-  const marker = `${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`;
-  return notes ? `${marker}\n${notes}` : marker;
+  return notes ? `${markers.join('\n')}\n${notes}` : markers.join('\n');
 }
 
 const DAY_ALIASES: Record<string, WeekDayKey> = {
@@ -82,12 +138,27 @@ const moduleKeyByLabel: Record<string, MKey> = Object.entries(MS).reduce((acc, [
   return acc;
 }, {} as Record<string, MKey>);
 
-function inferGroupId(program: string): string {
-  const p = program.toLowerCase();
+function normalizeProgramLabel(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function inferGroupId(program: string, groups: ProgrammeGroup[]): string {
+  const normalizedProgram = normalizeProgramLabel(program);
+  const matchedGroup = groups.find(group => {
+    const programmeLabel = normalizeProgramLabel(toProgrammeLabel(group));
+    const displayLabel = normalizeProgramLabel(group.name.replace('\n', ' '));
+    return normalizedProgram === programmeLabel || normalizedProgram === displayLabel;
+  });
+
+  if (matchedGroup) {
+    return matchedGroup.id;
+  }
+
+  const p = normalizedProgram;
   if (p.includes('pcp') || p.includes('project control')) return 'pcp';
   if (p.includes('mm') || p.includes('marketing manager')) return 'mm';
   if (p.includes('me') || p.includes('marketing executive')) return 'me';
-  return 'pcp';
+  return groups[0]?.id || 'pcp';
 }
 
 function parseDays(value: string): WeekDayKey[] {
@@ -108,16 +179,53 @@ function toProgrammeLabel(group: ProgrammeGroup): string {
   return `${code} ${level}`.trim();
 }
 
-function emptyGroupsTemplate(): ProgrammeGroup[] {
-  return INITIAL_GROUPS.map(group => ({ ...group, rows: [] }));
+function buildAllGroups(
+  customPrograms: CustomProgram[] = [],
+  builtInProgramOverrides: CustomProgram[] = [],
+  hiddenProgramIds: string[] = [],
+): ProgrammeGroup[] {
+  const hiddenIds = new Set(hiddenProgramIds);
+  const builtInOverrideMap = new Map(builtInProgramOverrides.map(program => [program.id, program]));
+  const builtInGroups: ProgrammeGroup[] = INITIAL_GROUPS
+    .filter(group => !hiddenIds.has(group.id))
+    .map(group => {
+      const override = builtInOverrideMap.get(group.id);
+      return {
+        ...group,
+        name: override?.name || group.name,
+        sub: override?.sub || group.sub,
+        color: override?.color || group.color,
+        rowBg: override?.rowBg || group.rowBg,
+        rows: [] as CohortRow[],
+      };
+    });
+
+  const customGroups: ProgrammeGroup[] = customPrograms
+    .filter(program => !hiddenIds.has(program.id))
+    .map(program => ({
+      id: program.id,
+      name: program.name,
+      sub: program.sub,
+      color: program.color,
+      rowBg: program.rowBg,
+      rows: [] as CohortRow[],
+    }));
+
+  return [...builtInGroups, ...customGroups];
 }
 
-function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[] {
-  const templatesById = new Map(INITIAL_GROUPS.map(group => [group.id, { ...group, rows: [] as CohortRow[] }]));
+function buildGroupsFromTrainingRows(
+  items: TrainingPlanItem[],
+  customPrograms: CustomProgram[] = [],
+  builtInProgramOverrides: CustomProgram[] = [],
+  hiddenProgramIds: string[] = [],
+): ProgrammeGroup[] {
+  const allGroups = buildAllGroups(customPrograms, builtInProgramOverrides, hiddenProgramIds);
+  const templatesById = new Map(allGroups.map(group => [group.id, group]));
   const cohortIndex = new Map<string, CohortRow>();
 
   items.forEach((item, index) => {
-    const groupId = inferGroupId(item.program || '');
+    const groupId = inferGroupId(item.program || '', allGroups);
     const group = templatesById.get(groupId);
     if (!group) {
       return;
@@ -130,8 +238,10 @@ function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[
         id: `db-row-${groupId}-${cohortIndex.size + 1}`,
         label: item.cohortName || 'Cohort',
         dateLbl: item.startingDateLabel || '',
+        endDateLbl: undefined,
         intake: 'Intake 1',
         quarter: 'Q1 2026',
+        color: undefined,
         blks: [],
       };
       cohortIndex.set(cohortKey, cohort);
@@ -144,9 +254,16 @@ function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[
     if (parsedNotes.holidayIds.length && (!cohort.holidayIds || cohort.holidayIds.length === 0)) {
       cohort.holidayIds = parsedNotes.holidayIds;
     }
+    if (parsedNotes.cohortColor && !cohort.color) {
+      cohort.color = parsedNotes.cohortColor;
+    }
+    if (parsedNotes.cohortEndDate && !cohort.endDateLbl) {
+      cohort.endDateLbl = parsedNotes.cohortEndDate;
+    }
     cohort.blks.push({
       id: `db-blk-${index + 1}`,
       mod: modKey,
+      color: parsedNotes.moduleColor,
       tutor: item.tutorName || '',
       startDate: item.startDate || '2026-01-01',
       endDate: item.endDate || item.startDate || '2026-01-01',
@@ -158,7 +275,7 @@ function buildGroupsFromTrainingRows(items: TrainingPlanItem[]): ProgrammeGroup[
     });
   });
 
-  return INITIAL_GROUPS.map(group => templatesById.get(group.id) || { ...group, rows: [] });
+  return allGroups.map(group => templatesById.get(group.id) || { ...group, rows: [] });
 }
 
 function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
@@ -176,18 +293,31 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         sessionWeekDay: (block.days || []).join(', '),
         sessionStartTime: block.sessionStartTime || '09:00',
         sessionEndTime: block.sessionEndTime || '11:00',
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || []),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl),
       })),
     ),
   );
 }
 
+interface TrainingPlanProgramConfigPayload extends CustomProgram {
+  isBuiltIn: boolean;
+  isHidden: boolean;
+}
+
 export default function ApprenticeshipTimeline() {
   const { canManageCohorts } = useAccessControl();
-  const [groups,   setGroups]   = useState<ProgrammeGroup[]>(emptyGroupsTemplate());
+  const builtInProgrammeIds = useMemo(() => new Set(INITIAL_GROUPS.map(group => group.id)), []);
+  const [customModules, setCustomModules] = useState<CustomModule[]>([]);
+  const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
+  const [builtInProgramOverrides, setBuiltInProgramOverrides] = useState<CustomProgram[]>([]);
+  const [hiddenProgramIds, setHiddenProgramIds] = useState<string[]>([]);
+  const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
+  const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [modal,    setModal]    = useState<ModalState>({ open: false });
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
+  const [showAddModule,  setShowAddModule]  = useState(false);
+  const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
   const [addDropdownOpen, setAddDropdownOpen] = useState(false);
@@ -211,7 +341,7 @@ export default function ApprenticeshipTimeline() {
           return;
         }
 
-        setGroups(buildGroupsFromTrainingRows(items));
+        setTrainingPlanItems(items);
       } catch {
         // Keep initial in-memory data if loading fails.
       }
@@ -224,7 +354,59 @@ export default function ApprenticeshipTimeline() {
   }, []);
 
   useEffect(() => {
+    setGroups(
+      trainingPlanItems.length
+        ? buildGroupsFromTrainingRows(trainingPlanItems, customPrograms, builtInProgramOverrides, hiddenProgramIds)
+        : buildAllGroups(customPrograms, builtInProgramOverrides, hiddenProgramIds),
+    );
+  }, [trainingPlanItems, customPrograms, builtInProgramOverrides, hiddenProgramIds]);
+
+  useEffect(() => {
     let cancelled = false;
+
+    async function loadTrainingPlanModules() {
+      try {
+        const response = await fetch('/api/training-plan-modules/');
+        if (!response.ok) {
+          return;
+        }
+
+        const items = (await response.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
+        if (!Array.isArray(items) || cancelled) {
+          return;
+        }
+
+        setCustomModules(items.map(item => ({
+          id: item.id,
+          name: item.name,
+          defaultSessions: item.defaultSessions,
+          bg: item.bg,
+          tx: item.tx,
+        })));
+      } catch {
+        // Keep current in-memory modules if loading fails.
+      }
+    }
+
+    async function loadTrainingPlanProgramConfigs() {
+      try {
+        const response = await fetch('/api/training-plan-program-configs/');
+        if (!response.ok) {
+          return;
+        }
+
+        const items = (await response.json()) as TrainingPlanProgramConfigPayload[];
+        if (!Array.isArray(items) || cancelled) {
+          return;
+        }
+
+        setCustomPrograms(items.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setBuiltInProgramOverrides(items.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setHiddenProgramIds(items.filter(item => item.isHidden).map(item => item.id));
+      } catch {
+        // Keep current in-memory programme configs if loading fails.
+      }
+    }
 
     async function loadTrainingPlanHolidays() {
       try {
@@ -244,6 +426,8 @@ export default function ApprenticeshipTimeline() {
       }
     }
 
+    void loadTrainingPlanModules();
+    void loadTrainingPlanProgramConfigs();
     void loadTrainingPlanHolidays();
     return () => {
       cancelled = true;
@@ -366,7 +550,49 @@ export default function ApprenticeshipTimeline() {
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
 
-      setHolidays(nextHolidays);
+      const result = await response.json() as { saved?: number; items?: Holiday[] };
+      const persistedItems = Array.isArray(result.items) ? result.items : [];
+
+      if (typeof result.saved !== 'number') {
+        throw new Error('The server did not confirm how many holiday periods were saved.');
+      }
+
+      if (result.saved !== nextHolidays.length) {
+        throw new Error(`Saved ${result.saved} of ${nextHolidays.length} holiday periods.`);
+      }
+
+      if (persistedItems.length !== nextHolidays.length) {
+        throw new Error(`The database returned ${persistedItems.length} of ${nextHolidays.length} holiday periods.`);
+      }
+
+      const expectedSnapshot = JSON.stringify(
+        nextHolidays
+          .map(item => ({
+            label: item.label,
+            startDate: item.startDate,
+            endDate: item.endDate,
+            type: item.type,
+            color: item.color,
+          }))
+          .sort((a, b) => `${a.startDate}-${a.endDate}-${a.label}`.localeCompare(`${b.startDate}-${b.endDate}-${b.label}`)),
+      );
+      const persistedSnapshot = JSON.stringify(
+        persistedItems
+          .map(item => ({
+            label: item.label,
+            startDate: item.startDate,
+            endDate: item.endDate,
+            type: item.type,
+            color: item.color,
+          }))
+          .sort((a, b) => `${a.startDate}-${a.endDate}-${a.label}`.localeCompare(`${b.startDate}-${b.endDate}-${b.label}`)),
+      );
+
+      if (persistedSnapshot !== expectedSnapshot) {
+        throw new Error('The saved holiday periods returned from the database did not match the submitted values.');
+      }
+
+      setHolidays(persistedItems);
       await kbcSuccessSwal.fire({
         icon: 'success',
         title: 'Holiday periods saved successfully',
@@ -383,6 +609,87 @@ export default function ApprenticeshipTimeline() {
       });
       return false;
     }
+  };
+
+  const persistCustomModules = async (nextModules: CustomModule[]) => {
+    const payload = {
+      items: nextModules.map(module => ({
+        id: module.id,
+        name: module.name,
+        defaultSessions: module.defaultSessions,
+        bg: module.bg,
+        tx: module.tx,
+      })),
+    };
+
+    const response = await fetch('/api/training-plan-modules/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+
+    const result = await response.json() as { items?: Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }> };
+    return Array.isArray(result.items)
+      ? result.items.map(item => ({
+          id: item.id,
+          name: item.name,
+          defaultSessions: item.defaultSessions,
+          bg: item.bg,
+          tx: item.tx,
+        }))
+      : nextModules;
+  };
+
+  const persistProgramConfigs = async (
+    nextCustomPrograms: CustomProgram[],
+    nextBuiltInProgramOverrides: CustomProgram[],
+    nextHiddenProgramIds: string[],
+  ) => {
+    const builtInMap = new Map(INITIAL_GROUPS.map(group => [group.id, group]));
+    const customItems: TrainingPlanProgramConfigPayload[] = nextCustomPrograms.map(program => ({
+      ...program,
+      isBuiltIn: false,
+      isHidden: false,
+    }));
+    const overrideItems: TrainingPlanProgramConfigPayload[] = nextBuiltInProgramOverrides.map(program => ({
+      ...program,
+      isBuiltIn: true,
+      isHidden: nextHiddenProgramIds.includes(program.id),
+    }));
+    const hiddenOnlyItems: TrainingPlanProgramConfigPayload[] = nextHiddenProgramIds
+      .filter(id => !nextBuiltInProgramOverrides.some(program => program.id === id))
+      .map(id => {
+        const fallback = builtInMap.get(id);
+        return {
+          id,
+          name: fallback?.name || id,
+          sub: fallback?.sub || '',
+          color: fallback?.color || '#1B2A4A',
+          rowBg: fallback?.rowBg || 'rgba(27,42,74,0.04)',
+          isBuiltIn: true,
+          isHidden: true,
+        };
+      });
+
+    const payload = { items: [...customItems, ...overrideItems, ...hiddenOnlyItems] };
+    const response = await fetch('/api/training-plan-program-configs/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+
+    const result = await response.json() as { items?: TrainingPlanProgramConfigPayload[] };
+    return Array.isArray(result.items) ? result.items : payload.items;
   };
 
   const handleSave = async (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
@@ -406,6 +713,7 @@ export default function ApprenticeshipTimeline() {
       return false;
     }
 
+    setTrainingPlanItems(flattenGroupsForApi(next));
     setGroups(next);
     setModal({ open: false });
 
@@ -426,22 +734,182 @@ export default function ApprenticeshipTimeline() {
       return;
     }
 
+    setTrainingPlanItems(flattenGroupsForApi(next));
     setGroups(next);
   };
 
-  const handleEditRow = (groupIdx: number, rowIdx: number) => {
+  const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string) => {
     if (!canManageCohorts) {
       return;
     }
 
     const row = groups[groupIdx].rows[rowIdx];
-    setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row });
+    setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row, expandedBlockId });
+  };
+
+  const handleAddModule = async (mod: CustomModule) => {
+    try {
+      const next = [...customModules.filter(m => m.id !== mod.id), mod];
+      const persistedModules = await persistCustomModules(next);
+      setCustomModules(persistedModules);
+      setShowAddModule(false);
+      void kbcSwal.fire({ toast: true, position: 'top-end', icon: 'success', title: `Module "${mod.name}" added`, showConfirmButton: false, timer: 2000, timerProgressBar: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      void kbcSwal.fire({
+        title: 'Module Not Saved',
+        html: `The module was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
+  };
+
+  const handleAddProgram = async (prog: CustomProgram) => {
+    const isBuiltIn = builtInProgrammeIds.has(prog.id);
+    const existingCustom = customPrograms.some(program => program.id === prog.id);
+    let nextCustomPrograms = customPrograms;
+    let nextOverrides = builtInProgramOverrides;
+    const nextHiddenIds = hiddenProgramIds.filter(id => id !== prog.id);
+
+    if (isBuiltIn) {
+      nextOverrides = [...builtInProgramOverrides.filter(program => program.id !== prog.id), prog];
+    } else {
+      nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
+    }
+
+    try {
+      const persistedItems = await persistProgramConfigs(nextCustomPrograms, nextOverrides, nextHiddenIds);
+      setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+      setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+      setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
+      setProgramModal({ open: false });
+      void kbcSwal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: `Programme "${prog.name.replace('\n', ' ')}" ${existingCustom || isBuiltIn ? 'updated' : 'added'}`,
+        showConfirmButton: false,
+        timer: 2000,
+        timerProgressBar: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      void kbcSwal.fire({
+        title: 'Programme Not Saved',
+        html: `The programme configuration was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
+  };
+
+  const handleEditProgram = (programId: string) => {
+    if (!canManageCohorts) {
+      return;
+    }
+
+    setProgramModal({ open: true, mode: 'edit', programId });
+  };
+
+  const handleDeleteProgram = async (programId: string) => {
+    if (!canManageCohorts) {
+      return;
+    }
+
+    const group = groups.find(item => item.id === programId);
+    if (!group) {
+      return;
+    }
+
+    if (group.rows.length > 0) {
+      await kbcSwal.fire({
+        title: 'Programme Not Deleted',
+        html: `The programme <strong>${group.name.replace('\n', ' ')}</strong> still has ${group.rows.length} cohort${group.rows.length === 1 ? '' : 's'}. Remove or move those cohorts first.`,
+        icon: 'info',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+
+    const result = await kbcSwal.fire({
+      title: 'Delete Programme?',
+      html: `The custom programme <strong>${group.name.replace('\n', ' ')}</strong> will be removed.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete Programme',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (!result.isConfirmed) {
+      return;
+    }
+
+    try {
+      if (builtInProgrammeIds.has(programId)) {
+        const nextOverrides = builtInProgramOverrides.filter(program => program.id !== programId);
+        const nextHiddenIds = [...new Set([...hiddenProgramIds, programId])];
+        const persistedItems = await persistProgramConfigs(customPrograms, nextOverrides, nextHiddenIds);
+        setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
+      } else {
+        const nextPrograms = customPrograms.filter(program => program.id !== programId);
+        const persistedItems = await persistProgramConfigs(nextPrograms, builtInProgramOverrides, hiddenProgramIds);
+        setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
+        setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
+      }
+      void kbcSwal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: `Programme "${group.name.replace('\n', ' ')}" deleted`,
+        showConfirmButton: false,
+        timer: 2000,
+        timerProgressBar: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      void kbcSwal.fire({
+        title: 'Programme Not Deleted',
+        html: `The programme configuration was not deleted from the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
   };
 
   const totalCohorts  = groups.reduce((s, g) => s + g.rows.length, 0);
+  const totalModules = groups.reduce((sum, group) => (
+    sum + group.rows.reduce((rowSum, row) => {
+      const moduleKeys = new Set(
+        row.blks.map(block => `${String(block.mod)}::${block.color || ''}::${block.startDate}::${block.endDate}::${block.sessions}`),
+      );
+      return rowSum + moduleKeys.size;
+    }, 0)
+  ), 0);
   const totalSessions = groups.reduce((s, g) =>
     s + g.rows.reduce((rs, r) => rs + r.blks.reduce((bs, b) => bs + b.sessions, 0), 0), 0);
   const holidayCount  = holidays.length;
+  const selectedProgram = programModal.open && programModal.mode === 'edit'
+    ? (() => {
+      const customProgram = customPrograms.find(program => program.id === programModal.programId);
+      if (customProgram) {
+        return customProgram;
+      }
+
+      const group = groups.find(item => item.id === programModal.programId);
+      return group
+        ? { id: group.id, name: group.name, sub: group.sub, color: group.color, rowBg: group.rowBg }
+        : undefined;
+    })()
+    : undefined;
+  const selectedProgramGroup = programModal.open && programModal.mode === 'edit'
+    ? groups.find(item => item.id === programModal.programId)
+    : undefined;
 
   const todaySessions = useMemo(() => {
     const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const;
@@ -498,7 +966,7 @@ export default function ApprenticeshipTimeline() {
                 <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
                   Apprenticeships Training Plan
                 </h1>
-                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2024 – 2027</p>
+                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2025 – 2027</p>
               </div>
             </div>
 
@@ -506,6 +974,7 @@ export default function ApprenticeshipTimeline() {
               {[
                 { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
                 { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
+                { icon: 'ri-puzzle-line',      label: `${totalModules} Modules` },
                 { icon: 'ri-stack-line',       label: `${totalSessions} Sessions` },
                 { icon: 'ri-calendar-event-line', label: `${holidayCount} Holidays` },
                 { icon: 'ri-live-line',        label: 'Apr 2026 Live' },
@@ -552,7 +1021,7 @@ export default function ApprenticeshipTimeline() {
                         <button
                           key={gi}
                           onClick={() => {
-                            setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+                            setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
                             setAddDropdownOpen(false);
                           }}
                           className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
@@ -585,6 +1054,15 @@ export default function ApprenticeshipTimeline() {
                 Holidays
               </button>
             )}
+            {canManageCohorts && (
+              <button
+                onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                style={{ background: '#1B2A4A' }}>
+                <i className="ri-add-circle-line" />
+                Add Programme
+              </button>
+            )}
 
             {false && canManageCohorts && (
               <div className="relative" ref={addDropdownRef}>
@@ -609,7 +1087,7 @@ export default function ApprenticeshipTimeline() {
                       <button
                         key={gi}
                         onClick={() => {
-                          setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+                          setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
                           setAddDropdownOpen(false);
                         }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
@@ -657,21 +1135,41 @@ export default function ApprenticeshipTimeline() {
         </div>
 
         {/* Tab switcher */}
-        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1 w-fit">
-          {([
-            { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
-            { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
-          ] as const).map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
-              style={{
-                background: activeTab === tab.key ? '#1B2A4A' : 'transparent',
-                color:      activeTab === tab.key ? '#fff'    : '#6B7280',
-              }}>
-              <i className={tab.icon} />
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-gray-200 rounded-lg p-1">
+          <div className="flex items-center gap-1 min-w-0">
+            {([
+              { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
+              { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
+            ] as const).map(tab => (
+              <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
+                style={{
+                  background: activeTab === tab.key ? '#1B2A4A' : 'transparent',
+                  color:      activeTab === tab.key ? '#fff'    : '#6B7280',
+                }}>
+                <i className={tab.icon} />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {canManageCohorts && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setShowHolidayMgr(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
+                style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                <i className="ri-calendar-event-line" />
+                Holidays
+              </button>
+              <button
+                onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-90"
+                style={{ background: '#1B2A4A' }}>
+                <i className="ri-add-circle-line" />
+                Add Programme
+              </button>
+            </div>
+          )}
         </div>
 
         {/* GANTT CARD */}
@@ -680,6 +1178,7 @@ export default function ApprenticeshipTimeline() {
             <GanttTimeline
               groups={groups}
               holidays={holidays}
+              customModules={customModules}
               zoom={zoom}
               onZoomChange={setZoom}
               onManageHolidays={() => setShowHolidayMgr(true)}
@@ -687,10 +1186,12 @@ export default function ApprenticeshipTimeline() {
                 if (!canManageCohorts) {
                   return;
                 }
-                setModal({ open: true, mode: 'add', defaultGroupIdx: gi });
+                setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
               }}
               onEditRow={handleEditRow}
               onDeleteRow={handleDeleteRow}
+              onEditProgram={handleEditProgram}
+              onDeleteProgram={handleDeleteProgram}
               canManageCohorts={canManageCohorts}
             />
           </div>
@@ -710,9 +1211,13 @@ export default function ApprenticeshipTimeline() {
           mode={modal.mode}
           groups={groups}
           holidays={holidays}
+          customModules={customModules}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
+          initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
+          lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
+          onManageHolidays={() => setShowHolidayMgr(true)}
           onClose={() => setModal({ open: false })}
         />
       )}
@@ -723,6 +1228,56 @@ export default function ApprenticeshipTimeline() {
           onSave={persistHolidays}
           onClose={() => setShowHolidayMgr(false)}
         />
+      )}
+
+      {canManageCohorts && showAddModule && (
+        <AddModuleModal
+          onSave={handleAddModule}
+          onClose={() => setShowAddModule(false)}
+        />
+      )}
+
+      {canManageCohorts && programModal.open && (
+        programModal.mode === 'add' ? (
+          <AddProgramModal
+            onSave={handleAddProgram}
+            onClose={() => setProgramModal({ open: false })}
+          />
+        ) : (
+          selectedProgram && selectedProgramGroup && (
+            <ManageProgramModal
+              program={selectedProgram}
+              group={selectedProgramGroup}
+              onSave={handleAddProgram}
+              onClose={() => setProgramModal({ open: false })}
+              onAddCohort={() => {
+                const groupIdx = groups.findIndex(item => item.id === selectedProgramGroup.id);
+                setProgramModal({ open: false });
+                if (groupIdx >= 0) {
+                  setModal({ open: true, mode: 'add', defaultGroupIdx: groupIdx, lockGroupSelection: true });
+                }
+              }}
+              onEditCohort={(rowIdx) => {
+                const groupIdx = groups.findIndex(item => item.id === selectedProgramGroup.id);
+                const row = groups[groupIdx]?.rows[rowIdx];
+                setProgramModal({ open: false });
+                if (groupIdx >= 0 && row) {
+                  setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row });
+                }
+              }}
+              onDeleteCohort={(rowIdx) => {
+                const groupIdx = groups.findIndex(item => item.id === selectedProgramGroup.id);
+                if (groupIdx >= 0) {
+                  void handleDeleteRow(groupIdx, rowIdx);
+                }
+              }}
+              onDeleteProgram={() => {
+                setProgramModal({ open: false });
+                void handleDeleteProgram(selectedProgramGroup.id);
+              }}
+            />
+          )
+        )
       )}
     </div>
   );

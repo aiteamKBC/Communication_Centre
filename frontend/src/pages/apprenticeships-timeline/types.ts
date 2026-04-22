@@ -18,6 +18,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 export interface ModuleBlock {
   id: string;
   mod: ModuleValue;
+  color?: string;
   tutor: string;
   startDate: string;   // ISO: "2025-01-06"
   endDate: string;     // ISO: "2025-05-30"
@@ -32,8 +33,10 @@ export interface CohortRow {
   id: string;
   label: string;
   dateLbl: string;
+  endDateLbl?: string;
   intake: string;      // e.g. "Intake 1", "Intake 2"
   quarter: string;     // e.g. "Q1 2025"
+  color?: string;
   holidayIds?: string[];
   blks: ModuleBlock[];
 }
@@ -63,4 +66,20 @@ export interface OverlapInfo {
   moduleId: string;
   conflictWith: string;
   type: 'module-overlap' | 'holiday-overlap';
+}
+
+export interface CustomModule {
+  id: string;
+  name: string;
+  defaultSessions: number;
+  bg: string;
+  tx: string;
+}
+
+export interface CustomProgram {
+  id: string;
+  name: string;
+  sub: string;
+  color: string;
+  rowBg: string;
 }

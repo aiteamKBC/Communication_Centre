@@ -1,7 +1,7 @@
 import type { Holiday, ModuleBlock, ZoomLevel } from './types';
 
 // ── Date helpers ──────────────────────────────────────────────────────────
-export const TIMELINE_START = new Date('2024-08-01');
+export const TIMELINE_START = new Date('2025-01-01');
 export const TIMELINE_END   = new Date('2027-07-31');
 export const TOTAL_DAYS     = Math.ceil((TIMELINE_END.getTime() - TIMELINE_START.getTime()) / 86400000);
 
@@ -96,10 +96,12 @@ export interface TimelineColumn {
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function addDays(date: Date, days: number): Date {
-  return new Date(date.getTime() + days * 86400000);
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
 }
 
-function startOfWeek(date: Date): Date {
+export function startOfWeek(date: Date): Date {
   const d = new Date(date);
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
@@ -109,6 +111,7 @@ function startOfWeek(date: Date): Date {
 
 export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date): TimelineColumn[] {
   const cols: TimelineColumn[] = [];
+  const viewEndIso = toLocalIsoDate(viewEnd);
 
   if (zoom === 'year') {
     const startYear = viewStart.getFullYear();
@@ -119,7 +122,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
       const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-      cols.push({ key: `y${y}`, label: String(y), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 0.8 });
+      cols.push({ key: `y${y}`, label: String(y), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 1.15 });
     }
   } else if (zoom === 'intake') {
     // Intake = ~4 months, 3 intakes per year
@@ -154,21 +157,26 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
     }
   } else if (zoom === 'week') {
-    let cur = startOfWeek(viewStart);
-    while (cur <= viewEnd) {
-      const s = cur;
-      const e = addDays(cur, 6);
-      const clampS = s < viewStart ? viewStart : s;
-      const clampE = e > viewEnd   ? viewEnd   : e;
-      const label = `W/C ${clampS.getDate()} ${MONTH_NAMES[clampS.getMonth()]}`;
-      cols.push({ key: `w${clampS.toISOString().slice(0,10)}`, label, startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: 80 });
-      cur = addDays(cur, 7);
+    let cur = new Date(viewStart);
+    while (toLocalIsoDate(cur) <= viewEndIso) {
+      const iso = toLocalIsoDate(cur);
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      cols.push({
+        key: `wday${iso}`,
+        label: String(cur.getDate()),
+        subLabel: dayNames[cur.getDay()],
+        startDate: iso,
+        endDate: iso,
+        widthPx: 160,
+        isHighlighted: cur.getDay() === 0,
+      });
+      cur = addDays(cur, 1);
     }
   } else {
     // day
     let cur = new Date(viewStart);
-    while (cur <= viewEnd) {
-      const iso = cur.toISOString().slice(0,10);
+    while (toLocalIsoDate(cur) <= viewEndIso) {
+      const iso = toLocalIsoDate(cur);
       const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
       const isWeekend = cur.getDay() === 0 || cur.getDay() === 6;
       cols.push({ key: `d${iso}`, label: String(cur.getDate()), subLabel: dayNames[cur.getDay()], startDate: iso, endDate: iso, widthPx: 32, isHighlighted: isWeekend });

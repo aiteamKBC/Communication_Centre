@@ -46,6 +46,10 @@ function monthLabel(date: Date): string {
   return date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
 
+function monthName(date: Date): string {
+  return date.toLocaleDateString('en-GB', { month: 'long' });
+}
+
 function isSameDay(a: Date | null, b: Date | null): boolean {
   if (!a || !b) {
     return false;
@@ -76,6 +80,7 @@ export default function DateField({
   }, []);
   const [open, setOpen] = useState(false);
   const [viewDate, setViewDate] = useState<Date>(() => selectedDate || today);
+  const [yearPickerOpen, setYearPickerOpen] = useState(false);
   const [popoverStyle, setPopoverStyle] = useState<{ top: number; left: number; width: number }>({
     top: 0,
     left: 0,
@@ -87,6 +92,12 @@ export default function DateField({
       setViewDate(selectedDate);
     }
   }, [selectedDate]);
+
+  useEffect(() => {
+    if (!open) {
+      setYearPickerOpen(false);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -193,6 +204,11 @@ export default function DateField({
     return cells;
   }, [viewDate]);
 
+  const yearOptions = useMemo(() => {
+    const centerYear = viewDate.getFullYear();
+    return Array.from({ length: 25 }, (_, index) => centerYear - 12 + index);
+  }, [viewDate]);
+
   return (
     <div ref={wrapperRef} className="relative space-y-1.5">
       <div
@@ -249,9 +265,41 @@ export default function DateField({
                 >
                   <i className="ri-arrow-left-s-line text-lg" />
                 </button>
-                <div className="text-center">
+                <div className="relative text-center">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Calendar</p>
-                  <p className="text-sm font-bold text-slate-800">{monthLabel(viewDate)}</p>
+                  <button
+                    type="button"
+                    onClick={() => setYearPickerOpen(current => !current)}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-bold text-slate-800 transition-colors hover:bg-white"
+                    aria-label="Choose year"
+                    aria-expanded={yearPickerOpen}
+                  >
+                    <span>{monthName(viewDate)}</span>
+                    <span>{viewDate.getFullYear()}</span>
+                    <i className={`text-base text-slate-400 transition-transform ${yearPickerOpen ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'}`} />
+                  </button>
+                  {yearPickerOpen && (
+                    <div className="absolute left-1/2 top-full z-10 mt-2 max-h-52 w-40 -translate-x-1/2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
+                      {yearOptions.map(year => (
+                        <button
+                          key={year}
+                          type="button"
+                          onClick={() => {
+                            setViewDate(prev => new Date(year, prev.getMonth(), 1));
+                            setYearPickerOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-50"
+                          style={{
+                            background: year === viewDate.getFullYear() ? `${accentColor}12` : 'transparent',
+                            color: year === viewDate.getFullYear() ? accentColor : '#1e293b',
+                          }}
+                        >
+                          <span>{year}</span>
+                          {year === viewDate.getFullYear() && <i className="ri-check-line text-base" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"

@@ -9,6 +9,7 @@ interface SessionCell {
 
 interface DerivedScheduleRow {
   cohort: string;
+  cohortColor: string;
   programme: string;
   programmeColor: string;
   module: string;
@@ -106,10 +107,12 @@ function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
 
           const base: DerivedScheduleRow = {
             cohort: row.dateLbl || row.label,
+            cohortColor: row.color || group.color,
             programme: programmeLabelFromGroupName(group.name),
             programmeColor: group.color,
             module: moduleName,
             nextModule,
+            rowHighlight: `${(row.color || group.color)}0D`,
             startDate: blk.startDate,
             endDate: blk.endDate,
           };
@@ -241,18 +244,23 @@ export default function ScheduleTable({ groups }: Props) {
             {sections.map(section => (
               <Fragment key={`section-${section.programme}`}>
                 <tr>
-                  <td colSpan={10} className="border border-gray-200 px-3 py-2" style={{ background: '#F8FAFF' }}>
-                    <span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-extrabold" style={{ color: section.programmeColor, background: `${section.programmeColor}14` }}>
-                      <span className="h-2 w-2 rounded-full" style={{ background: section.programmeColor }} />
-                      {section.programme}
-                    </span>
-                    <span className="ml-2 text-xs text-gray-400">{section.rows.length} module session{section.rows.length === 1 ? '' : 's'}</span>
+                  <td colSpan={10} className="border border-gray-200 px-4 py-2.5" style={{ background: `${section.programmeColor}18` }}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="h-3 w-3 rounded-full shrink-0" style={{ background: section.programmeColor }} />
+                        <span className="font-extrabold tracking-wide" style={{ fontSize: '13px', color: section.programmeColor }}>{section.programme}</span>
+                      </div>
+                      <span className="text-xs text-gray-400 font-medium">{section.rows.length} module session{section.rows.length === 1 ? '' : 's'}</span>
+                    </div>
                   </td>
                 </tr>
                 {section.rows.map((row, idx) => (
                   <tr key={`${section.programme}-${row.cohort}-${row.module}-${idx}`} className="group/srow hover:brightness-95 transition-all" style={{ background: row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB') }}>
                     <td className="border border-gray-200 px-3 py-1.5">
-                      <span className="font-extrabold text-xs text-gray-700 whitespace-nowrap">{row.cohort}</span>
+                      <span className="inline-flex items-center gap-2 font-extrabold text-xs whitespace-nowrap" style={{ color: row.cohortColor }}>
+                        <span className="h-2 w-2 rounded-full shrink-0" style={{ background: row.cohortColor }} />
+                        {row.cohort}
+                      </span>
                     </td>
                     <td className="border border-gray-200 px-3 py-1.5">
                       <span className="font-bold text-xs whitespace-nowrap" style={{ color: row.programmeColor }}>{row.programme}</span>
