@@ -14,18 +14,25 @@ const MODULE_H  = 56;  // full-height module row (no overlap)
 const LANE_H    = 28;  // half-height lane when two modules overlap
 
 // ── Lane / row types ──────────────────────────────────────────────────────
+interface LanedBlock {
+  blk: ModuleBlock;
+  lane: number; // 0 = top lane, 1 = bottom lane
+}
+
 interface GanttRow {
-  groupName: string;   // all blocks in this row share this group
-  blks: ModuleBlock[]; // all blocks for this group, sorted by startDate
+  groupName: string;
+  lanes: LanedBlock[]; // all blocks with their assigned lane
+  laneCount: number;   // 1 = single full-height row, 2 = two half-height lanes
 }
 
 function datesOverlap(a: ModuleBlock, b: ModuleBlock): boolean {
   return a.startDate <= b.endDate && b.startDate <= a.endDate;
 }
 
-// One row per distinct groupName. All modules in the same group share one row.
-// Bars are absolutely positioned by date so they naturally sit side-by-side or
-// visually overlap — no vertical splitting needed.
+// One row per distinct groupName.
+// Within a group, sequential modules share lane 0. If a module overlaps with
+// an existing lane-0 block it is placed in lane 1 (bottom). This way non-
+// overlapping modules sit side-by-side on one row, and overlapping pairs stack.
 function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
@@ -40,17 +47,29 @@ function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   for (const blk of sorted) {
     const key = (blk.groupName || '').trim();
     if (!rowMap.has(key)) {
-      rowMap.set(key, { groupName: key, blks: [] });
+      rowMap.set(key, { groupName: key, lanes: [], laneCount: 1 });
       order.push(key);
     }
-    rowMap.get(key)!.blks.push(blk);
+    const row = rowMap.get(key)!;
+
+    // Try to fit in lane 0 first, then lane 1
+    const overlapsLane0 = row.lanes
+      .filter(lb => lb.lane === 0)
+      .some(lb => datesOverlap(lb.blk, blk));
+
+    if (overlapsLane0) {
+      row.lanes.push({ blk, lane: 1 });
+      row.laneCount = 2;
+    } else {
+      row.lanes.push({ blk, lane: 0 });
+    }
   }
 
   return order.map(k => rowMap.get(k)!);
 }
 
-function rowHeight(_row: GanttRow): number {
-  return MODULE_H;
+function rowHeight(row: GanttRow): number {
+  return row.laneCount === 2 ? LANE_H * 2 : MODULE_H;
 }
 
 // Extract group label from cohort label, e.g. "Cohort 1 - G1" → "G1"
@@ -78,9 +97,9 @@ function buildLeftLabelEntries(ganttRows: GanttRow[], customModules: CustomModul
 
   ganttRows.forEach((row, idx) => {
     const rh = rowHeight(row);
-    const firstBlk = row.blks[0];
-    const label = row.groupName || getBlockDisplayName(firstBlk, customModules);
-    const color = resolveBlockMeta(firstBlk, customModules).bg;
+    const firstBlk = row.lanes[0]?.blk;
+    const label = row.groupName || (firstBlk ? getBlockDisplayName(firstBlk, customModules) : '');
+    const color = firstBlk ? resolveBlockMeta(firstBlk, customModules).bg : '#4A6DB0';
     entries.push({ key: `row-${idx}`, label, meta: '', color, top: offsetY, height: rh });
     offsetY += rh;
   });
@@ -1026,8 +1045,10 @@ export default function GanttTimeline({
                           const barPad = 5;
                           for (const ganttRow of ganttRows) {
                             const h = rowHeight(ganttRow);
-                            for (const blk of ganttRow.blks) {
-                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, offsetY + barPad, h - barPad * 2));
+                            for (const { blk, lane } of ganttRow.lanes) {
+                              const laneH = ganttRow.laneCount === 2 ? LANE_H : MODULE_H;
+                              const laneTop = offsetY + lane * LANE_H;
+                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, laneTop + barPad, laneH - barPad * 2));
                             }
                             offsetY += h;
                           }
