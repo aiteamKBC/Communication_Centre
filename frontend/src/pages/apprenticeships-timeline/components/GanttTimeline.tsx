@@ -721,49 +721,40 @@ export default function GanttTimeline({
         {pos.width > 30 && (
           <div
             className="min-w-0 w-full select-none"
-            style={{ padding: heightPx >= MODULE_H ? '0 8px' : '0 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 0 }}
+            style={{ padding: '0 8px', display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden' }}
           >
-            {/* Top row: label + tutor */}
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, lineHeight: 1.15 }}>
-              <span
-                className="truncate"
-                style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', flexShrink: 0, maxWidth: pos.width - (showTutor ? 60 : 20) }}
-              >
-                {pos.width > 60 ? mod.lbl : mod.lbl.split(' ')[0]}
-              </span>
-              {showTutor && (
-                <span
-                  className="truncate"
-                  style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.75, flexShrink: 1, minWidth: 0 }}
-                >
-                  · {tutorLabel}
-                </span>
-              )}
-            </div>
+            {/* Module name */}
+            <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {mod.lbl}
+            </span>
 
-            {/* Date row — only on full-height bars that are wide enough */}
-            {heightPx >= MODULE_H && pos.width > 80 && blk.startDate && blk.endDate && (
-              <div
+            {/* Tutor */}
+            {showTutor && (
+              <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.75, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                · {tutorLabel}
+              </span>
+            )}
+
+            {/* Dates */}
+            {pos.width > 120 && blk.startDate && blk.endDate && (
+              <span
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 3,
-                  marginTop: 3,
-                  background: 'rgba(0,0,0,0.18)',
+                  color: mod.tx,
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  opacity: 0.85,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  background: 'rgba(0,0,0,0.15)',
                   borderRadius: 3,
                   padding: '1px 5px',
-                  width: 'fit-content',
-                  maxWidth: pos.width - 16,
+                  marginLeft: 2,
                 }}
               >
-                <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.95, letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>
-                  {formatDateShort(blk.startDate)}
-                </span>
-                <span style={{ color: mod.tx, fontSize: '8px', opacity: 0.6 }}>→</span>
-                <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.95, letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>
-                  {formatDateShort(blk.endDate)}
-                </span>
-              </div>
+                {formatDateShort(blk.startDate)} → {formatDateShort(blk.endDate)}
+              </span>
             )}
           </div>
         )}
