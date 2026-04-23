@@ -15,17 +15,17 @@ const LANE_H    = 28;  // half-height lane when two modules overlap
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface GanttRow {
-  groupName: string;           // all blocks in this row share this group
-  blks: ModuleBlock[];         // all blocks for this group (sequential or overlapping)
-  hasOverlap: boolean;         // true if any two blocks in this row overlap in time
+  groupName: string;   // all blocks in this row share this group
+  blks: ModuleBlock[]; // all blocks for this group, sorted by startDate
 }
 
 function datesOverlap(a: ModuleBlock, b: ModuleBlock): boolean {
   return a.startDate <= b.endDate && b.startDate <= a.endDate;
 }
 
-// Build gantt rows: one row per distinct group name.
-// All modules in the same group share one row regardless of whether they overlap.
+// One row per distinct groupName. All modules in the same group share one row.
+// Bars are absolutely positioned by date so they naturally sit side-by-side or
+// visually overlap — no vertical splitting needed.
 function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
@@ -40,22 +40,17 @@ function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   for (const blk of sorted) {
     const key = (blk.groupName || '').trim();
     if (!rowMap.has(key)) {
-      rowMap.set(key, { groupName: key, blks: [], hasOverlap: false });
+      rowMap.set(key, { groupName: key, blks: [] });
       order.push(key);
     }
-    const row = rowMap.get(key)!;
-    // check if this block overlaps with any existing block in the row
-    if (row.blks.some(existing => datesOverlap(existing, blk))) {
-      row.hasOverlap = true;
-    }
-    row.blks.push(blk);
+    rowMap.get(key)!.blks.push(blk);
   }
 
   return order.map(k => rowMap.get(k)!);
 }
 
-function rowHeight(row: GanttRow): number {
-  return row.hasOverlap ? LANE_H * 2 : MODULE_H;
+function rowHeight(_row: GanttRow): number {
+  return MODULE_H;
 }
 
 // Extract group label from cohort label, e.g. "Cohort 1 - G1" → "G1"
@@ -1028,22 +1023,11 @@ export default function GanttTimeline({
                         {(() => {
                           const bars: React.ReactNode[] = [];
                           let offsetY = 0;
+                          const barPad = 5;
                           for (const ganttRow of ganttRows) {
                             const h = rowHeight(ganttRow);
-                            const barPad = 5;
-                            if (ganttRow.hasOverlap) {
-                              // Two overlapping blocks: split top/bottom lanes
-                              // (only fires if same-group modules overlap in time)
-                              const [first, second] = ganttRow.blks;
-                              bars.push(renderBar(first, row.label, rowColor, grp, gi, ri, offsetY + barPad, LANE_H - barPad * 2));
-                              if (second) {
-                                bars.push(renderBar(second, row.label, rowColor, grp, gi, ri, offsetY + LANE_H + barPad, LANE_H - barPad * 2));
-                              }
-                            } else {
-                              // All blocks are sequential — render each at full row height on the same Y
-                              for (const blk of ganttRow.blks) {
-                                bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, offsetY + barPad, h - barPad * 2));
-                              }
+                            for (const blk of ganttRow.blks) {
+                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, offsetY + barPad, h - barPad * 2));
                             }
                             offsetY += h;
                           }
