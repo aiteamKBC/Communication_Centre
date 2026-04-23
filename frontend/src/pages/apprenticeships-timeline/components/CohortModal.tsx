@@ -328,7 +328,6 @@ function buildGroupSignature(block: ModuleBlock): string {
   return [
     block.groupName || '',
     block.coachName || '',
-    block.tutor || '',
     days,
     block.sessionStartTime || '09:00',
     block.sessionEndTime || '11:00',
