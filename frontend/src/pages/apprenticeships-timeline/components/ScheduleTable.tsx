@@ -150,6 +150,7 @@ function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
         }),
       ),
     )
+    .filter(r => r.isCurrent)
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
 }
 
@@ -212,7 +213,7 @@ export default function ScheduleTable({ groups }: Props) {
       <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200" style={{ background: '#F9FAFB' }}>
         <div>
           <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
-          <p className="text-xs text-gray-400 mt-0.5">{rows.length} active sessions across all programmes</p>
+          <p className="text-xs text-gray-400 mt-0.5">{rows.length} current module{rows.length !== 1 ? 's' : ''} running today</p>
         </div>
       </div>
 
@@ -319,7 +320,7 @@ export default function ScheduleTable({ groups }: Props) {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={11} className="text-center py-8 text-sm text-gray-400 italic border border-gray-200">
-                  No sessions yet. Add cohorts and module blocks to populate this schedule.
+                  No modules are currently running today.
                 </td>
               </tr>
             )}
