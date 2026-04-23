@@ -720,29 +720,31 @@ export default function GanttTimeline({
       >
         {pos.width > 30 && (
           <div
-            className="min-w-0 w-full px-2 py-1.5 select-none"
-            style={{
-              display: 'flex',
-              flexDirection: 'row',
-              justifyContent: 'flex-start',
-              alignItems: 'center',
-              gap: '6px',
-              lineHeight: 1.12,
-              textAlign: 'left',
-            }}
+            className="min-w-0 w-full px-2 py-1 select-none"
+            style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '1px', lineHeight: 1.1, textAlign: 'left' }}
           >
-            <span
-              className="truncate"
-              style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', maxWidth: Math.max(pos.width * 0.58, 24) }}
-            >
-              {pos.width > 60 ? mod.lbl : mod.lbl.split(' ')[0]}
-            </span>
-            {showTutor && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
               <span
                 className="truncate"
-                style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.82, maxWidth: Math.max(pos.width * 0.34, 18), flexShrink: 1 }}
+                style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', maxWidth: Math.max(pos.width * 0.62, 24) }}
               >
-                {stackLabel ? tutorLabel : `• ${tutorLabel}`}
+                {pos.width > 60 ? mod.lbl : mod.lbl.split(' ')[0]}
+              </span>
+              {showTutor && (
+                <span
+                  className="truncate"
+                  style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.82, maxWidth: Math.max(pos.width * 0.3, 18), flexShrink: 1 }}
+                >
+                  {`• ${tutorLabel}`}
+                </span>
+              )}
+            </div>
+            {pos.width > 90 && blk.startDate && blk.endDate && (
+              <span
+                className="truncate"
+                style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.72 }}
+              >
+                {formatDateShort(blk.startDate)} – {formatDateShort(blk.endDate)}
               </span>
             )}
           </div>
