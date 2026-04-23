@@ -27,7 +27,15 @@ function datesOverlap(a: ModuleBlock, b: ModuleBlock): boolean {
 // if two modules overlap in time they share one row split top/bottom.
 function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   const rows: GanttRow[] = [];
-  const sorted = [...blks].sort((a, b) => a.startDate.localeCompare(b.startDate));
+  // Sort by group name first so all blocks from the same group stay together,
+  // then by start date within each group — this ensures the left-label merge
+  // collapses all modules in a group into one label entry.
+  const sorted = [...blks].sort((a, b) => {
+    const ga = (a.groupName || '').toLowerCase();
+    const gb = (b.groupName || '').toLowerCase();
+    if (ga !== gb) return ga.localeCompare(gb);
+    return a.startDate.localeCompare(b.startDate);
+  });
 
   for (const blk of sorted) {
     let placed = false;
@@ -268,6 +276,26 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.sessions} sessions total</p>
             </div>
           </div>
+          {(data.blk.days?.length || data.blk.sessionStartTime) && (
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                <i className="ri-time-line text-gray-400 text-xs" />
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 leading-none">Schedule</p>
+                {data.blk.days?.length ? (
+                  <p className="text-xs font-bold text-gray-800 mt-0.5 capitalize">
+                    {data.blk.days.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join(', ')}
+                  </p>
+                ) : null}
+                {data.blk.sessionStartTime && (
+                  <p className="text-xs text-gray-500">
+                    {data.blk.sessionStartTime}{data.blk.sessionEndTime ? ` – ${data.blk.sessionEndTime}` : ''}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           {hasHolidays && (
             <div className="rounded-lg p-2.5 border" style={{ background: '#FFF8E0', borderColor: '#F7A800' }}>
               <div className="flex items-center gap-1.5 mb-1.5">

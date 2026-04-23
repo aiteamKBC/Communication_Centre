@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { CohortRow, CustomModule, Holiday, ModuleBlock, ModuleValue, ProgrammeGroup, WeekDayKey } from '../types';
+import type { CatalogModule, CohortRow, CustomModule, Holiday, ModuleBlock, ModuleValue, ProgrammeGroup, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
@@ -12,6 +12,7 @@ interface Props {
   groups: ProgrammeGroup[];
   holidays: Holiday[];
   customModules?: CustomModule[];
+  catalogModules?: CatalogModule[];
   initialGroupIdx?: number;
   initialRow?: CohortRow;
   initialExpandedBlockId?: string;
@@ -48,6 +49,7 @@ interface FormData {
   label: string;
   dateLbl: string;
   endDateLbl: string;
+  durationMonths: number;
   intake: string;
   quarter: string;
   color: string;
@@ -136,17 +138,24 @@ function addDaysToIsoDate(value: string, days: number): string {
   return `${result.getFullYear()}-${`${result.getMonth() + 1}`.padStart(2, '0')}-${`${result.getDate()}`.padStart(2, '0')}`;
 }
 
-function addYearsToIsoDate(value: string, years: number): string {
+function addMonthsToIsoDate(value: string, months: number): string {
   if (!isIsoDate(value)) {
     return '';
   }
-
   const [year, month, day] = value.split('-').map(Number);
-  const result = new Date(year + years, month - 1, day);
-  if (result.getMonth() !== month - 1) {
+  const result = new Date(year, month - 1 + months, day);
+  if (result.getMonth() !== (month - 1 + months) % 12) {
     result.setDate(0);
   }
   return `${result.getFullYear()}-${`${result.getMonth() + 1}`.padStart(2, '0')}-${`${result.getDate()}`.padStart(2, '0')}`;
+}
+
+function latestModuleEndDate(groups: FormGroup[]): string {
+  let latest = '';
+  groups.forEach(g => g.modules.forEach(m => {
+    if (m.endDate && m.endDate > latest) latest = m.endDate;
+  }));
+  return latest;
 }
 
 function enumerateIsoDates(startDate: string, endDate: string): string[] {
@@ -287,15 +296,19 @@ const resolveModuleValue = (value: string, customModules: CustomModule[]): Modul
   return customModule ? customModule.name : trimmedValue;
 };
 
-const resolveModuleMeta = (moduleValue: ModuleValue, customModules: CustomModule[]) => {
+const resolveModuleMeta = (moduleValue: ModuleValue, customModules: CustomModule[], catalogModules: CatalogModule[] = []) => {
   const normalizedModuleValue = resolveModuleValue(getModuleInputValue(moduleValue), customModules);
   const standardMeta = normalizedModuleValue in MS ? getModuleMeta(normalizedModuleValue) : null;
   const customMeta = customModules.find(c => c.id === normalizedModuleValue || c.name === normalizedModuleValue);
-  return standardMeta ?? (customMeta ? { lbl: customMeta.name, bg: customMeta.bg, tx: customMeta.tx } : getModuleMeta(moduleValue));
+  const catalogMeta = catalogModules.find(c => c.name === normalizedModuleValue || c.name === moduleValue);
+  if (standardMeta) return standardMeta;
+  if (customMeta) return { lbl: customMeta.name, bg: customMeta.bg, tx: customMeta.tx };
+  if (catalogMeta) return { lbl: catalogMeta.name, bg: catalogMeta.colour || '#4A6DB0', tx: contrastColor(catalogMeta.colour || '#4A6DB0') };
+  return getModuleMeta(moduleValue);
 };
 
-const resolveModuleVisualMeta = (moduleItem: FormModule, customModules: CustomModule[]) => {
-  const baseMeta = resolveModuleMeta(moduleItem.mod, customModules);
+const resolveModuleVisualMeta = (moduleItem: FormModule, customModules: CustomModule[], catalogModules: CatalogModule[] = []) => {
+  const baseMeta = resolveModuleMeta(moduleItem.mod, customModules, catalogModules);
   const overrideColor = moduleItem.color?.trim();
   if (!overrideColor) {
     return baseMeta;
@@ -360,6 +373,7 @@ export default function CohortModal({
   groups,
   holidays,
   customModules = [],
+  catalogModules = [],
   initialGroupIdx = 0,
   initialRow,
   lockGroupSelection = false,
@@ -372,6 +386,7 @@ export default function CohortModal({
     label: initialRow.label,
     dateLbl: normalizeDateLabel(initialRow.dateLbl),
     endDateLbl: normalizeDateLabel(initialRow.endDateLbl || ''),
+    durationMonths: 24,
     intake: initialRow.intake,
     quarter: initialRow.quarter,
     color: initialRow.color || groups[initialGroupIdx]?.color || '#1B2A4A',
@@ -382,6 +397,7 @@ export default function CohortModal({
     label: '',
     dateLbl: '',
     endDateLbl: '',
+    durationMonths: 24,
     intake: 'Intake 1',
     quarter: 'Q1 2025',
     color: groups[initialGroupIdx]?.color || '#1B2A4A',
@@ -424,6 +440,16 @@ export default function CohortModal({
     [holidays, data.holidayIds],
   );
 
+  // Auto-update cohort end date to the latest module end date whenever modules change.
+  // Only updates when the derived date differs from what is stored, preventing loops.
+  useEffect(() => {
+    const latest = latestModuleEndDate(data.groups);
+    if (latest && latest !== data.endDateLbl) {
+      setData(prev => ({ ...prev, endDateLbl: latest }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.groups]);
+
   useEffect(() => {
     const available = new Set(holidays.map(item => item.id));
     const filtered = data.holidayIds.filter(id => available.has(id));
@@ -439,7 +465,14 @@ export default function CohortModal({
     setData(prev => ({
       ...prev,
       dateLbl: value,
-      endDateLbl: value ? addYearsToIsoDate(value, 2) : '',
+      endDateLbl: value ? addMonthsToIsoDate(value, prev.durationMonths) : '',
+    }));
+
+  const setDurationMonths = (months: number) =>
+    setData(prev => ({
+      ...prev,
+      durationMonths: months,
+      endDateLbl: prev.dateLbl ? addMonthsToIsoDate(prev.dateLbl, months) : prev.endDateLbl,
     }));
 
   const toggleHoliday = (holidayId: string) => {
@@ -608,6 +641,30 @@ export default function CohortModal({
     }
   };
 
+  const duplicateGroup = (groupId: string) => {
+    const source = data.groups.find(group => group.id === groupId);
+    if (!source) return;
+
+    const newId = `grp-${Date.now()}-${Math.random()}`;
+    const duplicate: FormGroup = {
+      ...source,
+      id: newId,
+      groupName: source.groupName ? `${source.groupName} (copy)` : '',
+      modules: source.modules.map(m => ({
+        ...m,
+        id: `mod-${Date.now()}-${Math.random()}`,
+      })),
+    };
+
+    setData(prev => {
+      const idx = prev.groups.findIndex(g => g.id === groupId);
+      const next = [...prev.groups];
+      next.splice(idx + 1, 0, duplicate);
+      return { ...prev, groups: next };
+    });
+    setExpandedGroupId(newId);
+  };
+
   const removeModule = async (groupId: string, moduleId: string) => {
     const parentGroup = data.groups.find(group => group.id === groupId);
     const target = parentGroup?.modules.find(item => item.id === moduleId);
@@ -644,7 +701,6 @@ export default function CohortModal({
     const nextErrors: Record<string, string> = {};
     if (!data.label.trim()) nextErrors.label = 'Cohort label is required';
     if (!data.dateLbl.trim()) nextErrors.dateLbl = 'Start date is required';
-    if (!data.endDateLbl.trim()) nextErrors.endDateLbl = 'End date is required';
     if (data.dateLbl && data.endDateLbl && data.endDateLbl < data.dateLbl) nextErrors.endDateLbl = 'End date must be after start date';
     if (data.groups.length === 0) nextErrors.groups = 'Add at least one group';
 
@@ -654,11 +710,8 @@ export default function CohortModal({
       }
 
       group.modules.forEach((moduleItem, moduleIdx) => {
+        if (!moduleItem.mod) nextErrors[`module_mod_${groupIdx}_${moduleIdx}`] = 'Select a module';
         if (!moduleItem.startDate) nextErrors[`module_start_${groupIdx}_${moduleIdx}`] = 'Start date required';
-        if (!moduleItem.endDate) nextErrors[`module_end_${groupIdx}_${moduleIdx}`] = 'End date required';
-        if (moduleItem.startDate && moduleItem.endDate && moduleItem.endDate < moduleItem.startDate) {
-          nextErrors[`module_end_${groupIdx}_${moduleIdx}`] = 'End date must be after start date';
-        }
       });
     });
 
@@ -810,10 +863,30 @@ export default function CohortModal({
                 {errors.dateLbl && <p className="text-red-500 text-xs mt-1">{errors.dateLbl}</p>}
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em] mb-1.5">Cohort End Date</label>
-                <DateField value={data.endDateLbl} onChange={value => setField('endDateLbl', value)} placeholder="Choose cohort end date" error={errors.endDateLbl} accentColor={data.color || selectedProgramme?.color || '#1B2A4A'} />
-                {errors.endDateLbl && <p className="text-red-500 text-xs mt-1">{errors.endDateLbl}</p>}
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em] mb-1.5">Duration (months)</label>
+                <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3">
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={data.durationMonths}
+                    onChange={e => setDurationMonths(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-20 bg-transparent text-sm font-semibold text-gray-800 focus:outline-none"
+                  />
+                  <span className="text-xs text-gray-400">months</span>
+                </div>
               </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em]">Cohort End Date</label>
+                <span className="text-[10px] text-gray-400">
+                  {latestModuleEndDate(data.groups) ? 'auto — set to last module end date' : 'set by duration months above'}
+                </span>
+              </div>
+              <DateField value={data.endDateLbl} onChange={value => setField('endDateLbl', value)} placeholder="Choose cohort end date" error={errors.endDateLbl} accentColor={data.color || selectedProgramme?.color || '#1B2A4A'} />
+              {errors.endDateLbl && <p className="text-red-500 text-xs mt-1">{errors.endDateLbl}</p>}
             </div>
           </div>
 
@@ -908,6 +981,9 @@ export default function CohortModal({
                       <span className="text-sm text-gray-500 hidden md:block">{group.modules.length} module{group.modules.length === 1 ? '' : 's'}</span>
                       {group.coachName && <span className="text-sm text-gray-400 hidden sm:block">{group.coachName}</span>}
                       {firstModule && lastModule && <span className="text-sm text-gray-400 hidden lg:block">{formatDate(firstModule.startDate)} {'->'} {formatDate(lastModule.endDate)}</span>}
+                      <button onClick={e => { e.stopPropagation(); duplicateGroup(group.id); }} title="Duplicate group" className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-blue-500 hover:bg-blue-50 cursor-pointer transition-all">
+                        <i className="ri-file-copy-line text-xs" />
+                      </button>
                       <button onClick={e => { e.stopPropagation(); void removeGroup(group.id); }} className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-all">
                         <i className="ri-delete-bin-line text-xs" />
                       </button>
@@ -962,14 +1038,14 @@ export default function CohortModal({
 
                         <div className="space-y-2">
                           {group.modules.map((moduleItem, moduleIdx) => {
-                            const moduleMeta = resolveModuleVisualMeta(moduleItem, customModules);
+                            const moduleMeta = resolveModuleVisualMeta(moduleItem, customModules, catalogModules);
                             return (
                               <div key={moduleItem.id} className="rounded-xl border border-gray-200 bg-white px-4 py-3 flex items-center gap-3">
                                 <span className="w-3 h-8 rounded-sm shrink-0" style={{ background: moduleMeta.bg }} />
                                 <div className="min-w-0 flex-1">
                                   <p className="text-base font-semibold text-gray-800 truncate">{moduleMeta.lbl}</p>
                                   <p className="text-sm text-gray-400 truncate">{moduleItem.startDate ? formatDate(moduleItem.startDate) : 'No start date'}{moduleItem.endDate ? ` -> ${formatDate(moduleItem.endDate)}` : ''} {' · '} {moduleItem.sessions} sessions</p>
-                                  {(errors[`module_start_${groupIdx}_${moduleIdx}`] || errors[`module_end_${groupIdx}_${moduleIdx}`]) && <p className="text-red-500 text-xs mt-1">{errors[`module_start_${groupIdx}_${moduleIdx}`] || errors[`module_end_${groupIdx}_${moduleIdx}`]}</p>}
+                                  {(errors[`module_mod_${groupIdx}_${moduleIdx}`] || errors[`module_start_${groupIdx}_${moduleIdx}`]) && <p className="text-red-500 text-xs mt-1">{errors[`module_mod_${groupIdx}_${moduleIdx}`] || errors[`module_start_${groupIdx}_${moduleIdx}`]}</p>}
                                 </div>
                                 <button type="button" onClick={() => openEditModule(group.id, moduleItem.id)} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white cursor-pointer transition-all hover:opacity-90" style={{ background: '#1B2A4A' }}>
                                   <i className="ri-edit-line" />
@@ -1071,52 +1147,67 @@ export default function CohortModal({
 
               <div className="px-5 py-5 space-y-4 bg-gray-50">
                 {(() => {
-                  const moduleMeta = resolveModuleVisualMeta(moduleDraft.module, customModules);
+                  const selectedCatalogModule = catalogModules.find(m => m.name === moduleDraft.module.mod || String(m.id) === String(moduleDraft.module.mod));
+                  const accentColor = selectedCatalogModule?.colour || '#1B2A4A';
                   return (
                     <>
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. PMP"
-                          value={getModuleInputValue(moduleDraft.module.mod)}
-                          onChange={e => {
-                            const nextValue = e.target.value;
-                            const resolvedValue = resolveModuleValue(nextValue, customModules);
-                            updateModuleDraft('mod', resolvedValue);
-                            const customModule = customModules.find(c => c.name.toLowerCase() === nextValue.trim().toLowerCase());
-                            if (customModule) {
-                              updateModuleDraft('sessions', customModule.defaultSessions);
-                            }
-                          }}
-                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module Colour</label>
-                        <div className="flex items-center gap-3">
-                          <input type="color" value={moduleDraft.module.color || moduleMeta.bg} onChange={e => updateModuleDraft('color', e.target.value)} className="h-11 w-14 cursor-pointer rounded-lg border border-gray-200 bg-white p-1" />
-                          <div className="flex-1 rounded-lg px-3 py-2 flex items-center gap-2" style={{ background: moduleMeta.bg }}>
-                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: moduleMeta.tx }} />
-                            <div className="min-w-0">
-                              <p className="text-[10px] font-extrabold uppercase tracking-wider" style={{ color: moduleMeta.tx }}>Preview</p>
-                              <p className="text-xs font-bold truncate" style={{ color: moduleMeta.tx }}>{moduleMeta.lbl}</p>
+                        {catalogModules.length > 0 ? (
+                          <select
+                            value={selectedCatalogModule ? selectedCatalogModule.name : ''}
+                            onChange={e => {
+                              const selected = catalogModules.find(m => m.name === e.target.value);
+                              if (selected) {
+                                updateModuleDraft('mod', selected.name);
+                                const sessions = Math.max(1, parseInt(selected.sessions || '1', 10) || 1);
+                                updateModuleDraft('sessions', sessions);
+                                updateModuleDraft('color', selected.colour || '');
+                              } else {
+                                updateModuleDraft('mod', '');
+                              }
+                            }}
+                            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+                            style={{ borderColor: '#D1D5DB' }}
+                          >
+                            <option value="">— Select a module —</option>
+                            {catalogModules.map(m => (
+                              <option key={m.id} value={m.name}>{m.name}{m.sessions ? ` (${m.sessions} sessions)` : ''}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                            No modules in the catalogue yet. Use the <strong>Add Module</strong> button in the toolbar first.
+                          </div>
+                        )}
+                        {selectedCatalogModule && (
+                          <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: `${accentColor}12` }}>
+                            <span className="w-3 h-5 rounded-sm shrink-0" style={{ background: accentColor }} />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-bold truncate" style={{ color: accentColor }}>{selectedCatalogModule.name}</p>
+                              {selectedCatalogModule.sessions && <p className="text-xs text-gray-400">{selectedCatalogModule.sessions} sessions</p>}
                             </div>
                           </div>
-                        </div>
+                        )}
                       </div>
 
                       <div className="grid grid-cols-2 gap-3">
-                        <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module Start Date</label><DateField value={moduleDraft.module.startDate} onChange={value => updateModuleDraft('startDate', value)} placeholder="Choose start date" accentColor={moduleMeta.bg} /></div>
-                        <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module End Date</label><DateField value={moduleDraft.module.endDate} onChange={value => updateModuleDraft('endDate', value)} placeholder="Choose end date" accentColor={moduleMeta.bg} /></div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Number of Sessions</label>
-                        <div className="flex items-center gap-2">
-                          <input type="number" min={1} max={100} value={moduleDraft.module.sessions} onChange={e => updateModuleDraft('sessions', Math.max(1, Number(e.target.value) || 1))} className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm text-center focus:outline-none bg-white" />
-                          <span className="text-xs text-gray-400">sessions total</span>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module Start Date</label>
+                          <DateField value={moduleDraft.module.startDate} onChange={value => updateModuleDraft('startDate', value)} placeholder="Choose start date" accentColor={accentColor} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module End Date</label>
+                          <div
+                            className="flex h-10 items-center gap-2 rounded-lg border px-3 text-sm"
+                            style={{ borderColor: accentColor ? `${accentColor}40` : '#D1D5DB', background: accentColor ? `${accentColor}08` : '#F9FAFB' }}
+                          >
+                            <i className="ri-calendar-check-line text-sm shrink-0" style={{ color: accentColor || '#6B7280' }} />
+                            <span className="font-semibold" style={{ color: accentColor || '#374151' }}>
+                              {moduleDraft.module.endDate ? formatDate(moduleDraft.module.endDate) : '—'}
+                            </span>
+                            <span className="ml-auto text-xs text-gray-400">auto</span>
+                          </div>
                         </div>
                       </div>
 

@@ -100,6 +100,18 @@ class TrainingPlanProgramConfig(models.Model):
 		db_table = 'training_plan_program_configs'
 
 
+class Module(models.Model):
+	module_id = models.BigAutoField(primary_key=True, db_column='Module ID')
+	module_name = models.TextField(db_column='Module_name', blank=True, default='')
+	module_colour = models.TextField(db_column='Module_colour', blank=True, default='')
+	number_of_sessions = models.TextField(db_column='Number of sessions', blank=True, default='')
+	notes = models.TextField(db_column='Notes', blank=True, default='')
+
+	class Meta:
+		db_table = 'Modules'
+		managed = False
+
+
 class UrgentNotice(models.Model):
 	id = models.BigAutoField(primary_key=True)
 	title = models.TextField(blank=True, default='')

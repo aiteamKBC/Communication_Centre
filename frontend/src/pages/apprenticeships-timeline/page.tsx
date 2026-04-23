@@ -2,12 +2,13 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram, CatalogModule } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
+import AddModuleCatalogModal from './components/AddModuleCatalogModal';
 import AddProgramModal from './components/AddProgramModal';
 import ManageProgramModal from './components/ManageProgramModal';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
@@ -308,12 +309,14 @@ export default function ApprenticeshipTimeline() {
   const { canManageCohorts } = useAccessControl();
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
   const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
+  const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [modal,    setModal]    = useState<ModalState>({ open: false });
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
   const [showAddModule,  setShowAddModule]  = useState(false);
+  const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
@@ -421,9 +424,28 @@ export default function ApprenticeshipTimeline() {
       }
     }
 
+    async function loadCatalogModules() {
+      try {
+        const response = await fetch('/api/modules/');
+        if (!response.ok) {
+          return;
+        }
+
+        const items = (await response.json()) as CatalogModule[];
+        if (!Array.isArray(items) || cancelled) {
+          return;
+        }
+
+        setCatalogModules(items);
+      } catch {
+        // Keep current catalog modules if loading fails.
+      }
+    }
+
     void loadTrainingPlanModules();
     void loadTrainingPlanProgramConfigs();
     void loadTrainingPlanHolidays();
+    void loadCatalogModules();
     return () => {
       cancelled = true;
     };
@@ -734,6 +756,38 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const handleAddCatalogModule = async (mod: Omit<CatalogModule, 'id'>) => {
+    try {
+      const response = await fetch('/api/modules/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mod),
+      });
+
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
+
+      const saved = (await response.json()) as CatalogModule;
+      setCatalogModules(prev => [...prev, saved]);
+      setShowAddCatalogModule(false);
+      void kbcSuccessSwal.fire({
+        icon: 'success',
+        title: `Module "${mod.name}" added`,
+        confirmButtonText: 'OK',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      void kbcSwal.fire({
+        title: 'Module Not Saved',
+        html: `The module was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
+  };
+
   const handleAddProgram = async (prog: CustomProgram) => {
     const existingCustom = customPrograms.some(program => program.id === prog.id);
     const nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
@@ -1011,6 +1065,15 @@ export default function ApprenticeshipTimeline() {
             )}
             {canManageCohorts && (
               <button
+                onClick={() => setShowAddCatalogModule(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
+                <i className="ri-puzzle-line" />
+                Add Module
+              </button>
+            )}
+            {canManageCohorts && (
+              <button
                 onClick={() => setProgramModal({ open: true, mode: 'add' })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
                 style={{ background: '#1B2A4A' }}>
@@ -1117,6 +1180,13 @@ export default function ApprenticeshipTimeline() {
                 Holidays
               </button>
               <button
+                onClick={() => setShowAddCatalogModule(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
+                style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
+                <i className="ri-puzzle-line" />
+                Add Module
+              </button>
+              <button
                 onClick={() => setProgramModal({ open: true, mode: 'add' })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-90"
                 style={{ background: '#1B2A4A' }}>
@@ -1194,6 +1264,7 @@ export default function ApprenticeshipTimeline() {
           groups={groups}
           holidays={holidays}
           customModules={customModules}
+          catalogModules={catalogModules}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
@@ -1216,6 +1287,13 @@ export default function ApprenticeshipTimeline() {
         <AddModuleModal
           onSave={handleAddModule}
           onClose={() => setShowAddModule(false)}
+        />
+      )}
+
+      {canManageCohorts && showAddCatalogModule && (
+        <AddModuleCatalogModal
+          onSave={handleAddCatalogModule}
+          onClose={() => setShowAddCatalogModule(false)}
         />
       )}
 

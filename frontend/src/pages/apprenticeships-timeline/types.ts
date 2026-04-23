@@ -83,3 +83,11 @@ export interface CustomProgram {
   sub: string;
   color: string;
 }
+
+export interface CatalogModule {
+  id: number;
+  name: string;
+  colour: string;
+  sessions: string;
+  notes: string;
+}

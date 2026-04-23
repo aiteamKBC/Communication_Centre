@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { CustomProgram, ProgrammeGroup } from '../types';
 import { formatDate } from '../utils';
-import DateField from './DateField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
@@ -29,52 +28,6 @@ function contrastColor(hex: string): string {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#1F2937' : '#ffffff';
 }
 
-function isIsoDate(value: string): boolean {
-  if (!value) {
-    return false;
-  }
-
-  const [year, month, day] = value.split('-').map(Number);
-  if (!year || !month || !day) {
-    return false;
-  }
-
-  const parsed = new Date(year, month - 1, day);
-  return (
-    !Number.isNaN(parsed.getTime())
-    && parsed.getFullYear() === year
-    && parsed.getMonth() === month - 1
-    && parsed.getDate() === day
-  );
-}
-
-function parseProgrammeDates(sub: string): { startDate: string; endDate: string } {
-  const [startDate = '', endDate = ''] = (sub || '').split('|');
-  return {
-    startDate: isIsoDate(startDate) ? startDate : '',
-    endDate: isIsoDate(endDate) ? endDate : '',
-  };
-}
-
-function serializeProgrammeDates(startDate: string, endDate: string): string {
-  return startDate && endDate ? `${startDate}|${endDate}` : '';
-}
-
-function addYearsToIsoDate(value: string, years: number): string {
-  if (!isIsoDate(value)) {
-    return '';
-  }
-
-  const [year, month, day] = value.split('-').map(Number);
-  const result = new Date(year + years, month - 1, day);
-  if (result.getMonth() !== month - 1) {
-    result.setDate(0);
-  }
-  const nextYear = result.getFullYear();
-  const nextMonth = `${result.getMonth() + 1}`.padStart(2, '0');
-  const nextDay = `${result.getDate()}`.padStart(2, '0');
-  return `${nextYear}-${nextMonth}-${nextDay}`;
-}
 
 function getProgrammeRange(group: ProgrammeGroup): { start: string; end: string } | null {
   const blocks = group.rows.flatMap(row => row.blks);
@@ -108,11 +61,8 @@ export default function ManageProgramModal({
   onDeleteCohort,
   onDeleteProgram,
 }: Props) {
-  const storedDates = parseProgrammeDates(program.sub || '');
   const programmeRange = getProgrammeRange(group);
   const [name, setName] = useState(program.name || '');
-  const [startDate, setStartDate] = useState(storedDates.startDate || programmeRange?.start || '');
-  const [endDate, setEndDate] = useState(storedDates.endDate || programmeRange?.end || '');
   const [color, setColor] = useState(program.color || '#1B2A4A');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -137,15 +87,6 @@ export default function ManageProgramModal({
     if (!name.trim()) {
       nextErrors.name = 'Programme name is required';
     }
-    if (!startDate) {
-      nextErrors.startDate = 'Start date is required';
-    }
-    if (!endDate) {
-      nextErrors.endDate = 'End date is required';
-    }
-    if (startDate && endDate && endDate < startDate) {
-      nextErrors.endDate = 'End date must be after start date';
-    }
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       return;
@@ -154,7 +95,7 @@ export default function ManageProgramModal({
     onSave({
       id: program.id,
       name: name.trim(),
-      sub: serializeProgrammeDates(startDate, endDate),
+      sub: program.sub || '',
       color,
     });
   };
@@ -187,39 +128,7 @@ export default function ManageProgramModal({
               {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Start Date</label>
-                <DateField
-                  value={startDate}
-                  onChange={value => {
-                    setStartDate(value);
-                    setEndDate(value ? addYearsToIsoDate(value, 2) : '');
-                    setErrors(prev => ({ ...prev, startDate: '', endDate: '' }));
-                  }}
-                  placeholder="Choose start date"
-                  error={errors.startDate}
-                  accentColor={color}
-                />
-                {errors.startDate && <p className="text-red-500 text-xs mt-1">{errors.startDate}</p>}
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">End Date</label>
-                <DateField
-                  value={endDate}
-                  onChange={value => {
-                    setEndDate(value);
-                    setErrors(prev => ({ ...prev, startDate: '', endDate: '' }));
-                  }}
-                  placeholder="Choose end date"
-                  error={errors.endDate}
-                  accentColor={color}
-                />
-                {errors.endDate && <p className="text-red-500 text-xs mt-1">{errors.endDate}</p>}
-              </div>
-            </div>
-
-            <div className="md:col-span-2">
+            <div>
               <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Programme Color</label>
               <div className="flex items-center gap-3">
                 <input
@@ -246,13 +155,9 @@ export default function ManageProgramModal({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Programme Schedule</p>
-                {startDate && endDate ? (
+                {programmeRange ? (
                   <p className="text-sm font-semibold text-gray-800 mt-1">
-                    {formatDate(startDate)} - {formatDate(endDate)}
-                  </p>
-                ) : programmeRange ? (
-                  <p className="text-sm font-semibold text-gray-800 mt-1">
-                    {formatDate(programmeRange.start)} - {formatDate(programmeRange.end)}
+                    {formatDate(programmeRange.start)} — {formatDate(programmeRange.end)}
                   </p>
                 ) : (
                   <p className="text-sm text-gray-400 mt-1">No dates yet. Add a cohort to define the programme schedule.</p>

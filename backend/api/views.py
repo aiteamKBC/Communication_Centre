@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import EventData, Feedback, LeadershipMessage, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
+from .models import EventData, Feedback, LeadershipMessage, Module, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
 
 
 def serialize_event(event: EventData) -> dict:
@@ -894,6 +894,49 @@ def training_plan_program_configs(request):
 			'saved': len(created),
 			'items': [serialize_training_plan_program_config(item) for item in created],
 		})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def modules(request):
+	if request.method == 'GET':
+		records = Module.objects.all().order_by('module_name', 'module_id')
+		return JsonResponse([{
+			'id': item.module_id,
+			'name': item.module_name,
+			'colour': item.module_colour,
+			'sessions': item.number_of_sessions,
+			'notes': item.notes,
+		} for item in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		name = str(payload.get('name', '')).strip()
+		colour = str(payload.get('colour', '')).strip()
+		sessions = str(payload.get('sessions', '')).strip()
+		notes = str(payload.get('notes', '')).strip()
+
+		if not name:
+			return HttpResponseBadRequest('Module name is required.')
+
+		record = Module.objects.create(
+			module_name=name,
+			module_colour=colour,
+			number_of_sessions=sessions,
+			notes=notes,
+		)
+		return JsonResponse({
+			'id': record.module_id,
+			'name': record.module_name,
+			'colour': record.module_colour,
+			'sessions': record.number_of_sessions,
+			'notes': record.notes,
+		}, status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
