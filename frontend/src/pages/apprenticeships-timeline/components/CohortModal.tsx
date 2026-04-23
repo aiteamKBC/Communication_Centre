@@ -30,6 +30,7 @@ interface FormModule {
   endDate: string;
   sessions: number;
   notes: string;
+  tutor: string;
 }
 
 interface FormGroup {
@@ -253,6 +254,7 @@ function newFormModule(): FormModule {
     endDate: '',
     sessions: 1,
     notes: '',
+    tutor: '',
   };
 }
 
@@ -362,6 +364,7 @@ function groupBlocksForForm(blocks: ModuleBlock[]) {
       endDate: block.endDate,
       sessions: block.sessions,
       notes: block.notes || '',
+      tutor: block.tutor || '',
     });
   });
 
@@ -740,7 +743,7 @@ export default function CohortModal({
           groupName: group.groupName.trim() || undefined,
           coachName: group.coachName.trim() || undefined,
           color: moduleItem.color || group.color,
-          tutor: group.tutor.trim(),
+          tutor: moduleItem.tutor.trim(),
           startDate: moduleItem.startDate,
           endDate: moduleItem.endDate,
           sessions: moduleItem.sessions,
@@ -1041,10 +1044,22 @@ export default function CohortModal({
                             const moduleMeta = resolveModuleVisualMeta(moduleItem, customModules, catalogModules);
                             return (
                               <div key={moduleItem.id} className="rounded-xl border border-gray-200 bg-white px-4 py-3 flex items-center gap-3">
-                                <span className="w-3 h-8 rounded-sm shrink-0" style={{ background: moduleMeta.bg }} />
+                                <span className="w-3 h-10 rounded-sm shrink-0" style={{ background: moduleMeta.bg }} />
                                 <div className="min-w-0 flex-1">
-                                  <p className="text-base font-semibold text-gray-800 truncate">{moduleMeta.lbl}</p>
-                                  <p className="text-sm text-gray-400 truncate">{moduleItem.startDate ? formatDate(moduleItem.startDate) : 'No start date'}{moduleItem.endDate ? ` -> ${formatDate(moduleItem.endDate)}` : ''} {' · '} {moduleItem.sessions} sessions</p>
+                                  <p className="text-sm font-bold text-gray-800 truncate">{moduleMeta.lbl}</p>
+                                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md" style={{ background: `${moduleMeta.bg}18`, color: moduleMeta.bg }}>
+                                      <i className="ri-calendar-line text-[10px]" />
+                                      {moduleItem.startDate ? formatDate(moduleItem.startDate) : 'No start'}
+                                    </span>
+                                    <i className="ri-arrow-right-line text-gray-300 text-xs" />
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md" style={{ background: `${moduleMeta.bg}18`, color: moduleMeta.bg }}>
+                                      <i className="ri-calendar-check-line text-[10px]" />
+                                      {moduleItem.endDate ? formatDate(moduleItem.endDate) : '—'}
+                                    </span>
+                                    <span className="text-xs text-gray-400">· {moduleItem.sessions} sessions</span>
+                                    {moduleItem.tutor && <span className="text-xs text-gray-400">· {moduleItem.tutor}</span>}
+                                  </div>
                                   {(errors[`module_mod_${groupIdx}_${moduleIdx}`] || errors[`module_start_${groupIdx}_${moduleIdx}`]) && <p className="text-red-500 text-xs mt-1">{errors[`module_mod_${groupIdx}_${moduleIdx}`] || errors[`module_start_${groupIdx}_${moduleIdx}`]}</p>}
                                 </div>
                                 <button type="button" onClick={() => openEditModule(group.id, moduleItem.id)} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white cursor-pointer transition-all hover:opacity-90" style={{ background: '#1B2A4A' }}>
@@ -1101,7 +1116,6 @@ export default function CohortModal({
 
                 <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Group Name</label><input type="text" placeholder="e.g. G1" value={groupDraft.group.groupName} onChange={e => updateGroupDraft('groupName', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" /></div>
                 <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Coach Name</label><input type="text" placeholder="e.g. Coach Ahmed" value={groupDraft.group.coachName} onChange={e => updateGroupDraft('coachName', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" /></div>
-                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tutor / Lecturer</label><input type="text" placeholder="e.g. Dr. Andrew Marsh" value={groupDraft.group.tutor} onChange={e => updateGroupDraft('tutor', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" /></div>
 
                 <div>
                   <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Week Days</label>
@@ -1209,6 +1223,11 @@ export default function CohortModal({
                             <span className="ml-auto text-xs text-gray-400">auto</span>
                           </div>
                         </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tutor / Lecturer</label>
+                        <input type="text" placeholder="e.g. Dr. Andrew Marsh" value={moduleDraft.module.tutor} onChange={e => updateModuleDraft('tutor', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" />
                       </div>
 
                       <div>
