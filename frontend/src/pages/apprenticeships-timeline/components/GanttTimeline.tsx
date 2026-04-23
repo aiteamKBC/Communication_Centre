@@ -10,8 +10,8 @@ import {
 
 const LEFT_W    = 220;
 const COHORT_H  = 32;  // thin cohort header strip
-const MODULE_H  = 48;  // full-height module row (no overlap)
-const LANE_H    = 26;  // half-height lane when two modules overlap
+const MODULE_H  = 56;  // full-height module row (no overlap)
+const LANE_H    = 28;  // half-height lane when two modules overlap
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface GanttRow {
@@ -720,40 +720,52 @@ export default function GanttTimeline({
       >
         {pos.width > 30 && (
           <div
-            className="min-w-0 w-full px-2 py-1 select-none"
-            style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '1px', lineHeight: 1.1, textAlign: 'left' }}
+            className="min-w-0 w-full select-none"
+            style={{ padding: heightPx >= MODULE_H ? '0 8px' : '0 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 0 }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            {/* Top row: label + tutor */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, lineHeight: 1.15 }}>
               <span
                 className="truncate"
-                style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', maxWidth: Math.max(pos.width * 0.62, 24) }}
+                style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', flexShrink: 0, maxWidth: pos.width - (showTutor ? 60 : 20) }}
               >
                 {pos.width > 60 ? mod.lbl : mod.lbl.split(' ')[0]}
               </span>
               {showTutor && (
                 <span
                   className="truncate"
-                  style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.82, maxWidth: Math.max(pos.width * 0.3, 18), flexShrink: 1 }}
+                  style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.75, flexShrink: 1, minWidth: 0 }}
                 >
-                  {`• ${tutorLabel}`}
+                  · {tutorLabel}
                 </span>
               )}
             </div>
-            {pos.width > 90 && blk.startDate && blk.endDate && (
-              <span
-                className="truncate"
-                style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.72 }}
+
+            {/* Date row — only on full-height bars that are wide enough */}
+            {heightPx >= MODULE_H && pos.width > 80 && blk.startDate && blk.endDate && (
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 3,
+                  marginTop: 3,
+                  background: 'rgba(0,0,0,0.18)',
+                  borderRadius: 3,
+                  padding: '1px 5px',
+                  width: 'fit-content',
+                  maxWidth: pos.width - 16,
+                }}
               >
-                {formatDateShort(blk.startDate)} – {formatDateShort(blk.endDate)}
-              </span>
+                <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.95, letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>
+                  {formatDateShort(blk.startDate)}
+                </span>
+                <span style={{ color: mod.tx, fontSize: '8px', opacity: 0.6 }}>→</span>
+                <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.95, letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>
+                  {formatDateShort(blk.endDate)}
+                </span>
+              </div>
             )}
           </div>
-        )}
-        {false && (
-          <span className="truncate select-none px-1 opacity-70"
-            style={{ color: mod.tx, fontSize: '9px' }}>
-            · {blk.tutor.split(' ')[0]}
-          </span>
         )}
         {hasOverlap && (
           <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 flex items-center justify-center rounded-full"
