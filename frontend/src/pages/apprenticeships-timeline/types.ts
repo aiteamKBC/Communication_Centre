@@ -90,4 +90,6 @@ export interface CatalogModule {
   colour: string;
   sessions: string;
   notes: string;
+  sessionNames: string[];
+  sessionDescriptions: string[];
 }

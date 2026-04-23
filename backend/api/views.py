@@ -898,17 +898,36 @@ def training_plan_program_configs(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
+_SESSION_NAME_FIELDS = [f'session_name_{i}' for i in range(1, 14)]
+_SESSION_DESC_FIELDS = [f'session_description_{i}' for i in range(1, 14)]
+
+
+def _serialize_module(item) -> dict:
+	session_names = [getattr(item, f, '') or '' for f in _SESSION_NAME_FIELDS]
+	session_descriptions = [getattr(item, f, '') or '' for f in _SESSION_DESC_FIELDS]
+	return {
+		'id': item.module_id,
+		'name': item.module_name,
+		'colour': item.module_colour,
+		'sessions': item.number_of_sessions,
+		'notes': item.notes,
+		'sessionNames': session_names,
+		'sessionDescriptions': session_descriptions,
+	}
+
+
+def _apply_session_data(record, session_names: list, session_descriptions: list):
+	for i, field in enumerate(_SESSION_NAME_FIELDS):
+		setattr(record, field, session_names[i] if i < len(session_names) else '')
+	for i, field in enumerate(_SESSION_DESC_FIELDS):
+		setattr(record, field, session_descriptions[i] if i < len(session_descriptions) else '')
+
+
 @csrf_exempt
 def modules(request):
 	if request.method == 'GET':
 		records = Module.objects.all().order_by('module_name', 'module_id')
-		return JsonResponse([{
-			'id': item.module_id,
-			'name': item.module_name,
-			'colour': item.module_colour,
-			'sessions': item.number_of_sessions,
-			'notes': item.notes,
-		} for item in records], safe=False)
+		return JsonResponse([_serialize_module(item) for item in records], safe=False)
 
 	if request.method == 'POST':
 		try:
@@ -920,23 +939,59 @@ def modules(request):
 		colour = str(payload.get('colour', '')).strip()
 		sessions = str(payload.get('sessions', '')).strip()
 		notes = str(payload.get('notes', '')).strip()
+		session_names = [str(s) for s in payload.get('sessionNames', [])]
+		session_descriptions = [str(s) for s in payload.get('sessionDescriptions', [])]
 
 		if not name:
 			return HttpResponseBadRequest('Module name is required.')
 
-		record = Module.objects.create(
+		record = Module(
 			module_name=name,
 			module_colour=colour,
 			number_of_sessions=sessions,
 			notes=notes,
 		)
-		return JsonResponse({
-			'id': record.module_id,
-			'name': record.module_name,
-			'colour': record.module_colour,
-			'sessions': record.number_of_sessions,
-			'notes': record.notes,
-		}, status=201)
+		_apply_session_data(record, session_names, session_descriptions)
+		record.save()
+		return JsonResponse(_serialize_module(record), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def module_detail(request, module_id: int):
+	try:
+		record = Module.objects.get(module_id=module_id)
+	except Module.DoesNotExist:
+		return JsonResponse({'detail': 'Not found.'}, status=404)
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		if 'name' in payload:
+			name = str(payload['name']).strip()
+			if not name:
+				return HttpResponseBadRequest('Module name is required.')
+			record.module_name = name
+		if 'colour' in payload:
+			record.module_colour = str(payload['colour']).strip()
+		if 'sessions' in payload:
+			record.number_of_sessions = str(payload['sessions']).strip()
+		if 'notes' in payload:
+			record.notes = str(payload['notes']).strip()
+		if 'sessionNames' in payload or 'sessionDescriptions' in payload:
+			names = [str(s) for s in payload.get('sessionNames', [getattr(record, f, '') or '' for f in _SESSION_NAME_FIELDS])]
+			descs = [str(s) for s in payload.get('sessionDescriptions', [getattr(record, f, '') or '' for f in _SESSION_DESC_FIELDS])]
+			_apply_session_data(record, names, descs)
+		record.save()
+		return JsonResponse(_serialize_module(record))
+
+	if request.method == 'DELETE':
+		record.delete()
+		return JsonResponse({'detail': 'Deleted.'}, status=200)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

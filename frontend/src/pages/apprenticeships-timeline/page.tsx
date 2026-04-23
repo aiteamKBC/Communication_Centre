@@ -9,6 +9,7 @@ import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
 import AddModuleCatalogModal from './components/AddModuleCatalogModal';
+import ManageModulesModal from './components/ManageModulesModal';
 import AddProgramModal from './components/AddProgramModal';
 import ManageProgramModal from './components/ManageProgramModal';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
@@ -317,6 +318,7 @@ export default function ApprenticeshipTimeline() {
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
   const [showAddModule,  setShowAddModule]  = useState(false);
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
+  const [showManageModules, setShowManageModules] = useState(false);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
@@ -431,11 +433,12 @@ export default function ApprenticeshipTimeline() {
           return;
         }
 
-        const items = (await response.json()) as CatalogModule[];
-        if (!Array.isArray(items) || cancelled) {
+        const raw = (await response.json()) as (CatalogModule & { sessionNames?: string[]; sessionDescriptions?: string[] })[];
+        if (!Array.isArray(raw) || cancelled) {
           return;
         }
 
+        const items: CatalogModule[] = raw.map(m => ({ ...m, sessionNames: m.sessionNames ?? [], sessionDescriptions: m.sessionDescriptions ?? [] }));
         setCatalogModules(items);
       } catch {
         // Keep current catalog modules if loading fails.
@@ -788,6 +791,58 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const handleUpdateCatalogModule = async (mod: CatalogModule) => {
+    const response = await fetch(`/api/modules/${mod.id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mod),
+    });
+    if (!response.ok) {
+      const text = (await response.text()).trim();
+      throw new Error(text || `Request failed with status ${response.status}`);
+    }
+    const updated = (await response.json()) as CatalogModule;
+    setCatalogModules(prev => prev.map(m => m.id === updated.id ? updated : m));
+  };
+
+  const handleDeleteCatalogModule = async (id: number) => {
+    const moduleName = catalogModules.find(m => m.id === id)?.name;
+
+    const response = await fetch(`/api/modules/${id}/`, { method: 'DELETE' });
+    if (!response.ok) {
+      const text = (await response.text()).trim();
+      throw new Error(text || `Request failed with status ${response.status}`);
+    }
+
+    setCatalogModules(prev => prev.filter(m => m.id !== id));
+
+    // Remove all blocks referencing this catalogue module from every group
+    if (moduleName) {
+      const nextGroups = groups.map(g => ({
+        ...g,
+        rows: g.rows.map(row => ({
+          ...row,
+          blks: row.blks.filter(blk => blk.mod !== moduleName),
+        })).filter(row => row.blks.length > 0),
+      }));
+      const hasChanges = nextGroups.some((g, gi) =>
+        g.rows.length !== groups[gi].rows.length ||
+        g.rows.some((row, ri) => row.blks.length !== groups[gi].rows[ri]?.blks.length)
+      );
+      if (hasChanges) {
+        const flattened = flattenGroupsForApi(nextGroups);
+        setTrainingPlanItems(flattened);
+        setGroups(nextGroups);
+        // Silently persist — no success toast needed since the delete confirmation covers it
+        void fetch('/api/training-plan/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: flattened }),
+        });
+      }
+    }
+  };
+
   const handleAddProgram = async (prog: CustomProgram) => {
     const existingCustom = customPrograms.some(program => program.id === prog.id);
     const nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
@@ -1074,6 +1129,15 @@ export default function ApprenticeshipTimeline() {
             )}
             {canManageCohorts && (
               <button
+                onClick={() => setShowManageModules(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
+                <i className="ri-list-check-2" />
+                View Added Modules
+              </button>
+            )}
+            {canManageCohorts && (
+              <button
                 onClick={() => setProgramModal({ open: true, mode: 'add' })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
                 style={{ background: '#1B2A4A' }}>
@@ -1185,6 +1249,13 @@ export default function ApprenticeshipTimeline() {
                 style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
                 <i className="ri-puzzle-line" />
                 Add Module
+              </button>
+              <button
+                onClick={() => setShowManageModules(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
+                style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
+                <i className="ri-list-check-2" />
+                View Added Modules
               </button>
               <button
                 onClick={() => setProgramModal({ open: true, mode: 'add' })}
@@ -1338,6 +1409,16 @@ export default function ApprenticeshipTimeline() {
             />
           )
         )
+      )}
+
+      {canManageCohorts && showManageModules && (
+        <ManageModulesModal
+          modules={catalogModules}
+          onAdd={handleAddCatalogModule}
+          onUpdate={handleUpdateCatalogModule}
+          onDelete={handleDeleteCatalogModule}
+          onClose={() => setShowManageModules(false)}
+        />
       )}
     </div>
   );
