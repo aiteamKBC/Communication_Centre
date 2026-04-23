@@ -24,6 +24,7 @@ interface DerivedScheduleRow {
   rowHighlight?: string;
   startDate: string;
   endDate: string;
+  isCurrent?: boolean;
 }
 
 interface ProgrammeSection {
@@ -106,12 +107,16 @@ function formatCompactIsoDate(isoDate: string): string {
 }
 
 function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayTs = today.getTime();
+
   return groups
     .flatMap(group =>
       group.rows.flatMap(row =>
         row.blks.map((blk, idx) => {
           const moduleName = getModuleMeta(blk.mod).lbl;
-          const groupName = (blk.groupName || '').trim();
+          const groupName = (blk.groupName || row.label || '').trim();
           const nextModule = row.blks[idx + 1] ? getModuleMeta(row.blks[idx + 1].mod).lbl : 'EPA';
           const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
           const trainer = blk.tutor?.trim() || 'TBD';
@@ -119,17 +124,22 @@ function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
           const endTime = blk.sessionEndTime || '11:00';
           const cell: SessionCell = { trainer, time: formatTimeRange(startTime, endTime) };
 
+          const startTs = new Date(blk.startDate).getTime();
+          const endTs = new Date(blk.endDate).getTime();
+          const isCurrent = !Number.isNaN(startTs) && !Number.isNaN(endTs) && todayTs >= startTs && todayTs <= endTs;
+
           const base: DerivedScheduleRow = {
-            cohort: `${formatCompactIsoDate(blk.startDate)} -> ${formatCompactIsoDate(blk.endDate)}`,
+            cohort: `${formatCompactIsoDate(blk.startDate)} → ${formatCompactIsoDate(blk.endDate)}`,
             cohortColor: row.color || group.color,
             programme: programmeLabelFromGroupName(group.name),
             programmeColor: group.color,
             module: moduleName,
             groupName: groupName || undefined,
             nextModule,
-            rowHighlight: `${(row.color || group.color)}0D`,
+            rowHighlight: isCurrent ? '#FFFBEB' : `${(row.color || group.color)}0D`,
             startDate: blk.startDate,
             endDate: blk.endDate,
+            isCurrent,
           };
 
           weekdays.forEach(day => {
@@ -230,14 +240,14 @@ export default function ScheduleTable({ groups }: Props) {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse" style={{ minWidth: 1100 }}>
+        <table className="w-full border-collapse" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={3} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-wide text-white text-sm" style={{ background: '#1B2A4A' }}>
+              <th colSpan={4} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-wide text-white text-sm" style={{ background: '#1B2A4A' }}>
                 Apprenticeship
               </th>
               <th colSpan={6} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-widest text-sm" style={{ background: '#F7A800', color: '#1B2A4A' }}>
-                2026
+                {new Date().getFullYear()}
               </th>
               <th className="border border-gray-300 text-center py-2.5 font-extrabold text-white text-xs" style={{ background: '#1B2A4A' }}>
                 Next Module
@@ -245,8 +255,9 @@ export default function ScheduleTable({ groups }: Props) {
             </tr>
             <tr style={{ background: '#F1F5F9' }}>
               <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Programme</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 130 }}>Module</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 150 }}>Module Dates</th>
+              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 90 }}>Cohort</th>
+              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 140 }}>Module</th>
+              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 160 }}>Module Dates</th>
               {DAY_COLS.map(d => (
                 <th key={d.key} className="border border-gray-200 px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide" style={{ background: d.headerBg, color: d.headerTx, minWidth: 140 }}>
                   {d.label}
@@ -259,18 +270,39 @@ export default function ScheduleTable({ groups }: Props) {
             {sections.map(section => (
               <Fragment key={`section-${section.programme}`}>
                 {section.rows.map((row, idx) => (
-                  <tr key={`${section.programme}-${row.cohort}-${row.module}-${idx}`} className="group/srow hover:brightness-95 transition-all" style={{ background: row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB') }}>
+                  <tr
+                    key={`${section.programme}-${row.cohort}-${row.module}-${idx}`}
+                    className="group/srow hover:brightness-95 transition-all"
+                    style={{ background: row.isCurrent ? '#FFFBEB' : (row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB')), outline: row.isCurrent ? '2px solid #F7A800' : 'none', outlineOffset: '-1px' }}
+                  >
                     {idx === 0 && (
                       <td rowSpan={section.rows.length} className="border border-gray-200 px-3 py-1.5 align-middle text-center bg-white/70">
                         <span className="inline-flex items-center justify-center font-bold text-xs whitespace-nowrap" style={{ color: row.programmeColor }}>{row.programme}</span>
                       </td>
                     )}
+                    {/* Cohort name */}
                     <td className="border border-gray-200 px-3 py-1.5">
-                      <div className="leading-tight">
+                      {row.groupName ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap" style={{ background: `${row.cohortColor}18`, color: row.cohortColor }}>
+                          {row.groupName}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </td>
+                    {/* Module + current badge */}
+                    <td className="border border-gray-200 px-3 py-1.5">
+                      <div className="leading-tight flex items-center gap-1.5 flex-wrap">
                         <p className="text-sm text-gray-700 font-bold">{row.module}</p>
-                        {row.groupName && <p className="text-xs text-gray-400 mt-0.5">{row.groupName}</p>}
+                        {row.isCurrent && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wide" style={{ background: '#F7A800', color: '#1B2A4A' }}>
+                            <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse inline-block" />
+                            Current
+                          </span>
+                        )}
                       </div>
                     </td>
+                    {/* Dates */}
                     <td className="border border-gray-200 px-3 py-1.5">
                       <span className="inline-flex items-center font-extrabold text-xs whitespace-nowrap" style={{ color: row.cohortColor }}>
                         {row.cohort}
@@ -286,7 +318,7 @@ export default function ScheduleTable({ groups }: Props) {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="text-center py-8 text-sm text-gray-400 italic border border-gray-200">
+                <td colSpan={11} className="text-center py-8 text-sm text-gray-400 italic border border-gray-200">
                   No sessions yet. Add cohorts and module blocks to populate this schedule.
                 </td>
               </tr>
