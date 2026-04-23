@@ -79,53 +79,55 @@ interface LeftLabelEntry {
 }
 
 function buildLeftLabelEntries(ganttRows: GanttRow[], customModules: CustomModule[]): LeftLabelEntry[] {
-  const laneEntries: LeftLabelEntry[] = [];
+  // Track per-label span: first appearance order, top offset, bottom offset, color
+  const spanMap = new Map<string, { key: string; label: string; color: string; top: number; bottom: number; order: number }>();
   let offsetY = 0;
+  let orderCounter = 0;
 
   ganttRows.forEach((row, idx) => {
-    const topHeight = row.bottomBlk ? LANE_H : rowHeight(row);
+    const rh = rowHeight(row);
+
     const topGroup = (row.topBlk.groupName || '').trim();
-    laneEntries.push({
-      key: `top-${idx}`,
-      label: topGroup || getBlockDisplayName(row.topBlk, customModules),
-      meta: '',
-      color: resolveBlockMeta(row.topBlk, customModules).bg,
-      top: offsetY,
-      height: topHeight,
-    });
+    const topLabel = topGroup || getBlockDisplayName(row.topBlk, customModules);
+    const topColor = resolveBlockMeta(row.topBlk, customModules).bg;
+    const topTop = offsetY;
+    const topBottom = row.bottomBlk ? offsetY + LANE_H : offsetY + rh;
+
+    const existing = spanMap.get(topLabel);
+    if (existing) {
+      existing.bottom = Math.max(existing.bottom, topBottom);
+    } else {
+      spanMap.set(topLabel, { key: `top-${idx}`, label: topLabel, color: topColor, top: topTop, bottom: topBottom, order: orderCounter++ });
+    }
 
     if (row.bottomBlk) {
       const bottomGroup = (row.bottomBlk.groupName || '').trim();
-      laneEntries.push({
-        key: `bottom-${idx}`,
-        label: bottomGroup || getBlockDisplayName(row.bottomBlk, customModules),
-        meta: '',
-        color: resolveBlockMeta(row.bottomBlk, customModules).bg,
-        top: offsetY + LANE_H,
-        height: LANE_H,
-      });
+      const bottomLabel = bottomGroup || getBlockDisplayName(row.bottomBlk, customModules);
+      const bottomColor = resolveBlockMeta(row.bottomBlk, customModules).bg;
+      const bottomTop = offsetY + LANE_H;
+      const bottomBottom = offsetY + rh;
+
+      const existingBottom = spanMap.get(bottomLabel);
+      if (existingBottom) {
+        existingBottom.bottom = Math.max(existingBottom.bottom, bottomBottom);
+      } else {
+        spanMap.set(bottomLabel, { key: `bottom-${idx}`, label: bottomLabel, color: bottomColor, top: bottomTop, bottom: bottomBottom, order: orderCounter++ });
+      }
     }
 
-    offsetY += rowHeight(row);
+    offsetY += rh;
   });
 
-  const merged: LeftLabelEntry[] = [];
-  laneEntries.forEach(entry => {
-    const prev = merged[merged.length - 1];
-    if (
-      prev &&
-      prev.label &&
-      entry.label &&
-      prev.label === entry.label &&
-      prev.top + prev.height === entry.top
-    ) {
-      prev.height += entry.height;
-      return;
-    }
-    merged.push({ ...entry });
-  });
-
-  return merged;
+  return Array.from(spanMap.values())
+    .sort((a, b) => a.order - b.order)
+    .map(span => ({
+      key: span.key,
+      label: span.label,
+      meta: '',
+      color: span.color,
+      top: span.top,
+      height: span.bottom - span.top,
+    }));
 }
 
 function resolveModuleMeta(mod: string, customModules: CustomModule[]) {
