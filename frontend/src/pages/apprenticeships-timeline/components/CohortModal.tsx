@@ -509,7 +509,8 @@ export default function CohortModal({
     if (!parentGroup || !target) {
       return;
     }
-    setModuleDraft({ parentGroupId, module: { ...target }, replaceId: moduleId });
+    const recalculatedEndDate = calculateModuleEndDate(target.startDate, target.sessions, holidays);
+    setModuleDraft({ parentGroupId, module: { ...target, endDate: recalculatedEndDate || target.endDate }, replaceId: moduleId });
   };
 
   const updateGroupDraft = (key: keyof Omit<FormGroup, 'id' | 'modules'>, value: string | WeekDayKey[]) => {
@@ -581,7 +582,7 @@ export default function CohortModal({
         nextModule.endDate = calculateModuleEndDate(
           key === 'startDate' ? String(value) : nextModule.startDate,
           key === 'sessions' ? Number(value) : nextModule.sessions,
-          selectedHolidays,
+          holidays,
         );
       }
       return { ...prev, module: nextModule };
