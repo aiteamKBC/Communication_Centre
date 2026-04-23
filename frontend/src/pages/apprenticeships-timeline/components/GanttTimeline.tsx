@@ -15,21 +15,21 @@ const LANE_H    = 28;  // half-height lane when two modules overlap
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface GanttRow {
-  topBlk: ModuleBlock;
-  bottomBlk: ModuleBlock | null; // present when two modules overlap
+  groupName: string;           // all blocks in this row share this group
+  blks: ModuleBlock[];         // all blocks for this group (sequential or overlapping)
+  hasOverlap: boolean;         // true if any two blocks in this row overlap in time
 }
 
 function datesOverlap(a: ModuleBlock, b: ModuleBlock): boolean {
   return a.startDate <= b.endDate && b.startDate <= a.endDate;
 }
 
-// Build gantt rows: each non-overlapping module gets its own full row;
-// if two modules overlap in time they share one row split top/bottom.
+// Build gantt rows: one row per distinct group name.
+// All modules in the same group share one row regardless of whether they overlap.
 function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
-  const rows: GanttRow[] = [];
-  // Sort by group name first so all blocks from the same group stay together,
-  // then by start date within each group — this ensures the left-label merge
-  // collapses all modules in a group into one label entry.
+  const rowMap = new Map<string, GanttRow>();
+  const order: string[] = [];
+
   const sorted = [...blks].sort((a, b) => {
     const ga = (a.groupName || '').toLowerCase();
     const gb = (b.groupName || '').toLowerCase();
@@ -38,28 +38,24 @@ function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   });
 
   for (const blk of sorted) {
-    let placed = false;
-    for (const row of rows) {
-      // Only stack two blocks in the same lane if they belong to the SAME group
-      // AND their dates overlap. Different groups always get separate rows.
-      const sameGroup =
-        (row.topBlk.groupName || '') === (blk.groupName || '');
-      if (sameGroup && !row.bottomBlk && datesOverlap(row.topBlk, blk)) {
-        row.bottomBlk = blk;
-        placed = true;
-        break;
-      }
+    const key = (blk.groupName || '').trim();
+    if (!rowMap.has(key)) {
+      rowMap.set(key, { groupName: key, blks: [], hasOverlap: false });
+      order.push(key);
     }
-    if (!placed) {
-      rows.push({ topBlk: blk, bottomBlk: null });
+    const row = rowMap.get(key)!;
+    // check if this block overlaps with any existing block in the row
+    if (row.blks.some(existing => datesOverlap(existing, blk))) {
+      row.hasOverlap = true;
     }
+    row.blks.push(blk);
   }
 
-  return rows;
+  return order.map(k => rowMap.get(k)!);
 }
 
 function rowHeight(row: GanttRow): number {
-  return row.bottomBlk ? LANE_H * 2 : MODULE_H;
+  return row.hasOverlap ? LANE_H * 2 : MODULE_H;
 }
 
 // Extract group label from cohort label, e.g. "Cohort 1 - G1" → "G1"
@@ -82,55 +78,19 @@ interface LeftLabelEntry {
 }
 
 function buildLeftLabelEntries(ganttRows: GanttRow[], customModules: CustomModule[]): LeftLabelEntry[] {
-  // Track per-label span: first appearance order, top offset, bottom offset, color
-  const spanMap = new Map<string, { key: string; label: string; color: string; top: number; bottom: number; order: number }>();
+  const entries: LeftLabelEntry[] = [];
   let offsetY = 0;
-  let orderCounter = 0;
 
   ganttRows.forEach((row, idx) => {
     const rh = rowHeight(row);
-
-    const topGroup = (row.topBlk.groupName || '').trim();
-    const topLabel = topGroup || getBlockDisplayName(row.topBlk, customModules);
-    const topColor = resolveBlockMeta(row.topBlk, customModules).bg;
-    const topTop = offsetY;
-    const topBottom = row.bottomBlk ? offsetY + LANE_H : offsetY + rh;
-
-    const existing = spanMap.get(topLabel);
-    if (existing) {
-      existing.bottom = Math.max(existing.bottom, topBottom);
-    } else {
-      spanMap.set(topLabel, { key: `top-${idx}`, label: topLabel, color: topColor, top: topTop, bottom: topBottom, order: orderCounter++ });
-    }
-
-    if (row.bottomBlk) {
-      const bottomGroup = (row.bottomBlk.groupName || '').trim();
-      const bottomLabel = bottomGroup || getBlockDisplayName(row.bottomBlk, customModules);
-      const bottomColor = resolveBlockMeta(row.bottomBlk, customModules).bg;
-      const bottomTop = offsetY + LANE_H;
-      const bottomBottom = offsetY + rh;
-
-      const existingBottom = spanMap.get(bottomLabel);
-      if (existingBottom) {
-        existingBottom.bottom = Math.max(existingBottom.bottom, bottomBottom);
-      } else {
-        spanMap.set(bottomLabel, { key: `bottom-${idx}`, label: bottomLabel, color: bottomColor, top: bottomTop, bottom: bottomBottom, order: orderCounter++ });
-      }
-    }
-
+    const firstBlk = row.blks[0];
+    const label = row.groupName || getBlockDisplayName(firstBlk, customModules);
+    const color = resolveBlockMeta(firstBlk, customModules).bg;
+    entries.push({ key: `row-${idx}`, label, meta: '', color, top: offsetY, height: rh });
     offsetY += rh;
   });
 
-  return Array.from(spanMap.values())
-    .sort((a, b) => a.order - b.order)
-    .map(span => ({
-      key: span.key,
-      label: span.label,
-      meta: '',
-      color: span.color,
-      top: span.top,
-      height: span.bottom - span.top,
-    }));
+  return entries;
 }
 
 function resolveModuleMeta(mod: string, customModules: CustomModule[]) {
@@ -1071,12 +1031,19 @@ export default function GanttTimeline({
                           for (const ganttRow of ganttRows) {
                             const h = rowHeight(ganttRow);
                             const barPad = 5;
-                            // top lane bar
-                            const topH = ganttRow.bottomBlk ? LANE_H - barPad * 2 : h - barPad * 2;
-                            bars.push(renderBar(ganttRow.topBlk, row.label, rowColor, grp, gi, ri, offsetY + barPad, topH));
-                            // bottom lane bar
-                            if (ganttRow.bottomBlk) {
-                              bars.push(renderBar(ganttRow.bottomBlk, row.label, rowColor, grp, gi, ri, offsetY + LANE_H + barPad, LANE_H - barPad * 2));
+                            if (ganttRow.hasOverlap) {
+                              // Two overlapping blocks: split top/bottom lanes
+                              // (only fires if same-group modules overlap in time)
+                              const [first, second] = ganttRow.blks;
+                              bars.push(renderBar(first, row.label, rowColor, grp, gi, ri, offsetY + barPad, LANE_H - barPad * 2));
+                              if (second) {
+                                bars.push(renderBar(second, row.label, rowColor, grp, gi, ri, offsetY + LANE_H + barPad, LANE_H - barPad * 2));
+                              }
+                            } else {
+                              // All blocks are sequential — render each at full row height on the same Y
+                              for (const blk of ganttRow.blks) {
+                                bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, offsetY + barPad, h - barPad * 2));
+                              }
                             }
                             offsetY += h;
                           }
