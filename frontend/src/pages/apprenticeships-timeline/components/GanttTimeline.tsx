@@ -965,7 +965,7 @@ export default function GanttTimeline({
                         ))}
                         {/* Now line */}
                         {nowPos && (
-                          <div className="absolute inset-y-0 z-30 pointer-events-none"
+                          <div className="absolute inset-y-0 z-10 pointer-events-none"
                             style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800' }} />
                         )}
                       </div>
@@ -1004,7 +1004,7 @@ export default function GanttTimeline({
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
                         {/* Now line */}
                         {nowPos && (
-                          <div className="absolute top-0 bottom-0 z-30 pointer-events-none"
+                          <div className="absolute top-0 bottom-0 z-10 pointer-events-none"
                             style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800' }}>
                             {gi === 0 && ri === 0 && (
                               <div className="absolute -top-px left-0" style={{ transform: 'translateX(-50%)' }}>
