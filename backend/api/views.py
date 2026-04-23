@@ -431,6 +431,8 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'program': item.program,
 		'startingDateLabel': item.starting_date_lable,
 		'moduleName': item.module_name,
+		'groupName': item.group_name,
+		'coachName': item.coach_name,
 		'tutorName': item.tutor_name,
 		'startDate': item.start_date,
 		'endDate': item.end_date,
@@ -490,9 +492,6 @@ def serialize_training_plan_program_config(item: TrainingPlanProgramConfig) -> d
 		'name': item.name,
 		'sub': item.sub,
 		'color': item.color,
-		'rowBg': item.row_bg,
-		'isBuiltIn': bool(item.is_builtin),
-		'isHidden': bool(item.is_hidden),
 	}
 
 
@@ -614,6 +613,8 @@ def training_plan(request):
 					program=str(row.get('program', '')).strip(),
 					starting_date_lable=str(row.get('startingDateLabel', '')).strip(),
 					module_name=str(row.get('moduleName', '')).strip(),
+					group_name=str(row.get('groupName', '')).strip(),
+					coach_name=str(row.get('coachName', '')).strip(),
 					tutor_name=str(row.get('tutorName', '')).strip(),
 					start_date=str(row.get('startDate', '')).strip(),
 					end_date=str(row.get('endDate', '')).strip(),
@@ -880,9 +881,6 @@ def training_plan_program_configs(request):
 				'name': name,
 				'sub': str(row.get('sub', '')).strip(),
 				'color': str(row.get('color', '')).strip() or '#1B2A4A',
-				'row_bg': str(row.get('rowBg', '')).strip() or 'rgba(27,42,74,0.04)',
-				'is_builtin': bool(row.get('isBuiltIn')),
-				'is_hidden': bool(row.get('isHidden')),
 			})
 
 		with transaction.atomic():

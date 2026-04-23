@@ -43,6 +43,8 @@ class TrainingPlan(models.Model):
 	program = models.TextField(db_column='Program', blank=True, default='')
 	starting_date_lable = models.TextField(db_column='Starting_date_lable', blank=True, default='')
 	module_name = models.TextField(blank=True, default='')
+	group_name = models.TextField(blank=True, default='')
+	coach_name = models.TextField(blank=True, default='')
 	tutor_name = models.TextField(db_column='Tutor_name', blank=True, default='')
 	start_date = models.TextField(blank=True, default='')
 	end_date = models.TextField(blank=True, default='')
@@ -91,9 +93,6 @@ class TrainingPlanProgramConfig(models.Model):
 	name = models.CharField(max_length=255)
 	sub = models.TextField(blank=True, default='')
 	color = models.CharField(max_length=32, default='#1B2A4A')
-	row_bg = models.CharField(max_length=64, default='rgba(27,42,74,0.04)')
-	is_builtin = models.BooleanField(default=False)
-	is_hidden = models.BooleanField(default=False)
 	created_at = models.DateTimeField(auto_now_add=True)
 	updated_at = models.DateTimeField(auto_now=True)
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram } from './types';
-import { INITIAL_GROUPS, MS, getModuleMeta } from './data';
+import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
@@ -30,6 +30,8 @@ interface TrainingPlanItem {
   program: string;
   startingDateLabel: string;
   moduleName: string;
+  groupName?: string;
+  coachName?: string;
   tutorName: string;
   startDate: string;
   endDate: string;
@@ -44,11 +46,13 @@ const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
+const GROUP_NAME_MARKER_PREFIX = '__group_name:';
+const COACH_NAME_MARKER_PREFIX = '__coach_name:';
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX)) {
-    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, notes: raw || '' };
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX)) {
+    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, notes: raw || '' };
   }
 
   const lines = value.split('\n');
@@ -57,6 +61,8 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let cohortColor: string | undefined;
   let moduleColor: string | undefined;
   let cohortEndDate: string | undefined;
+  let groupName: string | undefined;
+  let coachName: string | undefined;
   let readingMarkers = true;
 
   lines.forEach(line => {
@@ -88,14 +94,26 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
       return;
     }
 
+    if (readingMarkers && line.startsWith(GROUP_NAME_MARKER_PREFIX)) {
+      const nextGroupName = line.slice(GROUP_NAME_MARKER_PREFIX.length).trim();
+      groupName = nextGroupName || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(COACH_NAME_MARKER_PREFIX)) {
+      const nextCoachName = line.slice(COACH_NAME_MARKER_PREFIX.length).trim();
+      coachName = nextCoachName || undefined;
+      return;
+    }
+
     readingMarkers = false;
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string): string {
   const markers: string[] = [];
   if (holidayIds.length) {
     markers.push(`${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`);
@@ -108,6 +126,12 @@ function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: s
   }
   if (cohortEndDate) {
     markers.push(`${COHORT_END_DATE_MARKER_PREFIX}${cohortEndDate}`);
+  }
+  if (groupName) {
+    markers.push(`${GROUP_NAME_MARKER_PREFIX}${groupName}`);
+  }
+  if (coachName) {
+    markers.push(`${COACH_NAME_MARKER_PREFIX}${coachName}`);
   }
   if (!markers.length) {
     return notes;
@@ -181,46 +205,21 @@ function toProgrammeLabel(group: ProgrammeGroup): string {
 
 function buildAllGroups(
   customPrograms: CustomProgram[] = [],
-  builtInProgramOverrides: CustomProgram[] = [],
-  hiddenProgramIds: string[] = [],
 ): ProgrammeGroup[] {
-  const hiddenIds = new Set(hiddenProgramIds);
-  const builtInOverrideMap = new Map(builtInProgramOverrides.map(program => [program.id, program]));
-  const builtInGroups: ProgrammeGroup[] = INITIAL_GROUPS
-    .filter(group => !hiddenIds.has(group.id))
-    .map(group => {
-      const override = builtInOverrideMap.get(group.id);
-      return {
-        ...group,
-        name: override?.name || group.name,
-        sub: override?.sub || group.sub,
-        color: override?.color || group.color,
-        rowBg: override?.rowBg || group.rowBg,
-        rows: [] as CohortRow[],
-      };
-    });
-
-  const customGroups: ProgrammeGroup[] = customPrograms
-    .filter(program => !hiddenIds.has(program.id))
-    .map(program => ({
-      id: program.id,
-      name: program.name,
-      sub: program.sub,
-      color: program.color,
-      rowBg: program.rowBg,
-      rows: [] as CohortRow[],
-    }));
-
-  return [...builtInGroups, ...customGroups];
+  return customPrograms.map(program => ({
+    id: program.id,
+    name: program.name,
+    sub: program.sub,
+    color: program.color,
+    rows: [] as CohortRow[],
+  }));
 }
 
 function buildGroupsFromTrainingRows(
   items: TrainingPlanItem[],
   customPrograms: CustomProgram[] = [],
-  builtInProgramOverrides: CustomProgram[] = [],
-  hiddenProgramIds: string[] = [],
 ): ProgrammeGroup[] {
-  const allGroups = buildAllGroups(customPrograms, builtInProgramOverrides, hiddenProgramIds);
+  const allGroups = buildAllGroups(customPrograms);
   const templatesById = new Map(allGroups.map(group => [group.id, group]));
   const cohortIndex = new Map<string, CohortRow>();
 
@@ -263,6 +262,8 @@ function buildGroupsFromTrainingRows(
     cohort.blks.push({
       id: `db-blk-${index + 1}`,
       mod: modKey,
+      groupName: item.groupName || parsedNotes.groupName,
+      coachName: item.coachName || parsedNotes.coachName,
       color: parsedNotes.moduleColor,
       tutor: item.tutorName || '',
       startDate: item.startDate || '2026-01-01',
@@ -286,6 +287,8 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         program: toProgrammeLabel(group),
         startingDateLabel: row.dateLbl,
         moduleName: getModuleMeta(block.mod).lbl,
+        groupName: block.groupName,
+        coachName: block.coachName,
         tutorName: block.tutor,
         startDate: block.startDate,
         endDate: block.endDate,
@@ -299,18 +302,12 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
   );
 }
 
-interface TrainingPlanProgramConfigPayload extends CustomProgram {
-  isBuiltIn: boolean;
-  isHidden: boolean;
-}
+type TrainingPlanProgramConfigPayload = CustomProgram;
 
 export default function ApprenticeshipTimeline() {
   const { canManageCohorts } = useAccessControl();
-  const builtInProgrammeIds = useMemo(() => new Set(INITIAL_GROUPS.map(group => group.id)), []);
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
   const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
-  const [builtInProgramOverrides, setBuiltInProgramOverrides] = useState<CustomProgram[]>([]);
-  const [hiddenProgramIds, setHiddenProgramIds] = useState<string[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
@@ -356,10 +353,10 @@ export default function ApprenticeshipTimeline() {
   useEffect(() => {
     setGroups(
       trainingPlanItems.length
-        ? buildGroupsFromTrainingRows(trainingPlanItems, customPrograms, builtInProgramOverrides, hiddenProgramIds)
-        : buildAllGroups(customPrograms, builtInProgramOverrides, hiddenProgramIds),
+        ? buildGroupsFromTrainingRows(trainingPlanItems, customPrograms)
+        : buildAllGroups(customPrograms),
     );
-  }, [trainingPlanItems, customPrograms, builtInProgramOverrides, hiddenProgramIds]);
+  }, [trainingPlanItems, customPrograms]);
 
   useEffect(() => {
     let cancelled = false;
@@ -400,9 +397,7 @@ export default function ApprenticeshipTimeline() {
           return;
         }
 
-        setCustomPrograms(items.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setBuiltInProgramOverrides(items.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setHiddenProgramIds(items.filter(item => item.isHidden).map(item => item.id));
+        setCustomPrograms(items);
       } catch {
         // Keep current in-memory programme configs if loading fails.
       }
@@ -509,14 +504,10 @@ export default function ApprenticeshipTimeline() {
 
       setTrainingPlanSaveState('saved');
       setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
-      await kbcSwal.fire({
-        toast: true,
-        position: 'top-end',
+      await kbcSuccessSwal.fire({
         icon: 'success',
         title: 'Cohort saved successfully',
-        showConfirmButton: false,
-        timer: 2200,
-        timerProgressBar: true,
+        confirmButtonText: 'OK',
       });
       return true;
     } catch (error) {
@@ -647,36 +638,10 @@ export default function ApprenticeshipTimeline() {
 
   const persistProgramConfigs = async (
     nextCustomPrograms: CustomProgram[],
-    nextBuiltInProgramOverrides: CustomProgram[],
-    nextHiddenProgramIds: string[],
   ) => {
-    const builtInMap = new Map(INITIAL_GROUPS.map(group => [group.id, group]));
-    const customItems: TrainingPlanProgramConfigPayload[] = nextCustomPrograms.map(program => ({
-      ...program,
-      isBuiltIn: false,
-      isHidden: false,
-    }));
-    const overrideItems: TrainingPlanProgramConfigPayload[] = nextBuiltInProgramOverrides.map(program => ({
-      ...program,
-      isBuiltIn: true,
-      isHidden: nextHiddenProgramIds.includes(program.id),
-    }));
-    const hiddenOnlyItems: TrainingPlanProgramConfigPayload[] = nextHiddenProgramIds
-      .filter(id => !nextBuiltInProgramOverrides.some(program => program.id === id))
-      .map(id => {
-        const fallback = builtInMap.get(id);
-        return {
-          id,
-          name: fallback?.name || id,
-          sub: fallback?.sub || '',
-          color: fallback?.color || '#1B2A4A',
-          rowBg: fallback?.rowBg || 'rgba(27,42,74,0.04)',
-          isBuiltIn: true,
-          isHidden: true,
-        };
-      });
-
-    const payload = { items: [...customItems, ...overrideItems, ...hiddenOnlyItems] };
+    const payload = {
+      items: nextCustomPrograms,
+    };
     const response = await fetch('/api/training-plan-program-configs/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -753,7 +718,11 @@ export default function ApprenticeshipTimeline() {
       const persistedModules = await persistCustomModules(next);
       setCustomModules(persistedModules);
       setShowAddModule(false);
-      void kbcSwal.fire({ toast: true, position: 'top-end', icon: 'success', title: `Module "${mod.name}" added`, showConfirmButton: false, timer: 2000, timerProgressBar: true });
+      void kbcSuccessSwal.fire({
+        icon: 'success',
+        title: `Module "${mod.name}" added`,
+        confirmButtonText: 'OK',
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown save error';
       void kbcSwal.fire({
@@ -766,32 +735,17 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleAddProgram = async (prog: CustomProgram) => {
-    const isBuiltIn = builtInProgrammeIds.has(prog.id);
     const existingCustom = customPrograms.some(program => program.id === prog.id);
-    let nextCustomPrograms = customPrograms;
-    let nextOverrides = builtInProgramOverrides;
-    const nextHiddenIds = hiddenProgramIds.filter(id => id !== prog.id);
-
-    if (isBuiltIn) {
-      nextOverrides = [...builtInProgramOverrides.filter(program => program.id !== prog.id), prog];
-    } else {
-      nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
-    }
+    const nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
 
     try {
-      const persistedItems = await persistProgramConfigs(nextCustomPrograms, nextOverrides, nextHiddenIds);
-      setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-      setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-      setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
+      const persistedItems = await persistProgramConfigs(nextCustomPrograms);
+      setCustomPrograms(persistedItems);
       setProgramModal({ open: false });
-      void kbcSwal.fire({
-        toast: true,
-        position: 'top-end',
+      void kbcSuccessSwal.fire({
         icon: 'success',
-        title: `Programme "${prog.name.replace('\n', ' ')}" ${existingCustom || isBuiltIn ? 'updated' : 'added'}`,
-        showConfirmButton: false,
-        timer: 2000,
-        timerProgressBar: true,
+        title: `Programme "${prog.name.replace('\n', ' ')}" ${existingCustom ? 'updated' : 'added'}`,
+        confirmButtonText: 'OK',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown save error';
@@ -848,28 +802,13 @@ export default function ApprenticeshipTimeline() {
     }
 
     try {
-      if (builtInProgrammeIds.has(programId)) {
-        const nextOverrides = builtInProgramOverrides.filter(program => program.id !== programId);
-        const nextHiddenIds = [...new Set([...hiddenProgramIds, programId])];
-        const persistedItems = await persistProgramConfigs(customPrograms, nextOverrides, nextHiddenIds);
-        setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
-      } else {
-        const nextPrograms = customPrograms.filter(program => program.id !== programId);
-        const persistedItems = await persistProgramConfigs(nextPrograms, builtInProgramOverrides, hiddenProgramIds);
-        setCustomPrograms(persistedItems.filter(item => !item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setBuiltInProgramOverrides(persistedItems.filter(item => item.isBuiltIn && !item.isHidden).map(({ isBuiltIn: _isBuiltIn, isHidden: _isHidden, ...program }) => program));
-        setHiddenProgramIds(persistedItems.filter(item => item.isHidden).map(item => item.id));
-      }
-      void kbcSwal.fire({
-        toast: true,
-        position: 'top-end',
+      const nextPrograms = customPrograms.filter(program => program.id !== programId);
+      const persistedItems = await persistProgramConfigs(nextPrograms);
+      setCustomPrograms(persistedItems);
+      void kbcSuccessSwal.fire({
         icon: 'success',
         title: `Programme "${group.name.replace('\n', ' ')}" deleted`,
-        showConfirmButton: false,
-        timer: 2000,
-        timerProgressBar: true,
+        confirmButtonText: 'OK',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown save error';
@@ -883,6 +822,21 @@ export default function ApprenticeshipTimeline() {
   };
 
   const totalCohorts  = groups.reduce((s, g) => s + g.rows.length, 0);
+  const totalGroups = groups.reduce((sum, group) => (
+    sum + group.rows.reduce((rowSum, row) => {
+      const groupKeys = new Set(
+        row.blks.map(block => [
+          (block.groupName || '').trim(),
+          (block.coachName || '').trim(),
+          (block.tutor || '').trim(),
+          block.sessionStartTime || '',
+          block.sessionEndTime || '',
+          (block.days || []).join('|'),
+        ].join('::')),
+      );
+      return rowSum + groupKeys.size;
+    }, 0)
+  ), 0);
   const totalModules = groups.reduce((sum, group) => (
     sum + group.rows.reduce((rowSum, row) => {
       const moduleKeys = new Set(
@@ -903,7 +857,7 @@ export default function ApprenticeshipTimeline() {
 
       const group = groups.find(item => item.id === programModal.programId);
       return group
-        ? { id: group.id, name: group.name, sub: group.sub, color: group.color, rowBg: group.rowBg }
+        ? { id: group.id, name: group.name, sub: group.sub, color: group.color }
         : undefined;
     })()
     : undefined;
@@ -916,7 +870,7 @@ export default function ApprenticeshipTimeline() {
     const today = new Date();
     const todayKey = dayNames[today.getDay()];
     const tStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-    const sessions: Array<{ cohortName: string; program: string; moduleName: string; tutor: string; startTime?: string; endTime?: string }> = [];
+    const sessions: Array<{ cohortName: string; program: string; groupName: string; tutor: string; startTime?: string; endTime?: string }> = [];
 
     groups.forEach(g => {
       g.rows.forEach(r => {
@@ -929,7 +883,7 @@ export default function ApprenticeshipTimeline() {
           sessions.push({
             cohortName: r.label,
             program: toProgrammeLabel(g),
-            moduleName: getModuleMeta(b.mod).lbl,
+            groupName: b.groupName || getModuleMeta(b.mod).lbl,
             tutor: b.tutor || '',
             startTime: b.sessionStartTime,
             endTime: b.sessionEndTime,
@@ -974,6 +928,7 @@ export default function ApprenticeshipTimeline() {
               {[
                 { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
                 { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
+                { icon: 'ri-team-line',        label: `${totalGroups} Groups` },
                 { icon: 'ri-puzzle-line',      label: `${totalModules} Modules` },
                 { icon: 'ri-stack-line',       label: `${totalSessions} Sessions` },
                 { icon: 'ri-calendar-event-line', label: `${holidayCount} Holidays` },
@@ -1121,7 +1076,7 @@ export default function ApprenticeshipTimeline() {
               {todaySessions.map((s, i) => (
                 <li key={i} className="flex items-center justify-between py-2">
                   <div>
-                    <p className="text-sm font-semibold">{s.moduleName}</p>
+                    <p className="text-sm font-semibold">{s.groupName}</p>
                     <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
                     {s.tutor && <p className="text-xs text-gray-400">{s.tutor}</p>}
                   </div>
@@ -1174,32 +1129,59 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          <div className="bg-white rounded-xl overflow-hidden border border-gray-200">
-            <GanttTimeline
-              groups={groups}
-              holidays={holidays}
-              customModules={customModules}
-              zoom={zoom}
-              onZoomChange={setZoom}
-              onManageHolidays={() => setShowHolidayMgr(true)}
-              onAddRow={(gi) => {
-                if (!canManageCohorts) {
-                  return;
-                }
-                setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-              }}
-              onEditRow={handleEditRow}
-              onDeleteRow={handleDeleteRow}
-              onEditProgram={handleEditProgram}
-              onDeleteProgram={handleDeleteProgram}
-              canManageCohorts={canManageCohorts}
-            />
-          </div>
+          groups.length ? (
+            <div className="bg-white rounded-xl overflow-hidden border border-gray-200">
+              <GanttTimeline
+                groups={groups}
+                holidays={holidays}
+                customModules={customModules}
+                zoom={zoom}
+                onZoomChange={setZoom}
+                onManageHolidays={() => setShowHolidayMgr(true)}
+                onAddRow={(gi) => {
+                  if (!canManageCohorts) {
+                    return;
+                  }
+                  setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                }}
+                onEditRow={handleEditRow}
+                onDeleteRow={handleDeleteRow}
+                onEditProgram={handleEditProgram}
+                onDeleteProgram={handleDeleteProgram}
+                canManageCohorts={canManageCohorts}
+              />
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-kbc-navy/5 text-kbc-navy">
+                <i className="ri-book-open-line text-xl" />
+              </div>
+              <h2 className="mt-4 text-base font-bold text-kbc-navy">No programmes saved yet</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-gray-500">
+                This view now loads programmes from the database only. Add a programme to create the first training plan group.
+              </p>
+              {canManageCohorts && (
+                <button
+                  onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                  className="mt-5 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white transition-all hover:opacity-90"
+                  style={{ background: '#1B2A4A' }}>
+                  <i className="ri-add-circle-line" />
+                  Add Programme
+                </button>
+              )}
+            </div>
+          )
         )}
 
         {/* SESSION SCHEDULE */}
         {activeTab === 'schedule' && (
-          <ScheduleTable groups={groups} />
+          groups.length ? (
+            <ScheduleTable groups={groups} />
+          ) : (
+            <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
+              No session schedule yet because there are no saved programmes in the database.
+            </div>
+          )
         )}
 
       </main>

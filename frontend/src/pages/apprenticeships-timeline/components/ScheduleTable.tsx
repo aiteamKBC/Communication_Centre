@@ -13,6 +13,7 @@ interface DerivedScheduleRow {
   programme: string;
   programmeColor: string;
   module: string;
+  groupName?: string;
   saturday?: SessionCell;
   monday?: SessionCell;
   tuesday?: SessionCell;
@@ -92,12 +93,25 @@ function formatTimeRange(start: string, end: string): string {
   return `${formatMeridiemTime(start)} - ${formatMeridiemTime(end)}`;
 }
 
+function formatCompactIsoDate(isoDate: string): string {
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) {
+    return isoDate;
+  }
+
+  const year = d.getFullYear();
+  const month = `${d.getMonth() + 1}`.padStart(2, '0');
+  const day = `${d.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
   return groups
     .flatMap(group =>
       group.rows.flatMap(row =>
         row.blks.map((blk, idx) => {
           const moduleName = getModuleMeta(blk.mod).lbl;
+          const groupName = (blk.groupName || '').trim();
           const nextModule = row.blks[idx + 1] ? getModuleMeta(row.blks[idx + 1].mod).lbl : 'EPA';
           const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
           const trainer = blk.tutor?.trim() || 'TBD';
@@ -106,11 +120,12 @@ function toDerivedRows(groups: ProgrammeGroup[]): DerivedScheduleRow[] {
           const cell: SessionCell = { trainer, time: formatTimeRange(startTime, endTime) };
 
           const base: DerivedScheduleRow = {
-            cohort: row.dateLbl || row.label,
+            cohort: `${formatCompactIsoDate(blk.startDate)} -> ${formatCompactIsoDate(blk.endDate)}`,
             cohortColor: row.color || group.color,
             programme: programmeLabelFromGroupName(group.name),
             programmeColor: group.color,
             module: moduleName,
+            groupName: groupName || undefined,
             nextModule,
             rowHighlight: `${(row.color || group.color)}0D`,
             startDate: blk.startDate,
@@ -229,9 +244,9 @@ export default function ScheduleTable({ groups }: Props) {
               </th>
             </tr>
             <tr style={{ background: '#F1F5F9' }}>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Cohort</th>
               <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Programme</th>
               <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 130 }}>Module</th>
+              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 150 }}>Module Dates</th>
               {DAY_COLS.map(d => (
                 <th key={d.key} className="border border-gray-200 px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide" style={{ background: d.headerBg, color: d.headerTx, minWidth: 140 }}>
                   {d.label}
@@ -243,30 +258,23 @@ export default function ScheduleTable({ groups }: Props) {
           <tbody>
             {sections.map(section => (
               <Fragment key={`section-${section.programme}`}>
-                <tr>
-                  <td colSpan={10} className="border border-gray-200 px-4 py-2.5" style={{ background: `${section.programmeColor}18` }}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="h-3 w-3 rounded-full shrink-0" style={{ background: section.programmeColor }} />
-                        <span className="font-extrabold tracking-wide" style={{ fontSize: '13px', color: section.programmeColor }}>{section.programme}</span>
-                      </div>
-                      <span className="text-xs text-gray-400 font-medium">{section.rows.length} module session{section.rows.length === 1 ? '' : 's'}</span>
-                    </div>
-                  </td>
-                </tr>
                 {section.rows.map((row, idx) => (
                   <tr key={`${section.programme}-${row.cohort}-${row.module}-${idx}`} className="group/srow hover:brightness-95 transition-all" style={{ background: row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB') }}>
+                    {idx === 0 && (
+                      <td rowSpan={section.rows.length} className="border border-gray-200 px-3 py-1.5 align-middle text-center bg-white/70">
+                        <span className="inline-flex items-center justify-center font-bold text-xs whitespace-nowrap" style={{ color: row.programmeColor }}>{row.programme}</span>
+                      </td>
+                    )}
                     <td className="border border-gray-200 px-3 py-1.5">
-                      <span className="inline-flex items-center gap-2 font-extrabold text-xs whitespace-nowrap" style={{ color: row.cohortColor }}>
-                        <span className="h-2 w-2 rounded-full shrink-0" style={{ background: row.cohortColor }} />
+                      <div className="leading-tight">
+                        <p className="text-sm text-gray-700 font-bold">{row.module}</p>
+                        {row.groupName && <p className="text-xs text-gray-400 mt-0.5">{row.groupName}</p>}
+                      </div>
+                    </td>
+                    <td className="border border-gray-200 px-3 py-1.5">
+                      <span className="inline-flex items-center font-extrabold text-xs whitespace-nowrap" style={{ color: row.cohortColor }}>
                         {row.cohort}
                       </span>
-                    </td>
-                    <td className="border border-gray-200 px-3 py-1.5">
-                      <span className="font-bold text-xs whitespace-nowrap" style={{ color: row.programmeColor }}>{row.programme}</span>
-                    </td>
-                    <td className="border border-gray-200 px-3 py-1.5">
-                      <span className="text-xs text-gray-700 font-semibold">{row.module}</span>
                     </td>
                     {DAY_COLS.map(d => renderCell(row[d.key] as SessionCell | undefined, d.cellBg))}
                     <td className="border border-gray-200 px-3 py-1.5">

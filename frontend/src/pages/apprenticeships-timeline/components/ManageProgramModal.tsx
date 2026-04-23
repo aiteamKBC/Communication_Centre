@@ -151,13 +151,11 @@ export default function ManageProgramModal({
       return;
     }
 
-    const { r, g, b } = hexToRgb(color);
     onSave({
       id: program.id,
       name: name.trim(),
       sub: serializeProgrammeDates(startDate, endDate),
       color,
-      rowBg: `rgba(${r},${g},${b},0.04)`,
     });
   };
 

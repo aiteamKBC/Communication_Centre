@@ -18,6 +18,8 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 export interface ModuleBlock {
   id: string;
   mod: ModuleValue;
+  groupName?: string;
+  coachName?: string;
   color?: string;
   tutor: string;
   startDate: string;   // ISO: "2025-01-06"
@@ -46,7 +48,6 @@ export interface ProgrammeGroup {
   name: string;
   sub: string;
   color: string;
-  rowBg: string;
   rows: CohortRow[];
 }
 
@@ -81,5 +82,4 @@ export interface CustomProgram {
   name: string;
   sub: string;
   color: string;
-  rowBg: string;
 }

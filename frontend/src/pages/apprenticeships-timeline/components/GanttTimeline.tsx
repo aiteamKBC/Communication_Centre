@@ -57,6 +57,69 @@ function extractGroup(label: string): string {
   return m ? m[1] : '';
 }
 
+function getBlockDisplayName(blk: ModuleBlock, customModules: CustomModule[]) {
+  return resolveModuleMeta(blk.mod as string, customModules).lbl;
+}
+
+interface LeftLabelEntry {
+  key: string;
+  label: string;
+  meta: string;
+  color: string;
+  top: number;
+  height: number;
+}
+
+function buildLeftLabelEntries(ganttRows: GanttRow[], customModules: CustomModule[]): LeftLabelEntry[] {
+  const laneEntries: LeftLabelEntry[] = [];
+  let offsetY = 0;
+
+  ganttRows.forEach((row, idx) => {
+    const topHeight = row.bottomBlk ? LANE_H : rowHeight(row);
+    const topGroup = (row.topBlk.groupName || '').trim();
+    laneEntries.push({
+      key: `top-${idx}`,
+      label: topGroup || getBlockDisplayName(row.topBlk, customModules),
+      meta: '',
+      color: resolveBlockMeta(row.topBlk, customModules).bg,
+      top: offsetY,
+      height: topHeight,
+    });
+
+    if (row.bottomBlk) {
+      const bottomGroup = (row.bottomBlk.groupName || '').trim();
+      laneEntries.push({
+        key: `bottom-${idx}`,
+        label: bottomGroup || getBlockDisplayName(row.bottomBlk, customModules),
+        meta: '',
+        color: resolveBlockMeta(row.bottomBlk, customModules).bg,
+        top: offsetY + LANE_H,
+        height: LANE_H,
+      });
+    }
+
+    offsetY += rowHeight(row);
+  });
+
+  const merged: LeftLabelEntry[] = [];
+  laneEntries.forEach(entry => {
+    const prev = merged[merged.length - 1];
+    if (
+      prev &&
+      prev.label &&
+      entry.label &&
+      prev.label === entry.label &&
+      prev.top + prev.height === entry.top
+    ) {
+      prev.height += entry.height;
+      return;
+    }
+    merged.push({ ...entry });
+  });
+
+  return merged;
+}
+
 function resolveModuleMeta(mod: string, customModules: CustomModule[]) {
   if (mod in MS) return getModuleMeta(mod);
   const cm = customModules.find(c => c.id === mod || c.name === mod);
@@ -144,6 +207,7 @@ function shiftDateByDays(date: Date, days: number): Date {
 // ── Tooltip ───────────────────────────────────────────────────────────────
 function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
   const mod = resolveBlockMeta(data.blk, data.customModules);
+  const displayName = getBlockDisplayName(data.blk, data.customModules);
   const weeks = durationWeeks(data.blk.startDate, data.blk.endDate);
   const hasHolidays = data.holidays.length > 0;
 
@@ -152,7 +216,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
       style={{ left: Math.min(data.x + 12, window.innerWidth - 300), top: Math.max(data.y - 10, 8) }}>
       <div className="bg-white rounded-xl border border-gray-200 shadow-lg w-72 overflow-hidden pointer-events-auto">
         <div className="px-4 py-3 flex items-center gap-2" style={{ background: mod.bg }}>
-          <span className="font-extrabold text-sm flex-1 truncate" style={{ color: mod.tx }}>{mod.lbl}</span>
+          <span className="font-extrabold text-sm flex-1 truncate" style={{ color: mod.tx }}>{displayName}</span>
           <button onClick={onClose} className="w-5 h-5 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 cursor-pointer transition-opacity" style={{ color: mod.tx }}>
             <i className="ri-close-line text-xs" />
           </button>
@@ -172,6 +236,15 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
             <div>
               <p className="text-xs text-gray-400 leading-none">Tutor / Lecturer</p>
               <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.tutor || '—'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-5 flex items-center justify-center shrink-0">
+              <i className="ri-user-star-line text-gray-400 text-xs" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 leading-none">Coach Name</p>
+              <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.coachName || 'â€”'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -862,46 +935,24 @@ export default function GanttTimeline({
                           <div className="pl-6 flex items-center h-full">
                             <span className="text-xs text-gray-300 italic">No modules</span>
                           </div>
-                        ) : (() => {
-                          let offsetY = 0;
-                          return ganttRows.map((ganttRow, gri) => {
-                            const h = rowHeight(ganttRow);
-                            const topMod = resolveBlockMeta(ganttRow.topBlk, customModules);
-                            const botMod = ganttRow.bottomBlk ? resolveBlockMeta(ganttRow.bottomBlk, customModules) : null;
-                            const el = (
-                              <div key={gri} className="absolute left-0 right-0 flex flex-col" style={{ top: offsetY, height: h }}>
-                                {/* Top lane */}
-                                <div className="flex items-center gap-1.5 pl-6 pr-2 flex-1" style={{ height: ganttRow.bottomBlk ? LANE_H : h, borderBottom: 'none' }}>
-                                  <span className="shrink-0 rounded-sm" style={{ width: 8, height: 8, background: topMod.bg }} />
-                                  <div className="min-w-0">
-                                    <p className="font-bold text-gray-800 truncate leading-tight" style={{ fontSize: '9px' }}>
-                                      {topMod.lbl}
-                                    </p>
-                                    {group && (
-                                      <p className="text-gray-400 leading-none" style={{ fontSize: '7.5px' }}>{group} · {ganttRow.topBlk.sessions}s</p>
-                                    )}
-                                  </div>
-                                </div>
-                                {/* Bottom lane (overlap) */}
-                                {ganttRow.bottomBlk && botMod && (
-                                  <div className="flex items-center gap-1.5 pl-6 pr-2" style={{ height: LANE_H }}>
-                                    <span className="shrink-0 rounded-sm" style={{ width: 8, height: 8, background: botMod.bg }} />
-                                    <div className="min-w-0">
-                                      <p className="font-bold text-gray-800 truncate leading-tight" style={{ fontSize: '9px' }}>
-                                        {botMod.lbl}
-                                      </p>
-                                      {group && (
-                                        <p className="text-gray-400 leading-none" style={{ fontSize: '7.5px' }}>{group} · {ganttRow.bottomBlk.sessions}s</p>
-                                      )}
-                                    </div>
-                                  </div>
+                        ) : buildLeftLabelEntries(ganttRows, customModules).map(entry => (
+                          <div key={entry.key} className="absolute left-0 right-0 px-2" style={{ top: entry.top, height: entry.height }}>
+                            <div
+                              className="h-full rounded-lg border bg-white/96 shadow-[0_1px_2px_rgba(15,23,42,0.05)] flex items-center gap-1.5 pl-4 pr-2"
+                              style={{ borderColor: `${entry.color}24` }}
+                            >
+                              <span className="shrink-0 rounded-sm" style={{ width: 8, height: 8, background: entry.color }} />
+                              <div className="min-w-0">
+                                <p className="font-bold text-gray-800 truncate leading-tight" style={{ fontSize: '9px' }}>
+                                  {entry.label}
+                                </p>
+                                {entry.meta && (
+                                  <p className="text-gray-400 leading-none" style={{ fontSize: '7.5px' }}>{entry.meta}</p>
                                 )}
                               </div>
-                            );
-                            offsetY += h;
-                            return el;
-                          });
-                        })()}
+                            </div>
+                          </div>
+                        ))}
                       </div>
 
                       {/* Timeline area */}

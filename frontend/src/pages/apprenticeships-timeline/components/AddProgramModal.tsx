@@ -91,13 +91,11 @@ export default function AddProgramModal({ onSave, onClose, initialProgram }: Pro
     setErrors(errs);
     if (Object.keys(errs).length) return;
 
-    const { r, g, b } = hexToRgb(color);
     const prog: CustomProgram = {
       id: initialProgram?.id || slugify(name.trim()),
       name: name.trim(),
       sub: serializeProgrammeDates(startDate, endDate),
       color,
-      rowBg: `rgba(${r},${g},${b},0.04)`,
     };
     onSave(prog);
   };
