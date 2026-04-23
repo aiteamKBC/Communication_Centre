@@ -40,8 +40,11 @@ function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
   for (const blk of sorted) {
     let placed = false;
     for (const row of rows) {
-      // If top slot exists, overlaps this blk, and bottom slot is free → fill bottom
-      if (row.topBlk && !row.bottomBlk && datesOverlap(row.topBlk, blk)) {
+      // Only stack two blocks in the same lane if they belong to the SAME group
+      // AND their dates overlap. Different groups always get separate rows.
+      const sameGroup =
+        (row.topBlk.groupName || '') === (blk.groupName || '');
+      if (sameGroup && !row.bottomBlk && datesOverlap(row.topBlk, blk)) {
         row.bottomBlk = blk;
         placed = true;
         break;
