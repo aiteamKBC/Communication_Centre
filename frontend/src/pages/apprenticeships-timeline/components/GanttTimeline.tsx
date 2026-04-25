@@ -4,7 +4,7 @@ import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
-  formatDate, formatDateShort, durationWeeks, getHolidayOverlaps, startOfWeek,
+  formatDate, formatDateShort, durationWeeksByDay, getHolidayOverlaps, startOfWeek,
   ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
@@ -219,7 +219,7 @@ function shiftDateByDays(date: Date, days: number): Date {
 function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
   const mod = resolveBlockMeta(data.blk, data.customModules);
   const displayName = getBlockDisplayName(data.blk, data.customModules);
-  const weeks = durationWeeks(data.blk.startDate, data.blk.endDate);
+  const weeks = durationWeeksByDay(data.blk.startDate, data.blk.endDate, data.blk.days);
   const hasHolidays = data.holidays.length > 0;
 
   return (
@@ -466,7 +466,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -481,7 +481,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1 border-r border-gray-100 shrink-0"
@@ -506,7 +506,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -521,7 +521,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1.5 border-r border-gray-200 shrink-0"
@@ -539,7 +539,7 @@ export default function GanttTimeline({
     if (zoom === 'year') {
       return (
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
           <div className="flex">
             {cols.map((c, i) => {
               const navyShades = ['#1B2A4A','#243560','#2E4482','#3D5A99'];
@@ -568,7 +568,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {monthGroups.map((mg, i) => {
                 const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -586,7 +586,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
             <div className="flex">
               {cols.map((c, i) => {
                 const start = new Date(c.startDate);
@@ -644,7 +644,7 @@ export default function GanttTimeline({
     return (
       <>
         <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
           <div className="flex">
             {monthGroups.map((mg, i) => {
               const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -659,7 +659,7 @@ export default function GanttTimeline({
           </div>
         </div>
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
           <div className="flex">
             {cols.map((c, i) => (
               <div key={c.key} className="text-center py-1.5 border-r shrink-0 flex flex-col items-center"
@@ -873,7 +873,7 @@ export default function GanttTimeline({
             <div key={grp.id} className="relative">
               {/* ── Programme group header row ────────────────────────── */}
               <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
-                <div className="shrink-0 px-3 py-2" style={{ width: LEFT_W, background: grp.color, position: 'sticky', left: 0, zIndex: 20 }}>
+                <div className="shrink-0 px-3 py-2" style={{ width: LEFT_W, background: grp.color, position: 'sticky', left: 0, zIndex: 50 }}>
                   <p
                     className="w-full leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis"
                     style={{ fontSize: '11px' }}
@@ -915,7 +915,12 @@ export default function GanttTimeline({
                     )}
                   </div>
                 </div>
-                <div className="flex-1" style={{ background: 'transparent' }} />
+                <div className="flex-1 relative" style={{ background: 'transparent' }}>
+                  {nowPos && (
+                    <div className="absolute inset-y-0 pointer-events-none"
+                      style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }} />
+                  )}
+                </div>
               </div>
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
@@ -930,7 +935,7 @@ export default function GanttTimeline({
                   <div key={row.id} style={{ borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}` }}>
                     {/* Cohort header strip */}
                     <div className="flex relative" style={{ height: COHORT_H, background: 'transparent' }}>
-                      <div className="shrink-0 flex items-center px-3 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
+                      <div className="shrink-0 flex items-center px-3 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 50 }}>
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
                         <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1">
@@ -965,8 +970,8 @@ export default function GanttTimeline({
                         ))}
                         {/* Now line */}
                         {nowPos && (
-                          <div className="absolute inset-y-0 z-10 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800' }} />
+                          <div className="absolute inset-y-0 pointer-events-none"
+                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }} />
                         )}
                       </div>
                     </div>
@@ -974,7 +979,7 @@ export default function GanttTimeline({
                     {/* Module rows */}
                     <div className="flex relative" style={{ height: totalModuleH || MODULE_H, borderBottom: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}` }}>
                       {/* Left panel: stacked module entries */}
-                      <div className="shrink-0 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
+                      <div className="shrink-0 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 50 }}>
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
                         {ganttRows.length === 0 ? (
                           <div className="pl-6 flex items-center h-full">
@@ -1002,19 +1007,6 @@ export default function GanttTimeline({
 
                       {/* Timeline area */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
-                        {/* Now line */}
-                        {nowPos && (
-                          <div className="absolute top-0 bottom-0 z-10 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800' }}>
-                            {gi === 0 && ri === 0 && (
-                              <div className="absolute -top-px left-0" style={{ transform: 'translateX(-50%)' }}>
-                                <span className="font-bold px-1.5 py-px rounded whitespace-nowrap"
-                                  style={{ fontSize: '7px', background: '#F7A800', color: '#1B2A4A', display: 'block' }}>Now</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-
                         {/* Holiday overlays */}
                         {zoom === 'day' && holidayPositions.map(({ h, pos }) => pos && (
                           <div key={h.id} className="absolute top-0 bottom-0 z-5 pointer-events-none"
@@ -1054,6 +1046,19 @@ export default function GanttTimeline({
                           }
                           return bars;
                         })()}
+
+                        {/* Now line — rendered last so it appears above module bars */}
+                        {nowPos && (
+                          <div className="absolute top-0 bottom-0 pointer-events-none"
+                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }}>
+                            {gi === 0 && ri === 0 && (
+                              <div className="absolute -top-px left-0" style={{ transform: 'translateX(-50%)' }}>
+                                <span className="font-bold px-1.5 py-px rounded whitespace-nowrap"
+                                  style={{ fontSize: '7px', background: '#F7A800', color: '#1B2A4A', display: 'block' }}>Now</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1062,7 +1067,7 @@ export default function GanttTimeline({
 
               {grp.rows.length === 0 && (
                 <div className="flex items-center" style={{ height: MODULE_H, background: 'transparent' }}>
-                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: LEFT_W, height: MODULE_H, position: 'sticky', left: 0, zIndex: 20 }}>
+                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: LEFT_W, height: MODULE_H, position: 'sticky', left: 0, zIndex: 50 }}>
                     <span className="text-xs text-gray-300 italic pl-4">No cohorts yet</span>
                   </div>
                   <div className="flex-1 flex items-center justify-center">

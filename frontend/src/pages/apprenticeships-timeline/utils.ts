@@ -43,7 +43,34 @@ export function durationDays(startDate: string, endDate: string): number {
 }
 
 export function durationWeeks(startDate: string, endDate: string): number {
-  return Math.ceil(durationDays(startDate, endDate) / 7);
+  return Math.floor((durationDays(startDate, endDate) + 1) / 7);
+}
+
+const WEEKDAY_JS: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
+// Count how many times any of the given weekdays falls within [startDate, endDate].
+// When days is empty/undefined falls back to plain durationWeeks.
+export function durationWeeksByDay(
+  startDate: string,
+  endDate: string,
+  days?: string[],
+): number {
+  if (!days?.length) return durationWeeks(startDate, endDate);
+  const targets = new Set(days.map(d => WEEKDAY_JS[d.toLowerCase()]).filter(n => n !== undefined));
+  if (!targets.size) return durationWeeks(startDate, endDate);
+
+  const start = new Date(startDate);
+  const end   = new Date(endDate);
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    if (targets.has(cur.getDay())) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 // ── Overlap detection ─────────────────────────────────────────────────────

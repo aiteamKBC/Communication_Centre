@@ -93,6 +93,11 @@ const JS_DAY_TO_KEY: Record<number, WeekDayKey> = {
   6: 'saturday',
 };
 
+const WEEKDAY_KEY_TO_JS: Record<WeekDayKey, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
 function serializeDraftState(data: FormData, groupDraft: GroupDraftState | null, moduleDraft: ModuleDraftState | null): string {
   return JSON.stringify({ data, groupDraft, moduleDraft });
 }
@@ -193,7 +198,23 @@ function countHolidayDaysInRange(startDate: string, endDate: string, holidays: H
   return holidayDays.size;
 }
 
-function calculateModuleEndDate(startDate: string, sessions: number, holidays: Holiday[] = []): string {
+// Snap a date backward to the nearest occurrence of any of the given weekdays.
+function snapToWeekday(isoDate: string, days: WeekDayKey[]): string {
+  if (!days.length) return isoDate;
+  const targetDays = new Set(days.map(d => WEEKDAY_KEY_TO_JS[d]));
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
+  // Walk back up to 6 days to find the nearest matching weekday
+  for (let offset = 0; offset <= 6; offset++) {
+    if (targetDays.has(d.getDay())) {
+      return `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`;
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  return isoDate;
+}
+
+function calculateModuleEndDate(startDate: string, sessions: number, holidays: Holiday[] = [], days: WeekDayKey[] = []): string {
   if (!isIsoDate(startDate)) {
     return '';
   }
@@ -205,7 +226,7 @@ function calculateModuleEndDate(startDate: string, sessions: number, holidays: H
     const holidayDays = countHolidayDaysInRange(startDate, endDate, holidays);
     const shiftedEndDate = addDaysToIsoDate(startDate, safeSessions * 7 + holidayDays);
     if (shiftedEndDate === endDate) {
-      return endDate;
+      return days.length ? snapToWeekday(endDate, days) : endDate;
     }
     endDate = shiftedEndDate;
   }
@@ -509,7 +530,7 @@ export default function CohortModal({
     if (!parentGroup || !target) {
       return;
     }
-    const recalculatedEndDate = calculateModuleEndDate(target.startDate, target.sessions, holidays);
+    const recalculatedEndDate = calculateModuleEndDate(target.startDate, target.sessions, holidays, parentGroup.days);
     setModuleDraft({ parentGroupId, module: { ...target, endDate: recalculatedEndDate || target.endDate }, replaceId: moduleId });
   };
 

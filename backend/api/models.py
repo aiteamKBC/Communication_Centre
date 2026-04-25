@@ -169,6 +169,19 @@ class LeadershipMessage(models.Model):
 		db_table = 'leadership_messages'
 
 
+class Employee(models.Model):
+	full_name = models.TextField(db_column='Full name')
+	job_title = models.TextField(db_column='Job Title', blank=True, default='')
+	department = models.TextField(db_column='Department', blank=True, default='')
+	reports_to = models.TextField(db_column='Reports to', blank=True, null=True, default=None)
+	email = models.TextField(db_column='Email', blank=True, default='')
+	phone = models.TextField(db_column='Phone', blank=True, default='')
+
+	class Meta:
+		db_table = 'Table'
+		managed = False
+
+
 class Feedback(models.Model):
 	id = models.BigAutoField(primary_key=True, db_column='Feedback ID')
 	username = models.TextField(db_column='Username', blank=True, default='')

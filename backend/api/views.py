@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import EventData, Feedback, LeadershipMessage, Module, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
+from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
 
 
 def serialize_event(event: EventData) -> dict:
@@ -1267,3 +1267,86 @@ def documents_live(request):
 		return JsonResponse({'detail': str(error)}, status=502)
 	except Exception as error:
 		return JsonResponse({'detail': f'Unexpected server error: {error.__class__.__name__}'}, status=500)
+
+
+# ── Employees ─────────────────────────────────────────────────────────────────
+
+def serialize_employee(emp: Employee) -> dict:
+	return {
+		'id': str(emp.pk),
+		'name': emp.full_name,
+		'title': emp.job_title,
+		'department': emp.department,
+		'reportsTo': emp.reports_to or None,
+		'email': emp.email,
+		'phone': emp.phone,
+		'avatar': '',
+	}
+
+
+@csrf_exempt
+def employees(request):
+	if request.method == 'GET':
+		records = Employee.objects.all().order_by('pk')
+		return JsonResponse([serialize_employee(e) for e in records], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		name = str(payload.get('name', '')).strip()
+		if not name:
+			return HttpResponseBadRequest('Name is required.')
+
+		emp = Employee.objects.create(
+			full_name=name,
+			job_title=str(payload.get('title', '')).strip(),
+			department=str(payload.get('department', '')).strip(),
+			reports_to=str(payload.get('reportsTo', '') or '').strip() or None,
+			email=str(payload.get('email', '')).strip(),
+			phone=str(payload.get('phone', '')).strip(),
+		)
+		return JsonResponse(serialize_employee(emp), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def employee_detail(request, employee_id: int):
+	try:
+		emp = Employee.objects.get(pk=employee_id)
+	except Employee.DoesNotExist:
+		return JsonResponse({'detail': 'Not found.'}, status=404)
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		if 'name' in payload:
+			emp.full_name = str(payload['name']).strip()
+		if 'title' in payload:
+			emp.job_title = str(payload['title']).strip()
+		if 'department' in payload:
+			emp.department = str(payload['department']).strip()
+		if 'reportsTo' in payload:
+			emp.reports_to = str(payload['reportsTo'] or '').strip() or None
+		if 'email' in payload:
+			emp.email = str(payload['email']).strip()
+		if 'phone' in payload:
+			emp.phone = str(payload['phone']).strip()
+		emp.save()
+		return JsonResponse(serialize_employee(emp))
+
+	if request.method == 'DELETE':
+		# Re-parent direct reports to this employee's manager
+		Employee.objects.filter(reports_to=str(employee_id)).update(
+			reports_to=emp.reports_to
+		)
+		emp.delete()
+		return JsonResponse({'detail': 'Deleted.'})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
