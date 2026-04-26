@@ -39,8 +39,8 @@ function parseDays(value?: string): string[] {
   if (!value) return [];
   return value
     .split(/[|,;/]+/)
-    .map(s => s.trim().toLowerCase())
-    .map(s => DAY_ALIASES[s] || s)
+    .map((segment) => segment.trim().toLowerCase())
+    .map((segment) => DAY_ALIASES[segment] || segment)
     .filter(Boolean);
 }
 
@@ -72,7 +72,7 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
 
     let mounted = true;
     void fetch('/api/training-plan/')
-      .then(res => res.ok ? res.json() : Promise.reject(res.status))
+      .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
       .then((data: TrainingItem[]) => {
         if (!mounted) return;
         setItems(Array.isArray(data) ? data : []);
@@ -82,7 +82,9 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
         setItems([]);
       });
 
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [initialItems]);
 
   const todayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
@@ -91,11 +93,11 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
   todayStart.setHours(0, 0, 0, 0);
   const ts = todayStart.getTime();
 
-  const todays = (items || []).filter(it => {
-    const days = parseDays(it.sessionWeekDay);
+  const todays = (items || []).filter((item) => {
+    const days = parseDays(item.sessionWeekDay);
     if (!days.includes(todayKey)) return false;
-    const start = it.startDate ? new Date(it.startDate).getTime() : NaN;
-    const end = it.endDate ? new Date(it.endDate).getTime() : NaN;
+    const start = item.startDate ? new Date(item.startDate).getTime() : NaN;
+    const end = item.endDate ? new Date(item.endDate).getTime() : NaN;
     if (Number.isNaN(start) || Number.isNaN(end)) return true;
     return ts >= start && ts <= end;
   });
@@ -104,7 +106,9 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
     <div className="bg-white rounded-xl border border-gray-200 p-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-extrabold text-kbc-navy">Today's Sessions</h3>
-        <Link to="/training-plan" className="text-xs text-kbc-navy hover:underline">View training plan</Link>
+        <Link to="/training-plan" className="text-xs text-kbc-navy hover:underline">
+          View training plan
+        </Link>
       </div>
 
       <div className="mt-3">
@@ -112,15 +116,20 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
           <p className="text-xs text-gray-400">No sessions scheduled for today.</p>
         ) : (
           <ul className="space-y-2">
-            {todays.map((t, i) => (
-              <li key={`${t.cohortName}-${t.moduleName}-${i}`} className="flex items-center justify-between bg-gray-50 rounded px-3 py-2">
+            {todays.map((item, index) => (
+              <li
+                key={`${item.cohortName}-${item.moduleName}-${index}`}
+                className="flex items-center justify-between rounded bg-gray-50 px-3 py-2"
+              >
                 <div>
-                  <p className="font-semibold text-sm text-gray-800">{t.moduleName}</p>
-                  <p className="text-xs text-gray-500">{t.cohortName} · {t.program}</p>
+                  <p className="text-sm font-semibold text-gray-800">{item.moduleName}</p>
+                  <p className="text-xs text-gray-500">{item.cohortName} - {item.program}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-bold text-sm text-gray-700">{formatTimeRange(t.sessionStartTime, t.sessionEndTime)}</p>
-                  <p className="text-xs text-gray-400">{t.tutorName || 'TBD'}</p>
+                  <p className="text-sm font-bold text-gray-700">
+                    {formatTimeRange(item.sessionStartTime, item.sessionEndTime)}
+                  </p>
+                  <p className="text-xs text-gray-400">{item.tutorName || 'TBD'}</p>
                 </div>
               </li>
             ))}
