@@ -11,6 +11,30 @@ const priorityConfig = {
 export default function LatestNewsSection() {
   const featured = newsItems.slice(0, 3);
 
+  if (featured.length === 0) {
+    return (
+      <section className="mt-10">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-bold text-kbc-navy">Latest News</h2>
+            <p className="text-gray-400 text-xs mt-0.5">Recent announcements and updates from across the organisation</p>
+          </div>
+          <Link
+            to="/news"
+            className="text-xs text-kbc-navy font-medium hover:underline cursor-pointer whitespace-nowrap"
+          >
+            All News &rarr;
+          </Link>
+        </div>
+
+        <div className="rounded-xl border border-dashed border-gray-200 bg-white px-6 py-10 text-center text-gray-400">
+          <i className="ri-newspaper-line mb-3 block text-3xl" />
+          <p className="text-sm font-medium">No news articles published yet</p>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="mt-10">
       <div className="flex items-center justify-between mb-4">
@@ -34,7 +58,6 @@ export default function LatestNewsSection() {
               key={item.id}
               className="bg-white rounded-xl border border-gray-100 overflow-hidden group cursor-pointer hover:shadow-sm transition-shadow"
             >
-              {/* Image */}
               {item.image && (
                 <div className="w-full h-40 overflow-hidden bg-slate-100">
                   <SafeImage

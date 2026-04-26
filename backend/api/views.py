@@ -87,10 +87,13 @@ def serialize_news(item: News) -> dict:
 		'department': item.category or 'General',
 		'priority': priority,
 		'date': format_date_display(item.publication_date),
+		'publicationDate': item.publication_date.isoformat() if item.publication_date else '',
+		'status': item.status or '',
 		'requiresAcknowledgement': requires_ack,
 		'isExpired': status == 'expired',
 		'acknowledged': bool(item.acknowledged),
 		'image': item.image_url or None,
+		'imageUrl': item.image_url or '',
 		'category': item.category or 'General',
 		'author': 'Communications Team',
 		'content': item.full_article_content or item.details or item.summary or '',
@@ -154,20 +157,80 @@ def news(request):
 		if publication_date_raw and publication_date is None:
 			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
 
+		details = str(payload.get('details', '')).strip() or summary
+		content = str(payload.get('content', '')).strip()
+		priority = normalize_priority(str(payload.get('priority', 'general')))
+
 		record = News.objects.create(
 			title=title,
-			details=str(payload.get('details', '')).strip() or summary,
+			details=details,
 			image_url=str(payload.get('imageUrl', '')).strip(),
 			publication_date=publication_date,
 			audience=str(payload.get('audience', 'All Staff')).strip() or 'All Staff',
 			category=str(payload.get('category', 'General')).strip() or 'General',
-			priority=normalize_priority(str(payload.get('priority', 'general'))),
+			priority=priority,
 			summary=summary,
-			full_article_content=str(payload.get('content', '')).strip(),
+			full_article_content=content,
 			status='pending_review',
 		)
 
 		return JsonResponse(serialize_news(record), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def news_detail(request, news_id: int):
+	try:
+		record = News.objects.get(pk=news_id)
+	except News.DoesNotExist:
+		return JsonResponse({'detail': 'News article not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_news(record))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		title = str(payload.get('title', record.title)).strip()
+		summary = str(payload.get('summary', record.summary or record.details or '')).strip()
+		publication_date_raw = str(
+			payload.get(
+				'publicationDate',
+				record.publication_date.isoformat() if record.publication_date else '',
+			),
+		).strip()
+
+		if not title or not summary:
+			return HttpResponseBadRequest('Both title and summary are required.')
+
+		publication_date = parse_date(publication_date_raw) if publication_date_raw else None
+		if publication_date_raw and publication_date is None:
+			return HttpResponseBadRequest('publicationDate must be in YYYY-MM-DD format.')
+
+		details = str(payload.get('details', record.details or summary)).strip() or summary
+		content = str(payload.get('content', record.full_article_content)).strip()
+		priority = normalize_priority(str(payload.get('priority', record.priority or 'general')))
+
+		record.title = title
+		record.details = details
+		record.image_url = str(payload.get('imageUrl', record.image_url)).strip()
+		record.publication_date = publication_date
+		record.audience = str(payload.get('audience', record.audience or 'All Staff')).strip() or 'All Staff'
+		record.category = str(payload.get('category', record.category or 'General')).strip() or 'General'
+		record.priority = priority
+		record.summary = summary
+		record.full_article_content = content
+		record.save()
+
+		return JsonResponse(serialize_news(record))
+
+	if request.method == 'DELETE':
+		record.delete()
+		return JsonResponse({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

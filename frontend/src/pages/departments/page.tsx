@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
+import ModernSelect from '../../components/feature/ModernSelect';
 import useAccessControl from '../../hooks/useAccessControl';
 import type { Employee } from '../../mocks/employees';
 import { departments } from '../../mocks/departments';
@@ -189,6 +190,54 @@ function EmptyState() {
   );
 }
 
+function OrgChartSkeleton() {
+  return (
+    <div className="flex justify-center overflow-auto px-6 py-12">
+      <div className="min-w-[920px] animate-pulse">
+        <div className="flex justify-center">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm" style={{ width: CARD_W }}>
+            <div className="relative pl-5 pr-4 py-4">
+              <div className="absolute left-0 top-3 bottom-3 w-1 rounded-r-full bg-slate-200" />
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 shrink-0 rounded-xl bg-slate-200" />
+                <div className="min-w-0 flex-1">
+                  <div className="h-4 w-28 rounded-full bg-slate-200" />
+                  <div className="mt-2 h-3 w-20 rounded-full bg-slate-100" />
+                  <div className="mt-3 h-5 w-24 rounded-full bg-slate-100" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mx-auto h-8 w-0.5 bg-slate-200" />
+        <div className="mx-auto h-0.5 w-[560px] bg-slate-200" />
+
+        <div className="mt-5 flex justify-center gap-10">
+          {[0, 1, 2].map((item) => (
+            <div key={item} className="flex flex-col items-center">
+              <div className="h-5 w-0.5 bg-slate-200" />
+              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm" style={{ width: CARD_W }}>
+                <div className="relative pl-5 pr-4 py-4">
+                  <div className="absolute left-0 top-3 bottom-3 w-1 rounded-r-full bg-slate-200" />
+                  <div className="flex items-start gap-3">
+                    <div className="h-10 w-10 shrink-0 rounded-xl bg-slate-200" />
+                    <div className="min-w-0 flex-1">
+                      <div className="h-4 w-24 rounded-full bg-slate-200" />
+                      <div className="mt-2 h-3 w-28 rounded-full bg-slate-100" />
+                      <div className="mt-3 h-5 w-20 rounded-full bg-slate-100" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function DepartmentsPage() {
@@ -200,6 +249,7 @@ export default function DepartmentsPage() {
   const [search,     setSearch]     = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [saving,     setSaving]     = useState(false);
+  const departmentOptions = [{ value: '', label: 'All Departments' }, ...departments.map(d => ({ value: d.name, label: d.name }))];
 
   const filtered = useMemo(() => {
     let list = employees;
@@ -265,11 +315,38 @@ export default function DepartmentsPage() {
                 style={{ width: 180 }} />
             </div>
 
-            <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}
-              className="border border-gray-200 rounded-xl px-3 py-2 text-xs bg-white outline-none focus:border-blue-300 text-gray-600">
-              <option value="">All Departments</option>
-              {departments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-            </select>
+            <ModernSelect
+              value={deptFilter}
+              onChange={setDeptFilter}
+              options={departmentOptions}
+              className="min-w-[190px]"
+              buttonClassName="min-h-[42px] rounded-xl border-gray-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2 text-xs shadow-[0_12px_26px_-18px_rgba(27,42,74,0.35)]"
+              menuMinWidth={220}
+              renderOption={(option, selected) => {
+                const deptMeta = departments.find(d => d.name === option.value);
+                return (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ background: deptMeta?.color || '#CBD5E1' }}
+                    />
+                    <span className={`truncate ${selected ? 'text-white' : ''}`}>{option.label}</span>
+                  </span>
+                );
+              }}
+              renderValue={(option) => {
+                const deptMeta = departments.find(d => d.name === option?.value);
+                return (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ background: deptMeta?.color || '#CBD5E1' }}
+                    />
+                    <span className="truncate">{option?.label ?? 'All Departments'}</span>
+                  </span>
+                );
+              }}
+            />
 
             {adminAccess && (
               <button onClick={() => setEditMode(m => !m)}
@@ -324,9 +401,7 @@ export default function DepartmentsPage() {
         {/* chart canvas */}
         <div className="flex-1 overflow-auto" style={{ background: '#F8FAFC' }}>
           {loading ? (
-            <div className="flex items-center justify-center py-40 gap-2 text-gray-400">
-              <i className="ri-loader-4-line animate-spin text-xl" /><span className="text-sm">Loading…</span>
-            </div>
+            <OrgChartSkeleton />
           ) : error ? (
             <div className="flex flex-col items-center justify-center py-40 text-red-400">
               <i className="ri-error-warning-line text-3xl mb-2" /><p className="text-sm">{error}</p>
@@ -349,3 +424,4 @@ export default function DepartmentsPage() {
     </div>
   );
 }
+

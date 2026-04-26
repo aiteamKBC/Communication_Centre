@@ -35,7 +35,7 @@ const dashboardLinks = [
     text: 'text-[#6d47ff]',
   },
   {
-    title: 'Admin Dashboard',
+    title: 'Coaches Dashboard',
     url: 'https://admin.kentbusinesscollege.net/',
     description: 'Operational controls, system-wide administration, and service coordination.',
     label: 'Operations Control',
@@ -93,6 +93,17 @@ const dashboardLinks = [
     accent: 'from-[#d4a546] to-[#8b5e18]',
     soft: 'bg-[#fff6e3]',
     text: 'text-[#9a6a1d]',
+    comingSoon: true,
+  },
+  {
+    title: 'HR Compliance System',
+    url: '',
+    description: 'Policy compliance, HR governance checkpoints, audit readiness, and people-process oversight.',
+    label: 'HR Compliance',
+    icon: 'ri-file-shield-line',
+    accent: 'from-[#ec4899] to-[#be185d]',
+    soft: 'bg-[#fff1f7]',
+    text: 'text-[#be185d]',
     comingSoon: true,
   },
 ] satisfies DashboardLink[];

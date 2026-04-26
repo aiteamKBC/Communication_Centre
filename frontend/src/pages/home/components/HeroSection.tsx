@@ -3,14 +3,14 @@ import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
 import SafeImage from '../../../components/feature/SafeImage';
 
-type UrgentNoticeState = {
+export type UrgentNoticeState = {
   id?: string;
   title: string;
   body: string;
   date?: string;
 };
 
-type LeadershipMessageState = {
+export type LeadershipMessageState = {
   id?: string;
   cardTitle: string;
   authorName: string;
@@ -38,12 +38,23 @@ function formatNoticeDate(value?: string) {
   });
 }
 
-export default function HeroSection() {
+export default function HeroSection({
+  initialUrgentNotice,
+  initialLeadershipMessage,
+}: {
+  initialUrgentNotice?: UrgentNoticeState | null;
+  initialLeadershipMessage?: LeadershipMessageState | null;
+}) {
   const [leadershipOpen, setLeadershipOpen] = useState(false);
-  const [urgentNotice, setUrgentNotice] = useState<UrgentNoticeState | null>(null);
-  const [leadershipMessage, setLeadershipMessage] = useState<LeadershipMessageState | null>(null);
+  const [urgentNotice, setUrgentNotice] = useState<UrgentNoticeState | null>(initialUrgentNotice ?? null);
+  const [leadershipMessage, setLeadershipMessage] = useState<LeadershipMessageState | null>(initialLeadershipMessage ?? null);
 
   useEffect(() => {
+    if (initialUrgentNotice !== undefined) {
+      setUrgentNotice(initialUrgentNotice);
+      return;
+    }
+
     void (async () => {
       try {
         const response = await fetch('/api/urgent-notice/');
@@ -63,12 +74,16 @@ export default function HeroSection() {
           date: payload.date,
         });
       } catch {
-        // Leave urgent notice empty if database read fails.
       }
     })();
-  }, []);
+  }, [initialUrgentNotice]);
 
   useEffect(() => {
+    if (initialLeadershipMessage !== undefined) {
+      setLeadershipMessage(initialLeadershipMessage);
+      return;
+    }
+
     void (async () => {
       try {
         const response = await fetch('/api/leadership-message/');
@@ -92,10 +107,9 @@ export default function HeroSection() {
           profileImageUrl: payload.profileImageUrl || '',
         });
       } catch {
-        // Leave leadership message empty if database read fails.
       }
     })();
-  }, []);
+  }, [initialLeadershipMessage]);
 
   const leadershipParagraphs = useMemo(
     () => leadershipMessage?.body

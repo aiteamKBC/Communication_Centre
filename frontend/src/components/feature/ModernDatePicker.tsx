@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import ModalPortal from './ModalPortal';
 
@@ -8,11 +8,11 @@ interface ModernDatePickerProps {
   placeholder?: string;
   className?: string;
   buttonClassName?: string;
+  menuClassName?: string;
   boundaryRef?: RefObject<HTMLElement | null>;
 }
 
-const WEEK_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-const MONTH_NAMES = [
+const monthNames = [
   'January',
   'February',
   'March',
@@ -27,6 +27,14 @@ const MONTH_NAMES = [
   'December',
 ];
 
+const weekdayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+type CalendarDay = {
+  key: string;
+  date: Date;
+  currentMonth: boolean;
+};
+
 function parseDateValue(value: string) {
   if (!value) return null;
   const [year, month, day] = value.split('-').map(Number);
@@ -34,44 +42,63 @@ function parseDateValue(value: string) {
   return new Date(year, month - 1, day);
 }
 
-function formatValue(date: Date) {
+function formatDateValue(date: Date) {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
-function formatDisplay(date: Date) {
-  return new Intl.DateTimeFormat('en-US', {
+function formatDisplayDate(value: string) {
+  const parsed = parseDateValue(value);
+  if (!parsed) return '';
+  return parsed.toLocaleDateString('en-GB', {
+    day: '2-digit',
     month: 'short',
-    day: 'numeric',
     year: 'numeric',
-  }).format(date);
+  });
 }
 
-function isSameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+function isSameDay(left: Date, right: Date) {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function buildCalendarDays(viewDate: Date) {
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startDate = new Date(firstDay);
+  startDate.setDate(firstDay.getDate() - firstDay.getDay());
+
+  return Array.from({ length: 42 }, (_, index): CalendarDay => {
+    const date = new Date(startDate);
+    date.setDate(startDate.getDate() + index);
+    return {
+      key: formatDateValue(date),
+      date,
+      currentMonth: date.getMonth() === month,
+    };
+  });
 }
 
 export default function ModernDatePicker({
   value,
   onChange,
-  placeholder = 'mm/dd/yyyy',
+  placeholder = 'Select date...',
   className = '',
   buttonClassName = '',
+  menuClassName = '',
   boundaryRef,
 }: ModernDatePickerProps) {
+  const pickerId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const selectedDate = parseDateValue(value);
-  const today = useMemo(() => new Date(), []);
+  const selectedDate = useMemo(() => parseDateValue(value), [value]);
   const [open, setOpen] = useState(false);
-  const [visibleMonth, setVisibleMonth] = useState<Date>(() => selectedDate ?? today);
+  const [viewDate, setViewDate] = useState<Date>(selectedDate ?? new Date());
   const [menuPosition, setMenuPosition] = useState<{
     top?: number;
     bottom?: number;
@@ -82,9 +109,41 @@ export default function ModernDatePicker({
 
   useEffect(() => {
     if (selectedDate) {
-      setVisibleMonth(selectedDate);
+      setViewDate(selectedDate);
     }
-  }, [value]);
+  }, [selectedDate]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    }
+
+    function handlePickerOpen(event: Event) {
+      const customEvent = event as CustomEvent<{ id: string }>;
+      if (customEvent.detail?.id !== pickerId) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    window.addEventListener('modern-date-picker-open', handlePickerOpen as EventListener);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+      window.removeEventListener('modern-date-picker-open', handlePickerOpen as EventListener);
+    };
+  }, [pickerId]);
 
   useEffect(() => {
     if (!open || !buttonRef.current) {
@@ -102,19 +161,18 @@ export default function ModernDatePicker({
       const boundaryRect = boundaryRef?.current?.getBoundingClientRect();
       const gap = 10;
       const edgePadding = 12;
-      const desiredWidth = 304;
       const horizontalStart = boundaryRect ? boundaryRect.left + edgePadding : edgePadding;
       const horizontalEnd = boundaryRect ? boundaryRect.right - edgePadding : viewportWidth - edgePadding;
-      const maxAllowedWidth = Math.max(260, horizontalEnd - horizontalStart);
-      const width = Math.min(desiredWidth, maxAllowedWidth);
-      const spaceBelow = (boundaryRect ? boundaryRect.bottom : viewportHeight) - rect.bottom - edgePadding;
-      const spaceAbove = rect.top - (boundaryRect ? boundaryRect.top : 0) - edgePadding;
-      const openUpward = spaceBelow < 330 && spaceAbove > spaceBelow;
+      const maxAllowedWidth = Math.max(280, horizontalEnd - horizontalStart);
+      const width = Math.min(Math.max(Math.round(rect.width), 320), maxAllowedWidth);
+      const spaceBelow = viewportHeight - rect.bottom - edgePadding;
+      const spaceAbove = rect.top - edgePadding;
+      const openUpward = spaceBelow < 340 && spaceAbove > spaceBelow;
       const left = Math.min(
         Math.max(horizontalStart, rect.left),
         Math.max(horizontalStart, horizontalEnd - width),
       );
-      const maxHeight = Math.max(240, Math.min(360, (openUpward ? spaceAbove : spaceBelow) - gap));
+      const maxHeight = Math.max(280, Math.min(380, (openUpward ? spaceAbove : spaceBelow) - gap));
 
       setMenuPosition(
         openUpward
@@ -125,7 +183,7 @@ export default function ModernDatePicker({
               maxHeight,
             }
           : {
-              top: rect.bottom + gap,
+              top: Math.min(viewportHeight - edgePadding, rect.bottom + gap),
               left,
               width,
               maxHeight,
@@ -143,45 +201,30 @@ export default function ModernDatePicker({
     };
   }, [boundaryRef, open]);
 
-  useEffect(() => {
-    function handlePointerDown(event: MouseEvent) {
-      const target = event.target as Node;
-      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
-        setOpen(false);
+  const calendarDays = useMemo(() => buildCalendarDays(viewDate), [viewDate]);
+  const displayValue = formatDisplayDate(value);
+  const today = new Date();
+
+  const toggleOpen = () => {
+    setOpen(current => {
+      const next = !current;
+      if (next) {
+        window.dispatchEvent(new CustomEvent('modern-date-picker-open', { detail: { id: pickerId } }));
       }
-    }
+      return next;
+    });
+  };
 
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setOpen(false);
-      }
-    }
-
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleEscape);
-
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, []);
-
-  const currentMonthStart = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
-  const gridStart = new Date(currentMonthStart);
-  gridStart.setDate(1 - currentMonthStart.getDay());
-
-  const dayCells = Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(gridStart);
-    date.setDate(gridStart.getDate() + index);
-    return date;
-  });
+  const shiftMonth = (delta: number) => {
+    setViewDate(current => new Date(current.getFullYear(), current.getMonth() + delta, 1));
+  };
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <button
         ref={buttonRef}
         type="button"
-        onClick={() => setOpen(current => !current)}
+        onClick={toggleOpen}
         className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all ${
           open
             ? 'border-kbc-navy/30 bg-white shadow-lg shadow-slate-200/70 ring-4 ring-kbc-navy/5'
@@ -190,10 +233,10 @@ export default function ModernDatePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
       >
-        <span className={`min-w-0 flex-1 truncate text-sm font-medium ${selectedDate ? 'text-slate-700' : 'text-slate-400'}`}>
-          {selectedDate ? formatDisplay(selectedDate) : placeholder}
+        <span className={`min-w-0 flex-1 truncate text-sm font-medium ${displayValue ? 'text-slate-700' : 'text-slate-400'}`}>
+          {displayValue || placeholder}
         </span>
-        <span className={`flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-colors ${open ? 'bg-kbc-navy/5 text-kbc-navy' : ''}`}>
+        <span className={`flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-500 transition-colors ${open ? 'bg-kbc-navy/5 text-kbc-navy' : ''}`}>
           <i className="ri-calendar-line text-base" />
         </span>
       </button>
@@ -202,99 +245,106 @@ export default function ModernDatePicker({
         <ModalPortal>
           <div
             ref={menuRef}
-            className="fixed z-[80] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-[0_18px_45px_-22px_rgba(15,23,42,0.45)] backdrop-blur"
+            className={`fixed z-[80] overflow-hidden rounded-[24px] border border-slate-200 bg-white/95 p-3 shadow-[0_24px_60px_-26px_rgba(15,23,42,0.42)] backdrop-blur ${menuClassName}`}
             style={{
               top: menuPosition.top,
               bottom: menuPosition.bottom,
               left: menuPosition.left,
               width: menuPosition.width,
             }}
+            role="dialog"
+            aria-label="Choose publication date"
           >
-            <div style={{ maxHeight: menuPosition.maxHeight }} className="overflow-y-auto pr-1">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Pick a date</p>
-                  <p className="text-sm font-bold text-kbc-navy">
-                    {MONTH_NAMES[visibleMonth.getMonth()]} {visibleMonth.getFullYear()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
-                    aria-label="Previous month"
-                  >
-                    <i className="ri-arrow-left-s-line text-base" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-kbc-navy"
-                    aria-label="Next month"
-                  >
-                    <i className="ri-arrow-right-s-line text-base" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="mb-2 grid grid-cols-7 gap-1">
-                {WEEK_DAYS.map(day => (
-                  <span key={day} className="flex h-8 items-center justify-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    {day}
-                  </span>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-7 gap-1">
-                {dayCells.map(date => {
-                  const isCurrentMonth = date.getMonth() === visibleMonth.getMonth();
-                  const isSelected = selectedDate ? isSameDay(date, selectedDate) : false;
-                  const isToday = isSameDay(date, today);
-
-                  return (
+            <div style={{ maxHeight: menuPosition.maxHeight }} className="overflow-y-auto">
+              <div className="rounded-[20px] border border-slate-100 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] p-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">Publication Date</p>
+                    <h3 className="mt-1 text-base font-bold text-kbc-navy">
+                      {monthNames[viewDate.getMonth()]} {viewDate.getFullYear()}
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-2">
                     <button
-                      key={date.toISOString()}
                       type="button"
-                      onClick={() => {
-                        onChange(formatValue(date));
-                        setOpen(false);
-                      }}
-                      className={`flex h-9 items-center justify-center rounded-xl text-sm font-medium transition-all ${
-                        isSelected
-                          ? 'bg-kbc-navy text-white shadow-sm'
-                          : isToday
-                            ? 'bg-kbc-amber/15 text-kbc-navy'
-                            : isCurrentMonth
+                      onClick={() => shiftMonth(-1)}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-kbc-navy"
+                      aria-label="Previous month"
+                    >
+                      <i className="ri-arrow-left-s-line text-lg" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => shiftMonth(1)}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:text-kbc-navy"
+                      aria-label="Next month"
+                    >
+                      <i className="ri-arrow-right-s-line text-lg" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-2 grid grid-cols-7 gap-1.5">
+                  {weekdayNames.map(day => (
+                    <div
+                      key={day}
+                      className="flex h-8 items-center justify-center text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400"
+                    >
+                      {day}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-7 gap-1.5">
+                  {calendarDays.map(({ key, date, currentMonth }) => {
+                    const selected = selectedDate ? isSameDay(date, selectedDate) : false;
+                    const isToday = isSameDay(date, today);
+
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          onChange(formatDateValue(date));
+                          setOpen(false);
+                        }}
+                        className={`flex h-10 items-center justify-center rounded-xl text-sm font-semibold transition-all ${
+                          selected
+                            ? 'bg-kbc-navy text-white shadow-[0_16px_30px_-18px_rgba(27,42,74,0.9)]'
+                            : currentMonth
                               ? 'text-slate-700 hover:bg-slate-100'
                               : 'text-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      {date.getDate()}
-                    </button>
-                  );
-                })}
-              </div>
+                        } ${isToday && !selected ? 'border border-kbc-amber/50 bg-kbc-amber/10 text-kbc-navy' : ''}`}
+                      >
+                        {date.getDate()}
+                      </button>
+                    );
+                  })}
+                </div>
 
-              <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-                <button
-                  type="button"
-                  onClick={() => onChange('')}
-                  className="text-xs font-semibold text-slate-400 hover:text-kbc-navy"
-                >
-                  Clear
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(formatValue(today));
-                    setVisibleMonth(today);
-                    setOpen(false);
-                  }}
-                  className="text-xs font-semibold text-kbc-navy hover:text-kbc-navy-light"
-                >
-                  Today
-                </button>
+                <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange('');
+                      setOpen(false);
+                    }}
+                    className="text-sm font-semibold text-slate-500 transition-colors hover:text-kbc-navy"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange(formatDateValue(today));
+                      setViewDate(today);
+                      setOpen(false);
+                    }}
+                    className="rounded-xl bg-kbc-navy px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-kbc-navy-light"
+                  >
+                    Today
+                  </button>
+                </div>
               </div>
             </div>
           </div>

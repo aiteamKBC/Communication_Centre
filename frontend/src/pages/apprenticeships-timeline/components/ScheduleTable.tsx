@@ -274,7 +274,7 @@ export default function ScheduleTable({ groups }: Props) {
                   <tr
                     key={`${section.programme}-${row.cohort}-${row.module}-${idx}`}
                     className="group/srow hover:brightness-95 transition-all"
-                    style={{ background: row.isCurrent ? '#FFFBEB' : (row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB')), outline: row.isCurrent ? '2px solid #F7A800' : 'none', outlineOffset: '-1px' }}
+                    style={{ background: row.isCurrent ? '#FFFBEB' : (row.rowHighlight || (idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB')) }}
                   >
                     {idx === 0 && (
                       <td rowSpan={section.rows.length} className="border border-gray-200 px-3 py-1.5 align-middle text-center bg-white/70">

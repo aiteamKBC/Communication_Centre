@@ -326,6 +326,50 @@ function PolicyCard({ doc, folderTheme }: { doc: PolicyDocument; folderTheme: Fo
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+function PoliciesGridSkeleton() {
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 p-5">
+      <span className="sr-only">Loading documents</span>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 animate-pulse">
+        {[0, 1, 2, 3, 4, 5].map((item) => (
+          <div key={item} className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <div className="h-1 w-full bg-slate-200" />
+            <div className="flex flex-col gap-3 p-4">
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-lg bg-slate-200 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="h-4 w-24 rounded-full bg-slate-200" />
+                  <div className="mt-2 h-3 w-20 rounded-full bg-slate-100" />
+                </div>
+                <div className="h-5 w-16 rounded-full bg-slate-100" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-4 w-full rounded-full bg-slate-200" />
+                <div className="h-4 w-4/5 rounded-full bg-slate-200" />
+              </div>
+              <div className="h-3 w-12 rounded-full bg-slate-100" />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="h-3 w-16 rounded-full bg-slate-100" />
+                  <div className="h-3 w-20 rounded-full bg-slate-200" />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="h-3 w-16 rounded-full bg-slate-100" />
+                  <div className="h-3 w-20 rounded-full bg-slate-200" />
+                </div>
+              </div>
+              <div className="h-3 w-14 rounded-full bg-slate-100" />
+            </div>
+            <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/60 px-4 py-2.5">
+              <div className="h-3 w-10 rounded-full bg-slate-100" />
+              <div className="h-3 w-12 rounded-full bg-slate-200" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 export default function DocumentsPage() {
   const [data, setData] = useState<DocumentsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -546,10 +590,7 @@ export default function DocumentsPage() {
 
         {/* Content */}
         {loading ? (
-          <div className="bg-white rounded-xl border border-gray-100 p-12 text-center text-sm text-gray-400">
-            <i className="ri-loader-4-line animate-spin text-2xl mb-3 block text-kbc-navy" />
-            Loading documents from SharePoint...
-          </div>
+          <PoliciesGridSkeleton />
         ) : error ? (
           <div className="bg-white rounded-xl border border-red-200 p-6">
             <div className="flex items-start gap-3">
@@ -599,3 +640,4 @@ export default function DocumentsPage() {
     </div>
   );
 }
+

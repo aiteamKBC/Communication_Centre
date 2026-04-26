@@ -1,12 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import type { NewsItem } from '../../../mocks/news';
 import { useNewsAcknowledgements } from '../../news/useNewsAcknowledgements';
-
-const tabs = [
-  { key: 'all', label: 'All Staff' },
-  { key: 'departments', label: 'Departments' },
-  { key: 'leadership', label: 'Leadership' },
-];
+import NewsDetailModal from '../../news/components/NewsDetailModal';
 
 const priorityConfig = {
   critical: { badge: 'bg-kbc-red text-white', label: 'High Priority' },
@@ -30,7 +26,7 @@ function timeAgo(dateStr: string): string {
   const year = parseInt(parts[2], 10);
   if (isNaN(day) || month === undefined || isNaN(year)) return dateStr;
   const then = new Date(year, month, day);
-  const now = new Date(2026, 3, 1); // site reference date
+  const now = new Date(2026, 3, 1);
   const diffDays = Math.floor((now.getTime() - then.getTime()) / 86400000);
   if (diffDays === 0) return 'Today';
   if (diffDays === 1) return '1 day ago';
@@ -39,38 +35,84 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(diffDays / 7)} weeks ago`;
 }
 
-export default function NewsFeed() {
-  const { items: newsItems, loading, error } = useNewsAcknowledgements();
-  const [activeTab, setActiveTab] = useState('all');
-  const [page, setPage] = useState(0);
+export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }) {
+  const { items: newsItems, error, toggleAcknowledgement } = useNewsAcknowledgements(initialItems);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [selectedItem, setSelectedItem] = useState<NewsItem | null>(null);
+  const dragStartXRef = useRef<number | null>(null);
+  const dragDeltaXRef = useRef(0);
+  const suppressClickRef = useRef(false);
 
-  const filtered = newsItems.filter((item) => {
-    if (activeTab === 'all') return true;
-    if (activeTab === 'leadership') return item.department === 'Leadership';
-    if (activeTab === 'departments') return item.audience !== 'All Staff';
-    return true;
-  });
+  const filtered = newsItems;
 
-  const pageSize = 4;
-  const displayed = filtered.slice(page * pageSize, page * pageSize + pageSize);
-  const totalPages = Math.ceil(filtered.length / pageSize);
+  useEffect(() => {
+    setActiveIndex((current) => {
+      if (filtered.length === 0) return 0;
+      return Math.min(current, filtered.length - 1);
+    });
+  }, [filtered.length]);
+
+  const currentItem = filtered[activeIndex];
+  const hasMultipleSlides = filtered.length > 1;
+
+  const goToPreviousSlide = () => {
+    if (!hasMultipleSlides) return;
+    setActiveIndex((current) => (current - 1 + filtered.length) % filtered.length);
+  };
+
+  const goToNextSlide = () => {
+    if (!hasMultipleSlides) return;
+    setActiveIndex((current) => (current + 1) % filtered.length);
+  };
+
+  const openNewsDetails = (item: NewsItem) => {
+    setSelectedItem(item);
+  };
+
+  useEffect(() => {
+    if (!hasMultipleSlides || isPaused) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setActiveIndex((current) => (current + 1) % filtered.length);
+    }, 4000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [filtered.length, hasMultipleSlides, isPaused]);
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-      {/* Header */}
+    <div
+      className="bg-white border border-gray-200 rounded-lg overflow-hidden"
+      onMouseEnter={() => setIsPaused(true)}
+      onMouseLeave={() => setIsPaused(false)}
+    >
+      {selectedItem && (
+        <NewsDetailModal
+          item={selectedItem}
+          onClose={() => setSelectedItem(null)}
+          onToggleAcknowledgement={toggleAcknowledgement}
+        />
+      )}
+
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
         <h2 className="text-sm font-bold text-kbc-navy">Latest News</h2>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={page === 0}
+            onClick={goToPreviousSlide}
+            disabled={!hasMultipleSlides}
             className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-kbc-navy cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed rounded border border-gray-200 hover:border-kbc-navy transition-colors"
           >
             <i className="ri-arrow-left-s-line text-sm" />
           </button>
           <button
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={page >= totalPages - 1}
+            onClick={goToNextSlide}
+            disabled={!hasMultipleSlides}
             className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-kbc-navy cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed rounded border border-gray-200 hover:border-kbc-navy transition-colors"
           >
             <i className="ri-arrow-right-s-line text-sm" />
@@ -78,76 +120,177 @@ export default function NewsFeed() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-gray-100">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setPage(0); }}
-            className={`flex-1 py-2.5 text-xs font-medium cursor-pointer transition-colors whitespace-nowrap border-b-2 ${
-              activeTab === tab.key
-                ? 'text-kbc-navy border-kbc-navy font-semibold'
-                : 'text-gray-500 border-transparent hover:text-kbc-navy'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* News Items */}
-      <div className="divide-y divide-gray-50">
+      <div>
         {error && (
           <div className="px-4 py-3 text-xs text-red-700 bg-red-50 border-b border-red-100">
             {error}
           </div>
         )}
-        {loading && (
-          <div className="px-4 py-6 text-xs text-gray-500">
-            Loading latest news...
+        {currentItem && (
+          <div
+            className="overflow-hidden touch-pan-y cursor-grab active:cursor-grabbing select-none"
+            style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+            onPointerDown={(event) => {
+              if (!hasMultipleSlides) return;
+              (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
+              dragStartXRef.current = event.clientX;
+              dragDeltaXRef.current = 0;
+              suppressClickRef.current = false;
+              setDragOffset(0);
+              setIsDragging(true);
+              setIsPaused(true);
+            }}
+            onPointerMove={(event) => {
+              if (dragStartXRef.current === null) return;
+              dragDeltaXRef.current = event.clientX - dragStartXRef.current;
+              setDragOffset(dragDeltaXRef.current);
+              if (Math.abs(dragDeltaXRef.current) > 8) {
+                suppressClickRef.current = true;
+              }
+            }}
+            onPointerUp={() => {
+              if (dragStartXRef.current === null) return;
+              if (dragDeltaXRef.current <= -50) {
+                goToNextSlide();
+              } else if (dragDeltaXRef.current >= 50) {
+                goToPreviousSlide();
+              }
+              dragStartXRef.current = null;
+              dragDeltaXRef.current = 0;
+              setDragOffset(0);
+              setIsDragging(false);
+              window.setTimeout(() => {
+                suppressClickRef.current = false;
+              }, 0);
+              setIsPaused(false);
+            }}
+            onPointerCancel={() => {
+              dragStartXRef.current = null;
+              dragDeltaXRef.current = 0;
+              suppressClickRef.current = false;
+              setDragOffset(0);
+              setIsDragging(false);
+              setIsPaused(false);
+            }}
+            onPointerLeave={() => {
+              if (dragStartXRef.current === null) {
+                setIsPaused(false);
+                return;
+              }
+              if (dragDeltaXRef.current <= -50) {
+                goToNextSlide();
+              } else if (dragDeltaXRef.current >= 50) {
+                goToPreviousSlide();
+              }
+              dragStartXRef.current = null;
+              dragDeltaXRef.current = 0;
+              setDragOffset(0);
+              setIsDragging(false);
+              window.setTimeout(() => {
+                suppressClickRef.current = false;
+              }, 0);
+              setIsPaused(false);
+            }}
+            onClickCapture={(event) => {
+              if (suppressClickRef.current) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
+          >
+            <div
+              className={`flex ${isDragging ? '' : 'transition-transform duration-700 ease-in-out'}`}
+              style={{ transform: `translateX(calc(-${activeIndex * 100}% + ${dragOffset}px))` }}
+            >
+              {filtered.map((item, idx) => {
+                const cfg = priorityConfig[item.priority];
+                const avatarBg = avatarColors[idx % avatarColors.length];
+                const initials = (item.author || item.department)
+                  .split(' ')
+                  .map((w) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase();
+
+                return (
+                  <div key={item.id} className="min-w-full px-4 py-4">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openNewsDetails(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openNewsDetails(item);
+                        }
+                      }}
+                      className="group rounded-2xl border border-slate-100 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] p-4 shadow-[0_16px_34px_-26px_rgba(15,23,42,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-200 hover:shadow-[0_20px_40px_-24px_rgba(15,23,42,0.42)]"
+                    >
+                      <div className="mb-3 flex items-start gap-3">
+                        <div className={`mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${avatarBg} shadow-inner`}>
+                          <span className="text-xs font-bold text-white">{initials}</span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-2 flex items-start justify-between gap-2">
+                            <p className="line-clamp-2 flex-1 text-sm font-bold leading-snug text-kbc-navy transition-colors duration-300 group-hover:text-kbc-navy-light">
+                              {item.title}
+                            </p>
+                            {cfg.badge && (
+                              <span className={`shrink-0 whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-bold ${cfg.badge}`}>
+                                {cfg.label}
+                              </span>
+                            )}
+                          </div>
+                          <p className="line-clamp-3 text-xs leading-6 text-slate-500">
+                            {item.excerpt}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                            {item.department}
+                          </span>
+                          <span className="text-xs text-slate-400">{timeAgo(item.date)}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openNewsDetails(item);
+                          }}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-kbc-navy transition-colors hover:text-kbc-navy-light"
+                        >
+                          Read More <i className="ri-arrow-right-s-line text-sm" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
-        {displayed.map((item, idx) => {
-          const cfg = priorityConfig[item.priority];
-          const avatarBg = avatarColors[idx % avatarColors.length];
-          const initials = (item.author || item.department)
-            .split(' ')
-            .map((w) => w[0])
-            .join('')
-            .slice(0, 2)
-            .toUpperCase();
-
-          return (
-            <div key={item.id} className="flex items-start gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer group">
-              {/* Avatar */}
-              <div className={`w-9 h-9 rounded-full ${avatarBg} flex items-center justify-center shrink-0 mt-0.5`}>
-                <span className="text-white text-xs font-bold">{initials}</span>
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-xs font-semibold text-kbc-navy leading-snug group-hover:text-kbc-navy-light line-clamp-2 flex-1">
-                    {item.title}
-                  </p>
-                  {cfg.badge && (
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded shrink-0 whitespace-nowrap ${cfg.badge}`}>
-                      {cfg.label}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between mt-1.5">
-                  <span className="text-xs text-gray-400">{timeAgo(item.date)}</span>
-                  <Link
-                    to="/news"
-                    className="text-xs text-kbc-navy font-medium hover:underline cursor-pointer whitespace-nowrap"
-                  >
-                    Read More &rsaquo;
-                  </Link>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        {!error && filtered.length === 0 && (
+          <div className="px-4 py-8 text-center text-gray-400">
+            <i className="ri-newspaper-line mb-2 block text-3xl" />
+            <p className="text-xs font-medium">No news available in this view</p>
+          </div>
+        )}
+        {hasMultipleSlides && (
+          <div className="flex items-center justify-center gap-1.5 px-4 pb-3">
+            {filtered.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveIndex(index)}
+                className={`h-2.5 rounded-full transition-all ${index === activeIndex ? 'w-6 bg-kbc-navy' : 'w-2.5 bg-slate-200 hover:bg-slate-300'}`}
+                aria-label={`Go to news slide ${index + 1}`}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50">

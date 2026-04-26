@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-type TrainingItem = {
+export type TrainingItem = {
   id?: number;
   cohortName?: string;
   program?: string;
@@ -61,13 +61,16 @@ function formatTimeRange(start?: string, end?: string) {
   return `${formatMeridiemTime(start)} - ${formatMeridiemTime(end)}`;
 }
 
-export default function TodaysSessions() {
-  const [items, setItems] = useState<TrainingItem[] | null>(null);
-  const [loading, setLoading] = useState(false);
+export default function TodaysSessions({ initialItems }: { initialItems?: TrainingItem[] }) {
+  const [items, setItems] = useState<TrainingItem[] | null>(initialItems ?? null);
 
   useEffect(() => {
+    if (initialItems !== undefined) {
+      setItems(initialItems);
+      return;
+    }
+
     let mounted = true;
-    setLoading(true);
     void fetch('/api/training-plan/')
       .then(res => res.ok ? res.json() : Promise.reject(res.status))
       .then((data: TrainingItem[]) => {
@@ -77,15 +80,15 @@ export default function TodaysSessions() {
       .catch(() => {
         if (!mounted) return;
         setItems([]);
-      })
-      .finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
-  }, []);
+      });
 
-  const todayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const;
+    return () => { mounted = false; };
+  }, [initialItems]);
+
+  const todayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
   const todayKey = todayNames[new Date().getDay()];
   const todayStart = new Date();
-  todayStart.setHours(0,0,0,0);
+  todayStart.setHours(0, 0, 0, 0);
   const ts = todayStart.getTime();
 
   const todays = (items || []).filter(it => {
@@ -93,7 +96,7 @@ export default function TodaysSessions() {
     if (!days.includes(todayKey)) return false;
     const start = it.startDate ? new Date(it.startDate).getTime() : NaN;
     const end = it.endDate ? new Date(it.endDate).getTime() : NaN;
-    if (Number.isNaN(start) || Number.isNaN(end)) return true; // assume active if dates missing/malformed
+    if (Number.isNaN(start) || Number.isNaN(end)) return true;
     return ts >= start && ts <= end;
   });
 
@@ -105,9 +108,7 @@ export default function TodaysSessions() {
       </div>
 
       <div className="mt-3">
-        {loading ? (
-          <p className="text-xs text-gray-400">Loading…</p>
-        ) : todays.length === 0 ? (
+        {todays.length === 0 ? (
           <p className="text-xs text-gray-400">No sessions scheduled for today.</p>
         ) : (
           <ul className="space-y-2">
@@ -115,7 +116,7 @@ export default function TodaysSessions() {
               <li key={`${t.cohortName}-${t.moduleName}-${i}`} className="flex items-center justify-between bg-gray-50 rounded px-3 py-2">
                 <div>
                   <p className="font-semibold text-sm text-gray-800">{t.moduleName}</p>
-                  <p className="text-xs text-gray-500">{t.cohortName} · {t.program}</p>
+                  <p className="text-xs text-gray-500">{t.cohortName} � {t.program}</p>
                 </div>
                 <div className="text-right">
                   <p className="font-bold text-sm text-gray-700">{formatTimeRange(t.sessionStartTime, t.sessionEndTime)}</p>

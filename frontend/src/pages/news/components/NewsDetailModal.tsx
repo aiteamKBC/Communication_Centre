@@ -1,11 +1,13 @@
 import { useEffect } from 'react';
-import SafeImage from '../../../components/feature/SafeImage';
 import type { NewsItem } from '../../../mocks/news';
 
 interface NewsDetailModalProps {
   item: NewsItem;
   onClose: () => void;
   onToggleAcknowledgement: (id: string) => void;
+  canManageNews?: boolean;
+  onEdit?: (item: NewsItem) => void;
+  onDelete?: (item: NewsItem) => void;
 }
 
 const priorityStyles = {
@@ -26,8 +28,80 @@ const priorityStyles = {
   },
 };
 
-export default function NewsDetailModal({ item, onClose, onToggleAcknowledgement }: NewsDetailModalProps) {
+const URL_PATTERN = /https?:\/\/[^\s]+/i;
+
+function trimUrl(value: string) {
+  return value.replace(/[),.;]+$/, '');
+}
+
+function formatStatusLabel(status: string | undefined, isExpired: boolean) {
+  const rawStatus = (status || '').trim();
+  if (rawStatus) {
+    return rawStatus
+      .split('_')
+      .filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  return isExpired ? 'Expired' : 'Active';
+}
+
+function parseArticleContent(item: NewsItem) {
+  const rawContent = (item.content || item.excerpt || '').trim();
+  const lines = rawContent
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const paragraphs: string[] = [];
+  let sourceName = '';
+  let sourceLink = '';
+
+  lines.forEach((line) => {
+    const lowered = line.toLowerCase();
+
+    if (!sourceName && lowered.startsWith('source:')) {
+      sourceName = line.replace(/^source\s*:\s*/i, '').trim();
+      return;
+    }
+
+    if (!sourceLink && lowered.startsWith('source link:')) {
+      const match = line.match(URL_PATTERN);
+      if (match) {
+        sourceLink = trimUrl(match[0]);
+      }
+      return;
+    }
+
+    paragraphs.push(line);
+  });
+
+  if (!sourceLink) {
+    const fallbackMatch = rawContent.match(URL_PATTERN);
+    if (fallbackMatch) {
+      sourceLink = trimUrl(fallbackMatch[0]);
+    }
+  }
+
+  return {
+    paragraphs: paragraphs.length > 0 ? paragraphs : [item.excerpt],
+    sourceName,
+    sourceLink,
+  };
+}
+
+export default function NewsDetailModal({
+  item,
+  onClose,
+  onToggleAcknowledgement,
+  canManageNews = false,
+  onEdit,
+  onDelete,
+}: NewsDetailModalProps) {
   const priority = priorityStyles[item.priority];
+  const { paragraphs, sourceName, sourceLink } = parseArticleContent(item);
+  const statusLabel = formatStatusLabel(item.status, item.isExpired);
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -80,35 +154,46 @@ export default function NewsDetailModal({ item, onClose, onToggleAcknowledgement
         </div>
 
         <div className="overflow-y-auto px-6 py-6">
-          {item.image && (
-            <div className="mb-6 overflow-hidden rounded-[24px] border border-slate-100 bg-slate-50">
-              <SafeImage
-                src={item.image}
-                alt={item.title}
-                className="h-72 w-full object-cover object-center"
-                fallback={<div className="h-72 w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
-              />
-            </div>
-          )}
-
-          <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Audience</p>
-              <p className="mt-1 text-sm font-semibold text-kbc-navy">{item.audience}</p>
-            </div>
+          <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Department</p>
               <p className="mt-1 text-sm font-semibold text-kbc-navy">{item.department}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Status</p>
-              <p className="mt-1 text-sm font-semibold text-kbc-navy">{item.isExpired ? 'Expired' : 'Active'}</p>
+              <p className="mt-1 text-sm font-semibold text-kbc-navy">{statusLabel}</p>
             </div>
           </div>
 
           <div className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-5 py-5">
             <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Full Update</p>
-            <p className="mt-3 text-sm leading-7 text-slate-600">{item.excerpt}</p>
+            <div className="mt-3 space-y-3">
+              {paragraphs.map((paragraph, index) => (
+                <p key={`${item.id}-paragraph-${index}`} className="text-sm leading-7 text-slate-600">
+                  {paragraph}
+                </p>
+              ))}
+
+              {(sourceName || sourceLink) && (
+                <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Article Source</p>
+                  {sourceName && (
+                    <p className="mt-2 text-sm font-semibold text-kbc-navy">{sourceName}</p>
+                  )}
+                  {sourceLink && (
+                    <a
+                      href={sourceLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-kbc-navy underline decoration-slate-300 underline-offset-4 transition-colors hover:text-kbc-navy-light"
+                    >
+                      Open source article
+                      <i className="ri-external-link-line text-base" />
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -121,28 +206,48 @@ export default function NewsDetailModal({ item, onClose, onToggleAcknowledgement
             Close
           </button>
 
-          {item.requiresAcknowledgement && (
-            item.acknowledged ? (
+          <div className="flex items-center gap-2">
+            {canManageNews && onEdit && (
               <button
                 type="button"
-                onClick={() => onToggleAcknowledgement(item.id)}
-                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-yellow-800 transition-colors hover:bg-amber-100"
+                onClick={() => onEdit(item)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:text-kbc-navy"
               >
-                Undo Acknowledge
+                Edit
               </button>
-            ) : (
+            )}
+            {canManageNews && onDelete && (
               <button
                 type="button"
-                onClick={() => {
-                  onToggleAcknowledgement(item.id);
-                  onClose();
-                }}
-                className="rounded-xl bg-kbc-navy px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-kbc-navy-light"
+                onClick={() => onDelete(item)}
+                className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-semibold text-red-700 transition-colors hover:bg-red-100"
               >
-                Acknowledge
+                Delete
               </button>
-            )
-          )}
+            )}
+            {item.requiresAcknowledgement && (
+              item.acknowledged ? (
+                <button
+                  type="button"
+                  onClick={() => onToggleAcknowledgement(item.id)}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-yellow-800 transition-colors hover:bg-amber-100"
+                >
+                  Undo Acknowledge
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onToggleAcknowledgement(item.id);
+                    onClose();
+                  }}
+                  className="rounded-xl bg-kbc-navy px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-kbc-navy-light"
+                >
+                  Acknowledge
+                </button>
+              )
+            )}
+          </div>
         </div>
       </div>
     </div>

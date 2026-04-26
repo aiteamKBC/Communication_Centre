@@ -7,17 +7,26 @@ export interface NewNewsPayload {
   category: string;
   summary: string;
   content: string;
-  imageUrl: string;
-  audience: string;
   priority: 'critical' | 'important' | 'general';
 }
 
-export function useNewsAcknowledgements() {
-  const [items, setItems] = useState<NewsItem[]>([]);
-  const [loading, setLoading] = useState(true);
+export interface UpdateNewsPayload extends NewNewsPayload {
+  id: string;
+}
+
+export function useNewsAcknowledgements(initialItems?: NewsItem[]) {
+  const [items, setItems] = useState<NewsItem[]>(initialItems ?? []);
+  const [loading, setLoading] = useState(initialItems === undefined);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (initialItems !== undefined) {
+      setItems(initialItems);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     async function fetchNews() {
       try {
         setLoading(true);
@@ -32,11 +41,11 @@ export function useNewsAcknowledgements() {
         setLoading(false);
       }
     }
-    fetchNews();
-  }, []);
+
+    void fetchNews();
+  }, [initialItems]);
 
   const toggleAcknowledgement = async (id: string) => {
-    // Optimistic update
     setItems(current =>
       current.map(item =>
         item.id === id ? { ...item, acknowledged: !item.acknowledged } : item,
@@ -50,12 +59,10 @@ export function useNewsAcknowledgements() {
       });
       if (!response.ok) throw new Error('Failed to save acknowledgement.');
       const updated = (await response.json()) as NewsItem;
-      // Sync with server's confirmed value
       setItems(current =>
         current.map(item => (item.id === id ? { ...item, acknowledged: updated.acknowledged } : item)),
       );
     } catch {
-      // Revert optimistic update on failure
       setItems(current =>
         current.map(item =>
           item.id === id ? { ...item, acknowledged: !item.acknowledged } : item,
@@ -75,8 +82,6 @@ export function useNewsAcknowledgements() {
         summary: payload.summary,
         content: payload.content,
         details: payload.content || payload.summary,
-        imageUrl: payload.imageUrl,
-        audience: payload.audience,
         priority: payload.priority,
       }),
     });
@@ -86,5 +91,34 @@ export function useNewsAcknowledgements() {
     setItems(current => [saved, ...current]);
   };
 
-  return { items, loading, error, toggleAcknowledgement, addNews };
+  const updateNews = async (payload: UpdateNewsPayload): Promise<void> => {
+    const response = await fetch(`/api/news/${payload.id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: payload.title,
+        publicationDate: payload.date || undefined,
+        category: payload.category,
+        summary: payload.summary,
+        content: payload.content,
+        details: payload.content || payload.summary,
+        priority: payload.priority,
+      }),
+    });
+
+    if (!response.ok) throw new Error('Failed to update news.');
+    const updated = (await response.json()) as NewsItem;
+    setItems(current => current.map(item => (item.id === updated.id ? updated : item)));
+  };
+
+  const deleteNews = async (id: string): Promise<void> => {
+    const response = await fetch(`/api/news/${id}/`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) throw new Error('Failed to delete news.');
+    setItems(current => current.filter(item => item.id !== id));
+  };
+
+  return { items, loading, error, toggleAcknowledgement, addNews, updateNews, deleteNews };
 }

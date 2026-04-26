@@ -306,6 +306,62 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
 
 type TrainingPlanProgramConfigPayload = CustomProgram;
 
+function TrainingPlanPanelSkeleton() {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6 animate-pulse">
+      <span className="sr-only">Loading programmes</span>
+      <div className="space-y-4">
+        {[0, 1, 2].map((item) => (
+          <div key={item} className="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="h-5 w-40 rounded-full bg-slate-200" />
+                <div className="mt-2 h-3 w-28 rounded-full bg-slate-200" />
+              </div>
+              <div className="h-8 w-28 rounded-lg bg-slate-200" />
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {[0, 1, 2].map((block) => (
+                <div key={block} className="rounded-xl border border-white/80 bg-white p-3 shadow-sm shadow-slate-200/60">
+                  <div className="h-4 w-24 rounded-full bg-slate-200" />
+                  <div className="mt-3 h-3 w-full rounded-full bg-slate-200" />
+                  <div className="mt-2 h-3 w-5/6 rounded-full bg-slate-200" />
+                  <div className="mt-4 flex gap-2">
+                    <div className="h-7 w-20 rounded-lg bg-slate-200" />
+                    <div className="h-7 w-16 rounded-lg bg-slate-200" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SessionScheduleSkeleton() {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6 animate-pulse">
+      <span className="sr-only">Loading schedule</span>
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="h-9 rounded-lg bg-slate-200" />
+          ))}
+        </div>
+        {[0, 1, 2, 3, 4].map((row) => (
+          <div key={row} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+            {[0, 1, 2, 3].map((item) => (
+              <div key={item} className="h-12 rounded-xl bg-slate-100" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ApprenticeshipTimeline() {
   const { canManageCohorts } = useAccessControl();
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
@@ -326,6 +382,8 @@ export default function ApprenticeshipTimeline() {
   const addDropdownRef = useRef<HTMLDivElement>(null);
   const [trainingPlanSaveState, setTrainingPlanSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [trainingPlanSaveMessage, setTrainingPlanSaveMessage] = useState('Waiting for changes');
+  const [hasLoadedTrainingPlan, setHasLoadedTrainingPlan] = useState(false);
+  const [hasLoadedProgramConfigs, setHasLoadedProgramConfigs] = useState(false);
   const skipPersistRef = useRef(true);
 
   useEffect(() => {
@@ -346,6 +404,10 @@ export default function ApprenticeshipTimeline() {
         setTrainingPlanItems(items);
       } catch {
         // Keep initial in-memory data if loading fails.
+      } finally {
+        if (!cancelled) {
+          setHasLoadedTrainingPlan(true);
+        }
       }
     }
 
@@ -405,6 +467,10 @@ export default function ApprenticeshipTimeline() {
         setCustomPrograms(items);
       } catch {
         // Keep current in-memory programme configs if loading fails.
+      } finally {
+        if (!cancelled) {
+          setHasLoadedProgramConfigs(true);
+        }
       }
     }
 
@@ -504,6 +570,8 @@ export default function ApprenticeshipTimeline() {
 
     return () => controller.abort();
   }, [groups]);
+
+  const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
 
   const persistTrainingPlan = async (nextGroups: ProgrammeGroup[]) => {
     const payload = { items: flattenGroupsForApi(nextGroups) };
@@ -1196,7 +1264,19 @@ export default function ApprenticeshipTimeline() {
         {/* Today's Sessions */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
-          {todaySessions.length === 0 ? (
+          {isInitialProgrammesLoading ? (
+            <div className="mt-3 space-y-3 animate-pulse">
+              {[0, 1, 2].map((item) => (
+                <div key={item} className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 px-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="h-4 w-32 rounded-full bg-slate-200" />
+                    <div className="mt-2 h-3 w-48 rounded-full bg-slate-200" />
+                  </div>
+                  <div className="h-4 w-20 rounded-full bg-slate-200" />
+                </div>
+              ))}
+            </div>
+          ) : todaySessions.length === 0 ? (
             <p className="text-xs text-gray-400 mt-2">No sessions yet. Add cohorts and module blocks to populate this schedule.</p>
           ) : (
             <ul className="mt-3 divide-y">
@@ -1270,7 +1350,9 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          groups.length ? (
+          isInitialProgrammesLoading ? (
+            <TrainingPlanPanelSkeleton />
+          ) : groups.length ? (
             <div className="bg-white rounded-xl overflow-hidden border border-gray-200">
               <GanttTimeline
                 groups={groups}
@@ -1316,7 +1398,9 @@ export default function ApprenticeshipTimeline() {
 
         {/* SESSION SCHEDULE */}
         {activeTab === 'schedule' && (
-          groups.length ? (
+          isInitialProgrammesLoading ? (
+            <SessionScheduleSkeleton />
+          ) : groups.length ? (
             <ScheduleTable groups={groups} />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">

@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import ModernSelect from '../../components/feature/ModernSelect';
+import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 import AddNewsModal from './components/AddNewsModal';
 import NewsDetailModal from './components/NewsDetailModal';
 import { useNewsAcknowledgements } from './useNewsAcknowledgements';
@@ -16,35 +16,170 @@ const priorityConfig = {
   general: { label: 'General', border: 'border-l-kbc-green', bg: '', badge: 'bg-kbc-green/10 text-kbc-green', dot: 'bg-kbc-green' },
 };
 
-const audiences = ['All Staff', 'Leadership', 'Budget Holders', 'New Starters', 'Marketing'];
-const deptsList = ['All Departments', 'Compliance', 'Leadership', 'IT Services', 'HR & Safeguarding', 'HR', 'Marketing', 'Finance', 'Estates', 'Quality & Standards'];
-const audienceOptions = [
-  { value: 'all', label: 'All Audiences' },
-  ...audiences.map((item) => ({ value: item, label: item })),
-];
-const departmentOptions = deptsList.map((item) => ({ value: item, label: item }));
+const DEPARTMENT_PLACEHOLDER = 'All Departments';
+
+function NewsListSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 animate-pulse">
+      {[0, 1, 2].map((item) => (
+        <div
+          key={item}
+          className="overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)]"
+        >
+          <div className="p-4">
+            <div className="mb-2 flex items-center gap-2">
+              <div className="h-6 w-20 rounded-sm bg-slate-200" />
+              <div className="h-6 w-40 rounded-sm bg-amber-100" />
+            </div>
+            <div className="h-5 w-52 rounded-full bg-slate-200" />
+            <div className="mt-3 space-y-2">
+              <div className="h-3 w-full rounded-full bg-slate-200" />
+              <div className="h-3 w-5/6 rounded-full bg-slate-200" />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <div className="h-6 w-16 rounded-full bg-slate-100" />
+              <div className="h-6 w-12 rounded-full bg-slate-100" />
+              <div className="ml-auto h-4 w-20 rounded-full bg-slate-100" />
+              <div className="h-8 w-28 rounded-lg bg-slate-200" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function NewsGridSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 animate-pulse">
+      {[0, 1, 2, 3, 4, 5].map((item) => (
+        <div
+          key={item}
+          className="overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)]"
+        >
+          <div className="p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="h-5 w-20 rounded-sm bg-slate-200" />
+              <div className="ml-auto h-4 w-16 rounded-full bg-slate-100" />
+            </div>
+            <div className="space-y-2">
+              <div className="h-4 w-full rounded-full bg-slate-200" />
+              <div className="h-4 w-4/5 rounded-full bg-slate-200" />
+            </div>
+            <div className="mt-3 space-y-2">
+              <div className="h-3 w-full rounded-full bg-slate-100" />
+              <div className="h-3 w-5/6 rounded-full bg-slate-100" />
+              <div className="h-3 w-2/3 rounded-full bg-slate-100" />
+            </div>
+            <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3">
+              <div className="h-6 w-24 rounded-full bg-slate-100" />
+              <div className="h-4 w-20 rounded-full bg-slate-200" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function NewsPage() {
-  const { items, loading, error, toggleAcknowledgement, addNews } = useNewsAcknowledgements();
+  const { items, loading, error, toggleAcknowledgement, addNews, updateNews, deleteNews } = useNewsAcknowledgements();
   const { canManageNews } = useAccessControl();
   const [priority, setPriority] = useState<string>('all');
-  const [audience, setAudience] = useState<string>('all');
-  const [dept, setDept] = useState<string>('All Departments');
+  const [dept, setDept] = useState('');
   const [search, setSearch] = useState('');
   const [adminOpen, setAdminOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<NewsItem | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [selectedItem, setSelectedItem] = useState<NewsItem | null>(null);
 
+  const departmentOptions = useMemo(() => {
+    const departments = Array.from(
+      new Set(
+        items
+          .map(item => item.department?.trim())
+          .filter((department): department is string => Boolean(department)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    return [
+      { value: '', label: DEPARTMENT_PLACEHOLDER },
+      ...departments.map((department) => ({ value: department, label: department })),
+    ];
+  }, [items]);
+
+  const newsDepartmentOptions = useMemo(() => {
+    const selectableOptions = departmentOptions.filter(option => option.value);
+    return selectableOptions.length > 0
+      ? selectableOptions
+      : [{ value: 'General', label: 'General' }];
+  }, [departmentOptions]);
+
+  useEffect(() => {
+    if (dept && !departmentOptions.some(option => option.value === dept)) {
+      setDept('');
+    }
+  }, [departmentOptions, dept]);
+
   const filtered = items.filter(item => {
     const matchPriority = priority === 'all' || item.priority === priority;
-    const matchAudience = audience === 'all' || item.audience === audience;
-    const matchDept = dept === 'All Departments' || item.department === dept;
+    const matchDept = !dept || item.department === dept;
     const matchSearch = !search || item.title.toLowerCase().includes(search.toLowerCase()) || item.excerpt.toLowerCase().includes(search.toLowerCase());
-    return matchPriority && matchAudience && matchDept && matchSearch;
+    return matchPriority && matchDept && matchSearch;
   });
 
-  const criticalCount = items.filter(n => n.priority === 'critical').length;
-  const pendingAck = items.filter(n => n.requiresAcknowledgement && !n.acknowledged).length;
+  const closeAdminModal = () => {
+    setAdminOpen(false);
+    setEditingItem(null);
+  };
+
+  const openCreateModal = () => {
+    setEditingItem(null);
+    setAdminOpen(true);
+  };
+
+  const openEditModal = (item: NewsItem) => {
+    setSelectedItem(null);
+    setEditingItem(item);
+    setAdminOpen(true);
+  };
+
+  const openNewsDetails = (item: NewsItem) => {
+    setSelectedItem(item);
+  };
+
+  const handleDeleteNews = async (item: NewsItem) => {
+    const result = await kbcSwal.fire({
+      title: 'Delete News Article?',
+      html: `The article <strong>${item.title}</strong> will be removed from the database.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      await deleteNews(item.id);
+      setSelectedItem(current => (current?.id === item.id ? null : current));
+      await kbcSuccessSwal.fire({
+        title: 'Article Deleted',
+        html: 'The news article was removed successfully.',
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+    } catch {
+      await kbcSwal.fire({
+        title: 'Delete Failed',
+        html: 'The news article could not be deleted. Please try again.',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
+  };
 
 
   return (
@@ -52,12 +187,26 @@ export default function NewsPage() {
       <TopNav />
 
       {/* Add News Modal */}
-      {canManageNews && adminOpen && <AddNewsModal onClose={() => setAdminOpen(false)} onArticleAdded={addNews} />}
+      {canManageNews && adminOpen && (
+        <AddNewsModal
+          onClose={closeAdminModal}
+          initialArticle={editingItem}
+          departmentOptions={newsDepartmentOptions}
+          onSubmitArticle={(payload) => (
+            editingItem
+              ? updateNews({ ...payload, id: editingItem.id })
+              : addNews(payload)
+          )}
+        />
+      )}
       {selectedItem && (
         <NewsDetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
           onToggleAcknowledgement={toggleAcknowledgement}
+          canManageNews={canManageNews}
+          onEdit={openEditModal}
+          onDelete={handleDeleteNews}
         />
       )}
 
@@ -81,7 +230,7 @@ export default function NewsPage() {
             </div>
             {canManageNews && (
               <button
-                onClick={() => setAdminOpen(true)}
+                onClick={openCreateModal}
                 className="flex items-center gap-2 bg-kbc-amber text-kbc-navy text-xs font-bold px-4 py-2.5 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
               >
                 <i className="ri-add-circle-line text-base" />
@@ -98,18 +247,6 @@ export default function NewsPage() {
             {error}
           </div>
         )}
-
-        {/* Alert Summary Strip */}
-        <div className="flex flex-wrap items-center gap-3 mb-6">
-          <div className="flex items-center gap-2 bg-white border border-red-200 rounded-lg px-3 py-2">
-            <i className="ri-error-warning-fill text-kbc-red text-sm" />
-            <span className="text-kbc-navy text-xs font-semibold">{criticalCount} Critical Alerts Active</span>
-          </div>
-          <div className="flex items-center gap-2 bg-white border border-kbc-amber/30 rounded-lg px-3 py-2">
-            <i className="ri-pen-nib-line text-kbc-amber text-sm" />
-            <span className="text-kbc-navy text-xs font-semibold">{pendingAck} Pending Acknowledgements</span>
-          </div>
-        </div>
 
         {/* ── Section 2: News Display ── */}
         <div>
@@ -129,29 +266,25 @@ export default function NewsPage() {
             </div>
             <div className="w-px h-5 bg-gray-200 hidden sm:block" />
             <div className="flex items-center gap-1 flex-wrap">
-              {(['all', 'critical', 'important', 'general'] as const).map((p) => (
+              {(['all', 'critical', 'important', 'general'] as const).map((value) => (
                 <button
-                  key={p}
-                  onClick={() => setPriority(p)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium capitalize cursor-pointer whitespace-nowrap transition-all ${priority === p ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  key={value}
+                  type="button"
+                  onClick={() => setPriority(value)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium capitalize cursor-pointer whitespace-nowrap transition-all ${
+                    priority === value ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
                 >
-                  {p === 'all' ? 'All Priority' : p.charAt(0).toUpperCase() + p.slice(1)}
+                  {value === 'all' ? 'All Priority' : value.charAt(0).toUpperCase() + value.slice(1)}
                 </button>
               ))}
             </div>
             <div className="w-px h-5 bg-gray-200 hidden sm:block" />
             <ModernSelect
-              value={audience}
-              onChange={setAudience}
-              options={audienceOptions}
-              className="min-w-[190px]"
-              buttonClassName="min-h-[46px] rounded-2xl border-gray-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.4)]"
-              menuMinWidth={220}
-            />
-            <ModernSelect
               value={dept}
               onChange={setDept}
               options={departmentOptions}
+              placeholder={DEPARTMENT_PLACEHOLDER}
               className="min-w-[190px]"
               buttonClassName="min-h-[46px] rounded-2xl border-gray-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] px-4 py-2.5 text-sm shadow-[0_12px_26px_-18px_rgba(27,42,74,0.4)]"
               menuMinWidth={230}
@@ -177,31 +310,26 @@ export default function NewsPage() {
           {/* List View */}
           {viewMode === 'list' && (
             <div className="flex flex-col gap-3">
-              {loading && (
-                <div className="rounded-xl border border-gray-100 bg-white px-4 py-8 text-center text-sm text-gray-500">
-                  Loading news from the database...
-                </div>
-              )}
-              {filtered.map((item) => {
+              {loading ? (
+                <NewsListSkeleton />
+              ) : filtered.map((item) => {
                 const cfg = priorityConfig[item.priority];
                 return (
                   <div
                     key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openNewsDetails(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openNewsDetails(item);
+                      }
+                    }}
                     className={`group relative overflow-hidden rounded-xl border border-gray-100 border-l-4 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] ${cfg.border} ${cfg.bg} cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]`}
                   >
                     <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-                    <div className="flex items-start gap-0">
-                      {item.image && (
-                        <div className="w-28 sm:w-36 h-full min-h-[90px] overflow-hidden shrink-0 bg-slate-100">
-                          <SafeImage
-                            src={item.image}
-                            alt={item.title}
-                            className="w-full h-full object-cover object-top transition-transform duration-500 group-hover:scale-105"
-                            fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
-                          />
-                        </div>
-                      )}
-                      <div className="relative flex-1 min-w-0 p-4">
+                    <div className="relative p-4">
                         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide ${cfg.badge}`}>
                             {cfg.label}
@@ -227,12 +355,40 @@ export default function NewsPage() {
                           {item.excerpt}
                         </p>
                         <div className="flex items-center gap-2 mt-2.5 flex-wrap">
-                          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full whitespace-nowrap transition-colors duration-300 group-hover:bg-gray-200">{item.audience}</span>
                           <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full whitespace-nowrap transition-colors duration-300 group-hover:bg-gray-200">{item.department}</span>
+                          {canManageNews && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openEditModal(item);
+                                }}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 transition-colors hover:border-slate-300 hover:text-kbc-navy"
+                              >
+                                <i className="ri-edit-line text-xs" />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteNews(item);
+                                }}
+                                className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700 transition-colors hover:bg-red-100"
+                              >
+                                <i className="ri-delete-bin-line text-xs" />
+                                Delete
+                              </button>
+                            </div>
+                          )}
                           <span className="text-xs text-gray-400 ml-auto whitespace-nowrap">{item.date}</span>
                           <button
                             type="button"
-                            onClick={() => setSelectedItem(item)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openNewsDetails(item);
+                            }}
                             className="text-xs font-semibold text-kbc-navy hover:underline cursor-pointer whitespace-nowrap flex items-center gap-1"
                           >
                             Read More <i className="ri-arrow-right-s-line text-sm" />
@@ -241,7 +397,10 @@ export default function NewsPage() {
                             item.acknowledged ? (
                               <button
                                 type="button"
-                                onClick={() => toggleAcknowledgement(item.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleAcknowledgement(item.id);
+                                }}
                                 className="shrink-0 border border-amber-200 bg-amber-50 text-yellow-800 text-xs font-semibold px-3 py-1 rounded cursor-pointer hover:bg-amber-100 whitespace-nowrap"
                               >
                                 Undo Acknowledge
@@ -249,7 +408,10 @@ export default function NewsPage() {
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => toggleAcknowledgement(item.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleAcknowledgement(item.id);
+                                }}
                                 className="shrink-0 bg-kbc-navy text-white text-xs font-semibold px-3 py-1 rounded cursor-pointer hover:bg-kbc-navy-light whitespace-nowrap"
                               >
                                 Acknowledge
@@ -257,12 +419,11 @@ export default function NewsPage() {
                             )
                           )}
                         </div>
-                      </div>
                     </div>
                   </div>
                 );
               })}
-              {filtered.length === 0 && (
+              {!loading && filtered.length === 0 && (
                 <div className="text-center py-16 text-gray-400">
                   <i className="ri-newspaper-line text-4xl mb-3 block" />
                   <p className="text-sm font-medium">No announcements match your filters</p>
@@ -274,26 +435,27 @@ export default function NewsPage() {
           {/* Grid View */}
           {viewMode === 'grid' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {loading && (
-                <div className="col-span-3 rounded-xl border border-gray-100 bg-white px-4 py-8 text-center text-sm text-gray-500">
-                  Loading news from the database...
+              {loading ? (
+                <div className="col-span-1 sm:col-span-2 lg:col-span-3">
+                  <NewsGridSkeleton />
                 </div>
-              )}
-              {filtered.map((item) => {
+              ) : filtered.map((item) => {
                 const cfg = priorityConfig[item.priority];
                 return (
-                  <article key={item.id} className="group relative overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]">
+                  <article
+                    key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openNewsDetails(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openNewsDetails(item);
+                      }
+                    }}
+                    className="group relative overflow-hidden rounded-xl border border-gray-100 bg-[linear-gradient(180deg,#ffffff_0%,#fbfcff_100%)] cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:border-gray-200 hover:shadow-[0_22px_45px_-28px_rgba(15,23,42,0.32)]"
+                  >
                     <div className="absolute inset-y-0 right-0 w-24 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),transparent_72%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-                    {item.image && (
-                      <div className="w-full h-40 overflow-hidden bg-slate-100">
-                        <SafeImage
-                          src={item.image}
-                          alt={item.title}
-                          className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300"
-                          fallback={<div className="h-full w-full bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_100%)]" aria-hidden="true" />}
-                        />
-                      </div>
-                    )}
                     <div className="relative p-4">
                       <div className="flex items-center gap-2 mb-2">
                         <span className={`text-xs font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide ${cfg.badge}`}>
@@ -305,19 +467,50 @@ export default function NewsPage() {
                       <p className="text-xs text-gray-500 leading-relaxed line-clamp-3 mb-3 transition-colors duration-300 group-hover:text-gray-600">{item.excerpt}</p>
                       <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                         <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{item.department}</span>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedItem(item)}
-                          className="text-xs font-semibold text-kbc-navy hover:underline cursor-pointer whitespace-nowrap flex items-center gap-1"
-                        >
-                          Read More <i className="ri-arrow-right-s-line text-sm" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {canManageNews && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openEditModal(item);
+                                }}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 transition-colors hover:text-kbc-navy"
+                              >
+                                <i className="ri-edit-line text-sm" />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteNews(item);
+                                }}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 transition-colors hover:text-red-700"
+                              >
+                                <i className="ri-delete-bin-line text-sm" />
+                                Delete
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openNewsDetails(item);
+                            }}
+                            className="text-xs font-semibold text-kbc-navy hover:underline cursor-pointer whitespace-nowrap flex items-center gap-1"
+                          >
+                            Read More <i className="ri-arrow-right-s-line text-sm" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </article>
                 );
               })}
-              {filtered.length === 0 && (
+              {!loading && filtered.length === 0 && (
                 <div className="col-span-3 text-center py-16 text-gray-400">
                   <i className="ri-newspaper-line text-4xl mb-3 block" />
                   <p className="text-sm font-medium">No announcements match your filters</p>
