@@ -14,6 +14,9 @@ const avatarColors = [
   'bg-kbc-navy', 'bg-kbc-navy-mid', 'bg-kbc-navy-light', 'bg-gray-500', 'bg-kbc-navy-soft'
 ];
 
+const DRAG_CLICK_TOLERANCE = 12;
+const DRAG_SWIPE_THRESHOLD = 50;
+
 function timeAgo(dateStr: string): string {
   const parts = dateStr.trim().split(' ');
   if (parts.length < 3) return dateStr;
@@ -70,6 +73,47 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
 
   const openNewsDetails = (item: NewsItem) => {
     setSelectedItem(item);
+  };
+
+  const shouldOpenFromPointer = () => (
+    dragStartXRef.current !== null &&
+    Math.abs(dragDeltaXRef.current) <= DRAG_CLICK_TOLERANCE &&
+    !suppressClickRef.current
+  );
+
+  const finishDrag = (keepPaused = false) => {
+    if (dragStartXRef.current === null) {
+      if (!keepPaused) {
+        setIsPaused(false);
+      }
+      return;
+    }
+
+    const delta = dragDeltaXRef.current;
+    const wasDragging = Math.abs(delta) > DRAG_CLICK_TOLERANCE;
+
+    if (delta <= -DRAG_SWIPE_THRESHOLD) {
+      goToNextSlide();
+    } else if (delta >= DRAG_SWIPE_THRESHOLD) {
+      goToPreviousSlide();
+    }
+
+    dragStartXRef.current = null;
+    dragDeltaXRef.current = 0;
+    setDragOffset(0);
+    setIsDragging(false);
+
+    if (wasDragging) {
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    } else {
+      suppressClickRef.current = false;
+    }
+
+    if (!keepPaused) {
+      setIsPaused(false);
+    }
   };
 
   useEffect(() => {
@@ -137,32 +181,20 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
               dragDeltaXRef.current = 0;
               suppressClickRef.current = false;
               setDragOffset(0);
-              setIsDragging(true);
+              setIsDragging(false);
               setIsPaused(true);
             }}
             onPointerMove={(event) => {
               if (dragStartXRef.current === null) return;
               dragDeltaXRef.current = event.clientX - dragStartXRef.current;
               setDragOffset(dragDeltaXRef.current);
-              if (Math.abs(dragDeltaXRef.current) > 8) {
+              if (Math.abs(dragDeltaXRef.current) > DRAG_CLICK_TOLERANCE) {
                 suppressClickRef.current = true;
+                setIsDragging(true);
               }
             }}
             onPointerUp={() => {
-              if (dragStartXRef.current === null) return;
-              if (dragDeltaXRef.current <= -50) {
-                goToNextSlide();
-              } else if (dragDeltaXRef.current >= 50) {
-                goToPreviousSlide();
-              }
-              dragStartXRef.current = null;
-              dragDeltaXRef.current = 0;
-              setDragOffset(0);
-              setIsDragging(false);
-              window.setTimeout(() => {
-                suppressClickRef.current = false;
-              }, 0);
-              setIsPaused(false);
+              finishDrag();
             }}
             onPointerCancel={() => {
               dragStartXRef.current = null;
@@ -177,19 +209,7 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
                 setIsPaused(false);
                 return;
               }
-              if (dragDeltaXRef.current <= -50) {
-                goToNextSlide();
-              } else if (dragDeltaXRef.current >= 50) {
-                goToPreviousSlide();
-              }
-              dragStartXRef.current = null;
-              dragDeltaXRef.current = 0;
-              setDragOffset(0);
-              setIsDragging(false);
-              window.setTimeout(() => {
-                suppressClickRef.current = false;
-              }, 0);
-              setIsPaused(false);
+              finishDrag();
             }}
             onClickCapture={(event) => {
               if (suppressClickRef.current) {
@@ -218,6 +238,12 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
                       role="button"
                       tabIndex={0}
                       onClick={() => openNewsDetails(item)}
+                      onPointerUp={(event) => {
+                        if (event.button !== 0) return;
+                        if (shouldOpenFromPointer()) {
+                          openNewsDetails(item);
+                        }
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault();
@@ -248,22 +274,12 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
                       </div>
 
                       <div className="flex items-center justify-between border-t border-slate-100 pt-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
                           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
                             {item.department}
                           </span>
-                          <span className="text-xs text-slate-400">{timeAgo(item.date)}</span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openNewsDetails(item);
-                          }}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-kbc-navy transition-colors hover:text-kbc-navy-light"
-                        >
-                          Read More <i className="ri-arrow-right-s-line text-sm" />
-                        </button>
+                        <span className="shrink-0 text-xs text-slate-400">{timeAgo(item.date)}</span>
                       </div>
                     </div>
                   </div>
