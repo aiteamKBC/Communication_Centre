@@ -220,16 +220,57 @@ function calculateModuleEndDate(startDate: string, sessions: number, holidays: H
   }
 
   const safeSessions = Math.max(1, Number(sessions) || 1);
-  let endDate = addDaysToIsoDate(startDate, safeSessions * 7);
 
-  while (true) {
-    const holidayDays = countHolidayDaysInRange(startDate, endDate, holidays);
-    const shiftedEndDate = addDaysToIsoDate(startDate, safeSessions * 7 + holidayDays);
-    if (shiftedEndDate === endDate) {
-      return days.length ? snapToWeekday(endDate, days) : endDate;
+  // Build a set of holiday dates for O(1) lookup
+  const holidaySet = new Set<string>();
+  holidays.forEach(h => {
+    if (isIsoDate(h.startDate) && isIsoDate(h.endDate) && h.endDate >= h.startDate) {
+      enumerateIsoDates(h.startDate, h.endDate).forEach(d => holidaySet.add(d));
     }
-    endDate = shiftedEndDate;
+  });
+
+  // If session weekdays are specified, walk forward counting only those days
+  // (skipping holidays). Otherwise fall back to weekly intervals.
+  if (days.length > 0) {
+    const sessionDayNums = new Set(days.map(d => WEEKDAY_KEY_TO_JS[d]));
+    let count = 0;
+    let cursor = startDate;
+    let lastSessionDate = startDate;
+
+    // Safety cap: never iterate more than 5 years of days
+    const limit = safeSessions * 7 * 3 + 365;
+    for (let i = 0; i < limit; i++) {
+      const [y, m, day] = cursor.split('-').map(Number);
+      const jsDay = new Date(y, m - 1, day).getDay();
+      if (sessionDayNums.has(jsDay) && !holidaySet.has(cursor)) {
+        count++;
+        lastSessionDate = cursor;
+        if (count >= safeSessions) {
+          return lastSessionDate;
+        }
+      }
+      cursor = addDaysToIsoDate(cursor, 1);
+    }
+    return lastSessionDate;
   }
+
+  // No specific weekdays — keep the original weekly-interval approach but
+  // only skip holidays that fall on the implied session day (same weekday as startDate).
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const sessionWeekday = new Date(sy, sm - 1, sd).getDay();
+  let count = 0;
+  let cursor = startDate;
+  const limit = safeSessions * 7 * 3 + 365;
+  for (let i = 0; i < limit; i += 7) {
+    if (!holidaySet.has(cursor)) {
+      count++;
+      if (count >= safeSessions) return cursor;
+    }
+    cursor = addDaysToIsoDate(startDate, (i + 7));
+    // Keep cursor on the correct weekday (addDaysToIsoDate is exact multiples of 7 so it stays)
+    void sessionWeekday;
+  }
+  return addDaysToIsoDate(startDate, safeSessions * 7);
 }
 
 function normalizeDateLabel(value: string): string {
