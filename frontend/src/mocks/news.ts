@@ -8,9 +8,7 @@ export interface NewsItem {
   date: string;
   publicationDate?: string;
   status?: string;
-  requiresAcknowledgement: boolean;
   isExpired: boolean;
-  acknowledged?: boolean;
   image?: string;
   imageUrl?: string;
   category?: string;

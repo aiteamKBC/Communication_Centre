@@ -77,7 +77,6 @@ def normalize_priority(value: str) -> str:
 
 def serialize_news(item: News) -> dict:
 	priority = normalize_priority(item.priority or 'general')
-	requires_ack = priority == 'critical'
 	status = (item.status or '').strip().lower()
 	return {
 		'id': str(item.id),
@@ -89,9 +88,7 @@ def serialize_news(item: News) -> dict:
 		'date': format_date_display(item.publication_date),
 		'publicationDate': item.publication_date.isoformat() if item.publication_date else '',
 		'status': item.status or '',
-		'requiresAcknowledgement': requires_ack,
 		'isExpired': status == 'expired',
-		'acknowledged': bool(item.acknowledged),
 		'image': item.image_url or None,
 		'imageUrl': item.image_url or '',
 		'category': item.category or 'General',
@@ -459,32 +456,6 @@ def upload_image(request):
 
 	file_url = _save_uploaded_image(uploaded_file, folder)
 	return JsonResponse({'url': file_url}, status=201)
-
-
-@csrf_exempt
-def acknowledge_news(request, news_id: int):
-	"""PATCH /api/news/<id>/acknowledge/  — toggle acknowledged flag and persist to DB."""
-	if request.method != 'PATCH':
-		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
-
-	try:
-		item = News.objects.get(pk=news_id)
-	except News.DoesNotExist:
-		return JsonResponse({'detail': 'News item not found.'}, status=404)
-
-	try:
-		payload = json.loads(request.body.decode('utf-8') or '{}')
-	except json.JSONDecodeError:
-		return HttpResponseBadRequest('Invalid JSON payload.')
-
-	# Accept explicit value or toggle current
-	if 'acknowledged' in payload:
-		item.acknowledged = bool(payload['acknowledged'])
-	else:
-		item.acknowledged = not item.acknowledged
-
-	item.save(update_fields=['acknowledged'])
-	return JsonResponse(serialize_news(item))
 
 
 def serialize_training_plan(item: TrainingPlan) -> dict:

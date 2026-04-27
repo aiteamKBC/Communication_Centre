@@ -3,7 +3,7 @@ import ModernDatePicker from '../../../components/feature/ModernDatePicker';
 import ModernSelect from '../../../components/feature/ModernSelect';
 import { kbcSuccessSwal, kbcSwal } from '../../../components/feature/sweetAlert';
 import type { NewsItem } from '../../../mocks/news';
-import type { NewNewsPayload } from '../useNewsAcknowledgements';
+import type { NewNewsPayload } from '../useNews';
 
 interface AddNewsModalProps {
   onClose: () => void;

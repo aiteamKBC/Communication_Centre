@@ -6,7 +6,7 @@ import ModernSelect from '../../components/feature/ModernSelect';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 import AddNewsModal from './components/AddNewsModal';
 import NewsDetailModal from './components/NewsDetailModal';
-import { useNewsAcknowledgements } from './useNewsAcknowledgements';
+import { useNews } from './useNews';
 import type { NewsItem } from '../../mocks/news';
 import useAccessControl from '../../hooks/useAccessControl';
 
@@ -83,7 +83,7 @@ function NewsGridSkeleton() {
 }
 
 export default function NewsPage() {
-  const { items, loading, error, toggleAcknowledgement, addNews, updateNews, deleteNews } = useNewsAcknowledgements();
+  const { items, loading, error, addNews, updateNews, deleteNews } = useNews();
   const { canManageNews } = useAccessControl();
   const [priority, setPriority] = useState<string>('all');
   const [dept, setDept] = useState('');
@@ -203,7 +203,6 @@ export default function NewsPage() {
         <NewsDetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
-          onToggleAcknowledgement={toggleAcknowledgement}
           canManageNews={canManageNews}
           onEdit={openEditModal}
           onDelete={handleDeleteNews}
@@ -334,19 +333,6 @@ export default function NewsPage() {
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide ${cfg.badge}`}>
                             {cfg.label}
                           </span>
-                          {item.requiresAcknowledgement && (
-                            item.acknowledged ? (
-                              <span className="text-xs font-medium px-2 py-0.5 rounded-sm bg-green-100 text-kbc-green border border-green-200 flex items-center gap-1 whitespace-nowrap">
-                                <i className="ri-checkbox-circle-line text-xs" />
-                                Confirmed
-                              </span>
-                            ) : (
-                              <span className="text-xs font-medium px-2 py-0.5 rounded-sm bg-kbc-amber/20 text-yellow-800 border border-kbc-amber/40 flex items-center gap-1 whitespace-nowrap">
-                                <i className="ri-pen-nib-line text-xs" />
-                                Acknowledgement Required
-                              </span>
-                            )
-                          )}
                         </div>
                         <h3 className="text-sm font-bold text-kbc-navy leading-snug mb-1 transition-colors duration-300 group-hover:text-kbc-navy-light">
                           {item.title}
@@ -393,31 +379,6 @@ export default function NewsPage() {
                           >
                             Read More <i className="ri-arrow-right-s-line text-sm" />
                           </button>
-                          {item.requiresAcknowledgement && (
-                            item.acknowledged ? (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggleAcknowledgement(item.id);
-                                }}
-                                className="shrink-0 border border-amber-200 bg-amber-50 text-yellow-800 text-xs font-semibold px-3 py-1 rounded cursor-pointer hover:bg-amber-100 whitespace-nowrap"
-                              >
-                                Undo Acknowledge
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggleAcknowledgement(item.id);
-                                }}
-                                className="shrink-0 bg-kbc-navy text-white text-xs font-semibold px-3 py-1 rounded cursor-pointer hover:bg-kbc-navy-light whitespace-nowrap"
-                              >
-                                Acknowledge
-                              </button>
-                            )
-                          )}
                         </div>
                     </div>
                   </div>

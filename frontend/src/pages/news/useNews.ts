@@ -14,7 +14,7 @@ export interface UpdateNewsPayload extends NewNewsPayload {
   id: string;
 }
 
-export function useNewsAcknowledgements(initialItems?: NewsItem[]) {
+export function useNews(initialItems?: NewsItem[]) {
   const [items, setItems] = useState<NewsItem[]>(initialItems ?? []);
   const [loading, setLoading] = useState(initialItems === undefined);
   const [error, setError] = useState<string | null>(null);
@@ -44,32 +44,6 @@ export function useNewsAcknowledgements(initialItems?: NewsItem[]) {
 
     void fetchNews();
   }, [initialItems]);
-
-  const toggleAcknowledgement = async (id: string) => {
-    setItems(current =>
-      current.map(item =>
-        item.id === id ? { ...item, acknowledged: !item.acknowledged } : item,
-      ),
-    );
-
-    try {
-      const response = await fetch(`/api/news/${id}/acknowledge/`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!response.ok) throw new Error('Failed to save acknowledgement.');
-      const updated = (await response.json()) as NewsItem;
-      setItems(current =>
-        current.map(item => (item.id === id ? { ...item, acknowledged: updated.acknowledged } : item)),
-      );
-    } catch {
-      setItems(current =>
-        current.map(item =>
-          item.id === id ? { ...item, acknowledged: !item.acknowledged } : item,
-        ),
-      );
-    }
-  };
 
   const addNews = async (payload: NewNewsPayload): Promise<void> => {
     const response = await fetch('/api/news/', {
@@ -120,5 +94,5 @@ export function useNewsAcknowledgements(initialItems?: NewsItem[]) {
     setItems(current => current.filter(item => item.id !== id));
   };
 
-  return { items, loading, error, toggleAcknowledgement, addNews, updateNews, deleteNews };
+  return { items, loading, error, addNews, updateNews, deleteNews };
 }

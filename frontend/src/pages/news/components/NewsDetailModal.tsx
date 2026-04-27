@@ -4,7 +4,6 @@ import type { NewsItem } from '../../../mocks/news';
 interface NewsDetailModalProps {
   item: NewsItem;
   onClose: () => void;
-  onToggleAcknowledgement: (id: string) => void;
   canManageNews?: boolean;
   onEdit?: (item: NewsItem) => void;
   onDelete?: (item: NewsItem) => void;
@@ -94,7 +93,6 @@ function parseArticleContent(item: NewsItem) {
 export default function NewsDetailModal({
   item,
   onClose,
-  onToggleAcknowledgement,
   canManageNews = false,
   onEdit,
   onDelete,
@@ -123,17 +121,6 @@ export default function NewsDetailModal({
                 <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold ${priority.surface}`}>
                   {item.category}
                 </span>
-              )}
-              {item.requiresAcknowledgement && (
-                item.acknowledged ? (
-                  <span className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-[11px] font-semibold text-kbc-green">
-                    Confirmed
-                  </span>
-                ) : (
-                  <span className="rounded-full border border-kbc-amber/40 bg-kbc-amber/15 px-3 py-1 text-[11px] font-semibold text-yellow-800">
-                    Acknowledgement Required
-                  </span>
-                )
               )}
             </div>
             <h2 className="text-xl font-bold leading-tight text-kbc-navy">{item.title}</h2>
@@ -224,28 +211,6 @@ export default function NewsDetailModal({
               >
                 Delete
               </button>
-            )}
-            {item.requiresAcknowledgement && (
-              item.acknowledged ? (
-                <button
-                  type="button"
-                  onClick={() => onToggleAcknowledgement(item.id)}
-                  className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-yellow-800 transition-colors hover:bg-amber-100"
-                >
-                  Undo Acknowledge
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onToggleAcknowledgement(item.id);
-                    onClose();
-                  }}
-                  className="rounded-xl bg-kbc-navy px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-kbc-navy-light"
-                >
-                  Acknowledge
-                </button>
-              )
             )}
           </div>
         </div>

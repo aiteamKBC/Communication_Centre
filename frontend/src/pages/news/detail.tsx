@@ -1,7 +1,7 @@
 import { Link, useParams } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
-import { useNewsAcknowledgements } from './useNewsAcknowledgements';
+import { useNews } from './useNews';
 
 const priorityConfig = {
   critical: { label: 'Critical', badge: 'bg-kbc-red text-white', panel: 'border-red-200 bg-red-50 text-kbc-red' },
@@ -19,7 +19,7 @@ function buildArticleParagraphs(title: string, excerpt: string, department: stri
 
 export default function NewsDetailPage() {
   const { id } = useParams();
-  const { items, toggleAcknowledgement } = useNewsAcknowledgements();
+  const { items } = useNews();
   const article = items.find((item) => item.id === id);
 
   if (!article) {
@@ -105,40 +105,9 @@ export default function NewsDetailPage() {
                     <p className="text-sm font-semibold">Article status</p>
                   </div>
                   <p className="text-sm leading-6">
-                    {article.requiresAcknowledgement && article.acknowledged
-                      ? 'You have already acknowledged this announcement.'
-                      : article.requiresAcknowledgement
-                      ? 'This announcement requires your acknowledgement and follow-up.'
-                      : 'This announcement is for information and awareness.'}
+                    This announcement is for information and awareness.
                   </p>
                 </div>
-
-                {article.requiresAcknowledgement && (
-                  article.acknowledged ? (
-                    <button
-                      type="button"
-                      onClick={() => toggleAcknowledgement(article.id)}
-                      className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-left text-yellow-800 hover:bg-amber-100"
-                    >
-                      <div className="flex items-center gap-2">
-                        <i className="ri-arrow-go-back-line text-base" />
-                        <p className="text-sm font-semibold">Undo Acknowledgement</p>
-                      </div>
-                      <p className="mt-2 text-sm leading-6">
-                        This will return the notice to pending acknowledgement.
-                      </p>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => toggleAcknowledgement(article.id)}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-kbc-navy px-4 py-3 text-sm font-semibold text-white hover:bg-kbc-navy-light"
-                    >
-                      <i className="ri-check-line text-base" />
-                      Acknowledge This Notice
-                    </button>
-                  )
-                )}
 
                 <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4">
                   <p className="text-sm font-semibold text-kbc-navy mb-3">Details</p>

@@ -28,7 +28,6 @@ class News(models.Model):
 	summary = models.TextField(db_column='summary', blank=True, default='')
 	full_article_content = models.TextField(db_column='full_article_content', blank=True, default='')
 	status = models.CharField(db_column='status', max_length=50, blank=True, default='pending_review')
-	acknowledged = models.BooleanField(db_column='acknowledged', default=False)
 	created_at = models.DateTimeField(db_column='created_at', null=True, blank=True)
 	updated_at = models.DateTimeField(db_column='updated_at', null=True, blank=True)
 

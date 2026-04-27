@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { NewsItem } from '../../../mocks/news';
-import { useNewsAcknowledgements } from '../../news/useNewsAcknowledgements';
+import { useNews } from '../../news/useNews';
 import NewsDetailModal from '../../news/components/NewsDetailModal';
 
 const priorityConfig = {
@@ -39,7 +39,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }) {
-  const { items: newsItems, error, toggleAcknowledgement } = useNewsAcknowledgements(initialItems);
+  const { items: newsItems, error } = useNews(initialItems);
   const [activeIndex, setActiveIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
@@ -140,7 +140,6 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
         <NewsDetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
-          onToggleAcknowledgement={toggleAcknowledgement}
         />
       )}
 
