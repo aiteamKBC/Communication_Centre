@@ -158,6 +158,8 @@ interface Props {
   onDeleteRow: (groupIdx: number, rowIdx: number) => void;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
+  onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => void;
+  onReorderGroup?: (fromGroupIdx: number, toGroupIdx: number) => void;
   canManageCohorts?: boolean;
 }
 
@@ -324,11 +326,77 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
 // ── Main component ────────────────────────────────────────────────────────
 export default function GanttTimeline({
   groups, holidays, customModules = [], zoom, onZoomChange,
-  onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram, canManageCohorts = true,
+  onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
+  onReorderRow, onReorderGroup, canManageCohorts = true,
 }: Props) {
-  const [tooltip, setTooltip]       = useState<TooltipData | null>(null);
+  const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
+  const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Drag-and-drop state
+  type DragItem = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
+  type DragOverTarget = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
+  const dragItem    = useRef<DragItem | null>(null);
+  const [dragOver, setDragOver] = useState<DragOverTarget | null>(null);
+
+  const handleCohortDragStart = useCallback((e: React.DragEvent, groupIdx: number, rowIdx: number) => {
+    e.stopPropagation();
+    dragItem.current = { type: 'cohort', groupIdx, rowIdx };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `cohort:${groupIdx}:${rowIdx}`);
+  }, []);
+
+  const handleGroupDragStart = useCallback((e: React.DragEvent, groupIdx: number) => {
+    dragItem.current = { type: 'group', groupIdx };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `group:${groupIdx}`);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, target: typeof dragOver) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOver(target);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOver(null);
+  }, []);
+
+  const handleCohortDrop = useCallback((e: React.DragEvent, toGroupIdx: number, toRowIdx: number) => {
+    e.preventDefault();
+    setDragOver(null);
+    const item = dragItem.current;
+    if (!item || item.type !== 'cohort') return;
+    if (item.groupIdx === toGroupIdx && item.rowIdx === toRowIdx) return;
+    onReorderRow?.(item.groupIdx, item.rowIdx, toGroupIdx, toRowIdx);
+    dragItem.current = null;
+  }, [onReorderRow]);
+
+  const handleGroupDrop = useCallback((e: React.DragEvent, toGroupIdx: number) => {
+    e.preventDefault();
+    setDragOver(null);
+    const item = dragItem.current;
+    if (!item || item.type !== 'group') return;
+    if (item.groupIdx === toGroupIdx) return;
+    onReorderGroup?.(item.groupIdx, toGroupIdx);
+    dragItem.current = null;
+  }, [onReorderGroup]);
+
+  const handleDragEnd = useCallback(() => {
+    dragItem.current = null;
+    setDragOver(null);
+  }, []);
+
+  const toggleGroupCollapse = useCallback((groupId: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
 
   // Stretch the view end whenever module data extends beyond current window
   const dataEnd = useMemo(() => getMaxModuleEndDate(groups), [groups]);
@@ -466,7 +534,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -481,7 +549,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1 border-r border-gray-100 shrink-0"
@@ -506,7 +574,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -521,7 +589,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1.5 border-r border-gray-200 shrink-0"
@@ -539,7 +607,7 @@ export default function GanttTimeline({
     if (zoom === 'year') {
       return (
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {cols.map((c, i) => {
               const navyShades = ['#1B2A4A','#243560','#2E4482','#3D5A99'];
@@ -568,7 +636,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {monthGroups.map((mg, i) => {
                 const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -586,7 +654,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => {
                 const start = new Date(c.startDate);
@@ -644,7 +712,7 @@ export default function GanttTimeline({
     return (
       <>
         <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {monthGroups.map((mg, i) => {
               const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -659,7 +727,7 @@ export default function GanttTimeline({
           </div>
         </div>
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 50 }} />
+          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {cols.map((c, i) => (
               <div key={c.key} className="text-center py-1.5 border-r shrink-0 flex flex-col items-center"
@@ -849,6 +917,17 @@ export default function GanttTimeline({
 
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
           <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px dashed #F7A800' }} />Now</span>
+          {holidays.length > 0 && (
+            <>
+              <span className="text-gray-300">|</span>
+              {Array.from(new Map(holidays.map(h => [h.type, h])).values()).map(h => (
+                <span key={h.type} className="flex items-center gap-1">
+                  <span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: h.color }} />
+                  <span className="text-gray-500">{h.type}</span>
+                </span>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
@@ -856,6 +935,18 @@ export default function GanttTimeline({
       <div ref={scrollRef} className="overflow-x-auto">
         <div className="relative" style={{ width: totalWidth + LEFT_W }}>
           {renderHeaders()}
+
+          {/* Full-height holiday bands — start below headers, span all rows */}
+          {holidayPositions.map(({ h, pos }) => pos && (
+            <div
+              key={`band-${h.id}`}
+              className="absolute bottom-0"
+              style={{ top: 96, left: LEFT_W + pos.left, width: Math.max(pos.width, 4), background: h.color, opacity: 1.50, zIndex: 2, cursor: 'default' }}
+              onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
+              onMouseMove={e => setHolidayTip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
+              onMouseLeave={() => setHolidayTip(null)}
+            />
+          ))}
 
           {isZoomedGrid && (
             <div
@@ -869,18 +960,42 @@ export default function GanttTimeline({
             />
           )}
 
-          {groups.map((grp, gi) => (
-            <div key={grp.id} className="relative">
+          {groups.map((grp, gi) => {
+            const isCollapsed = collapsedGroups.has(grp.id);
+            const isGroupDragOver = dragOver?.type === 'group' && dragOver.groupIdx === gi;
+            return (
+            <div key={grp.id} className="relative"
+              onDragOver={canManageCohorts ? (e) => { if (dragItem.current?.type === 'group') handleDragOver(e, { type: 'group', groupIdx: gi }); } : undefined}
+              onDragLeave={canManageCohorts ? handleDragLeave : undefined}
+              onDrop={canManageCohorts ? (e) => handleGroupDrop(e, gi) : undefined}
+              style={isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : undefined}
+            >
               {/* ── Programme group header row ────────────────────────── */}
               <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
-                <div className="shrink-0 px-3 py-2" style={{ width: LEFT_W, background: grp.color, position: 'sticky', left: 0, zIndex: 50 }}>
-                  <p
-                    className="w-full leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis"
-                    style={{ fontSize: '11px' }}
-                    title={grp.name.replace('\n', ' ')}
-                  >
-                    {grp.name.replace('\n', ' ')}
-                  </p>
+                <div
+                  className="shrink-0 px-3 py-2"
+                  style={{ width: LEFT_W, background: grp.color, position: 'sticky', left: 0, zIndex: 20, cursor: canManageCohorts ? 'grab' : undefined }}
+                  draggable={canManageCohorts}
+                  onDragStart={canManageCohorts ? (e) => handleGroupDragStart(e, gi) : undefined}
+                  onDragEnd={handleDragEnd}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <p
+                      className="leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis flex-1"
+                      style={{ fontSize: '11px' }}
+                      title={grp.name.replace('\n', ' ')}
+                    >
+                      {grp.name.replace('\n', ' ')}
+                    </p>
+                    <button
+                      onClick={() => toggleGroupCollapse(grp.id)}
+                      title={isCollapsed ? 'Expand programme' : 'Collapse programme'}
+                      className="w-5 h-5 flex items-center justify-center rounded shrink-0 cursor-pointer transition-all hover:scale-110"
+                      style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}
+                    >
+                      <i className={isCollapsed ? 'ri-arrow-down-s-line' : 'ri-arrow-up-s-line'} style={{ fontSize: '11px' }} />
+                    </button>
+                  </div>
                   <div className="mt-2 flex items-center justify-between gap-2 min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
@@ -918,27 +1033,56 @@ export default function GanttTimeline({
                 <div className="flex-1 relative" style={{ background: 'transparent' }}>
                   {nowPos && (
                     <div className="absolute inset-y-0 pointer-events-none"
-                      style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }} />
+                      style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
                   )}
                 </div>
               </div>
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
-              {grp.rows.map((row, ri) => {
+              {!isCollapsed && grp.rows.map((row, ri) => {
                 const ganttRows = buildGanttRows(row.blks);
                 const group = extractGroup(row.label);
                 const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
                 const rowColor = row.color || grp.color;
                 const tunnelBg = `${grp.color}0D`;
 
+                const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
+
                 return (
-                  <div key={row.id} style={{ borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}` }}>
+                  <div
+                    key={row.id}
+                    style={{
+                      borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
+                      ...(isCohortDragOver ? { boxShadow: `inset 0 2px 0 ${rowColor}` } : {}),
+                    }}
+                    onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri }) : undefined}
+                    onDragLeave={canManageCohorts ? handleDragLeave : undefined}
+                    onDrop={canManageCohorts ? (e) => handleCohortDrop(e, gi, ri) : undefined}
+                  >
                     {/* Cohort header strip */}
                     <div className="flex relative" style={{ height: COHORT_H, background: 'transparent' }}>
-                      <div className="shrink-0 flex items-center px-3 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 50 }}>
+                      <div className="shrink-0 flex items-center px-3 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
-                        <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1">
+                        {/* Drag handle */}
+                        {canManageCohorts && (
+                          <div
+                            className="absolute right-full mr-0 w-4 h-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
+                            draggable
+                            onDragStart={(e) => handleCohortDragStart(e, gi, ri)}
+                            onDragEnd={handleDragEnd}
+                            style={{ cursor: 'grab', left: 0, right: 'auto', width: 14 }}
+                            title="Drag to reorder"
+                          >
+                            <i className="ri-draggable text-gray-300" style={{ fontSize: '10px' }} />
+                          </div>
+                        )}
+                        <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1"
+                          draggable={canManageCohorts}
+                          onDragStart={canManageCohorts ? (e) => handleCohortDragStart(e, gi, ri) : undefined}
+                          onDragEnd={handleDragEnd}
+                          style={{ cursor: canManageCohorts ? 'grab' : undefined }}
+                        >
                           <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }}>
                             {row.label}
                           </p>
@@ -963,15 +1107,10 @@ export default function GanttTimeline({
                       </div>
                       {/* Timeline: cohort span indicator */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
-                        {/* Holiday overlays */}
-                        {zoom === 'day' && holidayPositions.map(({ h, pos }) => pos && (
-                          <div key={h.id} className="absolute inset-y-0 z-5 pointer-events-none"
-                            style={{ left: pos.left, width: pos.width, background: h.color, opacity: 0.45 }} />
-                        ))}
                         {/* Now line */}
                         {nowPos && (
                           <div className="absolute inset-y-0 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }} />
+                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
                         )}
                       </div>
                     </div>
@@ -979,7 +1118,7 @@ export default function GanttTimeline({
                     {/* Module rows */}
                     <div className="flex relative" style={{ height: totalModuleH || MODULE_H, borderBottom: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}` }}>
                       {/* Left panel: stacked module entries */}
-                      <div className="shrink-0 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 50 }}>
+                      <div className="shrink-0 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
                         {ganttRows.length === 0 ? (
                           <div className="pl-6 flex items-center h-full">
@@ -1007,11 +1146,6 @@ export default function GanttTimeline({
 
                       {/* Timeline area */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
-                        {/* Holiday overlays */}
-                        {zoom === 'day' && holidayPositions.map(({ h, pos }) => pos && (
-                          <div key={h.id} className="absolute top-0 bottom-0 z-5 pointer-events-none"
-                            style={{ left: pos.left, width: pos.width, background: h.color, opacity: 0.55 }} />
-                        ))}
 
                         {/* Column gridlines */}
                         {zoom !== 'day' && (
@@ -1050,7 +1184,7 @@ export default function GanttTimeline({
                         {/* Now line — rendered last so it appears above module bars */}
                         {nowPos && (
                           <div className="absolute top-0 bottom-0 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 30 }}>
+                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }}>
                             {gi === 0 && ri === 0 && (
                               <div className="absolute -top-px left-0" style={{ transform: 'translateX(-50%)' }}>
                                 <span className="font-bold px-1.5 py-px rounded whitespace-nowrap"
@@ -1067,7 +1201,7 @@ export default function GanttTimeline({
 
               {grp.rows.length === 0 && (
                 <div className="flex items-center" style={{ height: MODULE_H, background: 'transparent' }}>
-                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: LEFT_W, height: MODULE_H, position: 'sticky', left: 0, zIndex: 50 }}>
+                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: LEFT_W, height: MODULE_H, position: 'sticky', left: 0, zIndex: 20 }}>
                     <span className="text-xs text-gray-300 italic pl-4">No cohorts yet</span>
                   </div>
                   <div className="flex-1 flex items-center justify-center">
@@ -1085,12 +1219,38 @@ export default function GanttTimeline({
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
 
         </div>
       </div>
 
       {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
+
+      {holidayTip && (
+        <div
+          className="fixed pointer-events-none z-50"
+          style={{ left: Math.min(holidayTip.x + 14, window.innerWidth - 220), top: Math.max(holidayTip.y - 8, 8) }}
+        >
+          <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden" style={{ minWidth: 180 }}>
+            <div className="px-3 py-2 flex items-center gap-2" style={{ background: holidayTip.h.color }}>
+              <i className="ri-calendar-close-line text-sm" style={{ color: '#000' }} />
+              <span className="font-extrabold text-sm truncate" style={{ color: '#000' }}>{holidayTip.h.label}</span>
+            </div>
+            <div className="px-3 py-2 flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: holidayTip.h.color }} />
+                <span className="text-xs" style={{ color: '#000' }}>{holidayTip.h.type}</span>
+              </div>
+              <p className="text-xs font-semibold" style={{ color: '#000' }}>
+                {new Date(holidayTip.h.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                {' → '}
+                {new Date(holidayTip.h.endDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

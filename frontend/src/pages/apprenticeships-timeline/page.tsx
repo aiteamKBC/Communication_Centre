@@ -573,7 +573,7 @@ export default function ApprenticeshipTimeline() {
 
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
 
-  const persistTrainingPlan = async (nextGroups: ProgrammeGroup[]) => {
+  const persistTrainingPlan = async (nextGroups: ProgrammeGroup[], silent = false) => {
     const payload = { items: flattenGroupsForApi(nextGroups) };
 
     if (!Array.isArray(payload.items)) {
@@ -597,11 +597,13 @@ export default function ApprenticeshipTimeline() {
 
       setTrainingPlanSaveState('saved');
       setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
-      await kbcSuccessSwal.fire({
-        icon: 'success',
-        title: 'Cohort saved successfully',
-        confirmButtonText: 'OK',
-      });
+      if (!silent) {
+        await kbcSuccessSwal.fire({
+          icon: 'success',
+          title: 'Cohort saved successfully',
+          confirmButtonText: 'OK',
+        });
+      }
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown save error';
@@ -794,6 +796,26 @@ export default function ApprenticeshipTimeline() {
 
     setTrainingPlanItems(flattenGroupsForApi(next));
     setGroups(next);
+  };
+
+  const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => {
+    if (!canManageCohorts) return;
+    const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
+    const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
+    const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < toRowIdx ? toRowIdx - 1 : toRowIdx;
+    next[toGroupIdx].rows.splice(insertAt, 0, moved);
+    setGroups(next);
+    await persistTrainingPlan(next, true);
+  };
+
+  const handleReorderGroup = async (fromGroupIdx: number, toGroupIdx: number) => {
+    if (!canManageCohorts) return;
+    const next = [...groups];
+    const [moved] = next.splice(fromGroupIdx, 1);
+    const insertAt = fromGroupIdx < toGroupIdx ? toGroupIdx - 1 : toGroupIdx;
+    next.splice(insertAt, 0, moved);
+    setGroups(next);
+    await persistTrainingPlan(next, true);
   };
 
   const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string) => {
@@ -1371,6 +1393,8 @@ export default function ApprenticeshipTimeline() {
                 onDeleteRow={handleDeleteRow}
                 onEditProgram={handleEditProgram}
                 onDeleteProgram={handleDeleteProgram}
+                onReorderRow={handleReorderRow}
+                onReorderGroup={handleReorderGroup}
                 canManageCohorts={canManageCohorts}
               />
             </div>
