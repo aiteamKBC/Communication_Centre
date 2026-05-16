@@ -139,8 +139,16 @@ login_database_url = os.getenv('login_DATABASE_URL')
 if login_database_url:
     DATABASES['login_db'] = parse_database_url(login_database_url)
 
+safeguarding_database_url = os.getenv('safe_gaurding_database_url')
+if safeguarding_database_url:
+    DATABASES['safeguarding_db'] = parse_database_url(safeguarding_database_url)
 
-DATABASE_ROUTERS = ['backend.db_routers.AuthAdminRouter']
+ofsted_database_url = os.getenv('ofested_command_database_url')
+if ofsted_database_url:
+    DATABASES['ofsted_db'] = parse_database_url(ofsted_database_url)
+
+
+DATABASE_ROUTERS = ['backend.db_routers.ExternalDbRouter', 'backend.db_routers.AuthAdminRouter']
 
 
 # Password validation

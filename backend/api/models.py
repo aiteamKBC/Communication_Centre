@@ -181,6 +181,47 @@ class Employee(models.Model):
 		managed = False
 
 
+class SupportTicket(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	wellbeing_record_id = models.BigIntegerField(null=True, blank=True)
+	ticket_type = models.TextField(blank=True, default='')
+	full_name = models.TextField(blank=True, default='')
+	email = models.TextField(blank=True, default='')
+	subject = models.TextField(blank=True, default='')
+	details = models.TextField(blank=True, default='')
+	urgency = models.TextField(blank=True, default='')
+	preferred_contact = models.TextField(blank=True, default='')
+	status = models.TextField(blank=True, default='')
+	created_at = models.DateTimeField(null=True, blank=True)
+	updated_at = models.DateTimeField(null=True, blank=True)
+	notes = models.JSONField(null=True, blank=True)
+	evidence = models.JSONField(null=True, blank=True)
+	created_by = models.TextField(blank=True, default='')
+	days_to_close = models.IntegerField(null=True, blank=True)
+	submitted_by = models.TextField(blank=True, default='')
+
+	class Meta:
+		db_table = 'support_tickets'
+		managed = False
+		app_label = 'api'
+
+
+class RiskRegisterItem(models.Model):
+	id = models.IntegerField(primary_key=True)
+	risk = models.TextField(db_column='Risk', blank=True, default='')
+	category = models.TextField(db_column='Category', blank=True, default='')
+	severity = models.TextField(db_column='Severity', blank=True, default='')
+	rag = models.TextField(db_column='RAG', blank=True, default='')
+	ofsted_area = models.TextField(db_column='Ofsted Area', blank=True, default='')
+	owner = models.TextField(db_column='Owner', blank=True, default='')
+	status = models.TextField(db_column='Status', blank=True, default='')
+
+	class Meta:
+		db_table = 'Risk register'
+		managed = False
+		app_label = 'api'
+
+
 class Feedback(models.Model):
 	id = models.BigAutoField(primary_key=True, db_column='Feedback ID')
 	username = models.TextField(db_column='Username', blank=True, default='')

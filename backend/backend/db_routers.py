@@ -1,6 +1,26 @@
 from django.conf import settings
 
 
+class ExternalDbRouter:
+    """Route SupportTicket to safeguarding_db and RiskRegisterItem to ofsted_db."""
+
+    _model_db = {
+        'supportticket': 'safeguarding_db',
+        'riskregisteritem': 'ofsted_db',
+    }
+
+    def db_for_read(self, model, **hints):
+        return self._model_db.get(model.__name__.lower())
+
+    def db_for_write(self, model, **hints):
+        return self._model_db.get(model.__name__.lower())
+
+    def allow_migrate(self, db, app_label, model_name=None, **hints):
+        if model_name and model_name.lower() in self._model_db:
+            return False
+        return None
+
+
 class AuthAdminRouter:
     """Route Django auth/admin/contenttypes models to login_db when configured."""
 

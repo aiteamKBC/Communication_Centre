@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
+from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
 
 
 def serialize_event(event: EventData) -> dict:
@@ -1384,3 +1384,59 @@ def employee_detail(request, employee_id: int):
 		return JsonResponse({'detail': 'Deleted.'})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+# ── Safeguarding urgent tickets ───────────────────────────────────────────────
+
+def serialize_support_ticket(t: SupportTicket) -> dict:
+	return {
+		'id': t.id,
+		'ticketType': t.ticket_type,
+		'fullName': t.full_name,
+		'email': t.email,
+		'subject': t.subject,
+		'details': t.details,
+		'urgency': t.urgency,
+		'preferredContact': t.preferred_contact,
+		'status': t.status,
+		'createdAt': t.created_at.isoformat() if t.created_at else '',
+		'submittedBy': t.submitted_by,
+		'createdBy': t.created_by,
+	}
+
+
+def urgent_tickets(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	try:
+		records = SupportTicket.objects.using('safeguarding_db').filter(
+			urgency__iexact='urgent'
+		).order_by('-created_at')
+		return JsonResponse([serialize_support_ticket(t) for t in records], safe=False)
+	except Exception as exc:
+		return JsonResponse({'detail': str(exc)}, status=502)
+
+
+# ── Risk register ─────────────────────────────────────────────────────────────
+
+def serialize_risk(r: RiskRegisterItem) -> dict:
+	return {
+		'id': r.id,
+		'risk': r.risk,
+		'category': r.category,
+		'severity': r.severity,
+		'rag': r.rag,
+		'ofstedArea': r.ofsted_area,
+		'owner': r.owner,
+		'status': r.status,
+	}
+
+
+def risk_register(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	try:
+		records = RiskRegisterItem.objects.using('ofsted_db').order_by('id')
+		return JsonResponse([serialize_risk(r) for r in records], safe=False)
+	except Exception as exc:
+		return JsonResponse({'detail': str(exc)}, status=502)
