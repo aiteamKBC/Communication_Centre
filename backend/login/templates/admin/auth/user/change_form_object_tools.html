@@ -1,0 +1,13 @@
+{% load i18n admin_urls %}
+{% block object-tools-items %}
+<li>
+    {% url opts|admin_urlname:'history' original.pk|admin_urlquote as history_url %}
+    <a href="{% add_preserved_filters history_url %}" class="historylink">{% translate "History" %}</a>
+</li>
+{% if original.pk %}
+<li>
+    <a href="{% url 'admin:auth_user_password_change' original.pk %}" class="historylink">{% translate "Reset Password" %}</a>
+</li>
+{% endif %}
+{% if has_absolute_url %}<li><a href="{{ absolute_url }}" class="viewsitelink">{% translate "View on site" %}</a></li>{% endif %}
+{% endblock %}
