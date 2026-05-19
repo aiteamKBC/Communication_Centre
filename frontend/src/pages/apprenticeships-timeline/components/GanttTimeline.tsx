@@ -9,6 +9,8 @@ import {
 } from '../utils';
 
 const LEFT_W    = 220;
+const TOP_NAV_H = 56;
+const ZOOM_BAR_H = 46;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 56;  // full-height module row (no overlap)
 const LANE_H    = 28;  // half-height lane when two modules overlap
@@ -333,6 +335,7 @@ export default function GanttTimeline({
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Drag-and-drop state
@@ -362,6 +365,11 @@ export default function GanttTimeline({
 
   const handleDragLeave = useCallback(() => {
     setDragOver(null);
+  }, []);
+
+  const handleTimelineScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) setHeaderScrollLeft(el.scrollLeft);
   }, []);
 
   const handleCohortDrop = useCallback((e: React.DragEvent, toGroupIdx: number, toRowIdx: number) => {
@@ -851,7 +859,15 @@ export default function GanttTimeline({
   return (
     <div className="relative">
       {/* Zoom controls */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-gray-50 flex-wrap">
+      <div
+        className="sticky flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-gray-50 flex-wrap"
+        style={{
+          top: TOP_NAV_H,
+          zIndex: 36,
+          minHeight: ZOOM_BAR_H,
+          boxShadow: '0 10px 18px -18px rgba(15,23,42,0.45)',
+        }}
+      >
         <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Zoom:</span>
         <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-0.5">
           {ZOOM_LEVELS.map(z => (
@@ -931,17 +947,34 @@ export default function GanttTimeline({
         </div>
       </div>
 
-      {/* Scrollable gantt */}
-      <div ref={scrollRef} className="overflow-x-auto">
-        <div className="relative" style={{ width: totalWidth + LEFT_W }}>
+      <div
+        className="sticky overflow-hidden"
+        style={{
+          top: TOP_NAV_H + ZOOM_BAR_H,
+          zIndex: 35,
+          background: '#FFFFFF',
+          boxShadow: '0 10px 18px -16px rgba(15,23,42,0.55)',
+        }}
+      >
+        <div
+          style={{
+            width: totalWidth + LEFT_W,
+            transform: `translateX(-${headerScrollLeft}px)`,
+          }}
+        >
           {renderHeaders()}
+        </div>
+      </div>
 
+      {/* Scrollable gantt */}
+      <div ref={scrollRef} className="overflow-x-auto" onScroll={handleTimelineScroll}>
+        <div className="relative" style={{ width: totalWidth + LEFT_W }}>
           {/* Full-height holiday bands — start below headers, span all rows */}
           {holidayPositions.map(({ h, pos }) => pos && (
             <div
               key={`band-${h.id}`}
               className="absolute bottom-0"
-              style={{ top: 96, left: LEFT_W + pos.left, width: Math.max(pos.width, 4), background: h.color, opacity: 1.50, zIndex: 2, cursor: 'default' }}
+              style={{ top: 0, left: LEFT_W + pos.left, width: Math.max(pos.width, 4), background: h.color, opacity: 1.50, zIndex: 2, cursor: 'default' }}
               onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
               onMouseMove={e => setHolidayTip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
               onMouseLeave={() => setHolidayTip(null)}
@@ -954,7 +987,7 @@ export default function GanttTimeline({
               style={{
                 left: LEFT_W,
                 right: 0,
-                top: 96,
+                top: 0,
                 ...getTimelineSurfaceStyle('#FFFFFF'),
               }}
             />

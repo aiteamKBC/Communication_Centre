@@ -1282,7 +1282,7 @@ export default function ApprenticeshipTimeline() {
         </div>
       </div>
 
-      <main className="max-w-screen-xl mx-auto px-4 md:px-6 py-5 space-y-4">
+      <main className="max-w-screen-2xl mx-auto px-4 md:px-6 py-5 space-y-4">
         {/* Today's Sessions */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
@@ -1375,7 +1375,7 @@ export default function ApprenticeshipTimeline() {
           isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
-            <div className="bg-white rounded-xl overflow-hidden border border-gray-200">
+            <div className="bg-white rounded-xl overflow-visible border border-gray-200">
               <GanttTimeline
                 groups={groups}
                 holidays={holidays}

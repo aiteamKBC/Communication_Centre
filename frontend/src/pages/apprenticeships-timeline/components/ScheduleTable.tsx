@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useCallback, useRef, useState } from 'react';
 import type { ProgrammeGroup, WeekDayKey } from '../types';
 import { getModuleMeta } from '../data';
 
@@ -38,6 +38,22 @@ interface Props {
 }
 
 type DayKey = WeekDayKey;
+
+const TOP_NAV_H = 56;
+const TABLE_COLUMNS = [
+  110, // Programme
+  120, // Cohort
+  160, // Module
+  190, // Module dates
+  140, // Saturday
+  140, // Monday
+  140, // Tuesday
+  140, // Wednesday
+  140, // Thursday
+  140, // Friday
+  180, // Next module
+] as const;
+const TABLE_MIN_WIDTH = TABLE_COLUMNS.reduce((sum, width) => sum + width, 0);
 
 const JS_DAY_TO_KEY: Record<number, DayKey> = {
   0: 'monday',
@@ -182,6 +198,8 @@ function toProgrammeSections(rows: DerivedScheduleRow[]): ProgrammeSection[] {
 export default function ScheduleTable({ groups }: Props) {
   const rows = toDerivedRows(groups);
   const sections = toProgrammeSections(rows);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
 
   // Today's sessions
   const todayIndex = new Date().getDay();
@@ -199,17 +217,61 @@ export default function ScheduleTable({ groups }: Props) {
   });
 
   const renderCell = (cell: SessionCell | undefined, bg: string) => {
-    if (!cell) return <td className="border border-gray-200 px-2 py-1.5" style={{ minWidth: 140 }} />;
+    if (!cell) return <td className="border border-gray-200 px-2 py-1.5" />;
     return (
-      <td className="border border-gray-200 px-2 py-1.5 text-center" style={{ background: bg, minWidth: 140 }}>
+      <td className="border border-gray-200 px-2 py-1.5 text-center align-middle" style={{ background: bg }}>
         <p className="font-semibold leading-tight" style={{ fontSize: '11px', color: '#1F2937' }}>{cell.trainer}</p>
         <p style={{ fontSize: '10px', color: '#6B7280' }}>({cell.time})</p>
       </td>
     );
   };
 
+  const handleTableScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) setHeaderScrollLeft(el.scrollLeft);
+  }, []);
+
+  const renderColumnGroup = () => (
+    <colgroup>
+      {TABLE_COLUMNS.map((width, index) => (
+        <col key={index} style={{ width: `${width}px` }} />
+      ))}
+    </colgroup>
+  );
+
+  const renderHeader = () => (
+    <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }}>
+      {renderColumnGroup()}
+      <thead>
+        <tr>
+          <th colSpan={4} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-wide text-white text-sm" style={{ background: '#1B2A4A' }}>
+            Apprenticeship
+          </th>
+          <th colSpan={6} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-widest text-sm" style={{ background: '#F7A800', color: '#1B2A4A' }}>
+            {new Date().getFullYear()}
+          </th>
+          <th className="border border-gray-300 text-center py-2.5 font-extrabold text-white text-xs" style={{ background: '#1B2A4A' }}>
+            Next Module
+          </th>
+        </tr>
+        <tr style={{ background: '#F1F5F9' }}>
+          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide">Programme</th>
+          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide">Cohort</th>
+          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide">Module</th>
+          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide">Module Dates</th>
+          {DAY_COLS.map(d => (
+            <th key={d.key} className="border border-gray-200 px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide" style={{ background: d.headerBg, color: d.headerTx }}>
+              {d.label}
+            </th>
+          ))}
+          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide">Next Module</th>
+        </tr>
+      </thead>
+    </table>
+  );
+
   return (
-    <div className="bg-white rounded-xl overflow-hidden border border-gray-300">
+    <div className="bg-white rounded-xl overflow-visible border border-gray-300">
       <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200" style={{ background: '#F9FAFB' }}>
         <div>
           <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
@@ -240,33 +302,30 @@ export default function ScheduleTable({ groups }: Props) {
         )}
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse" style={{ minWidth: 1200 }}>
-          <thead>
-            <tr>
-              <th colSpan={4} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-wide text-white text-sm" style={{ background: '#1B2A4A' }}>
-                Apprenticeship
-              </th>
-              <th colSpan={6} className="border border-gray-300 text-center py-2.5 font-extrabold tracking-widest text-sm" style={{ background: '#F7A800', color: '#1B2A4A' }}>
-                {new Date().getFullYear()}
-              </th>
-              <th className="border border-gray-300 text-center py-2.5 font-extrabold text-white text-xs" style={{ background: '#1B2A4A' }}>
-                Next Module
-              </th>
-            </tr>
-            <tr style={{ background: '#F1F5F9' }}>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 80 }}>Programme</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 90 }}>Cohort</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 140 }}>Module</th>
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 160 }}>Module Dates</th>
-              {DAY_COLS.map(d => (
-                <th key={d.key} className="border border-gray-200 px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide" style={{ background: d.headerBg, color: d.headerTx, minWidth: 140 }}>
-                  {d.label}
-                </th>
-              ))}
-              <th className="border border-gray-200 px-3 py-2 text-left text-xs font-extrabold text-gray-600 uppercase tracking-wide" style={{ minWidth: 90 }}>Next Module</th>
-            </tr>
-          </thead>
+      <div
+        className="sticky overflow-hidden bg-white"
+        style={{
+          top: TOP_NAV_H,
+          zIndex: 35,
+          marginBottom: 8,
+          borderBottom: '1px solid #E5E7EB',
+          boxShadow: '0 12px 22px -18px rgba(15,23,42,0.65)',
+        }}
+      >
+        <div
+          style={{
+            width: TABLE_MIN_WIDTH,
+            transform: `translateX(-${headerScrollLeft}px)`,
+            willChange: 'transform',
+          }}
+        >
+          {renderHeader()}
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="overflow-x-auto" onScroll={handleTableScroll}>
+        <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }}>
+          {renderColumnGroup()}
           <tbody>
             {sections.map(section => (
               <Fragment key={`section-${section.programme}`}>
@@ -282,7 +341,7 @@ export default function ScheduleTable({ groups }: Props) {
                       </td>
                     )}
                     {/* Cohort name */}
-                    <td className="border border-gray-200 px-3 py-1.5">
+                    <td className="border border-gray-200 px-3 py-1.5 align-middle">
                       {row.groupName ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap" style={{ background: `${row.cohortColor}18`, color: row.cohortColor }}>
                           {row.groupName}
@@ -292,7 +351,7 @@ export default function ScheduleTable({ groups }: Props) {
                       )}
                     </td>
                     {/* Module + current badge */}
-                    <td className="border border-gray-200 px-3 py-1.5">
+                    <td className="border border-gray-200 px-3 py-1.5 align-middle">
                       <div className="leading-tight flex items-center gap-1.5 flex-wrap">
                         <p className="text-sm text-gray-700 font-bold">{row.module}</p>
                         {row.isCurrent && (
@@ -304,14 +363,14 @@ export default function ScheduleTable({ groups }: Props) {
                       </div>
                     </td>
                     {/* Dates */}
-                    <td className="border border-gray-200 px-3 py-1.5">
+                    <td className="border border-gray-200 px-3 py-1.5 align-middle">
                       <span className="inline-flex items-center font-extrabold text-xs whitespace-nowrap" style={{ color: row.cohortColor }}>
                         {row.cohort}
                       </span>
                     </td>
                     {DAY_COLS.map(d => renderCell(row[d.key] as SessionCell | undefined, d.cellBg))}
-                    <td className="border border-gray-200 px-3 py-1.5">
-                      <span className="text-xs font-bold text-gray-600 whitespace-nowrap">{row.nextModule}</span>
+                    <td className="border border-gray-200 px-3 py-1.5 align-middle">
+                      <span className="block text-xs font-bold text-gray-600 leading-snug break-words">{row.nextModule}</span>
                     </td>
                   </tr>
                 ))}
