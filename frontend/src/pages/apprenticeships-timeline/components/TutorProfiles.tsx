@@ -365,8 +365,14 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
     () => sessions.filter(item => normalizeName(item.tutor) === normalizeName(activeTutor)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
     [sessions, activeTutor],
   );
+  const now = useMemo(() => new Date(), []);
   const conflicts = useMemo(() => findTutorConflicts(tutorSessions), [tutorSessions]);
-  const conflictGroups = useMemo(() => groupTutorConflicts(conflicts), [conflicts]);
+  const activeConflicts = useMemo(
+    () => conflicts.filter(conflict => parseLocalDateTime(conflict.date, conflict.session.endTime) > now),
+    [conflicts, now],
+  );
+  const conflictGroups = useMemo(() => groupTutorConflicts(activeConflicts), [activeConflicts]);
+  const hiddenCompletedConflictCount = conflicts.length - activeConflicts.length;
   const moduleBlocks = useMemo(() => {
     const map = new Map<string, TutorSession>();
     tutorSessions.forEach(session => {
@@ -393,7 +399,6 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
     [tutorSessions, selectedCoach],
   );
 
-  const now = new Date();
   const inProgressModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'in-progress');
   const assignedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'assigned');
   const completedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'completed');
@@ -451,15 +456,15 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
               <h2 className="mt-1 text-xl font-extrabold text-kbc-navy">{activeTutor}</h2>
               <p className="mt-1 text-sm text-gray-500">{inProgressModules.length} in progress, {assignedModules.length} assigned, {completedModules.length} completed</p>
             </div>
-            {conflicts.length > 0 && (
+            {activeConflicts.length > 0 && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-extrabold text-amber-800 ring-1 ring-amber-200">
                 <i className="ri-alert-line" />
-                {conflictGroups.length} conflict group{conflictGroups.length === 1 ? '' : 's'} / {conflicts.length} sessions
+                {conflictGroups.length} active conflict group{conflictGroups.length === 1 ? '' : 's'} / {activeConflicts.length} sessions
               </span>
             )}
           </div>
 
-          <div className="grid gap-3 px-5 py-4 md:grid-cols-4">
+          <div className="grid gap-3 px-5 py-4 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">In Progress</p>
               <p className="mt-1 text-xl font-extrabold text-gray-800">{inProgressModules.length}</p>
@@ -483,11 +488,11 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
           </div>
         </div>
 
-        {conflicts.length > 0 && (
+        {activeConflicts.length > 0 && (
           <div className="rounded-xl border border-amber-200 bg-amber-50">
             <div className="border-b border-amber-100 px-4 py-3">
               <p className="text-sm font-extrabold text-amber-900">Time Conflict Summary</p>
-              <p className="mt-0.5 text-xs font-semibold text-amber-700">Grouped by the two modules that clash at the same time.</p>
+              <p className="mt-0.5 text-xs font-semibold text-amber-700">Active/upcoming clashes only. Completed conflicts are ignored because they no longer need action.</p>
             </div>
             <div className="divide-y divide-amber-100">
               {conflictGroups.slice(0, 12).map(conflict => (
@@ -509,11 +514,25 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
           </div>
         )}
 
+        {activeConflicts.length === 0 && hiddenCompletedConflictCount > 0 && (
+          <div className="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 ring-1 ring-sky-100">
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700">
+              <i className="ri-information-line text-base" />
+            </span>
+            <div>
+              <p className="font-extrabold text-sky-900">Historical conflicts hidden</p>
+              <p className="mt-0.5 text-sky-700">
+                {hiddenCompletedConflictCount} completed conflict session{hiddenCompletedConflictCount === 1 ? '' : 's'} found, but they are not shown as warnings because they no longer need action.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4">
           <ModuleList
             title="In Progress Modules"
             modules={inProgressModules}
-            conflicts={conflicts}
+            conflicts={activeConflicts}
             emptyText="No modules currently in progress for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
@@ -523,7 +542,7 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
           <ModuleList
             title="Assigned Modules"
             modules={assignedModules}
-            conflicts={conflicts}
+            conflicts={activeConflicts}
             emptyText="No future assigned modules for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
@@ -533,7 +552,7 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
           <ModuleList
             title="Completed Modules"
             modules={completedModules}
-            conflicts={conflicts}
+            conflicts={[]}
             emptyText="No completed modules for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}

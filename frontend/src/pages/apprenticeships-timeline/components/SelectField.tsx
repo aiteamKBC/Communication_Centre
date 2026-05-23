@@ -41,10 +41,12 @@ export default function SelectField({
     () => options.find(option => option.value === value) ?? null,
     [options, value],
   );
+  const filteredOptions = options;
 
   useEffect(() => {
-    setActiveIndex(Math.max(0, options.findIndex(option => option.value === value)));
-  }, [options, value]);
+    const nextIndex = filteredOptions.findIndex(option => option.value === value);
+    setActiveIndex(Math.max(0, nextIndex));
+  }, [filteredOptions, value]);
 
   useEffect(() => {
     if (!open) {
@@ -87,7 +89,7 @@ export default function SelectField({
       }
 
       const width = Math.max(rect.width, 320);
-      const popoverHeight = 320;
+      const popoverHeight = 360;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
       const left = Math.min(Math.max(12, rect.left), viewportWidth - width - 12);
@@ -96,7 +98,7 @@ export default function SelectField({
       const shouldOpenUp = spaceBelow < popoverHeight + 12 && spaceAbove > spaceBelow;
       const top = shouldOpenUp
         ? Math.max(12, rect.top - popoverHeight - 10)
-        : Math.min(viewportHeight - popoverHeight - 12, rect.bottom + 10);
+        : Math.min(viewportHeight - popoverHeight - 12, rect.bottom + 8);
 
       setPopoverStyle({ top, left, width });
     };
@@ -121,7 +123,7 @@ export default function SelectField({
   }, [activeIndex, open]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (!options.length) {
+    if (!filteredOptions.length) {
       return;
     }
 
@@ -131,7 +133,7 @@ export default function SelectField({
         setOpen(true);
         return;
       }
-      setActiveIndex(current => Math.min(options.length - 1, current + 1));
+      setActiveIndex(current => Math.min(filteredOptions.length - 1, current + 1));
     }
 
     if (event.key === 'ArrowUp') {
@@ -149,7 +151,7 @@ export default function SelectField({
         setOpen(true);
         return;
       }
-      const option = options[activeIndex];
+      const option = filteredOptions[activeIndex];
       if (option) {
         onChange(option.value);
         setOpen(false);
@@ -160,7 +162,7 @@ export default function SelectField({
   return (
     <div ref={wrapperRef} className="relative space-y-1.5">
       <div
-        className="group relative overflow-hidden rounded-2xl border bg-white transition-all focus-within:-translate-y-px"
+        className="group relative overflow-hidden rounded-xl border bg-white transition-all"
         style={{
           borderColor: error ? '#EF4444' : open ? `${accentColor}66` : '#D7DEEA',
           boxShadow: error ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : open ? `0 14px 34px ${accentColor}18` : '0 10px 28px rgba(15, 23, 42, 0.05)',
@@ -175,14 +177,11 @@ export default function SelectField({
           type="button"
           onClick={() => setOpen(current => !current)}
           onKeyDown={handleKeyDown}
-          className="flex min-h-12 w-full items-center justify-between gap-3 bg-transparent pl-4 pr-14 text-left outline-none"
+          className="flex min-h-10 w-full items-center justify-between gap-3 bg-transparent pl-4 pr-12 text-left outline-none"
           aria-haspopup="listbox"
           aria-expanded={open}
         >
-          <div className="min-w-0 py-3">
-            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
-              Module
-            </span>
+          <div className="min-w-0 py-2">
             {selectedOption ? (
               <div className="flex items-center gap-2">
                 {selectedOption.color && (
@@ -201,7 +200,7 @@ export default function SelectField({
         <button
           type="button"
           onClick={() => setOpen(current => !current)}
-          className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl bg-slate-100 text-slate-500 transition-all hover:bg-slate-200 hover:text-slate-700"
+          className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-all hover:bg-slate-200 hover:text-slate-700"
           aria-label="Toggle options"
         >
           <i className={`text-base ${open ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'}`} />
@@ -218,17 +217,16 @@ export default function SelectField({
             width: popoverStyle.width,
           }}
         >
-          <div className="overflow-hidden rounded-[1.4rem] border border-slate-200 bg-white shadow-2xl ring-1 ring-slate-900/5">
-            <div className="border-b border-slate-100 bg-[linear-gradient(180deg,#f8fbff_0%,#f8fafc_100%)] px-4 py-3">
-              <div className="flex items-center justify-end">
-                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
-                  {options.length} options
-                </span>
-              </div>
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-900/5">
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Modules</span>
+              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200">
+                {options.length} options
+              </span>
             </div>
 
             <div ref={listRef} className="max-h-64 overflow-y-auto p-2" role="listbox">
-              {options.map((option, index) => {
+              {filteredOptions.map((option, index) => {
                 const isSelected = option.value === value;
                 const isActive = index === activeIndex;
                 return (
@@ -241,7 +239,7 @@ export default function SelectField({
                       onChange(option.value);
                       setOpen(false);
                     }}
-                    className="mb-1 flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left transition-all last:mb-0"
+                    className="mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-all last:mb-0"
                     style={{
                       background: isSelected ? `${accentColor}12` : isActive ? '#F8FAFC' : 'transparent',
                       boxShadow: isSelected ? `inset 0 0 0 1px ${accentColor}33` : isActive ? 'inset 0 0 0 1px rgba(148,163,184,0.18)' : undefined,
@@ -254,16 +252,17 @@ export default function SelectField({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-semibold text-slate-800">{option.label}</span>
                       {option.description && (
-                        <span className="mt-0.5 block text-xs text-slate-500">{option.description}</span>
+                        <span className="block text-xs text-slate-500">{option.description}</span>
                       )}
                     </span>
                     {isSelected && <i className="ri-check-line mt-0.5 text-base" style={{ color: accentColor }} />}
                   </button>
                 );
               })}
-              {options.length === 0 && (
+              {filteredOptions.length === 0 && (
                 <div className="px-3 py-8 text-center">
-                  <p className="text-sm font-semibold text-slate-600">No modules available</p>
+                  <p className="text-sm font-semibold text-slate-600">No matching modules</p>
+                  <p className="mt-1 text-xs text-slate-400">Try another module name.</p>
                 </div>
               )}
             </div>

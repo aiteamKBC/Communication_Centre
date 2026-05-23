@@ -796,13 +796,18 @@ export default function ApprenticeshipTimeline() {
       return;
     }
 
+    const target = groups[groupIdx]?.rows[rowIdx];
+    if (!target) {
+      throw new Error('The selected cohort could not be found.');
+    }
+
     const next = groups.map((g, gi) =>
       gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
     );
 
-    const saved = await persistTrainingPlan(next);
+    const saved = await persistTrainingPlan(next, true);
     if (!saved) {
-      return;
+      throw new Error('The training plan save was not completed.');
     }
 
     setTrainingPlanItems(flattenGroupsForApi(next));

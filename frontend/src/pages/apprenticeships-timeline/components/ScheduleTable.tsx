@@ -33,6 +33,20 @@ interface TutorSessionOccurrence {
   conflictTime?: string;
 }
 
+interface CurrentTutorModule {
+  blockId: string;
+  module: string;
+  programme: string;
+  cohort: string;
+  groupName?: string;
+  coach: string;
+  startDate: string;
+  endDate: string;
+  time: string;
+  completedSessions: number;
+  totalSessions: number;
+}
+
 interface NextModuleInfo {
   name: string;
   isScheduledBlock: boolean;
@@ -41,6 +55,7 @@ interface NextModuleInfo {
   startDate: string;
   endDate: string;
   sessions: number;
+  currentTutorModules: CurrentTutorModule[];
   otherTutorSessions: TutorSessionOccurrence[];
 }
 
@@ -332,6 +347,52 @@ function getTutorTimeConflicts(
     .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 }
 
+function getCurrentTutorModules(
+  groups: ProgrammeGroup[],
+  tutor: string,
+  catalogModules: CatalogModule[],
+  now: Date,
+  excludeBlockId?: string,
+): CurrentTutorModule[] {
+  const normalizedTutor = normalizePersonName(tutor);
+  if (!normalizedTutor) {
+    return [];
+  }
+
+  return groups.flatMap(group =>
+    group.rows.flatMap(row =>
+      row.blks.flatMap(block => {
+        if (block.id === excludeBlockId || normalizePersonName(block.tutor || '') !== normalizedTutor) {
+          return [];
+        }
+
+        const startTs = parseLocalIsoDate(block.startDate).getTime();
+        const endTs = parseLocalDateTime(block.endDate, block.sessionEndTime || '11:00').getTime();
+        if (Number.isNaN(startTs) || Number.isNaN(endTs) || now.getTime() < startTs || now.getTime() > endTs) {
+          return [];
+        }
+
+        const module = getModuleMeta(block.mod).lbl;
+        const progress = getSessionProgress(block, module, catalogModules);
+
+        return [{
+          blockId: block.id,
+          module,
+          programme: programmeLabelFromGroupName(group.name),
+          cohort: row.label,
+          groupName: (block.groupName || row.label || '').trim() || undefined,
+          coach: block.coachName?.trim() || 'TBD',
+          startDate: block.startDate,
+          endDate: block.endDate,
+          time: formatTimeRange(block.sessionStartTime || '09:00', block.sessionEndTime || '11:00'),
+          completedSessions: progress.completedSessions,
+          totalSessions: progress.totalSessions,
+        }];
+      }),
+    ),
+  ).sort((a, b) => a.endDate.localeCompare(b.endDate) || a.module.localeCompare(b.module));
+}
+
 function resolveCatalogModule(moduleName: string, moduleValue: unknown, catalogModules: CatalogModule[]): CatalogModule | undefined {
   const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
   const normalizedName = normalize(moduleName);
@@ -410,6 +471,9 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               startDate: nextBlock.startDate,
               endDate: nextBlock.endDate,
               sessions: nextBlock.sessions,
+              currentTutorModules: nextTutor
+                ? getCurrentTutorModules(groups, nextTutor, catalogModules, now, nextBlock.id)
+                : [],
               otherTutorSessions: nextTutor
                 ? getTutorTimeConflicts(nextBlock, nextTutor, tutorSessions)
                 : [],
@@ -422,6 +486,7 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               startDate: '',
               endDate: '',
               sessions: 0,
+              currentTutorModules: [],
               otherTutorSessions: [],
             };
           const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
@@ -589,6 +654,32 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
     const moreText = info.otherTutorSessions.length > visible.length
       ? `<p style="margin:10px 0 0;color:#6B7280;font-size:12px;">+${info.otherTutorSessions.length - visible.length} more conflicting sessions.</p>`
       : '';
+    const currentModulesHtml = info.currentTutorModules.length
+      ? `
+        <div style="margin:0 0 14px;border:1px solid #DBEAFE;border-radius:12px;background:#F8FBFF;overflow:hidden;">
+          <div style="padding:10px 12px;border-bottom:1px solid #DBEAFE;background:#EFF6FF;color:#1E3A8A;font-size:13px;font-weight:800;">
+            Current modules for ${escapeHtml(info.tutor)}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;padding:12px;">
+            ${info.currentTutorModules.map(moduleItem => `
+              <div style="border:1px solid #E5E7EB;border-radius:10px;background:#FFFFFF;padding:10px;">
+                <div style="font-weight:800;color:#1F2937;font-size:13px;">${escapeHtml(moduleItem.module)}</div>
+                <div style="margin-top:4px;color:#64748B;font-size:12px;">${escapeHtml(moduleItem.programme)} - ${escapeHtml(moduleItem.groupName || moduleItem.cohort)}</div>
+                <div style="margin-top:6px;color:#334155;font-size:12px;">
+                  ${escapeHtml(formatDisplayDate(moduleItem.startDate))} - ${escapeHtml(formatDisplayDate(moduleItem.endDate))}
+                </div>
+                <div style="margin-top:4px;color:#334155;font-size:12px;">${escapeHtml(moduleItem.time)}</div>
+                <div style="margin-top:4px;color:#64748B;font-size:12px;">Coach: ${escapeHtml(moduleItem.coach)} · ${moduleItem.completedSessions}/${moduleItem.totalSessions} done</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `
+      : `
+        <div style="margin:0 0 14px;border:1px solid #E5E7EB;border-radius:12px;background:#F9FAFB;padding:12px;color:#64748B;font-size:13px;">
+          No current in-progress modules were found for ${escapeHtml(info.tutor)}.
+        </div>
+      `;
 
     void kbcSwal.fire({
       title: 'Tutor time conflict',
@@ -597,6 +688,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
           <p style="margin:0 0 14px;color:#374151;font-size:14px;line-height:1.5;">
             <strong>${escapeHtml(info.tutor)}</strong> has <strong>${info.otherTutorSessions.length}</strong> saved session${info.otherTutorSessions.length === 1 ? '' : 's'} at the same time as the next module <strong>${escapeHtml(info.name)}</strong>.
           </p>
+          ${currentModulesHtml}
           <div style="max-height:58vh;overflow:auto;border:1px solid #E5E7EB;border-radius:12px;">
             <table style="width:100%;min-width:940px;border-collapse:collapse;font-size:13px;">
               <thead>

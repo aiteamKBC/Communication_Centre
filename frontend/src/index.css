@@ -8,10 +8,20 @@
     background: rgba(2, 6, 23, 0.46);
   }
 
+  .swal2-container,
+  .kbc-swal-container {
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+  }
+
   .kbc-swal-popup {
     @apply rounded-2xl border border-slate-200 shadow-2xl;
     width: min(32rem, calc(100vw - 2rem));
     padding: 1.75rem 1.5rem 1.5rem;
+  }
+
+  .kbc-swal-popup.swal2-show {
+    animation: kbc-swal-soft-enter 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both !important;
   }
 
   .kbc-swal-popup-success {
@@ -95,6 +105,21 @@
 }
 
 @layer utilities {
+  @keyframes kbc-swal-soft-enter {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 8px, 0) scale(0.985);
+    }
+    62% {
+      opacity: 1;
+      transform: translate3d(0, -2px, 0) scale(1.003);
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
   .scrollbar-hidden {
     -ms-overflow-style: none;
     scrollbar-width: none;

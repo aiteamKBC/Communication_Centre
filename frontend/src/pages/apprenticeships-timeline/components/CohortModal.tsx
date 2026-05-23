@@ -5,6 +5,7 @@ import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
 import ModernTimeField from './ModernTimeField';
+import SelectField from './SelectField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
@@ -520,14 +521,47 @@ export default function CohortModal({
     ? rangedModules.reduce((max, item) => (item.endDate > max ? item.endDate : max), rangedModules[0].endDate)
     : hasProgrammeDateRange ? programmeDates.endDate : '';
 
-  const holidaysInRange = hasDateRange
-    ? holidays.filter(item => isIsoDate(item.startDate) && isIsoDate(item.endDate) && rangeStart <= item.endDate && rangeEnd >= item.startDate)
-    : [];
-  const holidaysInRangeIds = new Set(holidaysInRange.map(item => item.id));
+  const holidaysInRange = useMemo(
+    () => {
+      if (!hasDateRange) {
+        return [];
+      }
+
+      const ranges = hasModuleDateRange
+        ? rangedModules.map(moduleItem => ({ startDate: moduleItem.startDate, endDate: moduleItem.endDate }))
+        : [{ startDate: rangeStart, endDate: rangeEnd }];
+
+      return holidays.filter(item => (
+        isIsoDate(item.startDate) &&
+        isIsoDate(item.endDate) &&
+        ranges.some(range => range.startDate <= item.endDate && range.endDate >= item.startDate)
+      ));
+    },
+    [hasDateRange, hasModuleDateRange, holidays, rangeEnd, rangeStart, rangedModules],
+  );
+  const holidaysInRangeIds = useMemo(() => new Set(holidaysInRange.map(item => item.id)), [holidaysInRange]);
+  const selectedHolidaysInRangeCount = data.holidayIds.filter(id => holidaysInRangeIds.has(id)).length;
   const selectedHolidays = useMemo(
     () => holidays.filter(item => data.holidayIds.includes(item.id)),
     [holidays, data.holidayIds],
   );
+  const displayHolidays = useMemo(() => {
+    const selectedIds = new Set(data.holidayIds);
+    const getPriority = (holiday: Holiday) => {
+      const selected = selectedIds.has(holiday.id);
+      const inRange = holidaysInRangeIds.has(holiday.id);
+      if (selected && inRange) return 0;
+      if (selected) return 1;
+      if (inRange) return 2;
+      return 3;
+    };
+
+    return [...holidays].sort((a, b) => {
+      const priorityDiff = getPriority(a) - getPriority(b);
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.startDate.localeCompare(b.startDate) || a.label.localeCompare(b.label);
+    });
+  }, [data.holidayIds, holidays, holidaysInRangeIds]);
 
   // Auto-update cohort end date to the latest module end date whenever modules change.
   // Only updates when the derived date differs from what is stored, preventing loops.
@@ -744,15 +778,19 @@ export default function CohortModal({
         if (group.id !== moduleDraft.parentGroupId) {
           return group;
         }
+        const normalizedModule = {
+          ...moduleDraft.module,
+          endDate: calculateModuleEndDate(moduleDraft.module.startDate, moduleDraft.module.sessions, selectedHolidays, group.days) || moduleDraft.module.endDate,
+        };
         if (moduleDraft.replaceId) {
           return {
             ...group,
-            modules: group.modules.map(item => item.id === moduleDraft.replaceId ? moduleDraft.module : item),
+            modules: group.modules.map(item => item.id === moduleDraft.replaceId ? normalizedModule : item),
           };
         }
         return {
           ...group,
-          modules: [...group.modules, moduleDraft.module],
+          modules: [...group.modules, normalizedModule],
         };
       }),
     }));
@@ -921,16 +959,21 @@ export default function CohortModal({
       return;
     }
 
+    const selectedHolidayIds = new Set(data.holidayIds);
+    const activeHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
+    const normalizedGroups = recalculateModuleEndDates(data.groups, activeHolidays);
+    const normalizedCohortEndDate = latestModuleEndDate(normalizedGroups) || data.endDateLbl.trim();
+
     const row: CohortRow = {
       id: initialRow?.id || `row-${Date.now()}`,
       label: data.label.trim(),
       dateLbl: data.dateLbl.trim(),
-      endDateLbl: data.endDateLbl.trim(),
+      endDateLbl: normalizedCohortEndDate,
       intake: data.intake,
       quarter: data.quarter,
       color: data.color,
       holidayIds: data.holidayIds,
-      blks: data.groups.flatMap(group =>
+      blks: normalizedGroups.flatMap(group =>
         group.modules.map(moduleItem => ({
           id: moduleItem.id,
           mod: moduleItem.mod,
@@ -1125,9 +1168,18 @@ export default function CohortModal({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <p className="text-sm text-gray-400">{hasDateRange ? `${holidaysInRange.length} holidays overlap the current date range.` : 'Showing all saved holidays. You can link any of them before setting module dates.'}</p>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <p className="font-semibold">
+                      Only holidays marked <span className="rounded bg-white px-1.5 py-0.5 text-[10px] uppercase tracking-wide">In range</span> will show on the timeline and extend module dates.
+                    </p>
+                    <p className="mt-1 text-amber-700">
+                      {hasDateRange
+                        ? `${selectedHolidaysInRangeCount} of ${data.holidayIds.length} selected holidays will appear for the current date range.`
+                        : 'Set module dates first to know which selected holidays will appear on the timeline.'}
+                    </p>
+                  </div>
                   <div className="flex flex-wrap gap-2">
-                    {holidays.map(holiday => {
+                    {displayHolidays.map(holiday => {
                       const selected = data.holidayIds.includes(holiday.id);
                       const inRange = holidaysInRangeIds.has(holiday.id);
                       return (
@@ -1146,6 +1198,12 @@ export default function CohortModal({
                           <span className="inline-flex items-center gap-1.5">
                             {selected && <i className="ri-check-line text-xs" />}
                             <span>{holiday.label}</span>
+                            {selected && inRange && (
+                              <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">Will show</span>
+                            )}
+                            {selected && !inRange && hasDateRange && (
+                              <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">Outside range</span>
+                            )}
                             {!selected && inRange && (
                               <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">In range</span>
                             )}
@@ -1175,8 +1233,13 @@ export default function CohortModal({
               {data.groups.map((group, groupIdx) => {
                 const groupAccent = group.color || selectedProgramme?.color || '#1B2A4A';
                 const isExpanded = expandedGroupId === group.id;
-                const firstModule = group.modules[0];
-                const lastModule = group.modules[group.modules.length - 1];
+                const datedModules = group.modules.filter(moduleItem => isIsoDate(moduleItem.startDate) && isIsoDate(moduleItem.endDate));
+                const groupStartDate = datedModules.length
+                  ? datedModules.reduce((min, moduleItem) => (moduleItem.startDate < min ? moduleItem.startDate : min), datedModules[0].startDate)
+                  : '';
+                const groupEndDate = datedModules.length
+                  ? datedModules.reduce((max, moduleItem) => (moduleItem.endDate > max ? moduleItem.endDate : max), datedModules[0].endDate)
+                  : '';
 
                 return (
                   <div key={group.id} className="rounded-xl border overflow-hidden border-gray-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
@@ -1188,7 +1251,7 @@ export default function CohortModal({
                       <span className="font-semibold text-base text-gray-800 flex-1">{group.groupName || group.tutor || `Group ${groupIdx + 1}`}</span>
                       <span className="text-sm text-gray-500 hidden md:block">{group.modules.length} module{group.modules.length === 1 ? '' : 's'}</span>
                       {group.coachName && <span className="text-sm text-gray-400 hidden sm:block">{group.coachName}</span>}
-                      {firstModule && lastModule && <span className="text-sm text-gray-400 hidden lg:block">{formatDate(firstModule.startDate)} {'->'} {formatDate(lastModule.endDate)}</span>}
+                      {groupStartDate && groupEndDate && <span className="text-sm text-gray-400 hidden lg:block">{formatDate(groupStartDate)} {'->'} {formatDate(groupEndDate)}</span>}
                       <button onClick={e => { e.stopPropagation(); duplicateGroup(group.id); }} title="Duplicate group" className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-blue-500 hover:bg-blue-50 cursor-pointer transition-all">
                         <i className="ri-file-copy-line text-xs" />
                       </button>
@@ -1372,6 +1435,22 @@ export default function CohortModal({
                   const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod);
                   const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
                   const accentColor = selectedCatalogModule?.colour || moduleDraft.module.color || parentGroup?.color || '#1B2A4A';
+                  const moduleOptions = [
+                    ...(!selectedCatalogModule && currentModuleLabel
+                      ? [{
+                          value: currentModuleLabel,
+                          label: currentModuleLabel,
+                          description: 'Current saved value',
+                          color: accentColor,
+                        }]
+                      : []),
+                    ...catalogModules.map(m => ({
+                      value: m.name,
+                      label: m.name,
+                      description: `${m.sessions || 0} session${m.sessions === '1' ? '' : 's'}`,
+                      color: m.colour || '#4A6DB0',
+                    })),
+                  ];
                   return (
                     <>
                       {parentGroup && (
@@ -1398,30 +1477,23 @@ export default function CohortModal({
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module</label>
                         {catalogModules.length > 0 ? (
-                          <select
+                          <SelectField
                             value={selectedCatalogModule ? selectedCatalogModule.name : currentModuleLabel}
-                            onChange={e => {
-                              const selected = catalogModules.find(m => m.name === e.target.value);
+                            options={moduleOptions}
+                            placeholder="Select a module"
+                            accentColor={accentColor}
+                            onChange={value => {
+                              const selected = catalogModules.find(m => m.name === value);
                               if (selected) {
                                 updateModuleDraft('mod', selected.name);
                                 const sessions = Math.max(1, parseInt(selected.sessions || '1', 10) || 1);
                                 updateModuleDraft('sessions', sessions);
                                 updateModuleDraft('color', selected.colour || '');
                               } else {
-                                updateModuleDraft('mod', '');
+                                updateModuleDraft('mod', value || '');
                               }
                             }}
-                            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
-                            style={{ borderColor: '#D1D5DB' }}
-                          >
-                            <option value="">— Select a module —</option>
-                            {!selectedCatalogModule && currentModuleLabel && (
-                              <option value={currentModuleLabel}>{currentModuleLabel} (current saved value)</option>
-                            )}
-                            {catalogModules.map(m => (
-                              <option key={m.id} value={m.name}>{m.name}{m.sessions ? ` (${m.sessions} sessions)` : ''}</option>
-                            ))}
-                          </select>
+                          />
                         ) : (
                           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
                             No modules in the catalogue yet. Use the <strong>Add Module</strong> button in the toolbar first.

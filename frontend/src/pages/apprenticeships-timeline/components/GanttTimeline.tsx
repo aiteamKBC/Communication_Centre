@@ -238,7 +238,7 @@ interface Props {
   onAddRow: (groupIdx: number) => void;
   onEditRow: (groupIdx: number, rowIdx: number, blockId?: string, returnToChoice?: boolean) => void;
   onEditCatalogModule?: (moduleId: number) => void;
-  onDeleteRow: (groupIdx: number, rowIdx: number) => void;
+  onDeleteRow: (groupIdx: number, rowIdx: number) => void | Promise<void>;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
   onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => void;
@@ -611,7 +611,35 @@ export default function GanttTimeline({
       reverseButtons: true,
       focusCancel: true,
     });
-    if (result.isConfirmed) onDeleteRow(groupIdx, rowIdx);
+    if (!result.isConfirmed) return;
+
+    void kbcSwal.fire({
+      title: 'Deleting Cohort...',
+      html: `Removing <strong>${cohortLabel}</strong> from the training plan. Please wait.`,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
+
+    try {
+      await onDeleteRow(groupIdx, rowIdx);
+      await kbcSwal.fire({
+        icon: 'success',
+        title: 'Cohort Deleted',
+        html: `<strong>${cohortLabel}</strong> was removed successfully.`,
+        confirmButtonText: 'OK',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown delete error';
+      await kbcSwal.fire({
+        icon: 'error',
+        title: 'Cohort Not Deleted',
+        html: `The cohort was not removed.<br /><br /><strong>Details:</strong> ${message}`,
+        confirmButtonText: 'OK',
+      });
+    }
   }, [onDeleteRow]);
 
   const holidayPositions = useMemo(() =>

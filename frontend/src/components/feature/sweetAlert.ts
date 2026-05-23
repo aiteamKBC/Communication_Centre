@@ -2,6 +2,7 @@ import Swal from 'sweetalert2';
 
 export const kbcSwal = Swal.mixin({
   customClass: {
+    container: 'kbc-swal-container',
     popup: 'kbc-swal-popup',
     title: 'kbc-swal-title',
     htmlContainer: 'kbc-swal-html',
@@ -14,6 +15,7 @@ export const kbcSwal = Swal.mixin({
 
 export const kbcSuccessSwal = Swal.mixin({
   customClass: {
+    container: 'kbc-swal-container',
     popup: 'kbc-swal-popup kbc-swal-popup-success',
     title: 'kbc-swal-title kbc-swal-title-success',
     htmlContainer: 'kbc-swal-html kbc-swal-html-success',
