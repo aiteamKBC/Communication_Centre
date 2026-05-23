@@ -932,13 +932,28 @@ def training_plan_program_configs(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-_SESSION_NAME_FIELDS = [f'session_name_{i}' for i in range(1, 14)]
-_SESSION_DESC_FIELDS = [f'session_description_{i}' for i in range(1, 14)]
+_LEGACY_MODULE_SESSION_FIELDS = 30
+_SESSION_NAME_FIELDS = [f'session_name_{i}' for i in range(1, _LEGACY_MODULE_SESSION_FIELDS + 1)]
+_SESSION_DESC_FIELDS = [f'session_description_{i}' for i in range(1, _LEGACY_MODULE_SESSION_FIELDS + 1)]
+
+
+def _json_array_or_empty(raw: str) -> list[str]:
+	try:
+		value = json.loads(raw or '[]')
+	except (TypeError, json.JSONDecodeError):
+		return []
+	if not isinstance(value, list):
+		return []
+	return [str(item) for item in value]
 
 
 def _serialize_module(item) -> dict:
-	session_names = [getattr(item, f, '') or '' for f in _SESSION_NAME_FIELDS]
-	session_descriptions = [getattr(item, f, '') or '' for f in _SESSION_DESC_FIELDS]
+	session_names = _json_array_or_empty(getattr(item, 'session_names_json', ''))
+	session_descriptions = _json_array_or_empty(getattr(item, 'session_descriptions_json', ''))
+	if not session_names:
+		session_names = [getattr(item, f, '') or '' for f in _SESSION_NAME_FIELDS]
+	if not session_descriptions:
+		session_descriptions = [getattr(item, f, '') or '' for f in _SESSION_DESC_FIELDS]
 	return {
 		'id': item.module_id,
 		'name': item.module_name,
@@ -951,6 +966,8 @@ def _serialize_module(item) -> dict:
 
 
 def _apply_session_data(record, session_names: list, session_descriptions: list):
+	record.session_names_json = json.dumps([str(s) for s in session_names], ensure_ascii=False)
+	record.session_descriptions_json = json.dumps([str(s) for s in session_descriptions], ensure_ascii=False)
 	for i, field in enumerate(_SESSION_NAME_FIELDS):
 		setattr(record, field, session_names[i] if i < len(session_names) else '')
 	for i, field in enumerate(_SESSION_DESC_FIELDS):

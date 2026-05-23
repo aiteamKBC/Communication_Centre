@@ -33,6 +33,19 @@ function emptyEdit(): EditState {
   return { id: null, name: '', colour: '#4A6DB0', sessions: '12', notes: '', sessionNames: [], sessionDescriptions: [] };
 }
 
+function parseSessionCount(value: string | number | undefined): number {
+  const count = parseInt(String(value || ''), 10);
+  return Number.isNaN(count) || count < 1 ? 0 : count;
+}
+
+function countNamedSessions(names: string[] | undefined, count: number): number {
+  return Array.from({ length: count }, (_, i) => names?.[i]?.trim() || '').filter(Boolean).length;
+}
+
+function sessionPreviewItems(names: string[] | undefined, count: number): string[] {
+  return Array.from({ length: Math.min(count, 4) }, (_, i) => names?.[i]?.trim() || `Session ${i + 1} not named`);
+}
+
 export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete, onClose }: Props) {
   const [editing, setEditing] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -54,9 +67,18 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
 
   const sessionCount = useMemo(() => {
     if (!editing) return 0;
-    const n = parseInt(editing.sessions, 10);
-    return isNaN(n) || n < 1 ? 0 : Math.min(n, 13);
-  }, [editing?.sessions]);
+    return parseSessionCount(editing.sessions);
+  }, [editing]);
+
+  const namedSessionCount = editing ? countNamedSessions(editing.sessionNames, sessionCount) : 0;
+
+  const changeSessionCount = (delta: number) => {
+    setEditing(prev => {
+      if (!prev) return prev;
+      const nextCount = Math.max(1, parseSessionCount(prev.sessions) + delta);
+      return { ...prev, sessions: String(nextCount) };
+    });
+  };
 
   const updateSessionName = (idx: number, value: string) => {
     setEditing(prev => {
@@ -100,8 +122,9 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
     if (!editing) return;
     if (!editing.name.trim()) { setError('Module name is required'); return; }
     setSaving(true);
-    const names = Array.from({ length: 13 }, (_, i) => editing.sessionNames[i] ?? '');
-    const descs = Array.from({ length: 13 }, (_, i) => editing.sessionDescriptions[i] ?? '');
+    const count = Math.max(0, parseInt(editing.sessions, 10) || 0);
+    const names = Array.from({ length: count }, (_, i) => editing.sessionNames[i] ?? '');
+    const descs = Array.from({ length: count }, (_, i) => editing.sessionDescriptions[i] ?? '');
     try {
       if (editing.id === null) {
         await onAdd({ name: editing.name.trim(), colour: editing.colour, sessions: editing.sessions, notes: editing.notes.trim(), sessionNames: names, sessionDescriptions: descs });
@@ -139,10 +162,13 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
           )}
           {modules.map(m => {
             const isDeleting = deletingId === m.id;
+            const totalSessions = parseSessionCount(m.sessions);
+            const namedSessions = countNamedSessions(m.sessionNames, totalSessions);
+            const previewSessions = sessionPreviewItems(m.sessionNames, totalSessions);
             return (
               <div
                 key={m.id}
-                className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 transition-opacity"
+                className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 transition-opacity"
                 style={{ opacity: isDeleting ? 0.4 : 1 }}
               >
                 <span className="w-3 h-9 rounded-sm shrink-0" style={{ background: m.colour || '#4A6DB0' }} />
@@ -150,6 +176,7 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
                   <p className="text-sm font-bold text-gray-800 truncate">{m.name}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {m.sessions ? `${m.sessions} sessions` : 'No sessions set'}
+                    {totalSessions ? ` - ${namedSessions}/${totalSessions} named` : ''}
                     {m.notes ? ` · ${m.notes}` : ''}
                   </p>
                 </div>
@@ -180,6 +207,24 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
                     : <i className="ri-delete-bin-line text-sm" />
                   }
                 </button>
+                {totalSessions > 0 && (
+                  <div className="w-full pl-6 flex flex-wrap gap-1.5">
+                    {previewSessions.map((item, idx) => (
+                      <span
+                        key={`${m.id}-session-preview-${idx}`}
+                        className="max-w-full truncate rounded-md px-2 py-1 text-[11px] font-semibold"
+                        style={{ background: `${m.colour || '#4A6DB0'}10`, color: item.endsWith('not named') ? '#9CA3AF' : (m.colour || '#4A6DB0') }}
+                      >
+                        {idx + 1}. {item}
+                      </span>
+                    ))}
+                    {totalSessions > previewSessions.length && (
+                      <span className="rounded-md bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-400">
+                        +{totalSessions - previewSessions.length} more
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -247,12 +292,21 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Number of Sessions</label>
-                  <input
-                    type="text"
-                    value={editing.sessions}
-                    onChange={e => setEditing(prev => prev ? { ...prev, sessions: e.target.value } : prev)}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
-                  />
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => changeSessionCount(-1)} className="h-10 w-10 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer">
+                      <i className="ri-subtract-line" />
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      value={editing.sessions}
+                      onChange={e => setEditing(prev => prev ? { ...prev, sessions: e.target.value } : prev)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+                    />
+                    <button type="button" onClick={() => changeSessionCount(1)} className="h-10 w-10 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer">
+                      <i className="ri-add-line" />
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Colour</label>
@@ -282,21 +336,30 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
               {/* Session names + descriptions */}
               {sessionCount > 0 && (
                 <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                  <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
                     <i className="ri-list-ordered text-sm" style={{ color: editing.colour }} />
-                    <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Sessions</span>
-                    <span className="ml-auto text-xs text-gray-400">{sessionCount} session{sessionCount !== 1 ? 's' : ''}</span>
+                    <div>
+                      <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Session Names</span>
+                      <p className="text-[11px] text-gray-400 mt-0.5">{namedSessionCount}/{sessionCount} named. These names appear in the schedule as the current lecture title.</p>
+                    </div>
+                    <span className="ml-auto text-xs font-bold rounded-full px-2.5 py-1" style={{ background: `${editing.colour}12`, color: editing.colour }}>{sessionCount} sessions</span>
                   </div>
                   <div className="px-4 py-4 space-y-4">
                     {Array.from({ length: sessionCount }, (_, i) => (
-                      <div key={i} className="flex gap-3">
+                      <div key={i} className="flex gap-3 rounded-lg border border-gray-100 bg-white p-3">
                         <span
-                          className="shrink-0 w-6 h-6 mt-2 rounded-full flex items-center justify-center text-xs font-bold"
+                          className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
                           style={{ background: `${editing.colour}18`, color: editing.colour }}
                         >
                           {i + 1}
                         </span>
                         <div className="flex-1 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Session {i + 1}</span>
+                            <span className={`text-[11px] font-semibold ${editing.sessionNames[i]?.trim() ? 'text-emerald-600' : 'text-gray-300'}`}>
+                              {editing.sessionNames[i]?.trim() ? 'Named' : 'Not named yet'}
+                            </span>
+                          </div>
                           <input
                             type="text"
                             placeholder={`Session ${i + 1} name`}

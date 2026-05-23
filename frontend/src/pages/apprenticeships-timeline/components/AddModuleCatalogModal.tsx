@@ -15,6 +15,10 @@ function contrastColor(hex: string): string {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#1F2937' : '#ffffff';
 }
 
+function countNamedSessions(names: string[] | undefined, count: number): number {
+  return Array.from({ length: count }, (_, i) => names?.[i]?.trim() || '').filter(Boolean).length;
+}
+
 export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
   const [name, setName] = useState('');
   const [colour, setColour] = useState('#4A6DB0');
@@ -28,8 +32,15 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
 
   const sessionCount = useMemo(() => {
     const n = parseInt(sessions, 10);
-    return isNaN(n) || n < 1 ? 0 : Math.min(n, 13);
+    return isNaN(n) || n < 1 ? 0 : n;
   }, [sessions]);
+
+  const namedSessionCount = countNamedSessions(sessionNames, sessionCount);
+
+  const changeSessionCount = (delta: number) => {
+    const nextCount = Math.max(1, sessionCount + delta);
+    setSessions(String(nextCount));
+  };
 
   const updateName = (idx: number, value: string) => {
     setSessionNames(prev => { const next = [...prev]; next[idx] = value; return next; });
@@ -46,8 +57,9 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
 
   const handleSave = () => {
     if (!name.trim()) { setError('Module name is required'); return; }
-    const names = Array.from({ length: 13 }, (_, i) => sessionNames[i] ?? '');
-    const descs = Array.from({ length: 13 }, (_, i) => sessionDescriptions[i] ?? '');
+    const count = Math.max(0, parseInt(sessions, 10) || 0);
+    const names = Array.from({ length: count }, (_, i) => sessionNames[i] ?? '');
+    const descs = Array.from({ length: count }, (_, i) => sessionDescriptions[i] ?? '');
     onSave({ name: name.trim(), colour, sessions, notes: notes.trim(), sessionNames: names, sessionDescriptions: descs });
   };
 
@@ -101,13 +113,22 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
                 <div>
                   <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Number of Sessions</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 12"
-                    value={sessions}
-                    onChange={e => setSessions(e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
-                  />
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => changeSessionCount(-1)} className="h-10 w-10 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer">
+                      <i className="ri-subtract-line" />
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder="e.g. 12"
+                      value={sessions}
+                      onChange={e => setSessions(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+                    />
+                    <button type="button" onClick={() => changeSessionCount(1)} className="h-10 w-10 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer">
+                      <i className="ri-add-line" />
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 uppercase tracking-wider mb-1.5">Module Colour</label>
@@ -143,21 +164,30 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
           {/* Session names + descriptions */}
           {sessionCount > 0 && (
             <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+              <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
                 <i className="ri-list-ordered text-sm" style={{ color: colour }} />
-                <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Sessions</span>
-                <span className="ml-auto text-xs text-gray-400">{sessionCount} session{sessionCount !== 1 ? 's' : ''}</span>
+                <div>
+                  <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Session Names</span>
+                  <p className="text-[11px] text-gray-400 mt-0.5">{namedSessionCount}/{sessionCount} named. These names appear in the schedule as the current lecture title.</p>
+                </div>
+                <span className="ml-auto text-xs font-bold rounded-full px-2.5 py-1" style={{ background: `${colour}12`, color: colour }}>{sessionCount} sessions</span>
               </div>
               <div className="px-4 py-4 space-y-4">
                 {Array.from({ length: sessionCount }, (_, i) => (
-                  <div key={i} className="flex gap-3">
+                  <div key={i} className="flex gap-3 rounded-lg border border-gray-100 bg-white p-3">
                     <span
-                      className="shrink-0 w-6 h-6 mt-2 rounded-full flex items-center justify-center text-xs font-bold"
+                      className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
                       style={{ background: `${colour}18`, color: colour }}
                     >
                       {i + 1}
                     </span>
                     <div className="flex-1 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Session {i + 1}</span>
+                        <span className={`text-[11px] font-semibold ${sessionNames[i]?.trim() ? 'text-emerald-600' : 'text-gray-300'}`}>
+                          {sessionNames[i]?.trim() ? 'Named' : 'Not named yet'}
+                        </span>
+                      </div>
                       <input
                         type="text"
                         placeholder={`Session ${i + 1} name`}

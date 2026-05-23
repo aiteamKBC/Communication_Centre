@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CatalogModule, CohortRow, CustomModule, Holiday, ModuleBlock, ModuleValue, ProgrammeGroup, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
@@ -94,7 +94,7 @@ const JS_DAY_TO_KEY: Record<number, WeekDayKey> = {
 };
 
 const WEEKDAY_KEY_TO_JS: Record<WeekDayKey, number> = {
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  monday: 1, tuesday: 2, wednesday: 3,
   thursday: 4, friday: 5, saturday: 6,
 };
 
@@ -371,6 +371,24 @@ const resolveModuleMeta = (moduleValue: ModuleValue, customModules: CustomModule
   return getModuleMeta(moduleValue);
 };
 
+const normalizeModuleLookup = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+const resolveCatalogModuleForValue = (moduleValue: ModuleValue, catalogModules: CatalogModule[] = []) => {
+  const rawValue = typeof moduleValue === 'string' ? moduleValue : '';
+  const displayValue = getModuleInputValue(moduleValue);
+  const normalizedRaw = normalizeModuleLookup(rawValue);
+  const normalizedDisplay = normalizeModuleLookup(displayValue);
+
+  return catalogModules.find(module => {
+    const normalizedName = normalizeModuleLookup(module.name);
+    return (
+      String(module.id) === rawValue ||
+      normalizedName === normalizedRaw ||
+      normalizedName === normalizedDisplay
+    );
+  });
+};
+
 const resolveModuleVisualMeta = (moduleItem: FormModule, customModules: CustomModule[], catalogModules: CatalogModule[] = []) => {
   const baseMeta = resolveModuleMeta(moduleItem.mod, customModules, catalogModules);
   const overrideColor = moduleItem.color?.trim();
@@ -440,6 +458,7 @@ export default function CohortModal({
   catalogModules = [],
   initialGroupIdx = 0,
   initialRow,
+  initialExpandedBlockId,
   lockGroupSelection = false,
   onSave,
   onManageHolidays,
@@ -474,11 +493,15 @@ export default function CohortModal({
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(initialFormData.groups[0]?.id || null);
   const [groupDraft, setGroupDraft] = useState<GroupDraftState | null>(null);
   const [moduleDraft, setModuleDraft] = useState<ModuleDraftState | null>(null);
+  const [groupDraftDirty, setGroupDraftDirty] = useState(false);
+  const [moduleDraftDirty, setModuleDraftDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const initialSnapshot = useMemo(() => serializeDraftState(initialFormData, groupDraft, moduleDraft), [initialFormData, groupDraft, moduleDraft]);
+  const [userHasEdited, setUserHasEdited] = useState(false);
+  const initialSnapshotRef = useRef(serializeDraftState(initialFormData, null, null));
+  const markUserEdited = () => setUserHasEdited(true);
   const hasUnsavedChanges = useMemo(
-    () => serializeDraftState(data, groupDraft, moduleDraft) !== serializeDraftState(initialFormData, null, null),
-    [data, groupDraft, moduleDraft, initialFormData],
+    () => userHasEdited && serializeDraftState(data, groupDraft, moduleDraft) !== initialSnapshotRef.current,
+    [data, groupDraft, moduleDraft, userHasEdited],
   );
   const selectedProgramme = groups[data.groupIdx];
   const programmeDates = parseProgrammeDates(selectedProgramme?.sub || '');
@@ -518,38 +541,63 @@ export default function CohortModal({
     const available = new Set(holidays.map(item => item.id));
     const filtered = data.holidayIds.filter(id => available.has(id));
     if (filtered.length !== data.holidayIds.length) {
-      setData(prev => ({ ...prev, holidayIds: filtered }));
+      const filteredHolidays = holidays.filter(item => filtered.includes(item.id));
+      setData(prev => ({
+        ...prev,
+        holidayIds: filtered,
+        groups: recalculateModuleEndDates(prev.groups, filteredHolidays),
+      }));
     }
   }, [holidays, data.holidayIds]);
 
-  const setField = <K extends keyof FormData>(key: K, value: FormData[K]) =>
+  const setField = <K extends keyof FormData>(key: K, value: FormData[K]) => {
+    markUserEdited();
     setData(prev => ({ ...prev, [key]: value }));
+  };
 
-  const setCohortStartDate = (value: string) =>
+  const setCohortStartDate = (value: string) => {
+    markUserEdited();
     setData(prev => ({
       ...prev,
       dateLbl: value,
       endDateLbl: value ? addMonthsToIsoDate(value, prev.durationMonths) : '',
     }));
+  };
 
-  const setDurationMonths = (months: number) =>
+  const setDurationMonths = (months: number) => {
+    markUserEdited();
     setData(prev => ({
       ...prev,
       durationMonths: months,
       endDateLbl: prev.dateLbl ? addMonthsToIsoDate(prev.dateLbl, months) : prev.endDateLbl,
     }));
+  };
+
+  const recalculateModuleEndDates = (groupsToUpdate: FormGroup[], activeHolidays: Holiday[]) =>
+    groupsToUpdate.map(group => ({
+      ...group,
+      modules: group.modules.map(moduleItem => ({
+        ...moduleItem,
+        endDate: calculateModuleEndDate(moduleItem.startDate, moduleItem.sessions, activeHolidays, group.days) || moduleItem.endDate,
+      })),
+    }));
 
   const toggleHoliday = (holidayId: string) => {
+    markUserEdited();
     setData(prev => {
       const exists = prev.holidayIds.includes(holidayId);
+      const nextHolidayIds = exists ? prev.holidayIds.filter(id => id !== holidayId) : [...prev.holidayIds, holidayId];
+      const nextSelectedHolidays = holidays.filter(item => nextHolidayIds.includes(item.id));
       return {
         ...prev,
-        holidayIds: exists ? prev.holidayIds.filter(id => id !== holidayId) : [...prev.holidayIds, holidayId],
+        holidayIds: nextHolidayIds,
+        groups: recalculateModuleEndDates(prev.groups, nextSelectedHolidays),
       };
     });
   };
 
   const openAddGroup = () => {
+    setGroupDraftDirty(false);
     setGroupDraft({ group: newFormGroup() });
   };
 
@@ -558,10 +606,12 @@ export default function CohortModal({
     if (!target) {
       return;
     }
+    setGroupDraftDirty(false);
     setGroupDraft({ group: { ...target, modules: [...target.modules] }, replaceId: groupId });
   };
 
   const openAddModule = (parentGroupId: string) => {
+    setModuleDraftDirty(false);
     setModuleDraft({ parentGroupId, module: newFormModule() });
   };
 
@@ -571,11 +621,32 @@ export default function CohortModal({
     if (!parentGroup || !target) {
       return;
     }
-    const recalculatedEndDate = calculateModuleEndDate(target.startDate, target.sessions, holidays, parentGroup.days);
+    const recalculatedEndDate = calculateModuleEndDate(target.startDate, target.sessions, selectedHolidays, parentGroup.days);
+    setModuleDraftDirty(false);
     setModuleDraft({ parentGroupId, module: { ...target, endDate: recalculatedEndDate || target.endDate }, replaceId: moduleId });
   };
 
+  useEffect(() => {
+    if (!initialExpandedBlockId || mode !== 'edit') {
+      return;
+    }
+
+    const parentGroup = data.groups.find(group =>
+      group.modules.some(moduleItem => moduleItem.id === initialExpandedBlockId),
+    );
+    if (!parentGroup) {
+      return;
+    }
+
+    setExpandedGroupId(parentGroup.id);
+    openEditModule(parentGroup.id, initialExpandedBlockId);
+  // Run once on mount so deep-link editing opens the target block.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const updateGroupDraft = (key: keyof Omit<FormGroup, 'id' | 'modules'>, value: string | WeekDayKey[]) => {
+    markUserEdited();
+    setGroupDraftDirty(true);
     setGroupDraft(prev => {
       if (!prev) {
         return prev;
@@ -589,6 +660,8 @@ export default function CohortModal({
   };
 
   const toggleGroupDraftDay = (day: WeekDayKey) => {
+    markUserEdited();
+    setGroupDraftDirty(true);
     setGroupDraft(prev => {
       if (!prev) {
         return prev;
@@ -605,6 +678,7 @@ export default function CohortModal({
     if (!groupDraft) {
       return;
     }
+    markUserEdited();
 
     setData(prev => {
       if (groupDraft.replaceId) {
@@ -632,19 +706,24 @@ export default function CohortModal({
 
     setExpandedGroupId(groupDraft.replaceId || groupDraft.group.id);
     setGroupDraft(null);
+    setGroupDraftDirty(false);
   };
 
   const updateModuleDraft = (key: keyof Omit<FormModule, 'id'>, value: string | number) => {
+    markUserEdited();
+    setModuleDraftDirty(true);
     setModuleDraft(prev => {
       if (!prev) {
         return prev;
       }
       const nextModule = { ...prev.module, [key]: value };
       if (key === 'startDate' || key === 'sessions') {
+        const parentGroup = data.groups.find(group => group.id === prev.parentGroupId);
         nextModule.endDate = calculateModuleEndDate(
           key === 'startDate' ? String(value) : nextModule.startDate,
           key === 'sessions' ? Number(value) : nextModule.sessions,
-          holidays,
+          selectedHolidays,
+          parentGroup?.days || [],
         );
       }
       return { ...prev, module: nextModule };
@@ -655,6 +734,7 @@ export default function CohortModal({
     if (!moduleDraft) {
       return;
     }
+    markUserEdited();
 
     setData(prev => ({
       ...prev,
@@ -677,6 +757,53 @@ export default function CohortModal({
 
     setExpandedGroupId(moduleDraft.parentGroupId);
     setModuleDraft(null);
+    setModuleDraftDirty(false);
+  };
+
+  const closeGroupDraft = async () => {
+    if (!groupDraftDirty) {
+      setGroupDraft(null);
+      return;
+    }
+
+    const result = await kbcSwal.fire({
+      title: 'Discard Group Changes?',
+      html: 'If you close now, the group changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (result.isConfirmed) {
+      setGroupDraft(null);
+      setGroupDraftDirty(false);
+    }
+  };
+
+  const closeModuleDraft = async () => {
+    if (!moduleDraftDirty) {
+      setModuleDraft(null);
+      return;
+    }
+
+    const result = await kbcSwal.fire({
+      title: 'Discard Module Changes?',
+      html: 'If you close now, the module changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+
+    if (result.isConfirmed) {
+      setModuleDraft(null);
+      setModuleDraftDirty(false);
+    }
   };
 
   const removeGroup = async (groupId: string) => {
@@ -700,6 +827,7 @@ export default function CohortModal({
       return;
     }
 
+    markUserEdited();
     setData(prev => ({ ...prev, groups: prev.groups.filter(group => group.id !== groupId) }));
     if (expandedGroupId === groupId) {
       setExpandedGroupId(null);
@@ -709,6 +837,7 @@ export default function CohortModal({
   const duplicateGroup = (groupId: string) => {
     const source = data.groups.find(group => group.id === groupId);
     if (!source) return;
+    markUserEdited();
 
     const newId = `grp-${Date.now()}-${Math.random()}`;
     const duplicate: FormGroup = {
@@ -752,6 +881,7 @@ export default function CohortModal({
       return;
     }
 
+    markUserEdited();
     setData(prev => ({
       ...prev,
       groups: prev.groups.map(group => (
@@ -890,7 +1020,10 @@ export default function CohortModal({
                 {groups.map((item, idx) => (
                   <button
                     key={item.id}
-                    onClick={() => setData(prev => ({ ...prev, groupIdx: idx, color: mode === 'add' ? item.color : prev.color }))}
+                    onClick={() => {
+                      markUserEdited();
+                      setData(prev => ({ ...prev, groupIdx: idx, color: mode === 'add' ? item.color : prev.color }));
+                    }}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 text-sm font-semibold cursor-pointer transition-all whitespace-nowrap"
                     style={{
                       borderColor: data.groupIdx === idx ? item.color : '#E5E7EB',
@@ -1001,12 +1134,18 @@ export default function CohortModal({
                           className="px-3 py-1.5 rounded-md text-sm font-semibold border cursor-pointer transition-all"
                           style={{
                             borderColor: selected ? '#1B2A4A' : '#D1D5DB',
-                            background: selected ? '#E8EEF9' : inRange ? '#F8FAFF' : '#fff',
-                            color: selected ? '#1B2A4A' : inRange ? '#3D5A99' : '#6B7280',
+                            background: selected ? '#E8EEF9' : '#fff',
+                            color: selected ? '#1B2A4A' : '#6B7280',
                           }}
                           title={`${holiday.label} (${formatDate(holiday.startDate)} - ${formatDate(holiday.endDate)})`}
                         >
-                          {holiday.label}
+                          <span className="inline-flex items-center gap-1.5">
+                            {selected && <i className="ri-check-line text-xs" />}
+                            <span>{holiday.label}</span>
+                            {!selected && inRange && (
+                              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">In range</span>
+                            )}
+                          </span>
                         </button>
                       );
                     })}
@@ -1156,7 +1295,7 @@ export default function CohortModal({
                   <h3 className="text-white font-extrabold text-sm tracking-wide">{groupDraft.replaceId ? 'Edit Group' : 'Add Group'}</h3>
                   <p className="text-white/60 text-xs mt-0.5">Create the parent group first, then add modules inside it.</p>
                 </div>
-                <button onClick={() => setGroupDraft(null)} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+                <button onClick={() => void closeGroupDraft()} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
                   <i className="ri-close-line text-lg" />
                 </button>
               </div>
@@ -1200,7 +1339,7 @@ export default function CohortModal({
               </div>
 
               <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-white">
-                <button onClick={() => setGroupDraft(null)} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">Cancel</button>
+                <button onClick={() => void closeGroupDraft()} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">Cancel</button>
                 <button onClick={saveGroupDraft} className="px-4 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all" style={{ background: '#1B2A4A' }}>Save Group</button>
               </div>
             </div>
@@ -1216,22 +1355,45 @@ export default function CohortModal({
                   <h3 className="text-white font-extrabold text-sm tracking-wide">{moduleDraft.replaceId ? 'Edit Module' : 'Add Module'}</h3>
                   <p className="text-white/60 text-xs mt-0.5">This module will be added inside the selected group.</p>
                 </div>
-                <button onClick={() => setModuleDraft(null)} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+                <button onClick={() => void closeModuleDraft()} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
                   <i className="ri-close-line text-lg" />
                 </button>
               </div>
 
               <div className="px-5 py-5 space-y-4 bg-gray-50">
                 {(() => {
-                  const selectedCatalogModule = catalogModules.find(m => m.name === moduleDraft.module.mod || String(m.id) === String(moduleDraft.module.mod));
-                  const accentColor = selectedCatalogModule?.colour || '#1B2A4A';
+                  const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules);
+                  const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod);
+                  const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
+                  const accentColor = selectedCatalogModule?.colour || moduleDraft.module.color || parentGroup?.color || '#1B2A4A';
                   return (
                     <>
+                      {parentGroup && (
+                        <div className="grid grid-cols-2 gap-3 rounded-xl border border-gray-200 bg-white p-3 md:grid-cols-4">
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Group</p>
+                            <p className="mt-1 text-sm font-extrabold text-gray-800">{parentGroup.groupName || 'No group name'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Coach</p>
+                            <p className="mt-1 text-sm font-extrabold text-gray-800">{parentGroup.coachName || 'TBD'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Days</p>
+                            <p className="mt-1 text-sm font-extrabold text-gray-800">{parentGroup.days.join(', ') || 'No days'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Time</p>
+                            <p className="mt-1 text-sm font-extrabold text-gray-800">{parentGroup.sessionStartTime} - {parentGroup.sessionEndTime}</p>
+                          </div>
+                        </div>
+                      )}
+
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module</label>
                         {catalogModules.length > 0 ? (
                           <select
-                            value={selectedCatalogModule ? selectedCatalogModule.name : ''}
+                            value={selectedCatalogModule ? selectedCatalogModule.name : currentModuleLabel}
                             onChange={e => {
                               const selected = catalogModules.find(m => m.name === e.target.value);
                               if (selected) {
@@ -1247,6 +1409,9 @@ export default function CohortModal({
                             style={{ borderColor: '#D1D5DB' }}
                           >
                             <option value="">— Select a module —</option>
+                            {!selectedCatalogModule && currentModuleLabel && (
+                              <option value={currentModuleLabel}>{currentModuleLabel} (current saved value)</option>
+                            )}
                             {catalogModules.map(m => (
                               <option key={m.id} value={m.name}>{m.name}{m.sessions ? ` (${m.sessions} sessions)` : ''}</option>
                             ))}
@@ -1256,13 +1421,21 @@ export default function CohortModal({
                             No modules in the catalogue yet. Use the <strong>Add Module</strong> button in the toolbar first.
                           </div>
                         )}
-                        {selectedCatalogModule && (
+                        {(selectedCatalogModule || currentModuleLabel) && (
                           <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: `${accentColor}12` }}>
                             <span className="w-3 h-5 rounded-sm shrink-0" style={{ background: accentColor }} />
                             <div className="min-w-0 flex-1">
-                              <p className="text-xs font-bold truncate" style={{ color: accentColor }}>{selectedCatalogModule.name}</p>
-                              {selectedCatalogModule.sessions && <p className="text-xs text-gray-400">{selectedCatalogModule.sessions} sessions</p>}
+                              <p className="text-xs font-bold truncate" style={{ color: accentColor }}>{selectedCatalogModule?.name || currentModuleLabel}</p>
+                              <p className="text-xs text-gray-400">{selectedCatalogModule?.sessions || moduleDraft.module.sessions} sessions</p>
                             </div>
+                          </div>
+                        )}
+                        {!selectedCatalogModule && currentModuleLabel && (
+                          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            <p className="font-bold">This module is not in the catalogue.</p>
+                            <p className="mt-0.5">
+                              The saved value is <strong>{currentModuleLabel}</strong>, so existing data is shown, but catalogue details like saved session names may not match until you add or select a matching module.
+                            </p>
                           </div>
                         )}
                       </div>
@@ -1302,7 +1475,7 @@ export default function CohortModal({
               </div>
 
               <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-white">
-                <button onClick={() => setModuleDraft(null)} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">Cancel</button>
+                <button onClick={() => void closeModuleDraft()} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">Cancel</button>
                 <button onClick={saveModuleDraft} className="px-4 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all" style={{ background: '#1B2A4A' }}>Save Module</button>
               </div>
             </div>

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
-import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule } from '../types';
+import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
@@ -84,6 +84,85 @@ function getBlockDisplayName(blk: ModuleBlock, customModules: CustomModule[]) {
   return resolveModuleMeta(blk.mod as string, customModules).lbl;
 }
 
+function parseLocalIsoDate(isoDate: string): Date {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return new Date(year || 1970, (month || 1) - 1, day || 1);
+}
+
+function localIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalDateTime(isoDate: string, time24: string): Date {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const [hourRaw = '0', minuteRaw = '0'] = time24.split(':');
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  return new Date(year || 1970, (month || 1) - 1, day || 1, Number.isNaN(hour) ? 0 : hour, Number.isNaN(minute) ? 0 : minute, 0, 0);
+}
+
+function hasSessionEnded(date: string, endTime: string, now: Date): boolean {
+  return parseLocalDateTime(date, endTime) <= now;
+}
+
+function normalizeModuleLookup(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function resolveCatalogModuleForBlock(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[]): CatalogModule | undefined {
+  const rawValue = String(blk.mod || '');
+  const displayValue = getBlockDisplayName(blk, customModules);
+  const normalizedRaw = normalizeModuleLookup(rawValue);
+  const normalizedDisplay = normalizeModuleLookup(displayValue);
+  return catalogModules.find(module => {
+    const normalizedName = normalizeModuleLookup(module.name);
+    return String(module.id) === rawValue || normalizedName === normalizedRaw || normalizedName === normalizedDisplay;
+  });
+}
+
+function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[]) {
+  const total = Math.max(1, blk.sessions || 1);
+  const weekdays = blk.days?.length ? blk.days : [];
+  const start = parseLocalIsoDate(blk.startDate);
+  const end = parseLocalIsoDate(blk.endDate || blk.startDate);
+  const now = new Date();
+  const endTime = blk.sessionEndTime || '11:00';
+  const dates: string[] = [];
+
+  if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+    const cursor = new Date(start);
+    while (cursor <= end && dates.length < total) {
+      const key = (['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const)[cursor.getDay()];
+      if (!weekdays.length || weekdays.includes(key as any)) {
+        dates.push(localIsoDate(cursor));
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  const sessionDates = dates.length ? dates : [blk.startDate];
+  const completed = Math.min(total, sessionDates.filter(date => hasSessionEnded(date, endTime, now)).length);
+  const isFinished = total > 0 && completed >= total;
+  const nextIndex = sessionDates.findIndex(date => !hasSessionEnded(date, endTime, now));
+  const index = nextIndex >= 0 ? nextIndex : Math.min(completed, total - 1);
+  const number = Math.min(total, Math.max(1, index + 1));
+  const catalogModule = resolveCatalogModuleForBlock(blk, customModules, catalogModules);
+  const savedName = catalogModule?.sessionNames?.[number - 1]?.trim() || '';
+
+  return {
+    number,
+    total,
+    completed,
+    isFinished,
+    date: sessionDates[index] || blk.startDate,
+    name: savedName,
+    hasRealName: Boolean(savedName),
+  };
+}
+
 interface LeftLabelEntry {
   key: string;
   label: string;
@@ -152,6 +231,7 @@ interface Props {
   groups: ProgrammeGroup[];
   holidays: Holiday[];
   customModules?: CustomModule[];
+  catalogModules?: CatalogModule[];
   zoom: ZoomLevel;
   onZoomChange: (z: ZoomLevel) => void;
   onManageHolidays?: () => void;
@@ -327,7 +407,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
 
 // ── Main component ────────────────────────────────────────────────────────
 export default function GanttTimeline({
-  groups, holidays, customModules = [], zoom, onZoomChange,
+  groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onReorderRow, onReorderGroup, canManageCohorts = true,
 }: Props) {
@@ -767,16 +847,24 @@ export default function GanttTimeline({
     grp: ProgrammeGroup,
     groupIdx: number,
     rowIdx: number,
+    activeHolidays: Holiday[],
     topPx: number,
     heightPx: number,
   ) => {
     const pos = getBlockPosition(blk.startDate, blk.endDate, cols);
     if (!pos) return null;
     const mod = resolveBlockMeta(blk, customModules);
-    const overlaps = getHolidayOverlaps(blk, holidays);
+    const overlaps = getHolidayOverlaps(blk, activeHolidays);
     const hasOverlap = overlaps.length > 0;
     const tutorLabel = blk.tutor.trim();
     const showTutor = pos.width > 72 && Boolean(tutorLabel);
+    const coachLabel = (blk.coachName || '').trim();
+    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules);
+    const sessionLabel = sessionSummary.isFinished
+      ? 'Finished'
+      : sessionSummary.hasRealName
+      ? `S${sessionSummary.number}: ${sessionSummary.name}`
+      : `S${sessionSummary.number}: no saved name`;
     const stackLabel = false;
 
     return (
@@ -842,6 +930,36 @@ export default function GanttTimeline({
                 }}
               >
                 {formatDateShort(blk.startDate)} → {formatDateShort(blk.endDate)}
+              </span>
+            )}
+
+            {pos.width > 180 && (
+              <span
+                title={`${sessionSummary.isFinished ? 'Finished module' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                style={{
+                  color: mod.tx,
+                  fontSize: '9px',
+                  fontWeight: 800,
+                  opacity: 0.95,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  background: sessionSummary.isFinished ? 'rgba(16,185,129,0.32)' : sessionSummary.hasRealName ? 'rgba(255,255,255,0.20)' : 'rgba(247,168,0,0.28)',
+                  borderRadius: 3,
+                  padding: '1px 5px',
+                  marginLeft: 2,
+                  maxWidth: Math.max(70, pos.width * 0.42),
+                }}
+              >
+                {sessionSummary.isFinished && <i className="ri-check-line" style={{ marginRight: 3 }} />}
+                {sessionLabel}
+              </span>
+            )}
+
+            {pos.width > 260 && (
+              <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.8, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {sessionSummary.isFinished ? 'Finished' : `${sessionSummary.completed}/${sessionSummary.total} done`}
               </span>
             )}
           </div>
@@ -1078,6 +1196,8 @@ export default function GanttTimeline({
                 const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
                 const rowColor = row.color || grp.color;
                 const tunnelBg = `${grp.color}0D`;
+                const selectedHolidayIds = new Set(row.holidayIds || []);
+                const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
 
@@ -1207,7 +1327,7 @@ export default function GanttTimeline({
                             for (const { blk, lane } of ganttRow.lanes) {
                               const laneH = ganttRow.laneCount === 2 ? LANE_H : MODULE_H;
                               const laneTop = offsetY + lane * LANE_H;
-                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, laneTop + barPad, laneH - barPad * 2));
+                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, rowHolidays, laneTop + barPad, laneH - barPad * 2));
                             }
                             offsetY += h;
                           }

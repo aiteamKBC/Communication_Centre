@@ -13,6 +13,7 @@ import ManageModulesModal from './components/ManageModulesModal';
 import AddProgramModal from './components/AddProgramModal';
 import ManageProgramModal from './components/ManageProgramModal';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
+import TutorProfiles from './components/TutorProfiles';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 
@@ -377,8 +378,9 @@ export default function ApprenticeshipTimeline() {
   const [showManageModules, setShowManageModules] = useState(false);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
-  const [activeTab, setActiveTab] = useState<'gantt' | 'schedule'>('gantt');
+  const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors'>('gantt');
   const [addDropdownOpen, setAddDropdownOpen] = useState(false);
+  const showHiddenCohortActions = addDropdownOpen && !addDropdownOpen;
   const addDropdownRef = useRef<HTMLDivElement>(null);
   const [trainingPlanSaveState, setTrainingPlanSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [trainingPlanSaveMessage, setTrainingPlanSaveMessage] = useState('Waiting for changes');
@@ -827,6 +829,13 @@ export default function ApprenticeshipTimeline() {
     setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row, expandedBlockId });
   };
 
+  const handleEditScheduleRow = (groupIdx: number, rowIdx: number, blockId: string) => {
+    if (!canManageCohorts) {
+      return;
+    }
+    handleEditRow(groupIdx, rowIdx, blockId);
+  };
+
   const handleAddModule = async (mod: CustomModule) => {
     try {
       const next = [...customModules.filter(m => m.id !== mod.id), mod];
@@ -1069,7 +1078,7 @@ export default function ApprenticeshipTimeline() {
     const today = new Date();
     const todayKey = dayNames[today.getDay()];
     const tStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-    const sessions: Array<{ cohortName: string; program: string; groupName: string; tutor: string; startTime?: string; endTime?: string }> = [];
+    const sessions: Array<{ cohortName: string; program: string; groupName: string; coach: string; tutor: string; startTime?: string; endTime?: string }> = [];
 
     groups.forEach(g => {
       g.rows.forEach(r => {
@@ -1083,6 +1092,7 @@ export default function ApprenticeshipTimeline() {
             cohortName: r.label,
             program: toProgrammeLabel(g),
             groupName: b.groupName || getModuleMeta(b.mod).lbl,
+            coach: b.coachName || '',
             tutor: b.tutor || '',
             startTime: b.sessionStartTime,
             endTime: b.sessionEndTime,
@@ -1142,7 +1152,7 @@ export default function ApprenticeshipTimeline() {
             </div>
 
             <div className="hidden xl:flex items-center gap-2 ml-auto">
-              {false && canManageCohorts && (
+              {showHiddenCohortActions && canManageCohorts && (
                 <button
                   onClick={() => setShowHolidayMgr(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
@@ -1152,7 +1162,7 @@ export default function ApprenticeshipTimeline() {
                 </button>
               )}
 
-              {false && canManageCohorts && (
+              {showHiddenCohortActions && canManageCohorts && (
                 <div className="relative" ref={addDropdownRef}>
                   <button
                     onClick={() => setAddDropdownOpen(v => !v)}
@@ -1236,7 +1246,7 @@ export default function ApprenticeshipTimeline() {
               </button>
             )}
 
-            {false && canManageCohorts && (
+            {showHiddenCohortActions && canManageCohorts && (
               <div className="relative" ref={addDropdownRef}>
                 <button
                   onClick={() => setAddDropdownOpen(v => !v)}
@@ -1307,7 +1317,8 @@ export default function ApprenticeshipTimeline() {
                   <div>
                     <p className="text-sm font-semibold">{s.groupName}</p>
                     <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
-                    {s.tutor && <p className="text-xs text-gray-400">{s.tutor}</p>}
+                    <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
+                    <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
@@ -1324,6 +1335,7 @@ export default function ApprenticeshipTimeline() {
             {([
               { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
               { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
+              { key: 'tutors',   label: 'Tutor Profiles', icon: 'ri-user-star-line' },
             ] as const).map(tab => (
               <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
@@ -1380,6 +1392,7 @@ export default function ApprenticeshipTimeline() {
                 groups={groups}
                 holidays={holidays}
                 customModules={customModules}
+                catalogModules={catalogModules}
                 zoom={zoom}
                 onZoomChange={setZoom}
                 onManageHolidays={() => setShowHolidayMgr(true)}
@@ -1425,10 +1438,33 @@ export default function ApprenticeshipTimeline() {
           isInitialProgrammesLoading ? (
             <SessionScheduleSkeleton />
           ) : groups.length ? (
-            <ScheduleTable groups={groups} />
+            <ScheduleTable
+              groups={groups}
+              catalogModules={catalogModules}
+              canEdit={canManageCohorts}
+              onEditTrainingPlan={handleEditScheduleRow}
+            />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
               No session schedule yet because there are no saved programmes in the database.
+            </div>
+          )
+        )}
+
+        {/* TUTOR PROFILES */}
+        {activeTab === 'tutors' && (
+          isInitialProgrammesLoading ? (
+            <SessionScheduleSkeleton />
+          ) : groups.length ? (
+            <TutorProfiles
+              groups={groups}
+              catalogModules={catalogModules}
+              canEdit={canManageCohorts}
+              onEditTrainingPlan={handleEditScheduleRow}
+            />
+          ) : (
+            <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
+              No tutor profiles yet because there are no saved programmes in the database.
             </div>
           )
         )}
