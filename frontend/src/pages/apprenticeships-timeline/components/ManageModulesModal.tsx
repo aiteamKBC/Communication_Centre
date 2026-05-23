@@ -8,6 +8,7 @@ interface Props {
   onUpdate: (mod: CatalogModule) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
   onClose: () => void;
+  initialEditModuleId?: number | null;
 }
 
 function contrastColor(hex: string): string {
@@ -33,6 +34,18 @@ function emptyEdit(): EditState {
   return { id: null, name: '', colour: '#4A6DB0', sessions: '12', notes: '', sessionNames: [], sessionDescriptions: [] };
 }
 
+function editStateFromModule(m: CatalogModule): EditState {
+  return {
+    id: m.id,
+    name: m.name,
+    colour: m.colour || '#4A6DB0',
+    sessions: m.sessions || '',
+    notes: m.notes || '',
+    sessionNames: m.sessionNames ? [...m.sessionNames] : [],
+    sessionDescriptions: m.sessionDescriptions ? [...m.sessionDescriptions] : [],
+  };
+}
+
 function parseSessionCount(value: string | number | undefined): number {
   const count = parseInt(String(value || ''), 10);
   return Number.isNaN(count) || count < 1 ? 0 : count;
@@ -46,23 +59,42 @@ function sessionPreviewItems(names: string[] | undefined, count: number): string
   return Array.from({ length: Math.min(count, 4) }, (_, i) => names?.[i]?.trim() || `Session ${i + 1} not named`);
 }
 
-export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete, onClose }: Props) {
-  const [editing, setEditing] = useState<EditState | null>(null);
+export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
+  const [editing, setEditing] = useState<EditState | null>(() => {
+    const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
+    return target ? editStateFromModule(target) : null;
+  });
+  const [editingSnapshot, setEditingSnapshot] = useState(() => {
+    const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
+    return target ? JSON.stringify(editStateFromModule(target)) : '';
+  });
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState('');
 
   const openEdit = (m: CatalogModule) => {
-    setEditing({
-      id: m.id,
-      name: m.name,
-      colour: m.colour || '#4A6DB0',
-      sessions: m.sessions || '',
-      notes: m.notes || '',
-      sessionNames: m.sessionNames ? [...m.sessionNames] : [],
-      sessionDescriptions: m.sessionDescriptions ? [...m.sessionDescriptions] : [],
-    });
+    const next = editStateFromModule(m);
+    setEditing(next);
+    setEditingSnapshot(JSON.stringify(next));
     setError('');
+  };
+
+  const closeEditing = async () => {
+    if (editing && JSON.stringify(editing) !== editingSnapshot) {
+      const result = await kbcSwal.fire({
+        title: 'Discard Module Changes?',
+        html: 'If you close now, the module catalogue changes you entered will be lost.',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Discard Changes',
+        cancelButtonText: 'Keep Editing',
+        reverseButtons: true,
+        focusCancel: true,
+      });
+      if (!result.isConfirmed) return;
+    }
+    setEditing(null);
+    setEditingSnapshot('');
   };
 
   const sessionCount = useMemo(() => {
@@ -238,7 +270,7 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
               Close
             </button>
             <button
-              onClick={() => { setEditing(emptyEdit()); setError(''); }}
+              onClick={() => { const next = emptyEdit(); setEditing(next); setEditingSnapshot(JSON.stringify(next)); setError(''); }}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all hover:opacity-90"
               style={{ background: '#1B2A4A' }}
             >
@@ -251,14 +283,14 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
       {/* Edit / Add panel */}
       {editing && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-950/20" onClick={() => setEditing(null)} />
+          <div className="absolute inset-0 bg-slate-950/20" onClick={() => { void closeEditing(); }} />
           <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 560, maxHeight: '92vh' }}>
             <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ background: '#1B2A4A' }}>
               <div>
                 <h3 className="text-white font-extrabold text-sm tracking-wide">{editing.id === null ? 'Add Module' : 'Edit Module'}</h3>
                 <p className="text-white/60 text-xs mt-0.5">Changes apply to the module catalogue</p>
               </div>
-              <button onClick={() => setEditing(null)} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+              <button onClick={() => { void closeEditing(); }} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
                 <i className="ri-close-line text-base" />
               </button>
             </div>
@@ -383,7 +415,7 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
             </div>
 
             <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-white shrink-0">
-              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
+              <button onClick={() => { void closeEditing(); }} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
                 Cancel
               </button>
               <button

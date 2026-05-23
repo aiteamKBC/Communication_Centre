@@ -65,6 +65,26 @@ export default function ManageProgramModal({
   const [name, setName] = useState(program.name || '');
   const [color, setColor] = useState(program.color || '#1B2A4A');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const initialSnapshot = JSON.stringify({ name: program.name || '', color: program.color || '#1B2A4A' });
+  const hasChanges = JSON.stringify({ name, color }) !== initialSnapshot;
+
+  const requestClose = async () => {
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Discard Changes?',
+      html: 'If you close now, the programme changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+    if (result.isConfirmed) onClose();
+  };
 
   const handleDeleteCohortRequest = async (rowIdx: number) => {
     const row = group.rows[rowIdx];
@@ -102,14 +122,14 @@ export default function ManageProgramModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={() => { void requestClose(); }} />
       <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 760, maxHeight: '92vh' }}>
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
             <h2 className="text-white font-extrabold text-sm tracking-wide">Manage Programme</h2>
             <p className="text-white/60 text-xs mt-0.5">Edit programme details and manage the cohorts inside it</p>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={() => { void requestClose(); }} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
             <i className="ri-close-line text-base" />
           </button>
         </div>
@@ -238,7 +258,7 @@ export default function ManageProgramModal({
             Delete Programme
           </button>
           <div className="flex items-center gap-3">
-            <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
+            <button onClick={() => { void requestClose(); }} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
               Close
             </button>
             <button

@@ -236,7 +236,8 @@ interface Props {
   onZoomChange: (z: ZoomLevel) => void;
   onManageHolidays?: () => void;
   onAddRow: (groupIdx: number) => void;
-  onEditRow: (groupIdx: number, rowIdx: number, blockId?: string) => void;
+  onEditRow: (groupIdx: number, rowIdx: number, blockId?: string, returnToChoice?: boolean) => void;
+  onEditCatalogModule?: (moduleId: number) => void;
   onDeleteRow: (groupIdx: number, rowIdx: number) => void;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
@@ -409,10 +410,19 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
-  onReorderRow, onReorderGroup, canManageCohorts = true,
+  onEditCatalogModule, onReorderRow, onReorderGroup, canManageCohorts = true,
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
+  const [editChoice, setEditChoice] = useState<{
+    blk: ModuleBlock;
+    moduleLabel: string;
+    programmeName: string;
+    cohortLabel: string;
+    groupIdx: number;
+    rowIdx: number;
+    catalogModule?: CatalogModule;
+  } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
@@ -891,6 +901,18 @@ export default function GanttTimeline({
             return;
           }
           setTooltip(null);
+          if (onEditCatalogModule) {
+            setEditChoice({
+              blk,
+              moduleLabel: mod.lbl,
+              programmeName: grp.name.replace('\n', ' '),
+              cohortLabel,
+              groupIdx,
+              rowIdx,
+              catalogModule: resolveCatalogModuleForBlock(blk, customModules, catalogModules),
+            });
+            return;
+          }
           onEditRow(groupIdx, rowIdx, blk.id);
         }}
       >
@@ -1379,6 +1401,68 @@ export default function GanttTimeline({
       </div>
 
       {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
+
+      {editChoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/35 backdrop-blur-[5px]" onClick={() => setEditChoice(null)} />
+          <div className="relative w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white/60">{editChoice.programmeName} - {editChoice.cohortLabel}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Choose What To Edit</h3>
+                <p className="mt-1 text-xs text-white/70">{editChoice.moduleLabel}</p>
+              </div>
+              <button onClick={() => setEditChoice(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const target = editChoice;
+                  setEditChoice(null);
+                  onEditRow(target.groupIdx, target.rowIdx, target.blk.id, true);
+                }}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-kbc-navy text-white">
+                  <i className="ri-calendar-schedule-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Edit schedule assignment</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  Change this specific cohort module: dates, tutor, coach, time, notes, and placement.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {editChoice.blk.groupName || 'Selected group'} - {formatDateShort(editChoice.blk.startDate)} to {formatDateShort(editChoice.blk.endDate)}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = editChoice.catalogModule;
+                  if (!target || !onEditCatalogModule) return;
+                  onEditCatalogModule(target.id);
+                }}
+                disabled={!editChoice.catalogModule || !onEditCatalogModule}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-200 disabled:hover:shadow-none"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white">
+                  <i className="ri-puzzle-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Edit module catalogue</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  Change the shared module definition: session count, colour, notes, and session names.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {editChoice.catalogModule ? `${editChoice.catalogModule.name} - ${editChoice.catalogModule.sessions || 0} sessions` : 'No matching catalogue module found'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {holidayTip && (
         <div

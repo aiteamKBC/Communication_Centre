@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { CustomProgram } from '../types';
+import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
   onSave: (program: CustomProgram) => void;
@@ -24,6 +25,26 @@ export default function AddProgramModal({ onSave, onClose, initialProgram }: Pro
   const [name, setName] = useState(initialProgram?.name || '');
   const [color, setColor] = useState(initialProgram?.color || '#1B2A4A');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const initialSnapshot = JSON.stringify({ name: initialProgram?.name || '', color: initialProgram?.color || '#1B2A4A' });
+  const hasChanges = JSON.stringify({ name, color }) !== initialSnapshot;
+
+  const requestClose = async () => {
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Discard Changes?',
+      html: 'If you close now, the programme changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+    if (result.isConfirmed) onClose();
+  };
 
   const handleSave = () => {
     const errs: Record<string, string> = {};
@@ -42,14 +63,14 @@ export default function AddProgramModal({ onSave, onClose, initialProgram }: Pro
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={() => { void requestClose(); }} />
       <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 560 }}>
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
             <h2 className="text-white font-extrabold text-sm tracking-wide">{mode === 'edit' ? 'Manage Programme' : 'Add Programme'}</h2>
             <p className="text-white/60 text-xs mt-0.5">{mode === 'edit' ? 'Edit programme details' : 'Create a new training programme group'}</p>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={() => { void requestClose(); }} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
             <i className="ri-close-line text-base" />
           </button>
         </div>
@@ -91,7 +112,7 @@ export default function AddProgramModal({ onSave, onClose, initialProgram }: Pro
         </div>
 
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
-          <button onClick={onClose}
+          <button onClick={() => { void requestClose(); }}
             className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
             {mode === 'edit' ? 'Close' : 'Cancel'}
           </button>

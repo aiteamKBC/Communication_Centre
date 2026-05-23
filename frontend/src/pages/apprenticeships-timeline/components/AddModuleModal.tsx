@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { CustomModule } from '../types';
+import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
   onSave: (mod: CustomModule) => void;
@@ -24,6 +25,25 @@ export default function AddModuleModal({ onSave, onClose }: Props) {
   const [bg, setBg] = useState('#4A6DB0');
   const [error, setError] = useState('');
   const previewName = name.trim() || 'Untitled Module';
+  const hasChanges = JSON.stringify({ name, sessions, bg }) !== JSON.stringify({ name: '', sessions: 12, bg: '#4A6DB0' });
+
+  const requestClose = async () => {
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Discard Changes?',
+      html: 'If you close now, the module changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+    if (result.isConfirmed) onClose();
+  };
 
   const handleReset = () => {
     setName('');
@@ -49,7 +69,7 @@ export default function AddModuleModal({ onSave, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" />
+      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={() => { void requestClose(); }} />
       <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden" style={{ maxWidth: 720 }}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ background: '#1B2A4A' }}>
@@ -57,7 +77,7 @@ export default function AddModuleModal({ onSave, onClose }: Props) {
             <h2 className="text-white font-extrabold text-sm tracking-wide">Add General Module</h2>
             <p className="text-white/60 text-xs mt-0.5">Create a reusable module with the same structure used inside cohorts</p>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={() => { void requestClose(); }} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
             <i className="ri-close-line text-base" />
           </button>
         </div>
@@ -137,6 +157,10 @@ export default function AddModuleModal({ onSave, onClose }: Props) {
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
+          <button onClick={() => { void requestClose(); }}
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
+            Cancel
+          </button>
           <button onClick={handleReset}
             className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
             Reset

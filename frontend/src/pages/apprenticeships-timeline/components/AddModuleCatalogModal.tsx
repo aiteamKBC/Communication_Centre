@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { CatalogModule } from '../types';
+import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
   onSave: (mod: Omit<CatalogModule, 'id'>) => void;
@@ -29,6 +30,15 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
   const [error, setError] = useState('');
 
   const previewName = name.trim() || 'Untitled Module';
+  const initialSnapshot = JSON.stringify({
+    name: '',
+    colour: '#4A6DB0',
+    sessions: '12',
+    notes: '',
+    sessionNames: [],
+    sessionDescriptions: [],
+  });
+  const hasChanges = JSON.stringify({ name, colour, sessions, notes, sessionNames, sessionDescriptions }) !== initialSnapshot;
 
   const sessionCount = useMemo(() => {
     const n = parseInt(sessions, 10);
@@ -55,6 +65,24 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
     setSessionNames([]); setSessionDescriptions([]); setError('');
   };
 
+  const requestClose = async () => {
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Discard Changes?',
+      html: 'If you close now, the module changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+    if (result.isConfirmed) onClose();
+  };
+
   const handleSave = () => {
     if (!name.trim()) { setError('Module name is required'); return; }
     const count = Math.max(0, parseInt(sessions, 10) || 0);
@@ -65,7 +93,7 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={() => { void requestClose(); }} />
       <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 680, maxHeight: '90vh' }}>
 
         <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ background: '#1B2A4A' }}>
@@ -73,7 +101,7 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
             <h2 className="text-white font-extrabold text-sm tracking-wide">Add Module</h2>
             <p className="text-white/60 text-xs mt-0.5">Save a module to the catalogue — select it when creating a group</p>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={() => { void requestClose(); }} className="w-7 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
             <i className="ri-close-line text-base" />
           </button>
         </div>
@@ -211,6 +239,9 @@ export default function AddModuleCatalogModal({ onSave, onClose }: Props) {
         </div>
 
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50 shrink-0">
+          <button onClick={() => { void requestClose(); }} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
+            Cancel
+          </button>
           <button onClick={handleReset} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">
             Reset
           </button>

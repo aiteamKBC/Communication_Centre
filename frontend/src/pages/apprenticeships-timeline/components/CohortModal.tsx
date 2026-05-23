@@ -19,6 +19,7 @@ interface Props {
   lockGroupSelection?: boolean;
   onSave: (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => boolean | Promise<boolean>;
   onManageHolidays?: () => void;
+  onBackToPreviousStep?: () => void;
   onClose: () => void;
 }
 
@@ -462,6 +463,7 @@ export default function CohortModal({
   lockGroupSelection = false,
   onSave,
   onManageHolidays,
+  onBackToPreviousStep,
   onClose,
 }: Props) {
   const initialFormData: FormData = mode === 'edit' && initialRow ? {
@@ -961,6 +963,7 @@ export default function CohortModal({
     }
 
     if (!hasUnsavedChanges) {
+      onBackToPreviousStep?.();
       onClose();
       return;
     }
@@ -977,6 +980,7 @@ export default function CohortModal({
     });
 
     if (result.isConfirmed) {
+      onBackToPreviousStep?.();
       onClose();
     }
   };
@@ -1289,7 +1293,8 @@ export default function CohortModal({
 
         {groupDraft && createPortal(
           <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/35 backdrop-blur-[2px] p-4">
-            <div className="w-full max-w-xl rounded-2xl bg-white shadow-2xl overflow-hidden">
+            <button type="button" aria-label="Close group editor" className="absolute inset-0 cursor-default" onClick={() => { void closeGroupDraft(); }} />
+            <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-2xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b" style={{ background: '#1B2A4A' }}>
                 <div>
                   <h3 className="text-white font-extrabold text-sm tracking-wide">{groupDraft.replaceId ? 'Edit Group' : 'Add Group'}</h3>
@@ -1349,7 +1354,8 @@ export default function CohortModal({
 
         {moduleDraft && createPortal(
           <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/35 backdrop-blur-[2px] p-4">
-            <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
+            <button type="button" aria-label="Close module editor" className="absolute inset-0 cursor-default" onClick={() => { void closeModuleDraft(); }} />
+            <div className="relative w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b" style={{ background: '#1B2A4A' }}>
                 <div>
                   <h3 className="text-white font-extrabold text-sm tracking-wide">{moduleDraft.replaceId ? 'Edit Module' : 'Add Module'}</h3>

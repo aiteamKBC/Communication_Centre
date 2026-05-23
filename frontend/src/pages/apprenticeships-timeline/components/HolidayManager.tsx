@@ -388,7 +388,28 @@ export default function HolidayManager({ holidays, onSave, onClose }: Props) {
   const isSaveFormComplete = Boolean(form.label.trim()) && Boolean(form.startDate) && Boolean(form.endDate);
   const hasPersistableDraft = isSaveFormComplete || Boolean(editId);
   const hasListChanges = JSON.stringify(list) !== initialSnapshot;
+  const hasFormDraft = Boolean(form.label.trim()) || Boolean(form.startDate) || Boolean(form.endDate);
+  const hasTypeDraft = showNewTypeForm || Boolean(editTypeValue) || Boolean(newTypeLabel.trim()) || Boolean(editTypeLabel.trim());
+  const hasUnsavedChanges = hasListChanges || hasPersistableDraft || hasFormDraft || hasTypeDraft;
   const canSaveChanges = hasPersistableDraft || hasListChanges;
+
+  const requestClose = async () => {
+    if (!hasUnsavedChanges) {
+      onClose();
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Discard Changes?',
+      html: 'If you close now, the holiday changes you entered will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Discard Changes',
+      cancelButtonText: 'Keep Editing',
+      reverseButtons: true,
+      focusCancel: true,
+    });
+    if (result.isConfirmed) onClose();
+  };
 
   const handleSave = async () => {
     if (!canSaveChanges) {
@@ -439,13 +460,13 @@ export default function HolidayManager({ holidays, onSave, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="modal-backdrop" />
+      <div className="modal-backdrop" onClick={() => { void requestClose(); }} />
       <div className="relative bg-white rounded-xl w-full flex flex-col overflow-hidden shadow-2xl" style={{ maxWidth: 920, maxHeight: '90vh' }}>
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
             <h2 className="text-white font-extrabold text-base">Holidays &amp; Non-Teaching Periods</h2>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
+          <button onClick={() => { void requestClose(); }} className="w-8 h-8 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/15 cursor-pointer transition-colors">
             <i className="ri-close-line text-lg" />
           </button>
         </div>
@@ -749,7 +770,7 @@ export default function HolidayManager({ holidays, onSave, onClose }: Props) {
 
             <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-gray-100 bg-gray-50">
               <div className="flex items-center justify-end gap-3">
-              <button onClick={onClose} className="px-5 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 cursor-pointer transition-colors">
+              <button onClick={() => { void requestClose(); }} className="px-5 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 cursor-pointer transition-colors">
                 Discard
               </button>
               <button

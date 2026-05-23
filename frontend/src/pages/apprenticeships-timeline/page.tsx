@@ -28,6 +28,12 @@ type ProgramModalState =
   | { open: true; mode: 'add' }
   | { open: true; mode: 'edit'; programId: string };
 
+interface EditChoiceState {
+  groupIdx: number;
+  rowIdx: number;
+  blockId: string;
+}
+
 interface TrainingPlanItem {
   cohortName: string;
   program: string;
@@ -376,6 +382,9 @@ export default function ApprenticeshipTimeline() {
   const [showAddModule,  setShowAddModule]  = useState(false);
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [showManageModules, setShowManageModules] = useState(false);
+  const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
+  const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
+  const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors'>('gantt');
@@ -820,12 +829,13 @@ export default function ApprenticeshipTimeline() {
     await persistTrainingPlan(next, true);
   };
 
-  const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string) => {
+  const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string, returnToChoice = false) => {
     if (!canManageCohorts) {
       return;
     }
 
     const row = groups[groupIdx].rows[rowIdx];
+    setReturnEditChoice(returnToChoice && expandedBlockId ? { groupIdx, rowIdx, blockId: expandedBlockId } : null);
     setModal({ open: true, mode: 'edit', groupIdx, rowIdx, row, expandedBlockId });
   };
 
@@ -1072,6 +1082,27 @@ export default function ApprenticeshipTimeline() {
   const selectedProgramGroup = programModal.open && programModal.mode === 'edit'
     ? groups.find(item => item.id === programModal.programId)
     : undefined;
+  const visibleEditChoiceDetails = useMemo(() => {
+    if (!visibleEditChoice) {
+      return null;
+    }
+    const group = groups[visibleEditChoice.groupIdx];
+    const row = group?.rows[visibleEditChoice.rowIdx];
+    const block = row?.blks.find(item => item.id === visibleEditChoice.blockId);
+    if (!group || !row || !block) {
+      return null;
+    }
+    const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const rawValue = String(block.mod || '');
+    const normalizedRaw = normalize(rawValue);
+    const displayName = rawValue in MS ? getModuleMeta(block.mod as MKey).lbl : rawValue;
+    const normalizedDisplay = normalize(displayName);
+    const catalogModule = catalogModules.find(module => {
+      const normalizedName = normalize(module.name);
+      return String(module.id) === rawValue || normalizedName === normalizedRaw || normalizedName === normalizedDisplay;
+    });
+    return { group, row, block, displayName, catalogModule };
+  }, [catalogModules, groups, visibleEditChoice]);
 
   const todaySessions = useMemo(() => {
     const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const;
@@ -1229,7 +1260,10 @@ export default function ApprenticeshipTimeline() {
             )}
             {canManageCohorts && (
               <button
-                onClick={() => setShowManageModules(true)}
+                onClick={() => {
+                  setInitialManageModuleId(null);
+                  setShowManageModules(true);
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
                 style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
                 <i className="ri-list-check-2" />
@@ -1365,7 +1399,10 @@ export default function ApprenticeshipTimeline() {
                 Add Module
               </button>
               <button
-                onClick={() => setShowManageModules(true)}
+                onClick={() => {
+                  setInitialManageModuleId(null);
+                  setShowManageModules(true);
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
                 style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
                 <i className="ri-list-check-2" />
@@ -1403,6 +1440,10 @@ export default function ApprenticeshipTimeline() {
                   setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
                 }}
                 onEditRow={handleEditRow}
+                onEditCatalogModule={(moduleId) => {
+                  setInitialManageModuleId(moduleId);
+                  setShowManageModules(true);
+                }}
                 onDeleteRow={handleDeleteRow}
                 onEditProgram={handleEditProgram}
                 onDeleteProgram={handleDeleteProgram}
@@ -1473,6 +1514,71 @@ export default function ApprenticeshipTimeline() {
       <Footer />
 
       {/* Modals */}
+      {canManageCohorts && visibleEditChoice && visibleEditChoiceDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/35 backdrop-blur-[5px]" onClick={() => setVisibleEditChoice(null)} />
+          <div className="relative w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white/60">{visibleEditChoiceDetails.group.name.replace('\n', ' ')} - {visibleEditChoiceDetails.row.label}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Choose What To Edit</h3>
+                <p className="mt-1 text-xs text-white/70">{visibleEditChoiceDetails.displayName}</p>
+              </div>
+              <button onClick={() => setVisibleEditChoice(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const target = visibleEditChoice;
+                  setVisibleEditChoice(null);
+                  handleEditRow(target.groupIdx, target.rowIdx, target.blockId, true);
+                }}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-kbc-navy text-white">
+                  <i className="ri-calendar-schedule-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Edit schedule assignment</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  Change this specific cohort module: dates, tutor, coach, time, notes, and placement.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {visibleEditChoiceDetails.block.groupName || 'Selected group'} - {visibleEditChoiceDetails.block.startDate} to {visibleEditChoiceDetails.block.endDate}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = visibleEditChoiceDetails.catalogModule;
+                  if (!target) return;
+                  setInitialManageModuleId(target.id);
+                  setShowManageModules(true);
+                }}
+                disabled={!visibleEditChoiceDetails.catalogModule}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-200 disabled:hover:shadow-none"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white">
+                  <i className="ri-puzzle-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Edit module catalogue</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  Change the shared module definition: session count, colour, notes, and session names.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {visibleEditChoiceDetails.catalogModule
+                    ? `${visibleEditChoiceDetails.catalogModule.name} - ${visibleEditChoiceDetails.catalogModule.sessions || 0} sessions`
+                    : 'No matching catalogue module found'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {canManageCohorts && modal.open && (
         <CohortModal
           mode={modal.mode}
@@ -1486,7 +1592,17 @@ export default function ApprenticeshipTimeline() {
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
           onManageHolidays={() => setShowHolidayMgr(true)}
-          onClose={() => setModal({ open: false })}
+          onBackToPreviousStep={() => {
+            setModal({ open: false });
+            if (returnEditChoice) {
+              setVisibleEditChoice(returnEditChoice);
+              setReturnEditChoice(null);
+            }
+          }}
+          onClose={() => {
+            setModal({ open: false });
+            setReturnEditChoice(null);
+          }}
         />
       )}
 
@@ -1561,7 +1677,11 @@ export default function ApprenticeshipTimeline() {
           onAdd={handleAddCatalogModule}
           onUpdate={handleUpdateCatalogModule}
           onDelete={handleDeleteCatalogModule}
-          onClose={() => setShowManageModules(false)}
+          initialEditModuleId={initialManageModuleId}
+          onClose={() => {
+            setShowManageModules(false);
+            setInitialManageModuleId(null);
+          }}
         />
       )}
     </div>
