@@ -1719,7 +1719,7 @@ def user_activity(request):
 	except ValueError:
 		limit = 100
 
-	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-login_at')
+	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-last_seen_at', '-login_at')
 	if search:
 		records = records.filter(
 			models.Q(email__icontains=search)
