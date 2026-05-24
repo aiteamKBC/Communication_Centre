@@ -14,6 +14,7 @@ import LoginPage from "../pages/login/page";
 import MicrosoftPopupCallbackPage from "../pages/login/microsoft-popup";
 import UrgentNoticePage from "../pages/urgent-notice/page";
 import LeadershipMessagePage from "../pages/leadership-message/page";
+import UserActivityPage from "../pages/user-activity/page";
 
 const routes: RouteObject[] = [
   {
@@ -27,6 +28,10 @@ const routes: RouteObject[] = [
   {
     path: "/dashboard",
     element: <DashboardPage />,
+  },
+  {
+    path: "/user-activity",
+    element: <UserActivityPage />,
   },
   {
     path: "/risk-register",

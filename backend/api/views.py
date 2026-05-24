@@ -10,12 +10,12 @@ from urllib.request import ProxyHandler, Request, build_opener
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
+from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
 
 
 def serialize_event(event: EventData) -> dict:
@@ -1501,3 +1501,83 @@ def risk_register(request):
 		return JsonResponse([serialize_risk(r) for r in records], safe=False)
 	except Exception as exc:
 		return JsonResponse({'detail': str(exc)}, status=502)
+
+
+def serialize_user_activity_session(session: UserActivitySession) -> dict:
+	page_visits = [
+		{
+			'id': visit.id,
+			'path': visit.path,
+			'title': visit.title,
+			'firstSeenAt': visit.first_seen_at.isoformat() if visit.first_seen_at else '',
+			'lastSeenAt': visit.last_seen_at.isoformat() if visit.last_seen_at else '',
+			'durationSeconds': visit.duration_seconds,
+			'viewCount': visit.view_count,
+		}
+		for visit in session.page_visits.all().order_by('-duration_seconds', 'path')
+	]
+
+	return {
+		'id': session.id,
+		'trackingSessionId': str(session.tracking_session_id),
+		'userId': session.user_id,
+		'username': session.username,
+		'email': session.email,
+		'displayName': session.display_name,
+		'authProvider': session.auth_provider,
+		'loginAt': session.login_at.isoformat() if session.login_at else '',
+		'logoutAt': session.logout_at.isoformat() if session.logout_at else '',
+		'lastSeenAt': session.last_seen_at.isoformat() if session.last_seen_at else '',
+		'totalSeconds': session.total_seconds,
+		'pageCount': session.page_count,
+		'ipAddress': session.ip_address or '',
+		'userAgent': session.user_agent,
+		'logoutReason': session.logout_reason,
+		'isActive': session.logout_at is None,
+		'pageVisits': page_visits,
+	}
+
+
+def user_activity(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	search = str(request.GET.get('search', '')).strip()
+	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
+	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
+	try:
+		limit = max(1, min(int(request.GET.get('limit', '100')), 500))
+	except ValueError:
+		limit = 100
+
+	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-login_at')
+	if search:
+		records = records.filter(
+			models.Q(email__icontains=search)
+			| models.Q(username__icontains=search)
+			| models.Q(display_name__icontains=search)
+			| models.Q(page_visits__path__icontains=search)
+		).distinct()
+	if from_date:
+		records = records.filter(login_at__date__gte=from_date)
+	if to_date:
+		records = records.filter(login_at__date__lte=to_date)
+
+	sessions = list(records[:limit])
+	total_sessions = records.count()
+	total_seconds = sum(session.total_seconds for session in sessions)
+	unique_users = len({(session.email or session.username or str(session.user_id)).lower() for session in sessions})
+	total_page_views = sum(sum(visit.view_count for visit in session.page_visits.all()) for session in sessions)
+
+	return JsonResponse(
+		{
+			'summary': {
+				'totalSessions': total_sessions,
+				'returnedSessions': len(sessions),
+				'uniqueUsers': unique_users,
+				'totalSeconds': total_seconds,
+				'totalPageViews': total_page_views,
+			},
+			'sessions': [serialize_user_activity_session(session) for session in sessions],
+		}
+	)

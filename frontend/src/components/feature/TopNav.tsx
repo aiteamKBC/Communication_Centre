@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import useAccessControl from '../../hooks/useAccessControl';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 
@@ -35,6 +36,7 @@ const navLinks = [
 export default function TopNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const access = useAccessControl();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -94,6 +96,10 @@ export default function TopNav() {
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  const visibleNavLinks = access.adminAccess || access.itAccess
+    ? [...navLinks, { label: 'User Activity', path: '/user-activity' }]
+    : navLinks;
 
   const isActive = (path: string) =>
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
@@ -180,7 +186,7 @@ export default function TopNav() {
           </Link>
 
           <div className="hidden lg:flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.45)] flex-1 justify-center max-w-max mx-auto">
-            {navLinks.map((link) => (
+            {visibleNavLinks.map((link) => (
               <Link
                 key={link.path}
                 to={link.path}
@@ -243,7 +249,7 @@ export default function TopNav() {
             className="nav-sheet bg-white/95 border-b border-gray-200 py-2 shadow-2xl backdrop-blur-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {navLinks.map((link) => (
+            {visibleNavLinks.map((link) => (
               <Link
                 key={link.path}
                 to={link.path}
