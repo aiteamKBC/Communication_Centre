@@ -10,12 +10,111 @@ from urllib.request import ProxyHandler, Request, build_opener
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice
+from .models import AuditLog, Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
+
+
+def _client_ip(request) -> str | None:
+	forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+	if forwarded_for:
+		return forwarded_for.split(',')[0].strip() or None
+	return request.META.get('REMOTE_ADDR') or None
+
+
+def _header_text(request, name: str) -> str:
+	return str(request.headers.get(name, '') or '').strip()
+
+
+def _header_int(request, name: str) -> int | None:
+	value = _header_text(request, name)
+	if not value:
+		return None
+	try:
+		return int(value)
+	except ValueError:
+		return None
+
+
+def _audit_log(
+	request,
+	*,
+	action: str,
+	entity: str,
+	object_id: str | int = '',
+	object_label: str = '',
+	before: dict | list | None = None,
+	after: dict | list | None = None,
+	metadata: dict | None = None,
+) -> None:
+	try:
+		AuditLog.objects.create(
+			action=action,
+			entity=entity,
+			object_id=str(object_id or ''),
+			object_label=str(object_label or '')[:1000],
+			user_id=_header_int(request, 'X-KBC-User-Id'),
+			username=_header_text(request, 'X-KBC-Username'),
+			email=_header_text(request, 'X-KBC-User-Email'),
+			display_name=_header_text(request, 'X-KBC-Display-Name'),
+			path=request.get_full_path(),
+			method=request.method,
+			ip_address=_client_ip(request),
+			user_agent=(request.META.get('HTTP_USER_AGENT') or '')[:2000],
+			before=before,
+			after=after,
+			metadata=metadata or {},
+		)
+	except Exception:
+		# Audit logging should not break the user-facing workflow.
+		pass
+
+
+def _model_snapshot(record) -> dict:
+	data = {}
+	for field in record._meta.fields:
+		value = getattr(record, field.name)
+		if isinstance(value, (date, datetime)):
+			value = value.isoformat()
+		data[field.name] = value
+	return data
+
+
+def _without_keys(item: dict, keys: set[str]) -> dict:
+	return {key: value for key, value in item.items() if key not in keys}
+
+
+def _bulk_diff(before_items: list[dict], after_items: list[dict], *, ignored_keys: set[str] | None = None, limit: int = 25) -> dict:
+	ignored = ignored_keys or set()
+	before_remaining = [_without_keys(item, ignored) for item in before_items]
+	after_remaining = [_without_keys(item, ignored) for item in after_items]
+	added = []
+	removed = []
+
+	for item in after_remaining:
+		if item in before_remaining:
+			before_remaining.remove(item)
+		else:
+			added.append(item)
+
+	for item in before_remaining:
+		if item in after_remaining:
+			after_remaining.remove(item)
+		else:
+			removed.append(item)
+
+	return {
+		'beforeCount': len(before_items),
+		'afterCount': len(after_items),
+		'addedCount': len(added),
+		'removedCount': len(removed),
+		'added': added[:limit],
+		'removed': removed[:limit],
+		'truncated': len(added) > limit or len(removed) > limit,
+	}
 
 
 def serialize_event(event: EventData) -> dict:
@@ -61,6 +160,7 @@ def events(request):
 			cover_image=str(payload.get('coverImage', '')),
 			more_images=str(payload.get('moreImages', '')),
 		)
+		_audit_log(request, action='create', entity='Event', object_id=event.event_id, object_label=event.event_title, after=serialize_event(event))
 		return JsonResponse(serialize_event(event), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -77,6 +177,7 @@ def event_detail(request, event_id: int):
 		return JsonResponse(serialize_event(event))
 
 	if request.method == 'PUT':
+		before = serialize_event(event)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -97,10 +198,14 @@ def event_detail(request, event_id: int):
 		event.cover_image = str(payload.get('coverImage', ''))
 		event.more_images = str(payload.get('moreImages', ''))
 		event.save()
+		_audit_log(request, action='update', entity='Event', object_id=event.event_id, object_label=event.event_title, before=before, after=serialize_event(event))
 		return JsonResponse(serialize_event(event))
 
 	if request.method == 'DELETE':
+		before = serialize_event(event)
+		object_label = event.event_title
 		event.delete()
+		_audit_log(request, action='delete', entity='Event', object_id=event_id, object_label=object_label, before=before)
 		return JsonResponse({'detail': 'Deleted.'}, status=200)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -215,6 +320,7 @@ def news(request):
 			status='pending_review',
 		)
 
+		_audit_log(request, action='create', entity='News', object_id=record.id, object_label=record.title, after=serialize_news(record))
 		return JsonResponse(serialize_news(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -231,6 +337,7 @@ def news_detail(request, news_id: int):
 		return JsonResponse(serialize_news(record))
 
 	if request.method == 'PATCH':
+		before = serialize_news(record)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -267,10 +374,14 @@ def news_detail(request, news_id: int):
 		record.full_article_content = content
 		record.save()
 
+		_audit_log(request, action='update', entity='News', object_id=record.id, object_label=record.title, before=before, after=serialize_news(record))
 		return JsonResponse(serialize_news(record))
 
 	if request.method == 'DELETE':
+		before = serialize_news(record)
+		object_label = record.title
 		record.delete()
+		_audit_log(request, action='delete', entity='News', object_id=news_id, object_label=object_label, before=before)
 		return JsonResponse({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -318,6 +429,7 @@ def urgent_notice(request):
 			publication_date=publication_date,
 		)
 
+		_audit_log(request, action='create', entity='UrgentNotice', object_id=record.id, object_label=record.title, after=serialize_urgent_notice(record))
 		return JsonResponse(serialize_urgent_notice(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -334,6 +446,7 @@ def urgent_notice_detail(request, notice_id: int):
 		return JsonResponse(serialize_urgent_notice(record))
 
 	if request.method == 'PATCH':
+		before = serialize_urgent_notice(record)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -358,9 +471,12 @@ def urgent_notice_detail(request, notice_id: int):
 		record.is_active = is_active
 		record.publication_date = publication_date
 		record.save()
+		_audit_log(request, action='update', entity='UrgentNotice', object_id=record.id, object_label=record.title, before=before, after=serialize_urgent_notice(record))
 		return JsonResponse(serialize_urgent_notice(record))
 
 	if request.method == 'DELETE':
+		before = serialize_urgent_notice(record)
+		object_label = record.title
 		was_active = record.is_active
 		record.delete()
 		if was_active:
@@ -369,6 +485,7 @@ def urgent_notice_detail(request, notice_id: int):
 				UrgentNotice.objects.exclude(pk=next_notice.pk).update(is_active=False)
 				next_notice.is_active = True
 				next_notice.save(update_fields=['is_active'])
+		_audit_log(request, action='delete', entity='UrgentNotice', object_id=notice_id, object_label=object_label, before=before)
 		return JsonResponse({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -425,6 +542,7 @@ def leadership_message(request):
 			profile_image_url=profile_image_url,
 		)
 
+		_audit_log(request, action='create', entity='LeadershipMessage', object_id=record.id, object_label=record.card_title, after=serialize_leadership_message(record))
 		return JsonResponse(serialize_leadership_message(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -441,6 +559,7 @@ def leadership_message_detail(request, message_id: int):
 		return JsonResponse(serialize_leadership_message(record))
 
 	if request.method == 'PATCH':
+		before = serialize_leadership_message(record)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -475,10 +594,14 @@ def leadership_message_detail(request, message_id: int):
 		record.cover_image_url = cover_image_url
 		record.profile_image_url = profile_image_url
 		record.save()
+		_audit_log(request, action='update', entity='LeadershipMessage', object_id=record.id, object_label=record.card_title, before=before, after=serialize_leadership_message(record))
 		return JsonResponse(serialize_leadership_message(record))
 
 	if request.method == 'DELETE':
+		before = serialize_leadership_message(record)
+		object_label = record.card_title
 		record.delete()
+		_audit_log(request, action='delete', entity='LeadershipMessage', object_id=message_id, object_label=object_label, before=before)
 		return JsonResponse({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -499,6 +622,7 @@ def upload_image(request):
 		return HttpResponseBadRequest('Only image uploads are allowed.')
 
 	file_url = _save_uploaded_image(uploaded_file, folder)
+	_audit_log(request, action='upload', entity='Image', object_label=str(getattr(uploaded_file, 'name', '') or 'upload'), after={'url': file_url, 'folder': folder})
 	return JsonResponse({'url': file_url}, status=201)
 
 
@@ -657,6 +781,7 @@ def feedback(request):
 			submitted_at=timezone.now(),
 		)
 
+		_audit_log(request, action='create', entity='Feedback', object_id=record.id, object_label=record.category, after=serialize_feedback(record))
 		return JsonResponse(serialize_feedback(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -680,6 +805,7 @@ def training_plan(request):
 
 		# If client posted an empty list, do not clear the table — ignore to avoid accidental wipe.
 		# Replace table content with the latest timeline state from the frontend.
+		before_items = [serialize_training_plan(item) for item in TrainingPlan.objects.all().order_by('id')]
 		TrainingPlan.objects.all().delete()
 		created = []
 		for row in items:
@@ -704,6 +830,22 @@ def training_plan(request):
 				)
 			)
 
+		after_items = [serialize_training_plan(item) for item in created]
+		diff = _bulk_diff(before_items, after_items, ignored_keys={'id'})
+		_audit_log(
+			request,
+			action='replace',
+			entity='TrainingPlan',
+			object_label='Training Plan timeline',
+			before={'count': diff['beforeCount'], 'removed': diff['removed']},
+			after={'count': diff['afterCount'], 'added': diff['added']},
+			metadata={
+				'received': len(items),
+				'addedCount': diff['addedCount'],
+				'removedCount': diff['removedCount'],
+				'truncated': diff['truncated'],
+			},
+		)
 		return JsonResponse({'saved': len(created)})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -764,6 +906,7 @@ def training_plan_holidays(request):
 				status=400,
 			)
 
+		before = [serialize_training_plan_holiday(item) for item in TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('id')]
 		with transaction.atomic():
 			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
 			created = [
@@ -777,9 +920,11 @@ def training_plan_holidays(request):
 				for item in validated_items
 			]
 
+		after = [serialize_training_plan_holiday(item) for item in created]
+		_audit_log(request, action='replace', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
 		return JsonResponse({
 			'saved': len(created),
-			'items': [serialize_training_plan_holiday(item) for item in created],
+			'items': after,
 		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -816,6 +961,7 @@ def training_plan_holiday_types(request):
 				'color': color,
 			},
 		)
+		_audit_log(request, action='create', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, after=serialize_training_plan_holiday_type(record))
 		return JsonResponse(serialize_training_plan_holiday_type(record), status=201)
 
 	if request.method == 'PATCH':
@@ -842,10 +988,12 @@ def training_plan_holiday_types(request):
 		except TrainingPlanHoliday.DoesNotExist:
 			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
 
+		before = serialize_training_plan_holiday_type(record)
 		record.label = f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}'
 		if color:
 			record.color = color
 		record.save(update_fields=['label', 'color'])
+		_audit_log(request, action='update', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, before=before, after=serialize_training_plan_holiday_type(record))
 		return JsonResponse(serialize_training_plan_holiday_type(record))
 
 	if request.method == 'DELETE':
@@ -861,12 +1009,15 @@ def training_plan_holiday_types(request):
 		if not type_value:
 			return HttpResponseBadRequest('value is required.')
 
-		deleted, _ = TrainingPlanHoliday.objects.filter(
+		records = list(TrainingPlanHoliday.objects.filter(
 			type=type_value,
 			label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER,
-		).delete()
+		))
+		before = [serialize_training_plan_holiday_type(record) for record in records]
+		deleted, _ = TrainingPlanHoliday.objects.filter(pk__in=[record.pk for record in records]).delete()
 		if not deleted:
 			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+		_audit_log(request, action='delete', entity='TrainingPlanHolidayType', object_label=type_value, before=before)
 		return JsonResponse({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -913,6 +1064,7 @@ def training_plan_modules(request):
 				'tx': tx,
 			})
 
+		before = [serialize_training_plan_module_definition(item) for item in TrainingPlanModuleDefinition.objects.all().order_by('id')]
 		with transaction.atomic():
 			TrainingPlanModuleDefinition.objects.all().delete()
 			created = [
@@ -920,9 +1072,11 @@ def training_plan_modules(request):
 				for item in validated_items
 			]
 
+		after = [serialize_training_plan_module_definition(item) for item in created]
+		_audit_log(request, action='replace', entity='TrainingPlanModuleDefinition', object_label='Training Plan module catalogue', before=before, after=after, metadata={'received': len(items)})
 		return JsonResponse({
 			'saved': len(created),
-			'items': [serialize_training_plan_module_definition(item) for item in created],
+			'items': after,
 		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -961,6 +1115,7 @@ def training_plan_program_configs(request):
 				'color': str(row.get('color', '')).strip() or '#1B2A4A',
 			})
 
+		before = [serialize_training_plan_program_config(item) for item in TrainingPlanProgramConfig.objects.all().order_by('id')]
 		with transaction.atomic():
 			TrainingPlanProgramConfig.objects.all().delete()
 			created = [
@@ -968,9 +1123,11 @@ def training_plan_program_configs(request):
 				for item in validated_items
 			]
 
+		after = [serialize_training_plan_program_config(item) for item in created]
+		_audit_log(request, action='replace', entity='TrainingPlanProgramConfig', object_label='Training Plan programme config', before=before, after=after, metadata={'received': len(items)})
 		return JsonResponse({
 			'saved': len(created),
-			'items': [serialize_training_plan_program_config(item) for item in created],
+			'items': after,
 		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1048,6 +1205,7 @@ def modules(request):
 		)
 		_apply_session_data(record, session_names, session_descriptions)
 		record.save()
+		_audit_log(request, action='create', entity='Module', object_id=record.module_id, object_label=record.module_name, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1061,6 +1219,7 @@ def module_detail(request, module_id: int):
 		return JsonResponse({'detail': 'Not found.'}, status=404)
 
 	if request.method == 'PATCH':
+		before = _serialize_module(record)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -1082,10 +1241,14 @@ def module_detail(request, module_id: int):
 			descs = [str(s) for s in payload.get('sessionDescriptions', [getattr(record, f, '') or '' for f in _SESSION_DESC_FIELDS])]
 			_apply_session_data(record, names, descs)
 		record.save()
+		_audit_log(request, action='update', entity='Module', object_id=record.module_id, object_label=record.module_name, before=before, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record))
 
 	if request.method == 'DELETE':
+		before = _serialize_module(record)
+		object_label = record.module_name
 		record.delete()
+		_audit_log(request, action='delete', entity='Module', object_id=module_id, object_label=object_label, before=before)
 		return JsonResponse({'detail': 'Deleted.'}, status=200)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1403,6 +1566,7 @@ def employees(request):
 			email=str(payload.get('email', '')).strip(),
 			phone=str(payload.get('phone', '')).strip(),
 		)
+		_audit_log(request, action='create', entity='Employee', object_id=emp.pk, object_label=emp.full_name, after=serialize_employee(emp))
 		return JsonResponse(serialize_employee(emp), status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1416,6 +1580,7 @@ def employee_detail(request, employee_id: int):
 		return JsonResponse({'detail': 'Not found.'}, status=404)
 
 	if request.method == 'PATCH':
+		before = serialize_employee(emp)
 		try:
 			payload = json.loads(request.body.decode('utf-8') or '{}')
 		except json.JSONDecodeError:
@@ -1434,14 +1599,18 @@ def employee_detail(request, employee_id: int):
 		if 'phone' in payload:
 			emp.phone = str(payload['phone']).strip()
 		emp.save()
+		_audit_log(request, action='update', entity='Employee', object_id=emp.pk, object_label=emp.full_name, before=before, after=serialize_employee(emp))
 		return JsonResponse(serialize_employee(emp))
 
 	if request.method == 'DELETE':
+		before = serialize_employee(emp)
+		object_label = emp.full_name
 		# Re-parent direct reports to this employee's manager
 		Employee.objects.filter(reports_to=str(employee_id)).update(
 			reports_to=emp.reports_to
 		)
 		emp.delete()
+		_audit_log(request, action='delete', entity='Employee', object_id=employee_id, object_label=object_label, before=before)
 		return JsonResponse({'detail': 'Deleted.'})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1501,3 +1670,149 @@ def risk_register(request):
 		return JsonResponse([serialize_risk(r) for r in records], safe=False)
 	except Exception as exc:
 		return JsonResponse({'detail': str(exc)}, status=502)
+
+
+def serialize_user_activity_session(session: UserActivitySession) -> dict:
+	page_visits = [
+		{
+			'id': visit.id,
+			'path': visit.path,
+			'title': visit.title,
+			'firstSeenAt': visit.first_seen_at.isoformat() if visit.first_seen_at else '',
+			'lastSeenAt': visit.last_seen_at.isoformat() if visit.last_seen_at else '',
+			'durationSeconds': visit.duration_seconds,
+			'viewCount': visit.view_count,
+		}
+		for visit in session.page_visits.all().order_by('-duration_seconds', 'path')
+	]
+
+	return {
+		'id': session.id,
+		'trackingSessionId': str(session.tracking_session_id),
+		'userId': session.user_id,
+		'username': session.username,
+		'email': session.email,
+		'displayName': session.display_name,
+		'authProvider': session.auth_provider,
+		'loginAt': session.login_at.isoformat() if session.login_at else '',
+		'logoutAt': session.logout_at.isoformat() if session.logout_at else '',
+		'lastSeenAt': session.last_seen_at.isoformat() if session.last_seen_at else '',
+		'totalSeconds': session.total_seconds,
+		'pageCount': session.page_count,
+		'ipAddress': session.ip_address or '',
+		'userAgent': session.user_agent,
+		'logoutReason': session.logout_reason,
+		'isActive': session.logout_at is None,
+		'pageVisits': page_visits,
+	}
+
+
+def user_activity(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	search = str(request.GET.get('search', '')).strip()
+	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
+	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
+	try:
+		limit = max(1, min(int(request.GET.get('limit', '100')), 500))
+	except ValueError:
+		limit = 100
+
+	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-login_at')
+	if search:
+		records = records.filter(
+			models.Q(email__icontains=search)
+			| models.Q(username__icontains=search)
+			| models.Q(display_name__icontains=search)
+			| models.Q(page_visits__path__icontains=search)
+		).distinct()
+	if from_date:
+		records = records.filter(login_at__date__gte=from_date)
+	if to_date:
+		records = records.filter(login_at__date__lte=to_date)
+
+	sessions = list(records[:limit])
+	total_sessions = records.count()
+	total_seconds = sum(session.total_seconds for session in sessions)
+	unique_users = len({(session.email or session.username or str(session.user_id)).lower() for session in sessions})
+	total_page_views = sum(sum(visit.view_count for visit in session.page_visits.all()) for session in sessions)
+
+	return JsonResponse(
+		{
+			'summary': {
+				'totalSessions': total_sessions,
+				'returnedSessions': len(sessions),
+				'uniqueUsers': unique_users,
+				'totalSeconds': total_seconds,
+				'totalPageViews': total_page_views,
+			},
+			'sessions': [serialize_user_activity_session(session) for session in sessions],
+		}
+	)
+
+
+def serialize_audit_log(item: AuditLog) -> dict:
+	return {
+		'id': item.id,
+		'action': item.action,
+		'entity': item.entity,
+		'objectId': item.object_id,
+		'objectLabel': item.object_label,
+		'userId': item.user_id,
+		'username': item.username,
+		'email': item.email,
+		'displayName': item.display_name,
+		'path': item.path,
+		'method': item.method,
+		'ipAddress': item.ip_address or '',
+		'before': item.before,
+		'after': item.after,
+		'metadata': item.metadata,
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+	}
+
+
+def audit_logs(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	search = str(request.GET.get('search', '')).strip()
+	entity = str(request.GET.get('entity', '')).strip()
+	action = str(request.GET.get('action', '')).strip()
+	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
+	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
+	try:
+		limit = max(1, min(int(request.GET.get('limit', '200')), 500))
+	except ValueError:
+		limit = 200
+
+	records = AuditLog.objects.order_by('-created_at')
+	if search:
+		records = records.filter(
+			models.Q(email__icontains=search)
+			| models.Q(username__icontains=search)
+			| models.Q(display_name__icontains=search)
+			| models.Q(entity__icontains=search)
+			| models.Q(object_label__icontains=search)
+			| models.Q(path__icontains=search)
+		)
+	if entity:
+		records = records.filter(entity__iexact=entity)
+	if action:
+		records = records.filter(action__iexact=action)
+	if from_date:
+		records = records.filter(created_at__date__gte=from_date)
+	if to_date:
+		records = records.filter(created_at__date__lte=to_date)
+
+	logs = list(records[:limit])
+	return JsonResponse(
+		{
+			'summary': {
+				'totalLogs': records.count(),
+				'returnedLogs': len(logs),
+			},
+			'logs': [serialize_audit_log(item) for item in logs],
+		}
+	)

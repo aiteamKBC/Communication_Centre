@@ -274,3 +274,81 @@ class Feedback(models.Model):
 	class Meta:
 		db_table = 'Feedback'
 		managed = False
+
+
+class UserActivitySession(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	tracking_session_id = models.UUIDField(unique=True)
+	user_id = models.BigIntegerField(null=True, blank=True)
+	username = models.TextField(blank=True, default='')
+	email = models.TextField(blank=True, default='')
+	display_name = models.TextField(blank=True, default='')
+	auth_provider = models.CharField(max_length=50, blank=True, default='password')
+	login_at = models.DateTimeField()
+	logout_at = models.DateTimeField(null=True, blank=True)
+	last_seen_at = models.DateTimeField()
+	total_seconds = models.PositiveIntegerField(default=0)
+	page_count = models.PositiveIntegerField(default=0)
+	ip_address = models.GenericIPAddressField(null=True, blank=True)
+	user_agent = models.TextField(blank=True, default='')
+	logout_reason = models.CharField(max_length=80, blank=True, default='')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'user_activity_sessions'
+		indexes = [
+			models.Index(fields=['user_id', '-login_at']),
+			models.Index(fields=['email', '-login_at']),
+			models.Index(fields=['tracking_session_id']),
+		]
+
+
+class UserPageVisit(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	session = models.ForeignKey(UserActivitySession, related_name='page_visits', on_delete=models.CASCADE)
+	path = models.TextField()
+	title = models.TextField(blank=True, default='')
+	first_seen_at = models.DateTimeField()
+	last_seen_at = models.DateTimeField()
+	duration_seconds = models.PositiveIntegerField(default=0)
+	view_count = models.PositiveIntegerField(default=1)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'user_page_visits'
+		unique_together = ('session', 'path')
+		indexes = [
+			models.Index(fields=['path']),
+			models.Index(fields=['-last_seen_at']),
+		]
+
+
+class AuditLog(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	action = models.CharField(max_length=40)
+	entity = models.CharField(max_length=120)
+	object_id = models.TextField(blank=True, default='')
+	object_label = models.TextField(blank=True, default='')
+	user_id = models.BigIntegerField(null=True, blank=True)
+	username = models.TextField(blank=True, default='')
+	email = models.TextField(blank=True, default='')
+	display_name = models.TextField(blank=True, default='')
+	path = models.TextField(blank=True, default='')
+	method = models.CharField(max_length=16, blank=True, default='')
+	ip_address = models.GenericIPAddressField(null=True, blank=True)
+	user_agent = models.TextField(blank=True, default='')
+	before = models.JSONField(null=True, blank=True)
+	after = models.JSONField(null=True, blank=True)
+	metadata = models.JSONField(null=True, blank=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'audit_logs'
+		indexes = [
+			models.Index(fields=['-created_at']),
+			models.Index(fields=['entity', '-created_at']),
+			models.Index(fields=['email', '-created_at']),
+			models.Index(fields=['action', '-created_at']),
+		]

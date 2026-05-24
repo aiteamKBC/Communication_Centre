@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import documents_live, employee_detail, employees, event_detail, events, feedback, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, risk_register, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets
+from .views import audit_logs, documents_live, employee_detail, employees, event_detail, events, feedback, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, risk_register, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
 urlpatterns = [
     path('employees/', employees, name='employees'),
@@ -25,4 +25,6 @@ urlpatterns = [
     path('modules/<int:module_id>/', module_detail, name='module-detail'),
     path('urgent-tickets/', urgent_tickets, name='urgent-tickets'),
     path('risk-register/', risk_register, name='risk-register'),
+    path('user-activity/', user_activity, name='user-activity'),
+    path('audit-logs/', audit_logs, name='audit-logs'),
 ]

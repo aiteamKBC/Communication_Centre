@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import useAccessControl from '../../hooks/useAccessControl';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 
@@ -35,6 +36,7 @@ const navLinks = [
 export default function TopNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const access = useAccessControl();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -95,16 +97,45 @@ export default function TopNav() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  const visibleNavLinks = access.adminAccess || access.itAccess
+    ? [...navLinks, { label: 'User Activity', path: '/user-activity' }]
+    : navLinks;
+
   const isActive = (path: string) =>
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
 
   const handleLogout = async () => {
+    let trackingSessionId = '';
+    let userId = '';
+    let email = '';
+    let username = '';
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+        const user = raw ? JSON.parse(raw) : null;
+        trackingSessionId = user?.trackingSessionId || '';
+        userId = user?.id || '';
+        email = user?.email || '';
+        username = user?.username || '';
+      } catch {
+        trackingSessionId = '';
+      }
+    }
+
     try {
       await fetch('/api/auth/logout/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          trackingSessionId,
+          userId,
+          email,
+          username,
+          reason: 'logout_button',
+        }),
       });
     } catch {
       // ignore logout network failures
@@ -155,7 +186,7 @@ export default function TopNav() {
           </Link>
 
           <div className="hidden lg:flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.45)] flex-1 justify-center max-w-max mx-auto">
-            {navLinks.map((link) => (
+            {visibleNavLinks.map((link) => (
               <Link
                 key={link.path}
                 to={link.path}
@@ -218,7 +249,7 @@ export default function TopNav() {
             className="nav-sheet bg-white/95 border-b border-gray-200 py-2 shadow-2xl backdrop-blur-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {navLinks.map((link) => (
+            {visibleNavLinks.map((link) => (
               <Link
                 key={link.path}
                 to={link.path}
