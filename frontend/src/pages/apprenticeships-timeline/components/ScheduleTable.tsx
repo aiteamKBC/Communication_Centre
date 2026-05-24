@@ -460,7 +460,7 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
           const sessionProgress = getSessionProgress(blk, moduleName, catalogModules);
           const groupName = (blk.groupName || row.label || '').trim();
           const nextBlock = row.blks[idx + 1];
-          const nextModule = nextBlock ? getModuleMeta(nextBlock.mod).lbl : 'EPA';
+          const nextModule = nextBlock ? getModuleMeta(nextBlock.mod).lbl : '';
           const nextTutor = nextBlock?.tutor?.trim() || '';
           const nextModuleInfo: NextModuleInfo = nextBlock
             ? {
@@ -479,7 +479,7 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
                 : [],
             }
             : {
-              name: 'EPA',
+              name: '',
               isScheduledBlock: false,
               tutor: '',
               coach: '',
@@ -622,7 +622,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
         title: info.isScheduledBlock ? 'No tutor set' : 'No scheduled next module',
         html: info.isScheduledBlock
           ? `<strong>${escapeHtml(info.name)}</strong> is a saved next module, but it does not have a tutor assigned yet.`
-          : `<strong>EPA</strong> is shown as the end-stage fallback because there is no saved next module block after this module in the Training Plan timeline.`,
+          : 'No scheduled next module block yet',
         icon: 'info',
         confirmButtonText: 'OK',
       });
@@ -926,15 +926,17 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                     <td className="border border-gray-200 px-3 py-1.5 align-middle">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <span className="block text-xs font-bold text-gray-600 leading-snug break-words">{row.nextModuleInfo?.name || row.nextModule}</span>
                           {row.nextModuleInfo?.isScheduledBlock ? (
-                            row.nextModuleInfo.tutor ? (
-                              <span className="mt-1 block text-[11px] text-gray-400">Tutor: {row.nextModuleInfo.tutor}</span>
-                            ) : (
-                              <span className="mt-1 block text-[11px] font-semibold text-amber-700">Tutor not assigned</span>
-                            )
+                            <>
+                              <span className="block text-xs font-bold text-gray-600 leading-snug break-words">{row.nextModuleInfo.name || row.nextModule}</span>
+                              {row.nextModuleInfo.tutor ? (
+                                <span className="mt-1 block text-[11px] text-gray-400">Tutor: {row.nextModuleInfo.tutor}</span>
+                              ) : (
+                                <span className="mt-1 block text-[11px] font-semibold text-amber-700">Tutor not assigned</span>
+                              )}
+                            </>
                           ) : (
-                            <span className="mt-1 block text-[11px] text-gray-400">No scheduled next module block yet</span>
+                            <span className="block text-[11px] font-semibold text-gray-400">No scheduled next module block yet</span>
                           )}
                         </div>
                         {row.nextModuleInfo?.isScheduledBlock && row.nextModuleInfo.otherTutorSessions.length > 0 && (
@@ -1035,10 +1037,9 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                   <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-4 py-3">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-wider text-gray-700">Next Module</p>
-                      <p className="mt-1 text-sm font-extrabold text-gray-800">{selectedRow.nextModuleInfo.name}</p>
-                      {!selectedRow.nextModuleInfo.isScheduledBlock && (
-                        <p className="mt-1 text-xs font-semibold text-gray-400">No scheduled next module block yet. EPA is shown as the end-stage fallback.</p>
-                      )}
+                      <p className="mt-1 text-sm font-extrabold text-gray-800">
+                        {selectedRow.nextModuleInfo.isScheduledBlock ? selectedRow.nextModuleInfo.name : 'No scheduled next module block yet'}
+                      </p>
                     </div>
                     {selectedRow.nextModuleInfo.isScheduledBlock && selectedRow.nextModuleInfo.otherTutorSessions.length > 0 && (
                       <button
