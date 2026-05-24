@@ -28,6 +28,8 @@ def serialize_event(event: EventData) -> dict:
 		'registrationLink': event.registration_link,
 		'time': event.event_time,
 		'type': event.event_type or 'online',
+		'coverImage': event.cover_image or '',
+		'moreImages': event.more_images or '',
 	}
 
 
@@ -56,8 +58,50 @@ def events(request):
 			registration_link=str(payload.get('registrationLink', '')).strip(),
 			event_time=str(payload.get('time', '')).strip(),
 			event_type=str(payload.get('type', 'online')).strip() or 'online',
+			cover_image=str(payload.get('coverImage', '')),
+			more_images=str(payload.get('moreImages', '')),
 		)
 		return JsonResponse(serialize_event(event), status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def event_detail(request, event_id: int):
+	try:
+		event = EventData.objects.get(pk=event_id)
+	except EventData.DoesNotExist:
+		return JsonResponse({'detail': 'Not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_event(event))
+
+	if request.method == 'PUT':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		title = str(payload.get('title', '')).strip()
+		date_val = str(payload.get('date', '')).strip()
+		if not title or not date_val:
+			return HttpResponseBadRequest('Both title and date are required.')
+
+		event.event_title = title
+		event.event_description = str(payload.get('description', '')).strip()
+		event.event_platform_or_meeting_link = str(payload.get('location', '')).strip()
+		event.event_date = date_val
+		event.registration_link = str(payload.get('registrationLink', '')).strip()
+		event.event_time = str(payload.get('time', '')).strip()
+		event.event_type = str(payload.get('type', 'online')).strip() or 'online'
+		event.cover_image = str(payload.get('coverImage', ''))
+		event.more_images = str(payload.get('moreImages', ''))
+		event.save()
+		return JsonResponse(serialize_event(event))
+
+	if request.method == 'DELETE':
+		event.delete()
+		return JsonResponse({'detail': 'Deleted.'}, status=200)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

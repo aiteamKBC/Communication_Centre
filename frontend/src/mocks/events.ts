@@ -3,6 +3,7 @@ export interface EventMedia {
   kind: 'image' | 'video';
   url: string;
   name: string;
+  isCover?: boolean;
 }
 
 export interface CalendarEvent {

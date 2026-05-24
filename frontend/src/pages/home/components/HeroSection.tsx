@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
 import SafeImage from '../../../components/feature/SafeImage';
+import { useSharedEvents } from '../../../hooks/useSharedEvents';
+import { parseCalendarEventDate, CalendarEvent } from '../../../mocks/events';
 
 export type UrgentNoticeState = {
   id?: string;
@@ -48,6 +50,17 @@ export default function HeroSection({
   const [leadershipOpen, setLeadershipOpen] = useState(false);
   const [urgentNotice, setUrgentNotice] = useState<UrgentNoticeState | null>(initialUrgentNotice ?? null);
   const [leadershipMessage, setLeadershipMessage] = useState<LeadershipMessageState | null>(initialLeadershipMessage ?? null);
+  const [slideIdx, setSlideIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const autoPlayRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { events } = useSharedEvents();
+  const today = useMemo(() => new Date(), []);
+  const upcomingEvents = useMemo(() => {
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    return events
+      .filter(e => parseCalendarEventDate(e) >= todayStart)
+      .slice(0, 3);
+  }, [events, today]);
 
   useEffect(() => {
     if (initialUrgentNotice !== undefined) {
@@ -111,6 +124,92 @@ export default function HeroSection({
     })();
   }, [initialLeadershipMessage]);
 
+  // Flat list of all cards — 3 fixed + upcoming events
+  const allCards = useMemo(() => {
+    const eventCards = upcomingEvents.map((event: CalendarEvent) => ({ kind: 'event' as const, event }));
+    return [
+      { kind: 'urgent' as const },
+      { kind: 'leadership' as const },
+      { kind: 'campaign' as const },
+      ...eventCards,
+    ];
+  }, [upcomingEvents]);
+
+  const total = allCards.length;
+
+  // Initialize to middle copy so left-arrow works from the very start
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (initializedRef.current || total <= 3) return;
+    initializedRef.current = true;
+    setSlideIdx(total);
+  }, [total]);
+
+  // virtualIdx is unbounded — freely increments/decrements forever.
+  // Track renders 3 copies of allCards side-by-side (total*3 cards).
+  // We start at offset=total (the middle copy) and silently shift ±total
+  // when virtualIdx drifts out of the middle copy range, so animation always
+  // has room to slide in either direction without hitting an edge.
+  const trackRef = useRef<HTMLDivElement>(null);
+  const containerDivRef = useRef<HTMLDivElement | null>(null);
+  const [containerW, setContainerW] = useState(0);
+  const isTransitioning = useRef(false);
+  const [noTransition, setNoTransition] = useState(false);
+
+  useEffect(() => {
+    const el = containerDivRef.current;
+    if (!el) return;
+    setContainerW(el.offsetWidth);
+    const ro = new ResizeObserver(() => setContainerW(el.offsetWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (paused || total <= 3) return;
+    autoPlayRef.current = setInterval(() => {
+      setSlideIdx(prev => prev + 1);
+    }, 4000);
+    return () => { if (autoPlayRef.current) clearInterval(autoPlayRef.current); };
+  }, [paused, total]);
+
+  // After each animated slide, silently reset slideIdx into the middle copy range
+  // so there's always room to slide in either direction.
+  useEffect(() => {
+    if (total <= 3) return;
+    const track = trackRef.current;
+    if (!track) return;
+    const onEnd = () => {
+      isTransitioning.current = false;
+      setSlideIdx(prev => {
+        const needsJump = prev >= total * 2 || prev < total;
+        if (!needsJump) return prev;
+        setNoTransition(true);
+        return prev >= total * 2 ? prev - total : prev + total;
+      });
+    };
+    track.addEventListener('transitionend', onEnd, { once: true });
+    return () => track.removeEventListener('transitionend', onEnd);
+  }, [slideIdx, total]);
+
+  // Re-enable transition after the silent jump has fully painted (two rAFs = 1 frame)
+  useEffect(() => {
+    if (!noTransition) return;
+    let raf1: number, raf2: number;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setNoTransition(false));
+    });
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
+  }, [noTransition]);
+
+  const goTo = (delta: number) => {
+    if (isTransitioning.current) return;
+    isTransitioning.current = true;
+    setSlideIdx(prev => prev + delta);
+    setPaused(true);
+    setTimeout(() => setPaused(false), 8000);
+  };
+
   const leadershipParagraphs = useMemo(
     () => leadershipMessage?.body
       .split(/\n\s*\n/)
@@ -121,161 +220,214 @@ export default function HeroSection({
 
   return (
     <>
-      <section className="w-full px-4 md:px-6 py-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-stretch">
-          <div className="bg-kbc-red rounded-lg p-5 flex flex-col justify-between min-h-[200px]">
-            <div>
-              <span className="inline-flex items-center gap-1.5 bg-white/20 text-white text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
-                <i className="ri-alarm-warning-line text-xs" />
-                {heroNotice.badge}
-              </span>
-              {urgentNotice ? (
-                <>
-                  <p className="text-white font-bold text-sm leading-snug mb-2">
-                    {urgentNotice.title}
-                  </p>
-                  {urgentNotice.date ? (
-                    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/70">
-                      {formatNoticeDate(urgentNotice.date)}
-                    </p>
-                  ) : null}
-                  <p className="text-white/80 text-xs leading-relaxed">
-                    {urgentNotice.body}
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="text-white font-bold text-sm leading-snug mb-2">
-                    No urgent notices published
-                  </p>
-                  <p className="text-white/80 text-xs leading-relaxed">
-                    Add a manual urgent notice to show important deadlines, alerts, or time-sensitive instructions on the home page.
-                  </p>
-                </>
-              )}
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {urgentNotice ? (
-                <Link
-                  to={urgentNotice.id ? `/urgent-notice/new?edit=${urgentNotice.id}` : '/urgent-notice/new'}
-                  className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Edit
-                  <i className="ri-edit-line text-sm" />
-                </Link>
-              ) : (
-                <Link
-                  to="/urgent-notice/new"
-                  className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Add Urgent Notice
-                  <i className="ri-add-line text-sm" />
-                </Link>
-              )}
-            </div>
-          </div>
+      <section
+        className="w-full px-4 md:px-6 py-4"
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+      >
+        <div className="relative">
+          {/* Left arrow */}
+          {total > 3 && (
+            <button
+              onClick={() => goTo(-1)}
+              className="absolute -left-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 flex items-center justify-center bg-white border border-gray-200 hover:bg-gray-50 shadow-sm rounded-full text-kbc-navy transition-colors"
+            >
+              <i className="ri-arrow-left-s-line text-base" />
+            </button>
+          )}
 
+          {/* Right arrow */}
+          {total > 3 && (
+            <button
+              onClick={() => goTo(1)}
+              className="absolute -right-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 flex items-center justify-center bg-white border border-gray-200 hover:bg-gray-50 shadow-sm rounded-full text-kbc-navy transition-colors"
+            >
+              <i className="ri-arrow-right-s-line text-base" />
+            </button>
+          )}
+
+          {/* Sliding track — overflow hidden, 3-card window */}
+          {/* Track renders 3 copies of allCards. Each card is 1/3 of the container.
+              We use a CSS variable --cw (container width) set via inline style on the
+              overflow-hidden div, updated by a ResizeObserver. */}
           <div
-            className={`relative rounded-lg overflow-hidden min-h-[200px] group ${leadershipMessage ? 'cursor-pointer' : ''}`}
-            onClick={() => {
-              if (leadershipMessage) {
-                setLeadershipOpen(true);
-              }
+            ref={(el) => {
+              containerDivRef.current = el;
+              if (el) setContainerW(el.offsetWidth);
             }}
+            className="overflow-hidden"
           >
-            <SafeImage
-              src={leadershipMessage?.coverImageUrl}
-              alt="Message from Principal"
-              className="absolute inset-0 w-full h-full object-contain bg-slate-100 group-hover:scale-105 transition-transform duration-500"
-              fallback={<div className="absolute inset-0 bg-[linear-gradient(135deg,#1e3a8a_0%,#0f172a_55%,#1e293b_100%)]" aria-hidden="true" />}
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-black/20" />
-            <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
-              <p className="text-white/80 text-xs font-medium mb-1 uppercase tracking-wide">Message from the Principal</p>
-              {leadershipMessage ? (
-                <>
-                  <h3 className="text-white font-bold text-base leading-snug">
-                    {leadershipMessage.cardTitle}
-                  </h3>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/80">
-                      {leadershipMessage.authorName}
-                    </span>
-                    {leadershipMessage.date ? (
-                      <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/70">
-                        {formatNoticeDate(leadershipMessage.date)}
+            <div
+              ref={trackRef}
+              className="flex gap-3"
+              style={{
+                transform: `translateX(calc(${slideIdx} * ${-(containerW / 3 + 4)}px))`,
+                transition: noTransition ? 'none' : 'transform 500ms ease-in-out',
+              }}
+            >
+              {/* 3 copies of all cards — track is 3x wide, slideIdx roams freely */}
+              {[0, 1, 2].flatMap(copy => allCards.map((card) => {
+                const key = `${copy}-${card.kind === 'event' ? card.event.id : card.kind}`;
+                const cardW = containerW ? Math.floor((containerW - 24) / 3) : 0;
+                const cardClass = `flex-none min-h-[200px]`;
+                const cardStyle = { width: cardW || undefined };
+
+                if (card.kind === 'urgent') return (
+                  <div key={key} style={cardStyle} className={`${cardClass} bg-kbc-red rounded-lg p-5 flex flex-col justify-between`}>
+                    <div>
+                      <span className="inline-flex items-center gap-1.5 bg-white/20 text-white text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
+                        <i className="ri-alarm-warning-line text-xs" />{heroNotice.badge}
                       </span>
-                    ) : null}
+                      {urgentNotice ? (
+                        <>
+                          <p className="text-white font-bold text-sm leading-snug mb-2">{urgentNotice.title}</p>
+                          {urgentNotice.date && <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/70">{formatNoticeDate(urgentNotice.date)}</p>}
+                          <p className="text-white/80 text-xs leading-relaxed">{urgentNotice.body}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-white font-bold text-sm leading-snug mb-2">No urgent notices published</p>
+                          <p className="text-white/80 text-xs leading-relaxed">Add a manual urgent notice to show important deadlines, alerts, or time-sensitive instructions on the home page.</p>
+                        </>
+                      )}
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      {urgentNotice ? (
+                        <Link to={urgentNotice.id ? `/urgent-notice/new?edit=${urgentNotice.id}` : '/urgent-notice/new'} className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                          Edit <i className="ri-edit-line text-sm" />
+                        </Link>
+                      ) : (
+                        <Link to="/urgent-notice/new" className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                          Add Urgent Notice <i className="ri-add-line text-sm" />
+                        </Link>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-white/70 text-xs mt-2">Click to read the full message</p>
-                  <div className="mt-4 flex flex-wrap items-center gap-2" onClick={event => event.stopPropagation()}>
-                    <button
-                      type="button"
-                      onClick={() => setLeadershipOpen(true)}
-                      className="inline-flex items-center gap-1.5 border border-white/50 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors"
-                    >
-                      Read Message
-                      <i className="ri-arrow-right-s-line text-sm" />
-                    </button>
-                    <Link
-                      to={leadershipMessage.id ? `/leadership-message/new?edit=${leadershipMessage.id}` : '/leadership-message/new'}
-                      className="inline-flex items-center gap-1.5 border border-white/25 bg-white/5 hover:bg-white/15 text-white text-xs font-semibold px-4 py-2 rounded transition-colors"
-                    >
-                      Edit
-                      <i className="ri-edit-line text-sm" />
-                    </Link>
+                );
+
+                if (card.kind === 'leadership') return (
+                  <div
+                    key={key}
+                    style={cardStyle}
+                    className={`${cardClass} relative rounded-lg overflow-hidden group ${leadershipMessage ? 'cursor-pointer' : ''}`}
+                    onClick={() => leadershipMessage && setLeadershipOpen(true)}
+                  >
+                    <SafeImage
+                      src={leadershipMessage?.coverImageUrl}
+                      alt="Message from Principal"
+                      className="absolute inset-0 w-full h-full object-contain bg-slate-100 group-hover:scale-105 transition-transform duration-500"
+                      fallback={<div className="absolute inset-0 bg-[linear-gradient(135deg,#1e3a8a_0%,#0f172a_55%,#1e293b_100%)]" aria-hidden="true" />}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-black/20" />
+                    <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
+                      <p className="text-white/80 text-xs font-medium mb-1 uppercase tracking-wide">Message from the Principal</p>
+                      {leadershipMessage ? (
+                        <>
+                          <h3 className="text-white font-bold text-base leading-snug">{leadershipMessage.cardTitle}</h3>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/80">{leadershipMessage.authorName}</span>
+                            {leadershipMessage.date && <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/70">{formatNoticeDate(leadershipMessage.date)}</span>}
+                          </div>
+                          <p className="text-white/70 text-xs mt-2">Click to read the full message</p>
+                          <div className="mt-4 flex flex-wrap items-center gap-2" onClick={e => e.stopPropagation()}>
+                            <button type="button" onClick={() => setLeadershipOpen(true)} className="inline-flex items-center gap-1.5 border border-white/50 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                              Read Message <i className="ri-arrow-right-s-line text-sm" />
+                            </button>
+                            <Link to={leadershipMessage.id ? `/leadership-message/new?edit=${leadershipMessage.id}` : '/leadership-message/new'} className="inline-flex items-center gap-1.5 border border-white/25 bg-white/5 hover:bg-white/15 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                              Edit <i className="ri-edit-line text-sm" />
+                            </Link>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="text-white font-bold text-base leading-snug">No CEO message published</h3>
+                          <p className="text-white/70 text-xs mt-1">Add a manual leadership message to activate this panel.</p>
+                          <div className="mt-4" onClick={e => e.stopPropagation()}>
+                            <Link to="/leadership-message/new" className="inline-flex items-center gap-1.5 border border-white/40 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                              Add CEO Message <i className="ri-add-line text-sm" />
+                            </Link>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </>
-              ) : (
-                <>
-                  <h3 className="text-white font-bold text-base leading-snug">
-                    No CEO message published
-                  </h3>
-                  <p className="text-white/70 text-xs mt-1">Add a manual leadership message to activate this panel.</p>
-                  <div className="mt-4" onClick={event => event.stopPropagation()}>
-                    <Link
-                      to="/leadership-message/new"
-                      className="inline-flex items-center gap-1.5 border border-white/40 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors"
-                    >
-                      Add CEO Message
-                      <i className="ri-add-line text-sm" />
-                    </Link>
+                );
+
+                if (card.kind === 'campaign') return (
+                  <div key={key} style={cardStyle} className={`${cardClass} relative rounded-lg overflow-hidden`}>
+                    <img
+                      src="https://readdy.ai/api/search-image?query=spring%20learning%20campaign%20education%20college%20background%2C%20light%20blue%20and%20white%20tones%2C%20graduation%20mortarboard%20cap%20and%20flowers%20on%20clean%20minimal%20desk%2C%20academic%20achievement%20symbols%2C%20fresh%20bright%20professional%20educational%20setting&width=600&height=340&seq=hero-campaign-panel&orientation=landscape"
+                      alt="Spring Learning Campaign"
+                      className="absolute inset-0 w-full h-full object-cover object-top"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/80 via-transparent to-transparent" />
+                    <div className="absolute inset-0 bg-kbc-navy/25" />
+                    <div className="relative z-10 p-5 h-full flex flex-col justify-between min-h-[200px]">
+                      <div>
+                        <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
+                          <i className="ri-seedling-line text-xs" /> Spring Campaign
+                        </span>
+                        <h3 className="text-white font-bold text-base leading-snug drop-shadow-sm">Spring Learning Campaign</h3>
+                        <p className="text-white/80 text-xs mt-1">New Workshops &amp; Courses</p>
+                      </div>
+                      <Link to="/training-plan" className="inline-flex items-center gap-1.5 border border-white/60 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors w-fit">
+                        Learn More <i className="ri-arrow-right-s-line text-sm" />
+                      </Link>
+                    </div>
                   </div>
-                </>
-              )}
+                );
+
+                if (card.kind === 'event') {
+                  const ev = card.event;
+                  const coverUrl = ev.media?.find(m => m.isCover)?.url ?? ev.image;
+                  const iconMap: Record<string, string> = { online: 'ri-wifi-line', offline: 'ri-map-pin-line' };
+                  return (
+                    <div key={key} style={cardStyle} className={`${cardClass} relative rounded-lg overflow-hidden`}>
+                      {coverUrl
+                        ? <img src={coverUrl} alt={ev.title} className="absolute inset-0 w-full h-full object-cover object-top" />
+                        : <div className="absolute inset-0 bg-gradient-to-br from-kbc-navy to-kbc-navy/80" />
+                      }
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
+                      <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
+                        <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-widest mb-2 w-fit">
+                          <i className="ri-calendar-event-line text-xs" /> Upcoming Event
+                        </span>
+                        <h3 className="text-white font-bold text-sm leading-snug mb-1 line-clamp-2">{ev.title}</h3>
+                        <div className="flex flex-wrap items-center gap-2 mb-3">
+                          <span className="flex items-center gap-1 text-white/70 text-xs"><i className="ri-calendar-line text-xs" /> {ev.date}</span>
+                          {ev.time && <span className="flex items-center gap-1 text-white/70 text-xs"><i className="ri-time-line text-xs" /> {ev.time}</span>}
+                          <span className="flex items-center gap-1 text-white/70 text-xs">
+                            <i className={`${iconMap[ev.type] ?? 'ri-map-pin-line'} text-xs`} />{ev.type === 'online' ? 'Online' : 'Offline'}
+                          </span>
+                        </div>
+                        <Link to="/events" className="inline-flex items-center gap-1.5 border border-white/50 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-3 py-1.5 rounded transition-colors w-fit">
+                          View Event <i className="ri-arrow-right-s-line text-sm" />
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return null;
+              }))}
             </div>
           </div>
 
-          <div className="relative rounded-lg overflow-hidden min-h-[200px]">
-            <img
-              src="https://readdy.ai/api/search-image?query=spring%20learning%20campaign%20education%20college%20background%2C%20light%20blue%20and%20white%20tones%2C%20graduation%20mortarboard%20cap%20and%20flowers%20on%20clean%20minimal%20desk%2C%20academic%20achievement%20symbols%2C%20fresh%20bright%20professional%20educational%20setting&width=600&height=340&seq=hero-campaign-panel&orientation=landscape"
-              alt="Spring Learning Campaign"
-              className="absolute inset-0 w-full h-full object-cover object-top"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/80 via-transparent to-transparent" />
-            <div className="absolute top-0 right-0 bottom-0 left-0 bg-kbc-navy/25" />
-            <div className="relative z-10 p-5 h-full flex flex-col justify-between min-h-[200px]">
-              <div>
-                <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
-                  <i className="ri-seedling-line text-xs" />
-                  Spring Campaign
-                </span>
-                <h3 className="text-white font-bold text-base leading-snug drop-shadow-sm">
-                  Spring Learning Campaign
-                </h3>
-                <p className="text-white/80 text-xs mt-1">New Workshops &amp; Courses</p>
-              </div>
-              <div>
-                <Link
-                  to="/training-plan"
-                  className="inline-flex items-center gap-1.5 border border-white/60 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Learn More
-                  <i className="ri-arrow-right-s-line text-sm" />
-                </Link>
-              </div>
+          {/* Dot indicators — show position within the real card set */}
+          {total > 3 && (
+            <div className="flex items-center justify-center gap-1.5 mt-3">
+              {allCards.map((_, i) => {
+                const activeDot = ((slideIdx % total) + total) % total;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => { const delta = i - activeDot; goTo(delta === 0 ? 0 : delta); }}
+                    className={`rounded-full transition-all ${i === activeDot ? 'w-5 h-2 bg-kbc-navy' : 'w-2 h-2 bg-gray-300 hover:bg-gray-400'}`}
+                  />
+                );
+              })}
             </div>
-          </div>
+          )}
         </div>
       </section>
 

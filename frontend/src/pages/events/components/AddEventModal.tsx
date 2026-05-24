@@ -24,6 +24,7 @@ const emptyForm = {
   registrationLink: '',
   type: 'online',
   description: '',
+  cover: null as EventMedia | null,
   media: [] as EventMedia[],
 };
 
@@ -35,6 +36,8 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
   const [errors, setErrors] = useState<{ title?: string; date?: string }>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -58,7 +61,9 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     const dayNum = dateObj.getDate();
     const monthIdx = dateObj.getMonth();
     const yearNum = dateObj.getFullYear();
-    const coverImage = form.media.find(item => item.kind === 'image')?.url;
+    const allMedia: EventMedia[] = [];
+    if (form.cover) allMedia.push({ ...form.cover, isCover: true });
+    allMedia.push(...form.media);
     return {
       id: `evt-${Date.now()}`,
       title: form.title.trim(),
@@ -70,16 +75,13 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
       location: form.location.trim() || undefined,
       registrationLink: form.registrationLink.trim() || undefined,
       description: form.description.trim() || undefined,
-      media: form.media.length ? form.media : undefined,
-      image: coverImage,
+      media: allMedia.length ? allMedia : undefined,
+      image: form.cover?.url,
     };
   };
 
-  const handleMediaChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
-
-    const nextMedia = await Promise.all(files.map(file => new Promise<EventMedia>((resolve) => {
+  const readFile = (file: File): Promise<EventMedia> =>
+    new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         resolve({
@@ -90,9 +92,22 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
         });
       };
       reader.readAsDataURL(file);
-    })));
+    });
 
+  const handleCoverChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const media = await readFile(file);
+    setForm(prev => ({ ...prev, cover: media }));
+    if (coverInputRef.current) coverInputRef.current.value = '';
+  };
+
+  const handleMediaChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    const nextMedia = await Promise.all(files.map(readFile));
     setForm(prev => ({ ...prev, media: [...prev.media, ...nextMedia] }));
+    if (galleryInputRef.current) galleryInputRef.current.value = '';
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -130,6 +145,8 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     setSubmitted(false);
     setSaving(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (coverInputRef.current) coverInputRef.current.value = '';
+    if (galleryInputRef.current) galleryInputRef.current.value = '';
     onClose();
   };
 
@@ -197,19 +214,71 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
               {errors.title && <p className="text-xs text-red-500 mt-1">{errors.title}</p>}
             </div>
 
-            {/* Event Media Upload */}
+            {/* Cover Image */}
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-kbc-navy mb-1.5">Event Media <span className="text-gray-400 font-normal">(optional)</span></label>
+              <label className="block text-xs font-semibold text-kbc-navy mb-1.5">
+                Cover Image <span className="text-gray-400 font-normal">(optional) — shown on the event card</span>
+              </label>
+              {form.cover ? (
+                <div className="relative w-full h-40 rounded-xl overflow-hidden border border-gray-200">
+                  <img src={form.cover.url} alt={form.cover.name} className="w-full h-full object-cover object-top" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+                  <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-white truncate">{form.cover.name}</span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => coverInputRef.current?.click()}
+                        className="text-[11px] font-semibold text-kbc-navy bg-white/90 hover:bg-white px-2.5 py-1 rounded-full transition-colors whitespace-nowrap"
+                      >
+                        Change
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForm(prev => ({ ...prev, cover: null }))}
+                        className="w-6 h-6 flex items-center justify-center rounded-full bg-white/90 hover:bg-white text-kbc-navy transition-colors"
+                      >
+                        <i className="ri-close-line text-xs" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="w-full h-28 rounded-xl border-2 border-dashed border-gray-200 flex flex-col items-center justify-center gap-1.5 cursor-pointer hover:border-kbc-navy hover:bg-gray-50 transition-all"
+                  onClick={() => coverInputRef.current?.click()}
+                >
+                  <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
+                    <i className="ri-image-add-line text-gray-400 text-lg" />
+                  </div>
+                  <p className="text-xs font-semibold text-gray-500">Click to upload a cover image</p>
+                  <p className="text-xs text-gray-400">PNG, JPG recommended</p>
+                </div>
+              )}
+              <input
+                ref={coverInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleCoverChange}
+              />
+            </div>
+
+            {/* Additional Media (gallery in event details) */}
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-semibold text-kbc-navy mb-1.5">
+                Additional Media <span className="text-gray-400 font-normal">(optional) — shown in event details</span>
+              </label>
               <div
-                className="w-full min-h-32 rounded-xl border-2 border-dashed border-gray-200 p-4 flex flex-col gap-3 cursor-pointer hover:border-kbc-navy hover:bg-gray-50 transition-all"
-                onClick={() => fileInputRef.current?.click()}
+                className="w-full min-h-28 rounded-xl border-2 border-dashed border-gray-200 p-4 flex flex-col gap-3 cursor-pointer hover:border-kbc-navy hover:bg-gray-50 transition-all"
+                onClick={() => galleryInputRef.current?.click()}
               >
                 {form.media.length > 0 ? (
                   <>
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-xs font-semibold text-kbc-navy">{form.media.length} file{form.media.length > 1 ? 's' : ''} selected</p>
-                        <p className="text-xs text-gray-400">Images and videos are supported. Click anywhere to add more.</p>
+                        <p className="text-xs text-gray-400">Images and videos. Click anywhere to add more.</p>
                       </div>
                       <span className="text-[11px] font-semibold text-kbc-navy bg-white border border-gray-200 px-2.5 py-1 rounded-full whitespace-nowrap">
                         Add More
@@ -244,7 +313,7 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
                     </div>
                   </>
                 ) : (
-                  <div className="h-24 flex flex-col items-center justify-center gap-1.5">
+                  <div className="h-20 flex flex-col items-center justify-center gap-1.5">
                     <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
                       <i className="ri-gallery-upload-line text-gray-400 text-lg" />
                     </div>
@@ -254,7 +323,7 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
                 )}
               </div>
               <input
-                ref={fileInputRef}
+                ref={galleryInputRef}
                 type="file"
                 accept="image/*,video/*"
                 multiple

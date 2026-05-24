@@ -10,6 +10,8 @@ class EventData(models.Model):
 	registration_link = models.TextField(db_column='registration link', blank=True, default='')
 	event_time = models.TextField(db_column='Event time', blank=True, default='')
 	event_type = models.TextField(db_column='event type', blank=True, default='online')
+	cover_image = models.TextField(db_column='Cover image', blank=True, default='')
+	more_images = models.TextField(db_column='More images', blank=True, default='')
 
 	class Meta:
 		db_table = 'Event_data'

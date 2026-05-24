@@ -6,37 +6,57 @@ import { useSharedEvents } from '../../hooks/useSharedEvents';
 import { CalendarEvent } from '../../mocks/events';
 import EventDetailModal from './components/EventDetailModal';
 import AddEventModal from './components/AddEventModal';
+import EditEventModal from './components/EditEventModal';
 import CalendarView from './components/CalendarView';
 import useAccessControl from '../../hooks/useAccessControl';
 
 function getCoverMedia(event: CalendarEvent) {
-  if (event.media?.length) return event.media[0];
+  if (event.media?.length) {
+    const flagged = event.media.find(m => m.isCover);
+    if (flagged) return flagged;
+  }
   return event.image
     ? { id: 'legacy-image', kind: 'image' as const, url: event.image, name: event.title }
     : null;
 }
 
 export default function EventsPage() {
-  const { events: allEvents, loading, error, addEvent } = useSharedEvents();
+  const { events: allEvents, loading, error, addEvent, updateEvent, deleteEvent } = useSharedEvents();
   const { canManageEvents } = useAccessControl();
   const [addEventOpen, setAddEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
-  const [calendarJump, setCalendarJump] = useState<Date | null>(null);
+  const [editingEvent, setEditingEvent]   = useState<CalendarEvent | null>(null);
+  const [calendarJump, setCalendarJump]   = useState<Date | null>(null);
+  const [deletingId, setDeletingId]       = useState<string | null>(null);
+
+  const monthAbbrMap: Record<string, number> = {
+    Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+    Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+  };
 
   const handleEventAdded = async (event: CalendarEvent) => {
-    if (!canManageEvents) {
-      return;
-    }
-
+    if (!canManageEvents) return;
     await addEvent(event);
     const parts = event.date.split(' ');
-    const monthAbbrMap: Record<string, number> = {
-      Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-      Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
-    };
     const month = monthAbbrMap[parts[1]] ?? 0;
-    const year = parseInt(parts[2], 10);
+    const year  = parseInt(parts[2], 10);
     setCalendarJump(new Date(year, month, 1));
+  };
+
+  const handleEventUpdated = async (event: CalendarEvent) => {
+    if (!canManageEvents) return;
+    await updateEvent(event);
+  };
+
+  const handleDeleteEvent = async (id: string) => {
+    if (!canManageEvents) return;
+    setDeletingId(id);
+    try {
+      await deleteEvent(id);
+      if (selectedEvent?.id === id) setSelectedEvent(null);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   return (
@@ -186,6 +206,25 @@ export default function EventsPage() {
 
                       <div className="flex items-center gap-2 pt-3 border-t border-gray-50">
                         <span className="text-xs text-gray-400 flex-1">{event.type === 'online' ? 'Online event' : 'Offline event'}</span>
+                        {canManageEvents && (
+                          <>
+                            <button
+                              onClick={e => { e.stopPropagation(); setEditingEvent(event); }}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 hover:text-kbc-navy transition-colors"
+                              title="Edit event"
+                            >
+                              <i className="ri-edit-line text-xs" />
+                            </button>
+                            <button
+                              onClick={e => { e.stopPropagation(); void handleDeleteEvent(event.id); }}
+                              disabled={deletingId === event.id}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg border border-red-100 bg-white hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                              title="Delete event"
+                            >
+                              <i className="ri-delete-bin-line text-xs" />
+                            </button>
+                          </>
+                        )}
                         <button
                           onClick={() => setSelectedEvent(event)}
                           className="flex items-center gap-1.5 bg-kbc-navy text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer hover:bg-kbc-navy-light transition-colors whitespace-nowrap"
@@ -213,11 +252,22 @@ export default function EventsPage() {
 
       <Footer />
 
-      <EventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+      <EventDetailModal
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        canManage={canManageEvents}
+        onEdit={event => { setSelectedEvent(null); setEditingEvent(event); }}
+        onDelete={id => void handleDeleteEvent(id)}
+      />
       <AddEventModal
         open={canManageEvents && addEventOpen}
         onClose={() => setAddEventOpen(false)}
         onEventAdded={handleEventAdded}
+      />
+      <EditEventModal
+        event={canManageEvents ? editingEvent : null}
+        onClose={() => setEditingEvent(null)}
+        onEventUpdated={handleEventUpdated}
       />
     </div>
   );

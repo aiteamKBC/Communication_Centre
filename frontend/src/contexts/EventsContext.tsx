@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { CalendarEvent, sortCalendarEvents } from '../mocks/events';
+import { CalendarEvent, EventMedia, sortCalendarEvents } from '../mocks/events';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,8 @@ type ApiEvent = {
   registrationLink?: string;
   time?: string;
   type?: string;
+  coverImage?: string;
+  moreImages?: string;
 };
 
 function normalizeDate(value: string): Date {
@@ -25,11 +27,34 @@ function normalizeDate(value: string): Date {
   return new Date(Number(year), monthIndex >= 0 ? monthIndex : 0, Number(day));
 }
 
+function parseMoreImages(raw: string | undefined): EventMedia[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as Array<Record<string, string>>).map((item, i) => ({
+      id: item.id ?? `db-gallery-${i}`,
+      kind: (item.kind === 'video' ? 'video' : 'image') as 'image' | 'video',
+      url: item.url ?? '',
+      name: item.name ?? `media-${i}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 function normalizeApiEvent(event: ApiEvent): CalendarEvent {
   const dateObj  = normalizeDate(event.date);
   const dayNum   = dateObj.getDate();
   const monthIdx = dateObj.getMonth();
   const year     = dateObj.getFullYear();
+
+  const allMedia: EventMedia[] = [];
+  if (event.coverImage) {
+    allMedia.push({ id: 'db-cover', kind: 'image', url: event.coverImage, name: 'cover', isCover: true });
+  }
+  allMedia.push(...parseMoreImages(event.moreImages));
+
   return {
     id: String(event.id),
     title: event.title,
@@ -41,6 +66,8 @@ function normalizeApiEvent(event: ApiEvent): CalendarEvent {
     location: event.location || undefined,
     description: event.description || undefined,
     registrationLink: event.registrationLink || undefined,
+    image: event.coverImage || undefined,
+    media: allMedia.length ? allMedia : undefined,
   };
 }
 
@@ -51,6 +78,8 @@ type EventsContextValue = {
   loading: boolean;
   error: string | null;
   addEvent: (event: CalendarEvent) => Promise<void>;
+  updateEvent: (event: CalendarEvent) => Promise<void>;
+  deleteEvent: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
@@ -80,27 +109,54 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { void fetchEvents(); }, [fetchEvents]);
 
+  const serializePayload = (event: CalendarEvent) => {
+    const coverItem = event.media?.find(m => m.isCover);
+    const galleryItems = event.media?.filter(m => !m.isCover) ?? [];
+    return {
+      title: event.title,
+      date: event.date,
+      time: event.time,
+      location: event.location,
+      registrationLink: event.registrationLink,
+      description: event.description,
+      type: event.type,
+      coverImage: coverItem?.url ?? event.image ?? '',
+      moreImages: galleryItems.length
+        ? JSON.stringify(galleryItems.map(m => ({ id: m.id, kind: m.kind, url: m.url, name: m.name })))
+        : '',
+    };
+  };
+
   const addEvent = async (event: CalendarEvent): Promise<void> => {
     const response = await fetch('/api/events/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: event.title,
-        date: event.date,
-        time: event.time,
-        location: event.location,
-        registrationLink: event.registrationLink,
-        description: event.description,
-        type: event.type,
-      }),
+      body: JSON.stringify(serializePayload(event)),
     });
     if (!response.ok) throw new Error('Failed to save event.');
     const saved = normalizeApiEvent((await response.json()) as ApiEvent);
     setEvents(current => sortCalendarEvents([...current, saved]));
   };
 
+  const updateEvent = async (event: CalendarEvent): Promise<void> => {
+    const response = await fetch(`/api/events/${event.id}/`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(serializePayload(event)),
+    });
+    if (!response.ok) throw new Error('Failed to update event.');
+    const updated = normalizeApiEvent((await response.json()) as ApiEvent);
+    setEvents(current => sortCalendarEvents(current.map(e => e.id === event.id ? updated : e)));
+  };
+
+  const deleteEvent = async (id: string): Promise<void> => {
+    const response = await fetch(`/api/events/${id}/`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete event.');
+    setEvents(current => current.filter(e => e.id !== id));
+  };
+
   return (
-    <EventsContext.Provider value={{ events, loading, error, addEvent, refresh: fetchEvents }}>
+    <EventsContext.Provider value={{ events, loading, error, addEvent, updateEvent, deleteEvent, refresh: fetchEvents }}>
       {children}
     </EventsContext.Provider>
   );
