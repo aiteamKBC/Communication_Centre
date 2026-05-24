@@ -166,13 +166,6 @@ function auditSummary(log: AuditLog): string {
 }
 
 function changeSummary(log: AuditLog): string {
-  const before = asRecord(log.before);
-  const after = asRecord(log.after);
-  const beforeCount = countValue(before, 'count');
-  const afterCount = countValue(after, 'count');
-  if (beforeCount !== null && afterCount !== null) {
-    return `${beforeCount} records before, ${afterCount} records after`;
-  }
   return log.objectLabel || log.entity;
 }
 
@@ -477,7 +470,9 @@ export default function UserActivityPage() {
                         </div>
                         <div className="rounded-lg border border-gray-200 bg-white p-3">
                           <p className="text-xs font-extrabold text-kbc-navy">{auditSummary(log)}</p>
-                          <p className="mt-1 text-xs font-semibold text-gray-500">{changeSummary(log)}</p>
+                          {changeSummary(log) !== auditSummary(log) && (
+                            <p className="mt-1 text-xs font-semibold text-gray-500">{changeSummary(log)}</p>
+                          )}
 
                           {asRecordArray(asRecord(log.after).added).length > 0 && (
                             <div className="mt-3">
