@@ -3,6 +3,7 @@ import { useRoutes } from "react-router-dom";
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import routes from "./config";
+import { useUserActivityTracking } from "../hooks/useUserActivityTracking";
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 
@@ -40,6 +41,7 @@ export function AppRoutes() {
   const element = useRoutes(routes);
   const navigate = useNavigate();
   const location = useLocation();
+  useUserActivityTracking();
   const isAuthenticated = hasAuthSession();
   const isLoginRoute = location.pathname.startsWith('/login');
 

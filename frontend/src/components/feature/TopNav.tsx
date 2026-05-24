@@ -99,12 +99,37 @@ export default function TopNav() {
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
 
   const handleLogout = async () => {
+    let trackingSessionId = '';
+    let userId = '';
+    let email = '';
+    let username = '';
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+        const user = raw ? JSON.parse(raw) : null;
+        trackingSessionId = user?.trackingSessionId || '';
+        userId = user?.id || '';
+        email = user?.email || '';
+        username = user?.username || '';
+      } catch {
+        trackingSessionId = '';
+      }
+    }
+
     try {
       await fetch('/api/auth/logout/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          trackingSessionId,
+          userId,
+          email,
+          username,
+          reason: 'logout_button',
+        }),
       });
     } catch {
       // ignore logout network failures

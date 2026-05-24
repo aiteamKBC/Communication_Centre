@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -8,10 +9,13 @@ from urllib.request import Request, urlopen
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core import signing
+from django.db.models import Sum
 from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from api.models import UserActivitySession, UserPageVisit
 from .access import get_user_access_payload
 
 
@@ -43,6 +47,72 @@ def _redirect_to_frontend_login(params: dict[str, str]) -> HttpResponseRedirect:
 def _encode_user_payload(payload: dict) -> str:
 	encoded = base64.urlsafe_b64encode(json.dumps(payload).encode('utf-8')).decode('utf-8')
 	return encoded.rstrip('=')
+
+
+def _client_ip(request) -> str | None:
+	forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+	if forwarded_for:
+		return forwarded_for.split(',')[0].strip() or None
+	return request.META.get('REMOTE_ADDR') or None
+
+
+def _display_name(user) -> str:
+	full_name = f'{user.first_name or ""} {user.last_name or ""}'.strip()
+	return full_name or user.username or user.email or ''
+
+
+def _create_activity_session(request, user, auth_provider: str = 'password') -> UserActivitySession:
+	now = timezone.now()
+	return UserActivitySession.objects.create(
+		tracking_session_id=uuid.uuid4(),
+		user_id=user.id,
+		username=user.username or '',
+		email=user.email or '',
+		display_name=_display_name(user),
+		auth_provider=auth_provider,
+		login_at=now,
+		last_seen_at=now,
+		ip_address=_client_ip(request),
+		user_agent=(request.META.get('HTTP_USER_AGENT') or '')[:2000],
+	)
+
+
+def _activity_session_payload(session: UserActivitySession) -> dict:
+	return {
+		'trackingSessionId': str(session.tracking_session_id),
+		'activitySessionId': session.id,
+	}
+
+
+def _get_activity_session(tracking_session_id: str) -> UserActivitySession | None:
+	try:
+		return UserActivitySession.objects.filter(tracking_session_id=uuid.UUID(tracking_session_id)).first()
+	except (TypeError, ValueError):
+		return None
+
+
+def _sync_session_totals(session: UserActivitySession, now=None) -> None:
+	now = now or timezone.now()
+	aggregate = session.page_visits.aggregate(total=Sum('duration_seconds'))
+	session.total_seconds = int(aggregate.get('total') or 0)
+	session.page_count = session.page_visits.count()
+	session.last_seen_at = now
+	session.save(update_fields=['total_seconds', 'page_count', 'last_seen_at', 'updated_at'])
+
+
+def _user_payload(user, auth_provider: str, activity_session: UserActivitySession) -> dict:
+	return {
+		'id': user.id,
+		'username': user.username,
+		'email': user.email,
+		'firstName': user.first_name,
+		'lastName': user.last_name,
+		'isStaff': bool(user.is_staff),
+		'isSuperuser': bool(user.is_superuser),
+		'authProvider': auth_provider,
+		'access': get_user_access_payload(user),
+		**_activity_session_payload(activity_session),
+	}
 
 
 def _decode_json_response(error: HTTPError) -> dict:
@@ -147,18 +217,8 @@ def login_view(request):
 	if not user or not check_password(password, user.password) or not user.is_active:
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)
 
-	return JsonResponse(
-		{
-			'id': user.id,
-			'username': user.username,
-			'email': user.email,
-			'firstName': user.first_name,
-			'lastName': user.last_name,
-			'isStaff': bool(user.is_staff),
-			'isSuperuser': bool(user.is_superuser),
-			'access': get_user_access_payload(user),
-		}
-	)
+	activity_session = _create_activity_session(request, user, 'password')
+	return JsonResponse(_user_payload(user, 'password', activity_session))
 
 
 @csrf_exempt
@@ -166,7 +226,82 @@ def logout_view(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		payload = {}
+
+	session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	if session:
+		now = timezone.now()
+		session.logout_at = now
+		session.logout_reason = str(payload.get('reason', 'logout')).strip()[:80] or 'logout'
+		session.last_seen_at = now
+		session.save(update_fields=['logout_at', 'logout_reason', 'last_seen_at', 'updated_at'])
+		_sync_session_totals(session, now)
+
 	return JsonResponse({'detail': 'Logged out.'})
+
+
+@csrf_exempt
+def activity_view(request):
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		return HttpResponseBadRequest('Invalid JSON payload.')
+
+	session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	if not session:
+		return JsonResponse({'detail': 'Activity session not found.'}, status=404)
+
+	now = timezone.now()
+	action = str(payload.get('action', 'heartbeat')).strip().lower()
+	path = str(payload.get('path', '')).strip()[:2000]
+	title = str(payload.get('title', '')).strip()[:500]
+	try:
+		duration_seconds = max(0, min(int(payload.get('durationSeconds') or 0), 3600))
+	except (TypeError, ValueError):
+		duration_seconds = 0
+
+	if path:
+		page_visit, created = UserPageVisit.objects.get_or_create(
+			session=session,
+			path=path,
+			defaults={
+				'title': title,
+				'first_seen_at': now,
+				'last_seen_at': now,
+				'duration_seconds': duration_seconds,
+				'view_count': 1,
+			},
+		)
+		if not created:
+			page_visit.title = title or page_visit.title
+			page_visit.last_seen_at = now
+			page_visit.duration_seconds = page_visit.duration_seconds + duration_seconds
+			if action == 'page_view':
+				page_visit.view_count = page_visit.view_count + 1
+			page_visit.save(update_fields=['title', 'last_seen_at', 'duration_seconds', 'view_count', 'updated_at'])
+
+	if action == 'logout':
+		session.logout_at = now
+		session.logout_reason = str(payload.get('reason', 'logout')).strip()[:80] or 'logout'
+		session.last_seen_at = now
+		session.save(update_fields=['logout_at', 'logout_reason', 'last_seen_at', 'updated_at'])
+		_sync_session_totals(session, now)
+	else:
+		_sync_session_totals(session, now)
+
+	return JsonResponse(
+		{
+			'detail': 'Activity recorded.',
+			'totalSeconds': session.total_seconds,
+			'pageCount': session.page_count,
+		}
+	)
 
 
 def access_view(request):
@@ -335,16 +470,9 @@ def microsoft_callback(request):
 	if not db_user:
 		return _redirect_to_url(result_target, {'ms_auth': 'error', 'ms_error': "This email isn't in the database."})
 
-	user_payload = {
-		'id': db_user.id,
-		'username': db_user.username,
-		'email': db_user.email,
-		'firstName': db_user.first_name or first_name,
-		'lastName': db_user.last_name or last_name,
-		'isStaff': bool(db_user.is_staff),
-		'isSuperuser': bool(db_user.is_superuser),
-		'authProvider': 'microsoft',
-		'access': get_user_access_payload(db_user),
-	}
+	activity_session = _create_activity_session(request, db_user, 'microsoft')
+	user_payload = _user_payload(db_user, 'microsoft', activity_session)
+	user_payload['firstName'] = db_user.first_name or first_name
+	user_payload['lastName'] = db_user.last_name or last_name
 
 	return _redirect_to_url(result_target, {'ms_auth': 'success', 'ms_user': _encode_user_payload(user_payload)})
