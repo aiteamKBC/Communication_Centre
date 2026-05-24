@@ -83,6 +83,40 @@ def _model_snapshot(record) -> dict:
 	return data
 
 
+def _without_keys(item: dict, keys: set[str]) -> dict:
+	return {key: value for key, value in item.items() if key not in keys}
+
+
+def _bulk_diff(before_items: list[dict], after_items: list[dict], *, ignored_keys: set[str] | None = None, limit: int = 25) -> dict:
+	ignored = ignored_keys or set()
+	before_remaining = [_without_keys(item, ignored) for item in before_items]
+	after_remaining = [_without_keys(item, ignored) for item in after_items]
+	added = []
+	removed = []
+
+	for item in after_remaining:
+		if item in before_remaining:
+			before_remaining.remove(item)
+		else:
+			added.append(item)
+
+	for item in before_remaining:
+		if item in after_remaining:
+			after_remaining.remove(item)
+		else:
+			removed.append(item)
+
+	return {
+		'beforeCount': len(before_items),
+		'afterCount': len(after_items),
+		'addedCount': len(added),
+		'removedCount': len(removed),
+		'added': added[:limit],
+		'removed': removed[:limit],
+		'truncated': len(added) > limit or len(removed) > limit,
+	}
+
+
 def serialize_event(event: EventData) -> dict:
 	return {
 		'id': str(event.event_id),
@@ -771,7 +805,7 @@ def training_plan(request):
 
 		# If client posted an empty list, do not clear the table — ignore to avoid accidental wipe.
 		# Replace table content with the latest timeline state from the frontend.
-		before_count = TrainingPlan.objects.count()
+		before_items = [serialize_training_plan(item) for item in TrainingPlan.objects.all().order_by('id')]
 		TrainingPlan.objects.all().delete()
 		created = []
 		for row in items:
@@ -796,7 +830,22 @@ def training_plan(request):
 				)
 			)
 
-		_audit_log(request, action='replace', entity='TrainingPlan', object_label='Training Plan timeline', before={'count': before_count}, after={'count': len(created)}, metadata={'received': len(items)})
+		after_items = [serialize_training_plan(item) for item in created]
+		diff = _bulk_diff(before_items, after_items, ignored_keys={'id'})
+		_audit_log(
+			request,
+			action='replace',
+			entity='TrainingPlan',
+			object_label='Training Plan timeline',
+			before={'count': diff['beforeCount'], 'removed': diff['removed']},
+			after={'count': diff['afterCount'], 'added': diff['added']},
+			metadata={
+				'received': len(items),
+				'addedCount': diff['addedCount'],
+				'removedCount': diff['removedCount'],
+				'truncated': diff['truncated'],
+			},
+		)
 		return JsonResponse({'saved': len(created)})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
