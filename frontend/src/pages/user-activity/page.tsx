@@ -238,11 +238,10 @@ export default function UserActivityPage() {
         </div>
 
         <main className="mx-auto max-w-7xl px-4 py-6 md:px-6">
-          <div className="grid gap-3 md:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-4">
             {[
               ['Sessions', payload.summary.totalSessions],
               ['Users', payload.summary.uniqueUsers],
-              ['Page Views', payload.summary.totalPageViews],
               ['Returned', payload.summary.returnedSessions],
               ['Total Time', formatDuration(payload.summary.totalSeconds)],
             ].map(([label, value]) => (
