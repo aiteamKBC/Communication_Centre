@@ -12,6 +12,8 @@ type StoredUser = {
   firstName?: string;
   lastName?: string;
   displayName?: string;
+  authProvider?: string;
+  activitySessionId?: number | string;
   trackingSessionId?: string;
 };
 
@@ -27,6 +29,11 @@ function readStoredUser(): StoredUser | null {
   } catch {
     return null;
   }
+}
+
+function writeStoredUser(user: StoredUser) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
 }
 
 function postActivity(payload: Record<string, unknown>, useBeacon = false) {
@@ -66,6 +73,42 @@ export function useUserActivityTracking() {
   const location = useLocation();
   const currentPathRef = useRef('');
   const enteredAtRef = useRef(Date.now());
+  const startInFlightRef = useRef(false);
+
+  const ensureTrackingSession = async (): Promise<StoredUser | null> => {
+    const user = readStoredUser();
+    if (!user) return null;
+    if (user.trackingSessionId) return user;
+    if (startInFlightRef.current) return null;
+
+    startInFlightRef.current = true;
+    try {
+      const response = await fetch('/api/auth/activity/start/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          email: user.email,
+          username: user.username,
+          authProvider: user.authProvider || 'existing_session',
+        }),
+      });
+      if (!response.ok) return null;
+      const payload = await response.json() as { trackingSessionId?: string; activitySessionId?: number | string };
+      if (!payload.trackingSessionId) return null;
+      const nextUser = {
+        ...user,
+        trackingSessionId: payload.trackingSessionId,
+        activitySessionId: payload.activitySessionId,
+      };
+      writeStoredUser(nextUser);
+      return nextUser;
+    } catch {
+      return null;
+    } finally {
+      startInFlightRef.current = false;
+    }
+  };
 
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
@@ -111,26 +154,27 @@ export function useUserActivityTracking() {
   };
 
   useEffect(() => {
-    const user = readStoredUser();
-    if (!user?.trackingSessionId) return;
-
     const nextPath = `${location.pathname}${location.search}${location.hash}`;
-    if (currentPathRef.current && currentPathRef.current !== nextPath) {
-      flushCurrentPath('page_exit');
-    }
+    void ensureTrackingSession().then(user => {
+      if (!user?.trackingSessionId) return;
 
-    currentPathRef.current = nextPath;
-    enteredAtRef.current = Date.now();
+      if (currentPathRef.current && currentPathRef.current !== nextPath) {
+        flushCurrentPath('page_exit');
+      }
 
-    postActivity({
-      action: 'page_view',
-      trackingSessionId: user.trackingSessionId,
-      userId: user.id,
-      email: user.email,
-      username: user.username,
-      path: nextPath,
-      title: document.title,
-      durationSeconds: 0,
+      currentPathRef.current = nextPath;
+      enteredAtRef.current = Date.now();
+
+      postActivity({
+        action: 'page_view',
+        trackingSessionId: user.trackingSessionId,
+        userId: user.id,
+        email: user.email,
+        username: user.username,
+        path: nextPath,
+        title: document.title,
+        durationSeconds: 0,
+      });
     });
   }, [location.pathname, location.search, location.hash]);
 
