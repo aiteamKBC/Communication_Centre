@@ -1,5 +1,14 @@
 import Swal from 'sweetalert2';
 
+const applyKbcSwalBackdrop = () => {
+  const container = document.querySelector<HTMLElement>('.swal2-container');
+  if (!container) return;
+
+  container.style.setProperty('backdrop-filter', 'blur(8px)', 'important');
+  container.style.setProperty('-webkit-backdrop-filter', 'blur(8px)', 'important');
+  container.style.setProperty('background', 'rgba(15, 23, 42, 0.5)', 'important');
+};
+
 export const kbcSwal = Swal.mixin({
   customClass: {
     container: 'kbc-swal-container',
@@ -11,6 +20,7 @@ export const kbcSwal = Swal.mixin({
   },
   buttonsStyling: false,
   backdrop: 'rgba(15, 23, 42, 0.5)',
+  didOpen: applyKbcSwalBackdrop,
 });
 
 export const kbcSuccessSwal = Swal.mixin({
@@ -23,6 +33,7 @@ export const kbcSuccessSwal = Swal.mixin({
   },
   buttonsStyling: false,
   backdrop: 'rgba(15, 23, 42, 0.5)',
+  didOpen: applyKbcSwalBackdrop,
 });
 
 export async function confirmDeleteEvent(title: string) {
