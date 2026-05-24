@@ -91,6 +91,35 @@ def _get_activity_session(tracking_session_id: str) -> UserActivitySession | Non
 		return None
 
 
+def _find_user_from_payload(payload: dict):
+	user_model = get_user_model()
+	queryset = user_model.objects.using('login_db')
+
+	user_id = str(payload.get('userId') or payload.get('id') or '').strip()
+	email = str(payload.get('email') or '').strip()
+	username = str(payload.get('username') or '').strip()
+
+	if user_id:
+		try:
+			user = queryset.filter(pk=int(user_id), is_active=True).first()
+			if user:
+				return user
+		except ValueError:
+			pass
+
+	if email:
+		user = queryset.filter(email__iexact=email, is_active=True).first()
+		if user:
+			return user
+
+	if username:
+		user = queryset.filter(username__iexact=username, is_active=True).first()
+		if user:
+			return user
+
+	return None
+
+
 def _sync_session_totals(session: UserActivitySession, now=None) -> None:
 	now = now or timezone.now()
 	aggregate = session.page_visits.aggregate(total=Sum('duration_seconds'))
@@ -241,6 +270,29 @@ def logout_view(request):
 		_sync_session_totals(session, now)
 
 	return JsonResponse({'detail': 'Logged out.'})
+
+
+@csrf_exempt
+def activity_start_view(request):
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		return HttpResponseBadRequest('Invalid JSON payload.')
+
+	existing_session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	if existing_session:
+		return JsonResponse(_activity_session_payload(existing_session))
+
+	user = _find_user_from_payload(payload)
+	if user is None:
+		return JsonResponse({'detail': 'User not found.'}, status=404)
+
+	auth_provider = str(payload.get('authProvider') or 'existing_session').strip()[:50] or 'existing_session'
+	activity_session = _create_activity_session(request, user, auth_provider)
+	return JsonResponse(_activity_session_payload(activity_session), status=201)
 
 
 @csrf_exempt
