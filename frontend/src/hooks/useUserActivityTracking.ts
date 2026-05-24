@@ -9,6 +9,9 @@ type StoredUser = {
   id?: number | string;
   email?: string;
   username?: string;
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
   trackingSessionId?: string;
 };
 
@@ -45,10 +48,42 @@ function postActivity(payload: Record<string, unknown>, useBeacon = false) {
   });
 }
 
+function userDisplayName(user: StoredUser): string {
+  return user.displayName || [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.username || user.email || '';
+}
+
+function applyAuditHeaders(headers: Headers, user: StoredUser | null) {
+  if (!user) return;
+  if (user.id !== undefined && user.id !== null) headers.set('X-KBC-User-Id', String(user.id));
+  if (user.email) headers.set('X-KBC-User-Email', String(user.email));
+  if (user.username) headers.set('X-KBC-Username', String(user.username));
+  const displayName = userDisplayName(user);
+  if (displayName) headers.set('X-KBC-Display-Name', displayName);
+  if (user.trackingSessionId) headers.set('X-KBC-Tracking-Session-Id', user.trackingSessionId);
+}
+
 export function useUserActivityTracking() {
   const location = useLocation();
   const currentPathRef = useRef('');
   const enteredAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes('/api/')) {
+        return originalFetch(input, init);
+      }
+
+      const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+      applyAuditHeaders(headers, readStoredUser());
+      return originalFetch(input, { ...init, headers });
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
 
   const flushCurrentPath = (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false) => {
     const user = readStoredUser();

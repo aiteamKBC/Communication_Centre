@@ -323,3 +323,32 @@ class UserPageVisit(models.Model):
 			models.Index(fields=['path']),
 			models.Index(fields=['-last_seen_at']),
 		]
+
+
+class AuditLog(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	action = models.CharField(max_length=40)
+	entity = models.CharField(max_length=120)
+	object_id = models.TextField(blank=True, default='')
+	object_label = models.TextField(blank=True, default='')
+	user_id = models.BigIntegerField(null=True, blank=True)
+	username = models.TextField(blank=True, default='')
+	email = models.TextField(blank=True, default='')
+	display_name = models.TextField(blank=True, default='')
+	path = models.TextField(blank=True, default='')
+	method = models.CharField(max_length=16, blank=True, default='')
+	ip_address = models.GenericIPAddressField(null=True, blank=True)
+	user_agent = models.TextField(blank=True, default='')
+	before = models.JSONField(null=True, blank=True)
+	after = models.JSONField(null=True, blank=True)
+	metadata = models.JSONField(null=True, blank=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'audit_logs'
+		indexes = [
+			models.Index(fields=['-created_at']),
+			models.Index(fields=['entity', '-created_at']),
+			models.Index(fields=['email', '-created_at']),
+			models.Index(fields=['action', '-created_at']),
+		]

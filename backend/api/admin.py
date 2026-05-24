@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import UserActivitySession, UserPageVisit
+from .models import AuditLog, UserActivitySession, UserPageVisit
 
 
 class UserPageVisitInline(admin.TabularInline):
@@ -64,4 +64,29 @@ class UserPageVisitAdmin(admin.ModelAdmin):
 		'view_count',
 		'created_at',
 		'updated_at',
+	)
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+	list_display = ('created_at', 'action', 'entity', 'object_label', 'email', 'username', 'ip_address')
+	search_fields = ('entity', 'object_id', 'object_label', 'email', 'username', 'display_name', 'path')
+	list_filter = ('action', 'entity', 'created_at')
+	readonly_fields = (
+		'action',
+		'entity',
+		'object_id',
+		'object_label',
+		'user_id',
+		'username',
+		'email',
+		'display_name',
+		'path',
+		'method',
+		'ip_address',
+		'user_agent',
+		'before',
+		'after',
+		'metadata',
+		'created_at',
 	)
