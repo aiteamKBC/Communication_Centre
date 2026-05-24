@@ -115,6 +115,83 @@ function userLabel(session: ActivitySession): string {
   return session.displayName || session.username || session.email || 'Unknown user';
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) as Record<string, unknown>[] : [];
+}
+
+function textValue(item: Record<string, unknown>, key: string): string {
+  const value = item[key];
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function countValue(item: Record<string, unknown>, key: string): number | null {
+  const value = Number(item[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function actionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    create: 'Created',
+    update: 'Updated',
+    delete: 'Deleted',
+    upload: 'Uploaded',
+    replace: 'Changed',
+  };
+  return labels[action] || action;
+}
+
+function auditSummary(log: AuditLog): string {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const metadata = asRecord(log.metadata);
+  const beforeCount = countValue(before, 'count');
+  const afterCount = countValue(after, 'count');
+  const addedCount = countValue(metadata, 'addedCount') ?? asRecordArray(after.added).length;
+  const removedCount = countValue(metadata, 'removedCount') ?? asRecordArray(before.removed).length;
+
+  if (log.entity === 'TrainingPlan' && log.action === 'replace') {
+    const parts = [];
+    if (addedCount > 0) parts.push(`${addedCount} added`);
+    if (removedCount > 0) parts.push(`${removedCount} removed`);
+    if (parts.length > 0) return `Training Plan changed: ${parts.join(', ')}`;
+    if (beforeCount !== null && afterCount !== null) return `Training Plan changed from ${beforeCount} to ${afterCount} records`;
+    return 'Training Plan was changed';
+  }
+
+  return `${actionLabel(log.action)} ${log.objectLabel || log.entity}`;
+}
+
+function changeSummary(log: AuditLog): string {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const beforeCount = countValue(before, 'count');
+  const afterCount = countValue(after, 'count');
+  if (beforeCount !== null && afterCount !== null) {
+    return `${beforeCount} records before, ${afterCount} records after`;
+  }
+  return log.objectLabel || log.entity;
+}
+
+function formatTrainingPlanItem(item: Record<string, unknown>): string {
+  const moduleName = textValue(item, 'moduleName') || 'Unnamed module';
+  const groupName = textValue(item, 'groupName');
+  const tutorName = textValue(item, 'tutorName');
+  const coachName = textValue(item, 'coachName');
+  const dates = [textValue(item, 'startDate'), textValue(item, 'endDate')].filter(Boolean).join(' - ');
+  const details = [
+    groupName ? `Group: ${groupName}` : '',
+    tutorName ? `Tutor: ${tutorName}` : '',
+    coachName ? `Coach: ${coachName}` : '',
+    dates ? `Dates: ${dates}` : '',
+  ].filter(Boolean);
+
+  return details.length ? `${moduleName} (${details.join(', ')})` : moduleName;
+}
+
 export default function UserActivityPage() {
   const access = useAccessControl();
   const canView = access.adminAccess || access.itAccess;
@@ -350,7 +427,7 @@ export default function UserActivityPage() {
             <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 className="text-base font-extrabold text-kbc-navy">Audit Logs</h2>
-                <p className="mt-0.5 text-sm text-gray-500">Create, update, delete, upload, and bulk replace actions recorded by the backend.</p>
+                <p className="mt-0.5 text-sm text-gray-500">Clear change history: who changed what, when, and what was added or removed.</p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-500">
                 {auditPayload.summary.returnedLogs} of {auditPayload.summary.totalLogs} logs
@@ -360,10 +437,10 @@ export default function UserActivityPage() {
             {auditError && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{auditError}</div>}
 
             <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-              <div className="grid grid-cols-[120px_160px_1fr_1fr_180px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
+              <div className="grid grid-cols-[120px_170px_1.5fr_1fr_180px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
                 <span>Action</span>
                 <span>Entity</span>
-                <span>Record</span>
+                <span>Change</span>
                 <span>User</span>
                 <span>Time</span>
                 <span />
@@ -379,11 +456,11 @@ export default function UserActivityPage() {
                     <button
                       type="button"
                       onClick={() => setExpandedAuditId(expandedAuditId === log.id ? null : log.id)}
-                      className="grid w-full grid-cols-[120px_160px_1fr_1fr_180px_44px] items-center px-4 py-3 text-left hover:bg-gray-50"
+                      className="grid w-full grid-cols-[120px_170px_1.5fr_1fr_180px_44px] items-center px-4 py-3 text-left hover:bg-gray-50"
                     >
-                      <span className="inline-flex w-fit rounded bg-kbc-navy/10 px-2 py-1 text-[11px] font-extrabold uppercase text-kbc-navy">{log.action}</span>
+                      <span className="inline-flex w-fit rounded bg-kbc-navy/10 px-2 py-1 text-[11px] font-extrabold uppercase text-kbc-navy">{actionLabel(log.action)}</span>
                       <span className="truncate text-xs font-bold text-gray-600">{log.entity}</span>
-                      <span className="truncate text-xs font-semibold text-gray-700">{log.objectLabel || log.objectId || '-'}</span>
+                      <span className="truncate text-xs font-semibold text-gray-700">{auditSummary(log)}</span>
                       <span className="truncate text-xs font-semibold text-gray-600">{log.displayName || log.username || log.email || 'Unknown'}</span>
                       <span className="text-xs font-semibold text-gray-500">{formatDateTime(log.createdAt)}</span>
                       <span className="flex justify-end text-gray-400">
@@ -398,15 +475,41 @@ export default function UserActivityPage() {
                           <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Path: {log.path}</span>
                           <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">IP: {log.ipAddress || 'Unknown'}</span>
                         </div>
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                            <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">Before</div>
-                            <pre className="max-h-80 overflow-auto p-3 text-xs text-gray-600">{JSON.stringify(log.before, null, 2) || 'null'}</pre>
-                          </div>
-                          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                            <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">After</div>
-                            <pre className="max-h-80 overflow-auto p-3 text-xs text-gray-600">{JSON.stringify(log.after, null, 2) || 'null'}</pre>
-                          </div>
+                        <div className="rounded-lg border border-gray-200 bg-white p-3">
+                          <p className="text-xs font-extrabold text-kbc-navy">{auditSummary(log)}</p>
+                          <p className="mt-1 text-xs font-semibold text-gray-500">{changeSummary(log)}</p>
+
+                          {asRecordArray(asRecord(log.after).added).length > 0 && (
+                            <div className="mt-3">
+                              <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Added</p>
+                              <div className="mt-2 space-y-2">
+                                {asRecordArray(asRecord(log.after).added).map((item, index) => (
+                                  <div key={`added-${index}`} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+                                    {log.entity === 'TrainingPlan' ? formatTrainingPlanItem(item) : JSON.stringify(item)}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {asRecordArray(asRecord(log.before).removed).length > 0 && (
+                            <div className="mt-3">
+                              <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Removed</p>
+                              <div className="mt-2 space-y-2">
+                                {asRecordArray(asRecord(log.before).removed).map((item, index) => (
+                                  <div key={`removed-${index}`} className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900">
+                                    {log.entity === 'TrainingPlan' ? formatTrainingPlanItem(item) : JSON.stringify(item)}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {asRecordArray(asRecord(log.after).added).length === 0 && asRecordArray(asRecord(log.before).removed).length === 0 && (
+                            <p className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                              This older log only stored record counts. New Training Plan logs will show the exact modules added or removed.
+                            </p>
+                          )}
                         </div>
                       </div>
                     )}
