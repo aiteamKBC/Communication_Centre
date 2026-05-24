@@ -169,20 +169,60 @@ function changeSummary(log: AuditLog): string {
   return log.objectLabel || log.entity;
 }
 
-function formatTrainingPlanItem(item: Record<string, unknown>): string {
+function TrainingPlanAuditCard({ item, tone }: { item: Record<string, unknown>; tone: 'added' | 'removed' }) {
   const moduleName = textValue(item, 'moduleName') || 'Unnamed module';
-  const groupName = textValue(item, 'groupName');
-  const tutorName = textValue(item, 'tutorName');
-  const coachName = textValue(item, 'coachName');
-  const dates = [textValue(item, 'startDate'), textValue(item, 'endDate')].filter(Boolean).join(' - ');
-  const details = [
-    groupName ? `Group: ${groupName}` : '',
-    tutorName ? `Tutor: ${tutorName}` : '',
-    coachName ? `Coach: ${coachName}` : '',
-    dates ? `Dates: ${dates}` : '',
-  ].filter(Boolean);
+  const groupName = textValue(item, 'groupName') || 'Not set';
+  const tutorName = textValue(item, 'tutorName') || 'Not set';
+  const coachName = textValue(item, 'coachName') || 'Not set';
+  const startDate = textValue(item, 'startDate');
+  const endDate = textValue(item, 'endDate');
+  const programme = textValue(item, 'program');
+  const sessions = textValue(item, 'sessionsNumber');
+  const day = textValue(item, 'sessionWeekDay');
+  const startTime = textValue(item, 'sessionStartTime');
+  const endTime = textValue(item, 'sessionEndTime');
+  const dates = [startDate, endDate].filter(Boolean).join(' - ') || 'Not set';
+  const time = [day, [startTime, endTime].filter(Boolean).join(' - ')].filter(Boolean).join(' | ') || 'Not set';
+  const toneClass = tone === 'added'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+    : 'border-red-200 bg-red-50 text-red-950';
 
-  return details.length ? `${moduleName} (${details.join(', ')})` : moduleName;
+  return (
+    <div className={`rounded-lg border px-3 py-3 ${toneClass}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-extrabold">{moduleName}</p>
+          {programme && <p className="mt-0.5 text-xs font-semibold opacity-75">{programme}</p>}
+        </div>
+        {sessions && (
+          <span className="rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold">
+            {sessions} sessions
+          </span>
+        )}
+      </div>
+      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <p className="font-extrabold uppercase opacity-60">Group</p>
+          <p className="mt-0.5 font-semibold">{groupName}</p>
+        </div>
+        <div>
+          <p className="font-extrabold uppercase opacity-60">Tutor</p>
+          <p className="mt-0.5 font-semibold">{tutorName}</p>
+        </div>
+        <div>
+          <p className="font-extrabold uppercase opacity-60">Coach</p>
+          <p className="mt-0.5 font-semibold">{coachName}</p>
+        </div>
+        <div>
+          <p className="font-extrabold uppercase opacity-60">Dates</p>
+          <p className="mt-0.5 font-semibold">{dates}</p>
+        </div>
+      </div>
+      <div className="mt-2 text-xs font-semibold opacity-80">
+        Time: {time}
+      </div>
+    </div>
+  );
 }
 
 export default function UserActivityPage() {
@@ -479,9 +519,13 @@ export default function UserActivityPage() {
                               <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Added</p>
                               <div className="mt-2 space-y-2">
                                 {asRecordArray(asRecord(log.after).added).map((item, index) => (
-                                  <div key={`added-${index}`} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
-                                    {log.entity === 'TrainingPlan' ? formatTrainingPlanItem(item) : JSON.stringify(item)}
-                                  </div>
+                                  log.entity === 'TrainingPlan' ? (
+                                    <TrainingPlanAuditCard key={`added-${index}`} item={item} tone="added" />
+                                  ) : (
+                                    <div key={`added-${index}`} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+                                      {JSON.stringify(item)}
+                                    </div>
+                                  )
                                 ))}
                               </div>
                             </div>
@@ -492,9 +536,13 @@ export default function UserActivityPage() {
                               <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Removed</p>
                               <div className="mt-2 space-y-2">
                                 {asRecordArray(asRecord(log.before).removed).map((item, index) => (
-                                  <div key={`removed-${index}`} className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900">
-                                    {log.entity === 'TrainingPlan' ? formatTrainingPlanItem(item) : JSON.stringify(item)}
-                                  </div>
+                                  log.entity === 'TrainingPlan' ? (
+                                    <TrainingPlanAuditCard key={`removed-${index}`} item={item} tone="removed" />
+                                  ) : (
+                                    <div key={`removed-${index}`} className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900">
+                                      {JSON.stringify(item)}
+                                    </div>
+                                  )
                                 ))}
                               </div>
                             </div>
