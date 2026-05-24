@@ -503,11 +503,6 @@ export default function UserActivityPage() {
 
                     {expandedAuditId === log.id && (
                       <div className="bg-slate-50 px-4 pb-4">
-                        <div className="mb-3 flex flex-wrap gap-2 text-[11px] font-semibold text-gray-500">
-                          <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Method: {log.method}</span>
-                          <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Path: {log.path}</span>
-                          <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">IP: {log.ipAddress || 'Unknown'}</span>
-                        </div>
                         <div className="rounded-lg border border-gray-200 bg-white p-3">
                           <p className="text-xs font-extrabold text-kbc-navy">{auditSummary(log)}</p>
                           {changeSummary(log) !== auditSummary(log) && (
