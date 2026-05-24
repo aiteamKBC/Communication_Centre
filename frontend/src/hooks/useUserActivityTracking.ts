@@ -73,6 +73,7 @@ export function useUserActivityTracking() {
   const location = useLocation();
   const currentPathRef = useRef('');
   const enteredAtRef = useRef(Date.now());
+  const activeRef = useRef(typeof document === 'undefined' ? true : document.visibilityState === 'visible' && document.hasFocus());
   const startInFlightRef = useRef(false);
 
   const ensureTrackingSession = async (): Promise<StoredUser | null> => {
@@ -128,9 +129,10 @@ export function useUserActivityTracking() {
     };
   }, []);
 
-  const flushCurrentPath = (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false) => {
+  const flushCurrentPath = (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false, force = false) => {
     const user = readStoredUser();
     if (!user?.trackingSessionId || !currentPathRef.current) return;
+    if (!force && action !== 'logout' && !activeRef.current) return;
 
     const now = Date.now();
     const durationSeconds = Math.max(0, Math.round((now - enteredAtRef.current) / 1000));
@@ -164,6 +166,7 @@ export function useUserActivityTracking() {
 
       currentPathRef.current = nextPath;
       enteredAtRef.current = Date.now();
+      activeRef.current = document.visibilityState === 'visible' && document.hasFocus();
 
       postActivity({
         action: 'page_view',
@@ -180,29 +183,43 @@ export function useUserActivityTracking() {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
+      if (!activeRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
       flushCurrentPath('heartbeat');
     }, HEARTBEAT_MS);
 
+    const pauseTracking = () => {
+      if (!activeRef.current) return;
+      flushCurrentPath('page_exit', true, true);
+      activeRef.current = false;
+    };
+
+    const resumeTracking = () => {
+      if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
+      activeRef.current = true;
+      enteredAtRef.current = Date.now();
+    };
+
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        flushCurrentPath('page_exit', true);
-      } else {
-        enteredAtRef.current = Date.now();
-      }
+      if (document.visibilityState === 'hidden') pauseTracking();
+      else resumeTracking();
     };
 
     const handleBeforeUnload = () => {
-      flushCurrentPath('page_exit', true);
+      flushCurrentPath('page_exit', true, true);
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('blur', pauseTracking);
+    window.addEventListener('focus', resumeTracking);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('blur', pauseTracking);
+      window.removeEventListener('focus', resumeTracking);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      flushCurrentPath('page_exit', true);
+      flushCurrentPath('page_exit', true, true);
     };
   }, []);
 }
