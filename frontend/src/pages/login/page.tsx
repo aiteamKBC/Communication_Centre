@@ -206,6 +206,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-[linear-gradient(145deg,#eef3fb_0%,#f7f9fc_45%,#fff9ec_100%)] px-4 py-10">
       <div className="mx-auto max-w-5xl">
+
         <div className="grid overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_30px_60px_-38px_rgba(15,23,42,0.45)] lg:grid-cols-2">
           <div className="relative hidden p-10 lg:block bg-[radial-gradient(circle_at_20%_20%,rgba(255,193,7,0.28),transparent_48%),linear-gradient(160deg,#0f386e_0%,#1b2a4a_70%)] text-white">
             <p className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold tracking-wide">
@@ -289,6 +290,7 @@ export default function LoginPage() {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

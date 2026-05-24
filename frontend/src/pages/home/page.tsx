@@ -10,6 +10,19 @@ import RiskSummary from './components/RiskSummary';
 import EventsWidget from './components/EventsWidget';
 import { useSharedEvents } from '../../hooks/useSharedEvents';
 import type { NewsItem } from '../../mocks/news';
+import EventDetailModal from '../events/components/EventDetailModal';
+import { CalendarEvent, parseCalendarEventDate } from '../../mocks/events';
+
+const SPLASH_SESSION_KEY = 'kbc-events-splash-seen';
+
+function getSplashKey() {
+  try {
+    const raw = localStorage.getItem('kbc-auth-user');
+    if (!raw) return SPLASH_SESSION_KEY;
+    const user = JSON.parse(raw) as { loggedInAt?: string };
+    return `${SPLASH_SESSION_KEY}-${user.loggedInAt ?? 'default'}`;
+  } catch { return SPLASH_SESSION_KEY; }
+}
 
 type HomeBootstrapData = {
   urgentNotice: UrgentNoticeState | null;
@@ -188,8 +201,23 @@ function HomePageSkeleton() {
 }
 
 export default function Home() {
-  const { loading: eventsLoading } = useSharedEvents();
+  const { loading: eventsLoading, events } = useSharedEvents();
   const [homeData, setHomeData] = useState<HomeBootstrapData | null>(null);
+  const [splashOpen, setSplashOpen] = useState(false);
+  const [splashEvent, setSplashEvent] = useState<CalendarEvent | null>(null);
+
+  // Show splash once per login when events are loaded
+  useEffect(() => {
+    if (eventsLoading) return;
+    const key = getSplashKey();
+    if (sessionStorage.getItem(key)) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const upcoming = events.filter(e => parseCalendarEventDate(e) >= today);
+    if (upcoming.length === 0) return;
+    sessionStorage.setItem(key, '1');
+    setSplashOpen(true);
+  }, [eventsLoading, events]);
 
   useEffect(() => {
     let mounted = true;
@@ -307,6 +335,94 @@ export default function Home() {
       </div>
 
       <Footer />
+
+      {/* Upcoming events splash — shown once per session on first visit */}
+      {splashOpen && !splashEvent && (() => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const upcoming = events.filter(e => parseCalendarEventDate(e) >= today).slice(0, 6);
+        const iconMap: Record<string, string> = { online: 'ri-wifi-line', offline: 'ri-map-pin-line' };
+        return (
+          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-6 sm:p-10">
+            {/* Blurred backdrop */}
+            <div className="absolute inset-0 backdrop-blur-sm bg-kbc-navy/60" onClick={() => setSplashOpen(false)} />
+
+            <div className="relative z-10 w-full max-w-6xl">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <i className="ri-calendar-event-line text-white text-2xl" />
+                  <h2 className="text-white font-bold text-2xl tracking-wide">Upcoming Events</h2>
+                </div>
+                <button
+                  onClick={() => setSplashOpen(false)}
+                  className="w-10 h-10 flex items-center justify-center bg-white/15 hover:bg-white/25 rounded-full text-white transition-colors"
+                >
+                  <i className="ri-close-line text-lg" />
+                </button>
+              </div>
+
+              {/* Cards grid */}
+              <div className={`grid gap-5 max-h-[72vh] overflow-y-auto pr-1 ${upcoming.length === 1 ? 'grid-cols-1 max-w-2xl mx-auto w-full' : upcoming.length === 2 ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl mx-auto w-full' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
+                {upcoming.map(event => {
+                  const coverUrl = event.media?.find(m => m.isCover)?.url ?? event.image;
+                  return (
+                    <button
+                      key={event.id}
+                      onClick={() => setSplashEvent(event)}
+                      className={`relative rounded-2xl overflow-hidden text-left group cursor-pointer border-0 p-0 focus:outline-none ${upcoming.length === 1 ? 'min-h-[420px]' : 'min-h-[300px]'}`}
+                    >
+                      {coverUrl ? (
+                        <img src={coverUrl} alt={event.title} className="absolute inset-0 w-full h-full object-cover scale-110 blur-[2px] brightness-50" />
+                      ) : (
+                        <div className="absolute inset-0 bg-gradient-to-br from-kbc-navy to-kbc-navy/70" />
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
+
+                      <div className={`relative z-10 h-full flex flex-col justify-between p-8 ${upcoming.length === 1 ? 'min-h-[420px]' : 'min-h-[300px]'}`}>
+                        <div>
+                          <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-3 py-1 rounded-full uppercase tracking-widest mb-3">
+                            <i className="ri-calendar-event-line text-xs" /> Upcoming
+                          </span>
+                          <h3 className="text-white font-bold text-base leading-snug line-clamp-3 group-hover:text-kbc-amber transition-colors">{event.title}</h3>
+                          {event.description && (
+                            <p className="text-white/60 text-sm mt-2 line-clamp-2 leading-relaxed">{event.description}</p>
+                          )}
+                        </div>
+                        <div className="mt-4 space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-white/70 text-sm">
+                            <span className="flex items-center gap-1.5"><i className="ri-calendar-line" />{event.date}</span>
+                            {event.time && <span className="flex items-center gap-1.5"><i className="ri-time-line" />{event.time}</span>}
+                            {event.location && (
+                              <span className="flex items-center gap-1.5 truncate max-w-[180px]">
+                                <i className={`${iconMap[event.type] ?? 'ri-map-pin-line'} shrink-0`} />
+                                {event.location}
+                              </span>
+                            )}
+                          </div>
+                          <span className="flex items-center gap-1.5 text-kbc-amber text-sm font-semibold mt-1 group-hover:underline">
+                            View details <i className="ri-arrow-right-s-line text-base" />
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="text-center text-white/50 text-sm mt-5 cursor-pointer hover:text-white/80 transition-colors" onClick={() => setSplashOpen(false)}>
+                Click anywhere outside to dismiss
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Event detail modal opened from splash */}
+      <EventDetailModal
+        event={splashEvent}
+        onClose={() => setSplashEvent(null)}
+      />
     </div>
   );
 }
