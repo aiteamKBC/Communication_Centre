@@ -127,6 +127,7 @@ function userLabel(session: ActivitySession): string {
 
 type SessionFilter = 'all' | 'active' | 'completed';
 type DateSortOrder = 'newest' | 'oldest';
+type SummaryModalType = 'sessions' | 'users' | 'returned' | 'time' | null;
 
 function dateInputValue(date: Date): string {
   const year = date.getFullYear();
@@ -660,6 +661,7 @@ export default function UserActivityPage() {
   const [openAuditDays, setOpenAuditDays] = useState<Record<string, boolean>>({});
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [dateSortOrder, setDateSortOrder] = useState<DateSortOrder>('newest');
+  const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: '200' });
@@ -693,6 +695,57 @@ export default function UserActivityPage() {
   }, [auditPayload.logs, dateSortOrder]);
   const sessionGroups = useMemo(() => groupByDay(visibleSessions, sessionLastSeenMs), [visibleSessions]);
   const auditLogGroups = useMemo(() => groupByDay(visibleAuditLogs, auditCreatedMs), [visibleAuditLogs]);
+  const visibleTotalSeconds = useMemo(() => (
+    visibleSessions.reduce((sum, session) => sum + session.totalSeconds, 0)
+  ), [visibleSessions]);
+  const userTimeTotals = useMemo(() => {
+    const totals = new Map<string, { label: string; email: string; totalSeconds: number }>();
+
+    visibleSessions.forEach(session => {
+      const key = sessionUserKey(session);
+      const existing = totals.get(key);
+      if (existing) {
+        existing.totalSeconds += session.totalSeconds;
+        return;
+      }
+      totals.set(key, {
+        label: userLabel(session),
+        email: session.email || session.username,
+        totalSeconds: session.totalSeconds,
+      });
+    });
+
+    return Array.from(totals.values()).sort((a, b) => b.totalSeconds - a.totalSeconds);
+  }, [visibleSessions]);
+  const userSessionTotals = useMemo(() => {
+    const totals = new Map<string, { label: string; email: string; sessions: number; active: number; completed: number }>();
+
+    visibleSessions.forEach(session => {
+      const key = sessionUserKey(session);
+      const existing = totals.get(key) || {
+        label: userLabel(session),
+        email: session.email || session.username,
+        sessions: 0,
+        active: 0,
+        completed: 0,
+      };
+      existing.sessions += 1;
+      if (session.isActive) existing.active += 1;
+      else existing.completed += 1;
+      totals.set(key, existing);
+    });
+
+    return Array.from(totals.values()).sort((a, b) => b.sessions - a.sessions || a.label.localeCompare(b.label));
+  }, [visibleSessions]);
+  const summaryModalTitle = summaryModal === 'sessions'
+    ? 'Sessions breakdown'
+    : summaryModal === 'users'
+      ? 'Users breakdown'
+      : summaryModal === 'returned'
+        ? 'Returned sessions'
+        : summaryModal === 'time'
+          ? 'Total time by user'
+          : '';
   const toggleSessionDay = (key: string) => {
     setOpenSessionDays(current => ({ ...current, [key]: !current[key] }));
   };
@@ -804,22 +857,162 @@ export default function UserActivityPage() {
         <main className="mx-auto max-w-7xl px-4 py-6 md:px-6">
           <div className="grid gap-3 md:grid-cols-4">
             {[
-              { label: 'Sessions', value: payload.summary.totalSessions, icon: 'ri-login-circle-line', tone: 'bg-blue-50 text-blue-700 ring-blue-100' },
-              { label: 'Users', value: payload.summary.uniqueUsers, icon: 'ri-user-line', tone: 'bg-violet-50 text-violet-700 ring-violet-100' },
-              { label: 'Returned', value: payload.summary.returnedSessions, icon: 'ri-loop-left-line', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
-              { label: 'Total Time', value: formatDuration(payload.summary.totalSeconds), icon: 'ri-time-line', tone: 'bg-amber-50 text-amber-700 ring-amber-100' },
+              { label: 'Sessions', value: payload.summary.totalSessions, hint: 'View active and completed', icon: 'ri-login-circle-line', tone: 'bg-blue-50 text-blue-700 ring-blue-100', modal: 'sessions' },
+              { label: 'Users', value: payload.summary.uniqueUsers, hint: 'View user session counts', icon: 'ri-user-line', tone: 'bg-violet-50 text-violet-700 ring-violet-100', modal: 'users' },
+              { label: 'Returned', value: payload.summary.returnedSessions, hint: 'View returned session list', icon: 'ri-loop-left-line', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100', modal: 'returned' },
             ].map(card => (
-              <div key={card.label} className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+              <button
+                key={card.label}
+                type="button"
+                onClick={() => setSummaryModal(card.modal as SummaryModalType)}
+                className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-4 text-left shadow-sm transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-kbc-navy/20"
+              >
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wide text-gray-400">{card.label}</p>
                   <p className="mt-1 text-2xl font-extrabold text-kbc-navy">{card.value}</p>
+                  <p className="mt-1 text-xs font-bold text-gray-400">{card.hint}</p>
                 </div>
                 <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ring-1 ${card.tone}`}>
                   <i className={`${card.icon} text-lg`} />
                 </span>
-              </div>
+              </button>
             ))}
+            <button
+              type="button"
+              onClick={() => setSummaryModal('time')}
+              className="rounded-lg border border-gray-200 bg-white p-4 text-left shadow-sm transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-kbc-navy/20"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Total Time</p>
+                  <p className="mt-1 text-2xl font-extrabold text-kbc-navy">{formatDuration(visibleTotalSeconds)}</p>
+                  <p className="mt-1 text-xs font-bold text-gray-400">Click to view by user</p>
+                </div>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+                  <i className="ri-time-line text-lg" />
+                </span>
+              </div>
+            </button>
           </div>
+
+          {summaryModal && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="summary-modal-title"
+              onClick={() => setSummaryModal(null)}
+            >
+              <div
+                className="w-full max-w-lg overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl"
+                onClick={event => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+                  <div>
+                    <p id="summary-modal-title" className="text-base font-extrabold text-kbc-navy">{summaryModalTitle}</p>
+                    <p className="mt-1 text-sm font-semibold text-gray-500">
+                      Showing the current filtered results.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSummaryModal(null)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-kbc-navy"
+                    aria-label="Close summary details"
+                  >
+                    <i className="ri-close-line text-xl" />
+                  </button>
+                </div>
+                <div className="max-h-[420px] overflow-y-auto p-4">
+                  {summaryModal === 'sessions' && (
+                    <div className="space-y-2">
+                      {[
+                        { label: 'Active sessions', value: activeSessions, tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
+                        { label: 'Completed sessions', value: completedSessions, tone: 'bg-gray-50 text-gray-700 ring-gray-200' },
+                        { label: 'Visible sessions', value: visibleSessions.length, tone: 'bg-blue-50 text-blue-700 ring-blue-100' },
+                      ].map(item => (
+                        <div key={item.label} className="flex items-center justify-between rounded-lg border border-gray-200 bg-slate-50 px-4 py-3">
+                          <span className="text-sm font-extrabold text-kbc-navy">{item.label}</span>
+                          <span className={`rounded-full px-3 py-1 text-sm font-extrabold ring-1 ${item.tone}`}>{item.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {summaryModal === 'users' && (
+                    userSessionTotals.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm font-semibold text-gray-400">
+                        No users in this view.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {userSessionTotals.map(user => (
+                          <div key={user.email || user.label} className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-slate-50 px-3 py-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-extrabold text-kbc-navy">{user.label}</p>
+                              {user.email && <p className="truncate text-xs font-semibold text-gray-400">{user.email}</p>}
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <p className="text-sm font-extrabold text-kbc-navy">{user.sessions} sessions</p>
+                              <p className="text-[11px] font-bold text-gray-400">{user.active} active / {user.completed} ended</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  )}
+
+                  {summaryModal === 'returned' && (
+                    visibleSessions.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm font-semibold text-gray-400">
+                        No returned sessions in this view.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {visibleSessions.map(session => (
+                          <div key={session.id} className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-slate-50 px-3 py-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-extrabold text-kbc-navy">{userLabel(session)}</p>
+                              <p className="truncate text-xs font-semibold text-gray-400">{session.email || session.username}</p>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <p className="text-sm font-extrabold text-kbc-navy">{sessionDurationLabel(session)}</p>
+                              <p className="text-[11px] font-bold text-gray-400">{session.pageCount} pages</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  )}
+
+                  {summaryModal === 'time' && (
+                    userTimeTotals.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm font-semibold text-gray-400">
+                        No user time yet.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-extrabold text-amber-800">
+                          Total visible time: {formatDuration(visibleTotalSeconds)}
+                        </div>
+                        {userTimeTotals.map(user => (
+                          <div key={user.email || user.label} className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-slate-50 px-3 py-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-extrabold text-kbc-navy">{user.label}</p>
+                              {user.email && <p className="truncate text-xs font-semibold text-gray-400">{user.email}</p>}
+                            </div>
+                            <span className="shrink-0 rounded-full bg-white px-3 py-1 text-sm font-extrabold text-kbc-navy ring-1 ring-gray-200">
+                              {formatDuration(user.totalSeconds)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
             <label className="relative min-w-[280px] flex-1">
