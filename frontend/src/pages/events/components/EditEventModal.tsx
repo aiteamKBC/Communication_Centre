@@ -365,10 +365,9 @@ export default function EditEventModal({ event, onClose, onEventUpdated }: Props
                 placeholder="Provide a brief description..."
                 rows={4}
                 value={description}
-                onChange={e => setDescription(e.target.value.slice(0, 500))}
+                onChange={e => setDescription(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 placeholder-gray-400 outline-none focus:border-kbc-navy transition-colors resize-none"
               />
-              <p className="text-xs text-gray-400 mt-1 text-right">{description.length}/500</p>
             </div>
           </div>
         </div>
