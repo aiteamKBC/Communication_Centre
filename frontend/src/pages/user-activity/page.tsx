@@ -96,7 +96,7 @@ function formatDuration(totalSeconds: number, showSeconds = false): string {
     const remainingSeconds = seconds % 60;
 
     if (hours > 0) return `${hours}h ${minutes}m`;
-    if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+    if (minutes > 0) return `${minutes}m`;
     return `${remainingSeconds}s`;
   }
 
@@ -199,6 +199,12 @@ function dateInputValue(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function msUntilNextLocalDay(): number {
+  const now = new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return Math.max(1000, tomorrow.getTime() - now.getTime() + 1000);
 }
 
 function dateDisplayValue(value: string): string {
@@ -538,7 +544,7 @@ function DaySessionStats({ sessions }: { sessions: ActivitySession[] }) {
     ['Sessions', stats.sessions],
     ['Users', stats.users],
     ['Returned', stats.returned],
-    ['Total time', formatDuration(stats.totalSeconds)],
+    ['Total period', formatDuration(stats.totalSeconds)],
   ];
 
   return (
@@ -904,7 +910,7 @@ function TrainingPlanAuditCard({ item, tone }: { item: Record<string, unknown>; 
         </div>
       </div>
       <div className="mt-2 text-xs font-semibold opacity-80">
-        Time: {time}
+        Period: {time}
       </div>
     </div>
   );
@@ -913,6 +919,7 @@ function TrainingPlanAuditCard({ item, tone }: { item: Record<string, unknown>; 
 export default function UserActivityPage() {
   const access = useAccessControl();
   const canView = access.adminAccess || access.itAccess;
+  const [currentDateValue, setCurrentDateValue] = useState(() => dateInputValue(new Date()));
   const [payload, setPayload] = useState<ActivityPayload>(emptyPayload);
   const [auditPayload, setAuditPayload] = useState<AuditPayload>(emptyAuditPayload);
   const [loading, setLoading] = useState(true);
@@ -932,6 +939,26 @@ export default function UserActivityPage() {
   const [pageVisitSort, setPageVisitSort] = useState<PageVisitSort>({ key: 'time', direction: 'desc' });
   const [auditLogSort, setAuditLogSort] = useState<AuditLogSort>({ key: 'time', direction: 'desc' });
   const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
+
+  useEffect(() => {
+    let timeoutId: number | null = null;
+
+    const scheduleNextDayRefresh = () => {
+      timeoutId = window.setTimeout(() => {
+        const nextDateValue = dateInputValue(new Date());
+        setCurrentDateValue(previousDateValue => {
+          return nextDateValue;
+        });
+        scheduleNextDayRefresh();
+      }, msUntilNextLocalDay());
+    };
+
+    scheduleNextDayRefresh();
+
+    return () => {
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, []);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: '200' });
@@ -959,8 +986,8 @@ export default function UserActivityPage() {
   const visibleAuditLogs = useMemo(() => {
     return sortedAuditLogs(auditPayload.logs, auditLogSort);
   }, [auditLogSort, auditPayload.logs]);
-  const sessionGroups = useMemo(() => groupedSortedSessions(visibleSessions, sessionSort, dateSortOrder), [dateSortOrder, sessionSort, visibleSessions]);
-  const auditLogGroups = useMemo(() => groupedSortedAuditLogs(auditPayload.logs, auditLogSort), [auditLogSort, auditPayload.logs]);
+  const sessionGroups = useMemo(() => groupedSortedSessions(visibleSessions, sessionSort, dateSortOrder), [currentDateValue, dateSortOrder, sessionSort, visibleSessions]);
+  const auditLogGroups = useMemo(() => groupedSortedAuditLogs(auditPayload.logs, auditLogSort), [auditLogSort, auditPayload.logs, currentDateValue]);
   const visibleTotalSeconds = useMemo(() => (
     visibleSessions.reduce((sum, session) => sum + session.totalSeconds, 0)
   ), [visibleSessions]);
@@ -1008,9 +1035,9 @@ export default function UserActivityPage() {
     : summaryModal === 'users'
       ? 'Users breakdown'
       : summaryModal === 'returned'
-        ? 'Returned sessions'
-        : summaryModal === 'time'
-          ? 'Total time by user'
+          ? 'Returned sessions'
+          : summaryModal === 'time'
+          ? 'Total period by user'
           : '';
   const toggleSessionDay = (key: string) => {
     setOpenSessionDays(current => ({ ...current, [key]: !current[key] }));
@@ -1084,22 +1111,39 @@ export default function UserActivityPage() {
       return;
     }
 
-    const controller = new AbortController();
-    setAuditLoading(true);
-    setAuditError('');
+    let cancelled = false;
+    let controller: AbortController | null = null;
 
-    fetch(`/api/audit-logs/?${query}`, { signal: controller.signal })
-      .then(async response => {
-        if (!response.ok) throw new Error('Unable to load audit logs.');
-        return response.json() as Promise<AuditPayload>;
-      })
-      .then(data => setAuditPayload(data))
-      .catch(err => {
-        if (err.name !== 'AbortError') setAuditError('Unable to load audit logs right now.');
-      })
-      .finally(() => setAuditLoading(false));
+    const loadAuditLogs = (showSpinner = false) => {
+      controller?.abort();
+      controller = new AbortController();
+      if (showSpinner) setAuditLoading(true);
+      setAuditError('');
 
-    return () => controller.abort();
+      fetch(`/api/audit-logs/?${query}`, { signal: controller.signal })
+        .then(async response => {
+          if (!response.ok) throw new Error('Unable to load audit logs.');
+          return response.json() as Promise<AuditPayload>;
+        })
+        .then(data => {
+          if (!cancelled) setAuditPayload(data);
+        })
+        .catch(err => {
+          if (!cancelled && err.name !== 'AbortError') setAuditError('Unable to load audit logs right now.');
+        })
+        .finally(() => {
+          if (!cancelled && showSpinner) setAuditLoading(false);
+        });
+    };
+
+    loadAuditLogs(true);
+    const intervalId = window.setInterval(() => loadAuditLogs(), 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      controller?.abort();
+    };
   }, [canView, query]);
 
   if (!canView) {
@@ -1140,6 +1184,8 @@ export default function UserActivityPage() {
               <button
                 type="button"
                 onClick={() => {
+                  const todayValue = dateInputValue(new Date());
+                  setCurrentDateValue(todayValue);
                   setSearch('');
                   setFrom('');
                   setTo('');
@@ -1185,7 +1231,7 @@ export default function UserActivityPage() {
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Total Time</p>
+                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Total Period</p>
                   <p className="mt-1 text-2xl font-extrabold text-kbc-navy">{formatDuration(visibleTotalSeconds)}</p>
                   <p className="mt-1 text-xs font-bold text-gray-400">Click to view by user</p>
                 </div>
@@ -1294,7 +1340,7 @@ export default function UserActivityPage() {
                     ) : (
                       <div className="space-y-2">
                         <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-extrabold text-amber-800">
-                          Total visible time: {formatDuration(visibleTotalSeconds)}
+                          Total visible period: {formatDuration(visibleTotalSeconds)}
                         </div>
                         {userTimeTotals.map(user => (
                           <div key={user.email || user.label} className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-slate-50 px-3 py-3">
@@ -1382,7 +1428,7 @@ export default function UserActivityPage() {
               <SortHeader label="User" sortKey="user" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Login" sortKey="login" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Status" sortKey="status" currentSort={sessionSort} onSort={toggleSessionSort} />
-              <SortHeader label="Time" sortKey="time" currentSort={sessionSort} onSort={toggleSessionSort} align="right" />
+              <SortHeader label="Period" sortKey="time" currentSort={sessionSort} onSort={toggleSessionSort} align="right" />
               <SortHeader label="Pages" sortKey="pages" currentSort={sessionSort} onSort={toggleSessionSort} align="center" />
               <span />
             </div>
@@ -1441,7 +1487,7 @@ export default function UserActivityPage() {
                           <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
                             <div className="grid grid-cols-[1fr_110px_90px_120px] bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">
                               <SortHeader label="Page" sortKey="page" currentSort={pageVisitSort} onSort={togglePageVisitSort} />
-                              <SortHeader label="Time" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
+                              <SortHeader label="Period" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
                               <SortHeader label="Views" sortKey="views" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="center" />
                               <SortHeader label="Last Seen" sortKey="lastSeen" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
                             </div>

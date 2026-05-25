@@ -1734,9 +1734,9 @@ def user_activity(request):
 			| models.Q(page_visits__path__icontains=search)
 		).distinct()
 	if from_date:
-		records = records.filter(login_at__date__gte=from_date)
+		records = records.filter(last_seen_at__date__gte=from_date)
 	if to_date:
-		records = records.filter(login_at__date__lte=to_date)
+		records = records.filter(last_seen_at__date__lte=to_date)
 
 	sessions = list(records[:limit])
 	total_sessions = records.count()
