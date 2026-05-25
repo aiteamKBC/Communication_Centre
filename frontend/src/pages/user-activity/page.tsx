@@ -87,15 +87,26 @@ const emptyAuditPayload: AuditPayload = {
   logs: [],
 };
 
-function formatDuration(totalSeconds: number): string {
+function formatDuration(totalSeconds: number, showSeconds = false): string {
   const seconds = Math.max(0, Math.round(totalSeconds || 0));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainingSeconds = seconds % 60;
+
+  if (showSeconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+    return `${remainingSeconds}s`;
+  }
+
+  const totalMinutes = Math.round(seconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
 
   if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
-  return `${remainingSeconds}s`;
+  if (seconds > 0 && totalMinutes === 0) return '<1m';
+  return `${totalMinutes}m`;
 }
 
 function formatDateTime(value: string): string {
@@ -163,11 +174,23 @@ function userLabel(session: ActivitySession): string {
 type SessionFilter = 'all' | 'active' | 'completed';
 type DateSortOrder = 'newest' | 'oldest';
 type SummaryModalType = 'sessions' | 'users' | 'returned' | 'time' | null;
+type SessionSortKey = 'user' | 'login' | 'status' | 'time' | 'pages';
 type PageVisitSortKey = 'page' | 'time' | 'views' | 'lastSeen';
+type AuditLogSortKey = 'action' | 'entity' | 'change' | 'user' | 'time';
 type SortDirection = 'asc' | 'desc';
+
+type SessionSort = {
+  key: SessionSortKey;
+  direction: SortDirection;
+};
 
 type PageVisitSort = {
   key: PageVisitSortKey;
+  direction: SortDirection;
+};
+
+type AuditLogSort = {
+  key: AuditLogSortKey;
   direction: SortDirection;
 };
 
@@ -215,6 +238,11 @@ function calendarDays(monthDate: Date): Date[] {
 function sessionLastSeenMs(session: ActivitySession): number {
   const value = session.lastSeenAt || session.logoutAt || session.loginAt;
   const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function sessionLoginMs(session: ActivitySession): number {
+  const timestamp = new Date(session.loginAt).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
@@ -305,6 +333,67 @@ function sessionStatusText(session: ActivitySession): string {
   return `Last seen ${formatTime(session.lastSeenAt)}`;
 }
 
+function sessionStatusRank(session: ActivitySession): number {
+  if (session.isActive) return 0;
+  if (!session.logoutAt) return 1;
+  return 2;
+}
+
+function sortedSessions(sessions: ActivitySession[], sort: SessionSort): ActivitySession[] {
+  const direction = sort.direction === 'asc' ? 1 : -1;
+
+  return [...sessions].sort((a, b) => {
+    let comparison = 0;
+
+    if (sort.key === 'user') {
+      comparison = userLabel(a).localeCompare(userLabel(b));
+    } else if (sort.key === 'login') {
+      comparison = sessionLoginMs(a) - sessionLoginMs(b);
+    } else if (sort.key === 'status') {
+      comparison = sessionStatusRank(a) - sessionStatusRank(b);
+    } else if (sort.key === 'time') {
+      comparison = a.totalSeconds - b.totalSeconds;
+    } else {
+      comparison = a.pageCount - b.pageCount;
+    }
+
+    if (comparison !== 0) return comparison * direction;
+    return sessionLastSeenMs(b) - sessionLastSeenMs(a) || b.id - a.id;
+  });
+}
+
+function groupedSortedSessions(sessions: ActivitySession[], sort: SessionSort, dateOrder: DateSortOrder): DayGroup<ActivitySession>[] {
+  const groups = new Map<string, { label: string; timestamp: number; items: ActivitySession[] }>();
+
+  sessions.forEach(session => {
+    const timestamp = sessionLastSeenMs(session);
+    const key = dateKeyFromMs(timestamp);
+    const existing = groups.get(key);
+
+    if (existing) {
+      existing.timestamp = dateOrder === 'oldest' ? Math.min(existing.timestamp, timestamp) : Math.max(existing.timestamp, timestamp);
+      existing.items.push(session);
+      return;
+    }
+
+    groups.set(key, {
+      label: dateGroupLabel(timestamp),
+      timestamp,
+      items: [session],
+    });
+  });
+
+  const groupDirection = dateOrder === 'oldest' ? 1 : -1;
+
+  return Array.from(groups.entries())
+    .sort(([, a], [, b]) => (a.timestamp - b.timestamp) * groupDirection)
+    .map(([key, group]) => ({
+      key,
+      label: group.label,
+      items: sortedSessions(group.items, sort),
+    }));
+}
+
 function pageVisitLastSeenMs(visit: PageVisit): number {
   const timestamp = new Date(visit.lastSeenAt).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -331,7 +420,7 @@ function sortedPageVisits(visits: PageVisit[], sort: PageVisitSort): PageVisit[]
   });
 }
 
-function PageVisitSortHeader({
+function SortHeader<TSortKey extends string>({
   label,
   sortKey,
   currentSort,
@@ -339,9 +428,9 @@ function PageVisitSortHeader({
   align = 'left',
 }: {
   label: string;
-  sortKey: PageVisitSortKey;
-  currentSort: PageVisitSort;
-  onSort: (key: PageVisitSortKey) => void;
+  sortKey: TSortKey;
+  currentSort: { key: TSortKey; direction: SortDirection };
+  onSort: (key: TSortKey) => void;
   align?: 'left' | 'center' | 'right';
 }) {
   const active = currentSort.key === sortKey;
@@ -364,6 +453,65 @@ function PageVisitSortHeader({
       <i className={`${icon} text-xs`} />
     </button>
   );
+}
+
+function auditUserLabel(log: AuditLog): string {
+  return log.displayName || log.username || log.email || 'Unknown';
+}
+
+function sortedAuditLogs(logs: AuditLog[], sort: AuditLogSort): AuditLog[] {
+  const direction = sort.direction === 'asc' ? 1 : -1;
+
+  return [...logs].sort((a, b) => {
+    let comparison = 0;
+
+    if (sort.key === 'action') {
+      comparison = actionLabel(a.action).localeCompare(actionLabel(b.action));
+    } else if (sort.key === 'entity') {
+      comparison = a.entity.localeCompare(b.entity);
+    } else if (sort.key === 'change') {
+      comparison = auditSummary(a).localeCompare(auditSummary(b));
+    } else if (sort.key === 'user') {
+      comparison = auditUserLabel(a).localeCompare(auditUserLabel(b));
+    } else {
+      comparison = auditCreatedMs(a) - auditCreatedMs(b);
+    }
+
+    if (comparison !== 0) return comparison * direction;
+    return auditCreatedMs(b) - auditCreatedMs(a) || b.id - a.id;
+  });
+}
+
+function groupedSortedAuditLogs(logs: AuditLog[], sort: AuditLogSort): DayGroup<AuditLog>[] {
+  const groups = new Map<string, { label: string; timestamp: number; items: AuditLog[] }>();
+
+  logs.forEach(log => {
+    const timestamp = auditCreatedMs(log);
+    const key = dateKeyFromMs(timestamp);
+    const existing = groups.get(key);
+
+    if (existing) {
+      existing.timestamp = sort.direction === 'asc' ? Math.min(existing.timestamp, timestamp) : Math.max(existing.timestamp, timestamp);
+      existing.items.push(log);
+      return;
+    }
+
+    groups.set(key, {
+      label: dateGroupLabel(timestamp),
+      timestamp,
+      items: [log],
+    });
+  });
+
+  const groupDirection = sort.key === 'time' && sort.direction === 'asc' ? 1 : -1;
+
+  return Array.from(groups.entries())
+    .sort(([, a], [, b]) => (a.timestamp - b.timestamp) * groupDirection)
+    .map(([key, group]) => ({
+      key,
+      label: group.label,
+      items: sortedAuditLogs(group.items, sort),
+    }));
 }
 
 function pageCountLabel(session: ActivitySession): string {
@@ -780,7 +928,9 @@ export default function UserActivityPage() {
   const [openAuditDays, setOpenAuditDays] = useState<Record<string, boolean>>({});
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [dateSortOrder, setDateSortOrder] = useState<DateSortOrder>('newest');
+  const [sessionSort, setSessionSort] = useState<SessionSort>({ key: 'login', direction: 'desc' });
   const [pageVisitSort, setPageVisitSort] = useState<PageVisitSort>({ key: 'time', direction: 'desc' });
+  const [auditLogSort, setAuditLogSort] = useState<AuditLogSort>({ key: 'time', direction: 'desc' });
   const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
 
   const query = useMemo(() => {
@@ -807,14 +957,10 @@ export default function UserActivityPage() {
       ));
   }, [dateSortOrder, payload.sessions, sessionFilter]);
   const visibleAuditLogs = useMemo(() => {
-    return [...auditPayload.logs].sort((a, b) => (
-      dateSortOrder === 'newest'
-        ? auditCreatedMs(b) - auditCreatedMs(a)
-        : auditCreatedMs(a) - auditCreatedMs(b)
-    ));
-  }, [auditPayload.logs, dateSortOrder]);
-  const sessionGroups = useMemo(() => groupByDay(visibleSessions, sessionLastSeenMs), [visibleSessions]);
-  const auditLogGroups = useMemo(() => groupByDay(visibleAuditLogs, auditCreatedMs), [visibleAuditLogs]);
+    return sortedAuditLogs(auditPayload.logs, auditLogSort);
+  }, [auditLogSort, auditPayload.logs]);
+  const sessionGroups = useMemo(() => groupedSortedSessions(visibleSessions, sessionSort, dateSortOrder), [dateSortOrder, sessionSort, visibleSessions]);
+  const auditLogGroups = useMemo(() => groupedSortedAuditLogs(auditPayload.logs, auditLogSort), [auditLogSort, auditPayload.logs]);
   const visibleTotalSeconds = useMemo(() => (
     visibleSessions.reduce((sum, session) => sum + session.totalSeconds, 0)
   ), [visibleSessions]);
@@ -872,8 +1018,20 @@ export default function UserActivityPage() {
   const toggleAuditDay = (key: string) => {
     setOpenAuditDays(current => ({ ...current, [key]: !current[key] }));
   };
+  const toggleSessionSort = (key: SessionSortKey) => {
+    setSessionSort(current => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
   const togglePageVisitSort = (key: PageVisitSortKey) => {
     setPageVisitSort(current => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+  const toggleAuditLogSort = (key: AuditLogSortKey) => {
+    setAuditLogSort(current => ({
       key,
       direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
     }));
@@ -1221,11 +1379,11 @@ export default function UserActivityPage() {
               </p>
             </div>
             <div className="grid grid-cols-[minmax(280px,1.6fr)_100px_minmax(240px,1.1fr)_110px_88px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
-              <span>User</span>
-              <span>Login</span>
-              <span>Status</span>
-              <span>Time</span>
-              <span>Pages</span>
+              <SortHeader label="User" sortKey="user" currentSort={sessionSort} onSort={toggleSessionSort} />
+              <SortHeader label="Login" sortKey="login" currentSort={sessionSort} onSort={toggleSessionSort} />
+              <SortHeader label="Status" sortKey="status" currentSort={sessionSort} onSort={toggleSessionSort} />
+              <SortHeader label="Time" sortKey="time" currentSort={sessionSort} onSort={toggleSessionSort} align="right" />
+              <SortHeader label="Pages" sortKey="pages" currentSort={sessionSort} onSort={toggleSessionSort} align="center" />
               <span />
             </div>
 
@@ -1267,8 +1425,8 @@ export default function UserActivityPage() {
                           </span>
                           <span className="truncate font-extrabold text-gray-700">{sessionStatusText(session)}</span>
                         </span>
-                        <span className="text-xs font-extrabold text-gray-700">{sessionDurationLabel(session)}</span>
-                        <span className="text-xs font-semibold text-gray-600">{pageCountLabel(session)}</span>
+                        <span className="text-right text-xs font-extrabold text-gray-700">{sessionDurationLabel(session)}</span>
+                        <span className="text-center text-xs font-semibold text-gray-600">{pageCountLabel(session)}</span>
                         <span className="flex justify-end text-gray-400">
                           <i className={expandedId === session.id ? 'ri-arrow-up-s-line text-xl' : 'ri-arrow-down-s-line text-xl'} />
                         </span>
@@ -1282,10 +1440,10 @@ export default function UserActivityPage() {
                           </div>
                           <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
                             <div className="grid grid-cols-[1fr_110px_90px_120px] bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">
-                              <PageVisitSortHeader label="Page" sortKey="page" currentSort={pageVisitSort} onSort={togglePageVisitSort} />
-                              <PageVisitSortHeader label="Time" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
-                              <PageVisitSortHeader label="Views" sortKey="views" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="center" />
-                              <PageVisitSortHeader label="Last Seen" sortKey="lastSeen" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
+                              <SortHeader label="Page" sortKey="page" currentSort={pageVisitSort} onSort={togglePageVisitSort} />
+                              <SortHeader label="Time" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
+                              <SortHeader label="Views" sortKey="views" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="center" />
+                              <SortHeader label="Last Seen" sortKey="lastSeen" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
                             </div>
                             {session.pageVisits.length === 0 ? (
                               <div className="px-3 py-4 text-xs font-semibold text-gray-400">No page visits recorded.</div>
@@ -1293,7 +1451,7 @@ export default function UserActivityPage() {
                               sortedPageVisits(session.pageVisits, pageVisitSort).map(visit => (
                                 <div key={visit.id} className="grid grid-cols-[1fr_110px_90px_120px] border-t border-gray-100 px-3 py-2 text-xs hover:bg-slate-50">
                                   <span className="truncate font-semibold text-gray-700" title={visit.path}>{pageVisitLabel(visit.path)}</span>
-                                  <span className="text-right font-bold text-gray-700">{formatDuration(visit.durationSeconds)}</span>
+                                  <span className="text-right font-bold text-gray-700">{formatDuration(visit.durationSeconds, true)}</span>
                                   <span className="text-center text-gray-500">{visit.viewCount}</span>
                                   <span className="text-right text-gray-500">{formatTime(visit.lastSeenAt)}</span>
                                 </div>
@@ -1324,11 +1482,11 @@ export default function UserActivityPage() {
 
             <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
               <div className="grid grid-cols-[120px_170px_1.5fr_1fr_180px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
-                <span>Action</span>
-                <span>Entity</span>
-                <span>Change</span>
-                <span>User</span>
-                <span>Time</span>
+                <SortHeader label="Action" sortKey="action" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
+                <SortHeader label="Entity" sortKey="entity" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
+                <SortHeader label="Change" sortKey="change" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
+                <SortHeader label="User" sortKey="user" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
+                <SortHeader label="Time" sortKey="time" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
                 <span />
               </div>
 
@@ -1360,7 +1518,7 @@ export default function UserActivityPage() {
                           <span className="inline-flex w-fit rounded bg-kbc-navy/10 px-2 py-1 text-[11px] font-extrabold uppercase text-kbc-navy">{actionLabel(log.action)}</span>
                           <span className="truncate text-xs font-bold text-gray-600">{log.entity}</span>
                           <span className="truncate text-xs font-semibold text-gray-700">{auditSummary(log)}</span>
-                          <span className="truncate text-xs font-semibold text-gray-600">{log.displayName || log.username || log.email || 'Unknown'}</span>
+                          <span className="truncate text-xs font-semibold text-gray-600">{auditUserLabel(log)}</span>
                           <span className="text-xs font-semibold text-gray-500">{formatTime(log.createdAt)}</span>
                           <span className="flex justify-end text-gray-400">
                             <i className={expandedAuditId === log.id ? 'ri-arrow-up-s-line text-xl' : 'ri-arrow-down-s-line text-xl'} />
