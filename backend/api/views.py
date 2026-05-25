@@ -2,7 +2,7 @@ import base64
 import json
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
@@ -1672,7 +1672,13 @@ def risk_register(request):
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
-def serialize_user_activity_session(session: UserActivitySession) -> dict:
+ACTIVITY_ACTIVE_WINDOW_SECONDS = 20
+
+
+def serialize_user_activity_session(session: UserActivitySession, now=None) -> dict:
+	now = now or timezone.now()
+	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
+	is_active = bool(session.logout_at is None and session.last_seen_at and session.last_seen_at >= active_cutoff)
 	page_visits = [
 		{
 			'id': visit.id,
@@ -1702,7 +1708,7 @@ def serialize_user_activity_session(session: UserActivitySession) -> dict:
 		'ipAddress': session.ip_address or '',
 		'userAgent': session.user_agent,
 		'logoutReason': session.logout_reason,
-		'isActive': session.logout_at is None,
+		'isActive': is_active,
 		'pageVisits': page_visits,
 	}
 
@@ -1738,6 +1744,7 @@ def user_activity(request):
 	unique_users = len({(session.email or session.username or str(session.user_id)).lower() for session in sessions})
 	total_page_views = sum(sum(visit.view_count for visit in session.page_visits.all()) for session in sessions)
 
+	now = timezone.now()
 	return JsonResponse(
 		{
 			'summary': {
@@ -1747,7 +1754,7 @@ def user_activity(request):
 				'totalSeconds': total_seconds,
 				'totalPageViews': total_page_views,
 			},
-			'sessions': [serialize_user_activity_session(session) for session in sessions],
+			'sessions': [serialize_user_activity_session(session, now) for session in sessions],
 		}
 	)
 

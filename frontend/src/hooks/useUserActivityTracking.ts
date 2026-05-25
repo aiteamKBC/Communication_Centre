@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 const ACTIVITY_ENDPOINT = '/api/auth/activity/';
-const HEARTBEAT_MS = 15000;
+const HEARTBEAT_MS = 10000;
 
 type StoredUser = {
   id?: number | string;

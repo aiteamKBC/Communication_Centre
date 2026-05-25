@@ -121,6 +121,41 @@ function formatTime(value: string): string {
   });
 }
 
+const pageLabels = [
+  { path: '/login/microsoft-popup', label: 'Microsoft Sign-in' },
+  { path: '/urgent-notice/new', label: 'Urgent Notice' },
+  { path: '/leadership-message/new', label: 'Leadership Message' },
+  { path: '/apprenticeships-timeline', label: 'Training Plan' },
+  { path: '/training-plan', label: 'Training Plan' },
+  { path: '/user-activity', label: 'User Activity' },
+  { path: '/risk-register', label: 'Risk Register' },
+  { path: '/departments', label: 'Departments' },
+  { path: '/documents', label: 'Policies' },
+  { path: '/dashboard', label: 'Internal Dashboards' },
+  { path: '/feedback', label: 'Submit Feedback' },
+  { path: '/events', label: 'Events' },
+  { path: '/news', label: 'News & Announcements' },
+  { path: '/login', label: 'Login' },
+  { path: '/', label: 'Home' },
+];
+
+function pageVisitLabel(path: string): string {
+  const cleanPath = (path || '/').split(/[?#]/)[0] || '/';
+  const match = pageLabels.find(item => (
+    item.path === '/' ? cleanPath === '/' : cleanPath === item.path || cleanPath.startsWith(`${item.path}/`)
+  ));
+
+  if (match) return match.label;
+
+  return cleanPath
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean)
+    .map(part => part.replace(/[-_]+/g, ' '))
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' / ') || 'Home';
+}
+
 function userLabel(session: ActivitySession): string {
   return session.displayName || session.username || session.email || 'Unknown user';
 }
@@ -128,6 +163,13 @@ function userLabel(session: ActivitySession): string {
 type SessionFilter = 'all' | 'active' | 'completed';
 type DateSortOrder = 'newest' | 'oldest';
 type SummaryModalType = 'sessions' | 'users' | 'returned' | 'time' | null;
+type PageVisitSortKey = 'page' | 'time' | 'views' | 'lastSeen';
+type SortDirection = 'asc' | 'desc';
+
+type PageVisitSort = {
+  key: PageVisitSortKey;
+  direction: SortDirection;
+};
 
 function dateInputValue(date: Date): string {
   const year = date.getFullYear();
@@ -245,6 +287,83 @@ function groupByDay<T>(items: T[], getTimestamp: (item: T) => number): DayGroup<
 function sessionDurationLabel(session: ActivitySession): string {
   if (session.isActive && session.totalSeconds === 0) return 'Just started';
   return formatDuration(session.totalSeconds);
+}
+
+function sessionStatusLabel(session: ActivitySession): string {
+  if (session.isActive) return 'Active';
+  return session.logoutAt ? 'Ended' : 'Inactive';
+}
+
+function sessionStatusDetail(session: ActivitySession): string {
+  if (session.isActive) return 'Currently open';
+  return session.logoutAt ? 'Logged out' : 'Not currently open';
+}
+
+function sessionStatusText(session: ActivitySession): string {
+  if (session.isActive) return `Open now - seen ${formatTime(session.lastSeenAt)}`;
+  if (session.logoutAt) return `Logged out ${formatTime(session.logoutAt)}`;
+  return `Last seen ${formatTime(session.lastSeenAt)}`;
+}
+
+function pageVisitLastSeenMs(visit: PageVisit): number {
+  const timestamp = new Date(visit.lastSeenAt).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function sortedPageVisits(visits: PageVisit[], sort: PageVisitSort): PageVisit[] {
+  const direction = sort.direction === 'asc' ? 1 : -1;
+
+  return [...visits].sort((a, b) => {
+    let comparison = 0;
+
+    if (sort.key === 'page') {
+      comparison = pageVisitLabel(a.path).localeCompare(pageVisitLabel(b.path));
+    } else if (sort.key === 'time') {
+      comparison = a.durationSeconds - b.durationSeconds;
+    } else if (sort.key === 'views') {
+      comparison = a.viewCount - b.viewCount;
+    } else {
+      comparison = pageVisitLastSeenMs(a) - pageVisitLastSeenMs(b);
+    }
+
+    if (comparison !== 0) return comparison * direction;
+    return pageVisitLabel(a.path).localeCompare(pageVisitLabel(b.path)) || a.id - b.id;
+  });
+}
+
+function PageVisitSortHeader({
+  label,
+  sortKey,
+  currentSort,
+  onSort,
+  align = 'left',
+}: {
+  label: string;
+  sortKey: PageVisitSortKey;
+  currentSort: PageVisitSort;
+  onSort: (key: PageVisitSortKey) => void;
+  align?: 'left' | 'center' | 'right';
+}) {
+  const active = currentSort.key === sortKey;
+  const icon = !active
+    ? 'ri-arrow-up-down-line'
+    : currentSort.direction === 'asc'
+      ? 'ri-arrow-up-line'
+      : 'ri-arrow-down-line';
+  const alignment = align === 'right' ? 'justify-self-end text-right' : align === 'center' ? 'justify-self-center text-center' : 'justify-self-start text-left';
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      className={`inline-flex w-fit items-center gap-1 rounded px-1 py-0.5 font-extrabold uppercase tracking-wide transition-colors ${alignment} ${
+        active ? 'text-kbc-navy' : 'text-gray-400 hover:text-kbc-navy'
+      }`}
+    >
+      <span>{label}</span>
+      <i className={`${icon} text-xs`} />
+    </button>
+  );
 }
 
 function pageCountLabel(session: ActivitySession): string {
@@ -661,6 +780,7 @@ export default function UserActivityPage() {
   const [openAuditDays, setOpenAuditDays] = useState<Record<string, boolean>>({});
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [dateSortOrder, setDateSortOrder] = useState<DateSortOrder>('newest');
+  const [pageVisitSort, setPageVisitSort] = useState<PageVisitSort>({ key: 'time', direction: 'desc' });
   const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
 
   const query = useMemo(() => {
@@ -752,6 +872,12 @@ export default function UserActivityPage() {
   const toggleAuditDay = (key: string) => {
     setOpenAuditDays(current => ({ ...current, [key]: !current[key] }));
   };
+  const togglePageVisitSort = (key: PageVisitSortKey) => {
+    setPageVisitSort(current => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
 
   useEffect(() => {
     if (!canView) {
@@ -759,22 +885,39 @@ export default function UserActivityPage() {
       return;
     }
 
-    const controller = new AbortController();
-    setLoading(true);
-    setError('');
+    let cancelled = false;
+    let controller: AbortController | null = null;
 
-    fetch(`/api/user-activity/?${query}`, { signal: controller.signal })
-      .then(async response => {
-        if (!response.ok) throw new Error('Unable to load user activity.');
-        return response.json() as Promise<ActivityPayload>;
-      })
-      .then(data => setPayload(data))
-      .catch(err => {
-        if (err.name !== 'AbortError') setError('Unable to load user activity right now.');
-      })
-      .finally(() => setLoading(false));
+    const loadActivity = (showSpinner = false) => {
+      controller?.abort();
+      controller = new AbortController();
+      if (showSpinner) setLoading(true);
+      setError('');
 
-    return () => controller.abort();
+      fetch(`/api/user-activity/?${query}`, { signal: controller.signal })
+        .then(async response => {
+          if (!response.ok) throw new Error('Unable to load user activity.');
+          return response.json() as Promise<ActivityPayload>;
+        })
+        .then(data => {
+          if (!cancelled) setPayload(data);
+        })
+        .catch(err => {
+          if (!cancelled && err.name !== 'AbortError') setError('Unable to load user activity right now.');
+        })
+        .finally(() => {
+          if (!cancelled && showSpinner) setLoading(false);
+        });
+    };
+
+    loadActivity(true);
+    const intervalId = window.setInterval(() => loadActivity(), 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      controller?.abort();
+    };
   }, [canView, query]);
 
   useEffect(() => {
@@ -857,7 +1000,7 @@ export default function UserActivityPage() {
         <main className="mx-auto max-w-7xl px-4 py-6 md:px-6">
           <div className="grid gap-3 md:grid-cols-4">
             {[
-              { label: 'Sessions', value: payload.summary.totalSessions, hint: 'View active and completed', icon: 'ri-login-circle-line', tone: 'bg-blue-50 text-blue-700 ring-blue-100', modal: 'sessions' },
+              { label: 'Sessions', value: payload.summary.totalSessions, hint: 'View active and not active', icon: 'ri-login-circle-line', tone: 'bg-blue-50 text-blue-700 ring-blue-100', modal: 'sessions' },
               { label: 'Users', value: payload.summary.uniqueUsers, hint: 'View user session counts', icon: 'ri-user-line', tone: 'bg-violet-50 text-violet-700 ring-violet-100', modal: 'users' },
               { label: 'Returned', value: payload.summary.returnedSessions, hint: 'View returned session list', icon: 'ri-loop-left-line', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100', modal: 'returned' },
             ].map(card => (
@@ -928,7 +1071,7 @@ export default function UserActivityPage() {
                     <div className="space-y-2">
                       {[
                         { label: 'Active sessions', value: activeSessions, tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
-                        { label: 'Completed sessions', value: completedSessions, tone: 'bg-gray-50 text-gray-700 ring-gray-200' },
+                        { label: 'Not active sessions', value: completedSessions, tone: 'bg-gray-50 text-gray-700 ring-gray-200' },
                         { label: 'Visible sessions', value: visibleSessions.length, tone: 'bg-blue-50 text-blue-700 ring-blue-100' },
                       ].map(item => (
                         <div key={item.label} className="flex items-center justify-between rounded-lg border border-gray-200 bg-slate-50 px-4 py-3">
@@ -954,7 +1097,7 @@ export default function UserActivityPage() {
                             </div>
                             <div className="shrink-0 text-right">
                               <p className="text-sm font-extrabold text-kbc-navy">{user.sessions} sessions</p>
-                              <p className="text-[11px] font-bold text-gray-400">{user.active} active / {user.completed} ended</p>
+                              <p className="text-[11px] font-bold text-gray-400">{user.active} active / {user.completed} not active</p>
                             </div>
                           </div>
                         ))}
@@ -1047,7 +1190,7 @@ export default function UserActivityPage() {
               {[
                 ['all', `All (${payload.sessions.length})`],
                 ['active', `Active (${activeSessions})`],
-                ['completed', `Completed (${completedSessions})`],
+                ['completed', `Not active (${completedSessions})`],
               ].map(([value, label]) => (
                 <button
                   key={value}
@@ -1074,13 +1217,13 @@ export default function UserActivityPage() {
                 </p>
               </div>
               <p className="rounded-full bg-white px-3 py-1 text-xs font-extrabold text-gray-500 ring-1 ring-gray-200">
-                {sessionFilter === 'all' ? 'All sessions' : sessionFilter === 'active' ? 'Active sessions' : 'Completed sessions'}
+                {sessionFilter === 'all' ? 'All sessions' : sessionFilter === 'active' ? 'Active sessions' : 'Not active sessions'}
               </p>
             </div>
             <div className="grid grid-cols-[minmax(280px,1.6fr)_100px_minmax(240px,1.1fr)_110px_88px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
               <span>User</span>
               <span>Login</span>
-              <span>Status / Last Seen</span>
+              <span>Status</span>
               <span>Time</span>
               <span>Pages</span>
               <span />
@@ -1120,9 +1263,9 @@ export default function UserActivityPage() {
                           <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-extrabold ${
                             session.isActive ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200' : 'bg-gray-100 text-gray-500 ring-1 ring-gray-200'
                           }`}>
-                            {session.isActive ? 'Active' : 'Ended'}
+                            {sessionStatusLabel(session)}
                           </span>
-                          <span className="font-extrabold text-gray-700">{formatTime(session.isActive ? session.lastSeenAt : session.logoutAt)}</span>
+                          <span className="truncate font-extrabold text-gray-700">{sessionStatusText(session)}</span>
                         </span>
                         <span className="text-xs font-extrabold text-gray-700">{sessionDurationLabel(session)}</span>
                         <span className="text-xs font-semibold text-gray-600">{pageCountLabel(session)}</span>
@@ -1135,24 +1278,24 @@ export default function UserActivityPage() {
                         <div className="bg-slate-50 px-4 pb-4">
                           <div className="mb-3 flex flex-wrap gap-2 text-[11px] font-semibold text-gray-500">
                             <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Signed in with {session.authProvider || 'password'}</span>
-                            <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">{session.isActive ? 'Still active' : 'Logged out'}</span>
+                            <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">{sessionStatusDetail(session)}</span>
                           </div>
                           <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
                             <div className="grid grid-cols-[1fr_110px_90px_120px] bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">
-                              <span>Page</span>
-                              <span>Time</span>
-                              <span>Views</span>
-                              <span>Last Seen</span>
+                              <PageVisitSortHeader label="Page" sortKey="page" currentSort={pageVisitSort} onSort={togglePageVisitSort} />
+                              <PageVisitSortHeader label="Time" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
+                              <PageVisitSortHeader label="Views" sortKey="views" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="center" />
+                              <PageVisitSortHeader label="Last Seen" sortKey="lastSeen" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
                             </div>
                             {session.pageVisits.length === 0 ? (
                               <div className="px-3 py-4 text-xs font-semibold text-gray-400">No page visits recorded.</div>
                             ) : (
-                              session.pageVisits.map(visit => (
+                              sortedPageVisits(session.pageVisits, pageVisitSort).map(visit => (
                                 <div key={visit.id} className="grid grid-cols-[1fr_110px_90px_120px] border-t border-gray-100 px-3 py-2 text-xs hover:bg-slate-50">
-                                  <span className="truncate font-semibold text-gray-700">{visit.path}</span>
-                                  <span className="font-bold text-gray-700">{formatDuration(visit.durationSeconds)}</span>
-                                  <span className="text-gray-500">{visit.viewCount}</span>
-                                  <span className="text-gray-500">{formatTime(visit.lastSeenAt)}</span>
+                                  <span className="truncate font-semibold text-gray-700" title={visit.path}>{pageVisitLabel(visit.path)}</span>
+                                  <span className="text-right font-bold text-gray-700">{formatDuration(visit.durationSeconds)}</span>
+                                  <span className="text-center text-gray-500">{visit.viewCount}</span>
+                                  <span className="text-right text-gray-500">{formatTime(visit.lastSeenAt)}</span>
                                 </div>
                               ))
                             )}
@@ -1218,7 +1361,7 @@ export default function UserActivityPage() {
                           <span className="truncate text-xs font-bold text-gray-600">{log.entity}</span>
                           <span className="truncate text-xs font-semibold text-gray-700">{auditSummary(log)}</span>
                           <span className="truncate text-xs font-semibold text-gray-600">{log.displayName || log.username || log.email || 'Unknown'}</span>
-                          <span className="text-xs font-semibold text-gray-500">{formatDateTime(log.createdAt)}</span>
+                          <span className="text-xs font-semibold text-gray-500">{formatTime(log.createdAt)}</span>
                           <span className="flex justify-end text-gray-400">
                             <i className={expandedAuditId === log.id ? 'ri-arrow-up-s-line text-xl' : 'ri-arrow-down-s-line text-xl'} />
                           </span>
