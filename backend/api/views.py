@@ -1672,13 +1672,19 @@ def risk_register(request):
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
-ACTIVITY_ACTIVE_WINDOW_SECONDS = 20
+ACTIVITY_ACTIVE_WINDOW_SECONDS = 7
 
 
 def serialize_user_activity_session(session: UserActivitySession, now=None) -> dict:
 	now = now or timezone.now()
 	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
 	is_active = bool(session.logout_at is None and session.last_seen_at and session.last_seen_at >= active_cutoff)
+	visits = list(session.page_visits.all())
+	current_visit = max(
+		visits,
+		key=lambda visit: (visit.last_seen_at or visit.first_seen_at, visit.id),
+		default=None,
+	) if is_active else None
 	page_visits = [
 		{
 			'id': visit.id,
@@ -1689,7 +1695,7 @@ def serialize_user_activity_session(session: UserActivitySession, now=None) -> d
 			'durationSeconds': visit.duration_seconds,
 			'viewCount': visit.view_count,
 		}
-		for visit in session.page_visits.all().order_by('-duration_seconds', 'path')
+		for visit in sorted(visits, key=lambda visit: (-visit.duration_seconds, visit.path))
 	]
 
 	return {
@@ -1709,6 +1715,11 @@ def serialize_user_activity_session(session: UserActivitySession, now=None) -> d
 		'userAgent': session.user_agent,
 		'logoutReason': session.logout_reason,
 		'isActive': is_active,
+		'currentPage': {
+			'path': current_visit.path,
+			'title': current_visit.title,
+			'lastSeenAt': current_visit.last_seen_at.isoformat() if current_visit.last_seen_at else '',
+		} if current_visit else None,
 		'pageVisits': page_visits,
 	}
 

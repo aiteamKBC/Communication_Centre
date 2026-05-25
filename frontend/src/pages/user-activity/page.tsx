@@ -28,6 +28,11 @@ type ActivitySession = {
   ipAddress: string;
   logoutReason: string;
   isActive: boolean;
+  currentPage?: {
+    path: string;
+    title: string;
+    lastSeenAt: string;
+  } | null;
   pageVisits: PageVisit[];
 };
 
@@ -67,6 +72,8 @@ type AuditPayload = {
   };
   logs: AuditLog[];
 };
+
+const ACTIVITY_REFRESH_MS = 2000;
 
 const emptyPayload: ActivityPayload = {
   summary: {
@@ -169,6 +176,21 @@ function pageVisitLabel(path: string): string {
 
 function userLabel(session: ActivitySession): string {
   return session.displayName || session.username || session.email || 'Unknown user';
+}
+
+function currentPageVisit(session: ActivitySession): PageVisit | null {
+  if (!session.pageVisits.length) return null;
+  return [...session.pageVisits].sort((a, b) => {
+    const lastSeenDiff = new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime();
+    return lastSeenDiff || b.id - a.id;
+  })[0] || null;
+}
+
+function currentPageLabel(session: ActivitySession): string {
+  if (!session.isActive) return 'Not active';
+  const path = session.currentPage?.path || currentPageVisit(session)?.path || '';
+  if (!path) return 'No page yet';
+  return pageVisitLabel(path);
 }
 
 type SessionFilter = 'all' | 'active' | 'completed';
@@ -1096,7 +1118,7 @@ export default function UserActivityPage() {
     };
 
     loadActivity(true);
-    const intervalId = window.setInterval(() => loadActivity(), 10000);
+    const intervalId = window.setInterval(() => loadActivity(), ACTIVITY_REFRESH_MS);
 
     return () => {
       cancelled = true;
@@ -1424,10 +1446,11 @@ export default function UserActivityPage() {
                 {sessionFilter === 'all' ? 'All sessions' : sessionFilter === 'active' ? 'Active sessions' : 'Not active sessions'}
               </p>
             </div>
-            <div className="grid grid-cols-[minmax(280px,1.6fr)_100px_minmax(240px,1.1fr)_110px_88px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
+            <div className="grid grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
               <SortHeader label="User" sortKey="user" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Login" sortKey="login" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Status" sortKey="status" currentSort={sessionSort} onSort={toggleSessionSort} />
+              <span>Now</span>
               <SortHeader label="Period" sortKey="time" currentSort={sessionSort} onSort={toggleSessionSort} align="right" />
               <SortHeader label="Pages" sortKey="pages" currentSort={sessionSort} onSort={toggleSessionSort} align="center" />
               <span />
@@ -1456,7 +1479,7 @@ export default function UserActivityPage() {
                       <button
                         type="button"
                         onClick={() => setExpandedId(expandedId === session.id ? null : session.id)}
-                        className="grid w-full grid-cols-[minmax(280px,1.6fr)_100px_minmax(240px,1.1fr)_110px_88px_44px] items-center px-4 py-3 text-left transition-colors hover:bg-slate-50"
+                        className="grid w-full grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] items-center px-4 py-3 text-left transition-colors hover:bg-slate-50"
                       >
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-extrabold text-kbc-navy">{userLabel(session)}</span>
@@ -1470,6 +1493,12 @@ export default function UserActivityPage() {
                             {sessionStatusLabel(session)}
                           </span>
                           <span className="truncate font-extrabold text-gray-700">{sessionStatusText(session)}</span>
+                        </span>
+                        <span
+                          className={`truncate text-xs font-extrabold ${session.isActive ? 'text-emerald-800' : 'text-gray-400'}`}
+                          title={session.currentPage?.path || currentPageVisit(session)?.path || ''}
+                        >
+                          {currentPageLabel(session)}
                         </span>
                         <span className="text-right text-xs font-extrabold text-gray-700">{sessionDurationLabel(session)}</span>
                         <span className="text-center text-xs font-semibold text-gray-600">{pageCountLabel(session)}</span>
