@@ -51,12 +51,54 @@ interface TrainingPlanItem {
   notes: string;
 }
 
+interface MonthlySessionDetail {
+  date: string;
+  tutor: string;
+  coach: string;
+  time: string;
+  holidays: MonthlyHolidayDetail[];
+}
+
+interface MonthlyHolidayDetail {
+  id: string;
+  label: string;
+  type: string;
+  dateRange: string;
+  color: string;
+}
+
+interface ModuleMonthSummary {
+  key: string;
+  label: string;
+  sessions: MonthlySessionDetail[];
+  holidays: MonthlyHolidayDetail[];
+}
+
+interface ModuleMonthlySummary {
+  key: string;
+  programme: string;
+  programmeColor: string;
+  cohort: string;
+  moduleName: string;
+  groupName: string;
+  tutor: string;
+  coach: string;
+  dateRange: string;
+  totalSessions: number;
+  countedSessions: number;
+  color: string;
+  textColor: string;
+  affectedSessions: number;
+  months: ModuleMonthSummary[];
+}
+
 const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
+const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 
 function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; notes: string } {
   const value = (raw || '').trim();
@@ -308,6 +350,454 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl),
       })),
     ),
+  );
+}
+
+function parseLocalDate(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year || 1970, (month || 1) - 1, day || 1);
+}
+
+function toLocalDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatPlanDate(value: string): string {
+  return parseLocalDate(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function formatPlanMonth(value: string): string {
+  return parseLocalDate(`${value}-01`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+
+function monthKeyFromDate(value: string): string {
+  return value.slice(0, 7);
+}
+
+function monthBounds(monthKey: string): { start: string; end: string } {
+  const [year, month] = monthKey.split('-').map(Number);
+  const start = new Date(year, month - 1, 1);
+  const end = new Date(year, month, 0);
+  return { start: toLocalDateKey(start), end: toLocalDateKey(end) };
+}
+
+function dateRangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  return parseLocalDate(aStart) <= parseLocalDate(bEnd) && parseLocalDate(bStart) <= parseLocalDate(aEnd);
+}
+
+function resolveTrainingModuleMeta(block: { mod: MKey | string; color?: string }, customModules: CustomModule[]) {
+  const base = block.mod in MS
+    ? getModuleMeta(block.mod as MKey)
+    : customModules.find(module => module.id === block.mod || module.name === block.mod)
+      ? {
+        lbl: customModules.find(module => module.id === block.mod || module.name === block.mod)!.name,
+        bg: customModules.find(module => module.id === block.mod || module.name === block.mod)!.bg,
+        tx: customModules.find(module => module.id === block.mod || module.name === block.mod)!.tx,
+      }
+      : getModuleMeta(block.mod);
+
+  if (!block.color) {
+    return base;
+  }
+
+  return { ...base, bg: block.color };
+}
+
+function buildSessionDates(block: { startDate: string; endDate: string; sessions: number; days?: WeekDayKey[] }): string[] {
+  const total = Math.max(1, block.sessions || 1);
+  const start = parseLocalDate(block.startDate);
+  const end = parseLocalDate(block.endDate || block.startDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    return [];
+  }
+
+  if (block.days?.length) {
+    const targets = new Set(block.days);
+    const dates: string[] = [];
+    const cursor = new Date(start);
+    while (cursor <= end && dates.length < total) {
+      if (targets.has(DAY_NAMES[cursor.getDay()] as WeekDayKey)) {
+        dates.push(toLocalDateKey(cursor));
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return dates;
+  }
+
+  if (total === 1) {
+    return [toLocalDateKey(start)];
+  }
+
+  const spanDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+  const dates = new Set<string>();
+  for (let i = 0; i < total; i += 1) {
+    const offset = Math.round((spanDays * i) / Math.max(1, total - 1));
+    const next = new Date(start);
+    next.setDate(start.getDate() + offset);
+    dates.add(toLocalDateKey(next));
+  }
+  return Array.from(dates);
+}
+
+function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[]): ModuleMonthlySummary[] {
+  return groups.flatMap(group =>
+    group.rows.flatMap(row =>
+      row.blks.map(block => {
+        const meta = resolveTrainingModuleMeta(block, customModules);
+        const months = new Map<string, ModuleMonthSummary>();
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const scopedHolidays = selectedHolidayIds.size
+          ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id))
+          : holidays;
+        let affectedSessions = 0;
+
+        buildSessionDates(block).forEach(date => {
+          const monthKey = monthKeyFromDate(date);
+          if (!months.has(monthKey)) {
+            months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
+          }
+          const sessionHolidays = scopedHolidays
+            .filter(holiday => dateRangesOverlap(date, date, holiday.startDate, holiday.endDate))
+            .map(holiday => ({
+              id: holiday.id,
+              label: holiday.label,
+              type: holiday.type,
+              dateRange: `${formatPlanDate(holiday.startDate)} - ${formatPlanDate(holiday.endDate)}`,
+              color: holiday.color,
+            }));
+          if (sessionHolidays.length) {
+            affectedSessions += 1;
+          }
+          months.get(monthKey)!.sessions.push({
+            date,
+            tutor: block.tutor || 'TBD',
+            coach: block.coachName || 'TBD',
+            time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
+            holidays: sessionHolidays,
+          });
+        });
+
+        scopedHolidays
+          .filter(holiday => dateRangesOverlap(block.startDate, block.endDate, holiday.startDate, holiday.endDate))
+          .forEach(holiday => {
+            const startMonth = parseLocalDate(holiday.startDate);
+            const endMonth = parseLocalDate(holiday.endDate);
+            const cursor = new Date(startMonth.getFullYear(), startMonth.getMonth(), 1);
+            const last = new Date(endMonth.getFullYear(), endMonth.getMonth(), 1);
+
+            while (cursor <= last) {
+              const monthKey = `${cursor.getFullYear()}-${`${cursor.getMonth() + 1}`.padStart(2, '0')}`;
+              const bounds = monthBounds(monthKey);
+              if (dateRangesOverlap(block.startDate, block.endDate, bounds.start, bounds.end) && dateRangesOverlap(holiday.startDate, holiday.endDate, bounds.start, bounds.end)) {
+                if (!months.has(monthKey)) {
+                  months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
+                }
+                const month = months.get(monthKey)!;
+                if (!month.holidays.some(item => item.id === holiday.id)) {
+                  month.holidays.push({
+                    id: holiday.id,
+                    label: holiday.label,
+                    type: holiday.type,
+                    dateRange: `${formatPlanDate(holiday.startDate)} - ${formatPlanDate(holiday.endDate)}`,
+                    color: holiday.color,
+                  });
+                }
+              }
+              cursor.setMonth(cursor.getMonth() + 1);
+            }
+          });
+
+        const sortedMonths = Array.from(months.values()).sort((a, b) => a.key.localeCompare(b.key));
+
+        return {
+          key: `${group.id}-${row.id}-${block.id}`,
+          programme: group.name.replace('\n', ' '),
+          programmeColor: group.color,
+          cohort: row.label,
+          moduleName: meta.lbl,
+          groupName: block.groupName || 'No group name',
+          tutor: block.tutor || 'TBD',
+          coach: block.coachName || 'TBD',
+          dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(block.endDate)}`,
+          totalSessions: block.sessions || 0,
+          countedSessions: sortedMonths.reduce(
+            (count, month) => count + month.sessions.filter(session => session.holidays.length === 0).length,
+            0,
+          ),
+          color: meta.bg,
+          textColor: meta.tx,
+          affectedSessions,
+          months: sortedMonths,
+        };
+      }),
+    ),
+  ).filter(summary => summary.months.length > 0);
+}
+
+function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
+  const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [programmeFilter, setProgrammeFilter] = useState('all');
+  const [riskFilter, setRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
+  const programmeOptions = useMemo(
+    () => Array.from(new Set(summaries.map(summary => summary.programme))).sort((a, b) => a.localeCompare(b)),
+    [summaries],
+  );
+  const filteredSummaries = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return summaries.filter(summary => {
+      if (programmeFilter !== 'all' && summary.programme !== programmeFilter) return false;
+      if (riskFilter === 'affected' && summary.affectedSessions === 0) return false;
+      if (riskFilter === 'clear' && summary.affectedSessions > 0) return false;
+      if (!query) return true;
+
+      const searchable = [
+        summary.moduleName,
+        summary.programme,
+        summary.cohort,
+        summary.groupName,
+        summary.tutor,
+        summary.coach,
+        summary.dateRange,
+      ].join(' ').toLowerCase();
+      return searchable.includes(query);
+    });
+  }, [programmeFilter, riskFilter, searchQuery, summaries]);
+  const selectedMonths = selectedSummary ? selectedSummary.months : [];
+  const hasActiveFilters = searchQuery.trim() || programmeFilter !== 'all' || riskFilter !== 'all';
+
+  if (!summaries.length) {
+    return null;
+  }
+
+  return (
+    <>
+      <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-bold text-kbc-navy">Monthly Module Breakdown</h2>
+            <p className="mt-0.5 text-xs text-gray-400">Click any module to view monthly sessions, holidays, tutors, and coaches.</p>
+          </div>
+          <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+            {filteredSummaries.length}/{summaries.length} module{summaries.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        <div className="grid gap-2 border-b border-gray-100 bg-slate-50/70 px-4 py-3 md:grid-cols-[minmax(180px,1.4fr)_minmax(150px,1fr)_minmax(160px,0.9fr)_auto]">
+          <label className="relative min-w-0">
+            <span className="sr-only">Search modules</span>
+            <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
+            <input
+              value={searchQuery}
+              onChange={event => setSearchQuery(event.target.value)}
+              placeholder="Search module, group, tutor..."
+              className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs font-medium text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
+            />
+          </label>
+
+          <select
+            value={programmeFilter}
+            onChange={event => setProgrammeFilter(event.target.value)}
+            className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
+          >
+            <option value="all">All programmes</option>
+            {programmeOptions.map(programme => (
+              <option key={programme} value={programme}>{programme}</option>
+            ))}
+          </select>
+
+          <div className="flex h-9 rounded-lg border border-slate-200 bg-white p-1">
+            {([
+              { key: 'all', label: 'All' },
+              { key: 'affected', label: 'Clashes' },
+              { key: 'clear', label: 'Clear' },
+            ] as const).map(option => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setRiskFilter(option.key)}
+                className={`flex-1 rounded-md px-2 text-xs font-bold transition-colors ${riskFilter === option.key ? 'bg-kbc-navy text-white' : 'text-gray-500 hover:bg-slate-50 hover:text-kbc-navy'}`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery('');
+              setProgrammeFilter('all');
+              setRiskFilter('all');
+            }}
+            disabled={!hasActiveFilters}
+            className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-white hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Reset
+          </button>
+        </div>
+
+        <div className="max-h-[360px] overflow-auto">
+          {filteredSummaries.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-gray-400">
+              No modules match the current filters.
+            </div>
+          ) : filteredSummaries.map(summary => (
+            <button
+              key={summary.key}
+              type="button"
+              onClick={() => setSelectedSummary(summary)}
+              className="grid w-full grid-cols-[18px_minmax(0,1.5fr)_minmax(0,1fr)_72px_72px_30px] items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-50"
+            >
+              <span className="h-2.5 w-2.5 rounded-sm" style={{ background: summary.color }} />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-extrabold text-kbc-navy">{summary.moduleName}</span>
+                <span className="mt-0.5 block truncate text-gray-400">{summary.programme} - {summary.cohort}</span>
+              </span>
+              <span className="min-w-0 text-gray-500">
+                <span className="block truncate"><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
+                <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
+              </span>
+              <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
+                {summary.countedSessions}
+              </span>
+              <span
+                className={`rounded-md px-2 py-1 text-center font-bold ${summary.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
+                title="Sessions inside holiday ranges"
+              >
+                {summary.affectedSessions ? (
+                  <span className="inline-flex items-center justify-center gap-1">
+                    <i className="ri-alert-line" />
+                    {summary.affectedSessions}
+                  </span>
+                ) : '0'}
+              </span>
+              <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
+                <i className="ri-external-link-line text-sm" />
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {selectedSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close monthly breakdown"
+            className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            onClick={() => setSelectedSummary(null)}
+          />
+          <div className="relative flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${selectedSummary.color}` }}>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="h-3 w-3 rounded-sm" style={{ background: selectedSummary.color }} />
+                  <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedSummary.moduleName}</h3>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">{selectedSummary.programme} - {selectedSummary.cohort}</p>
+                <p className="mt-0.5 text-xs text-gray-400">{selectedSummary.dateRange}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedSummary(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
+              >
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+
+            <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-5">
+              <span><strong className="text-gray-700">Group:</strong> {selectedSummary.groupName}</span>
+              <span><strong className="text-gray-700">Tutor:</strong> {selectedSummary.tutor}</span>
+              <span><strong className="text-gray-700">Coach:</strong> {selectedSummary.coach}</span>
+              <span><strong className="text-gray-700">Sessions:</strong> {selectedSummary.countedSessions} counted</span>
+              <span className={selectedSummary.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
+                <strong>Affected:</strong> {selectedSummary.affectedSessions}
+              </span>
+            </div>
+
+            <div className="overflow-auto p-5">
+              {selectedSummary.affectedSessions > 0 && (
+                <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  <i className="ri-alert-line mt-0.5" />
+                  <span>
+                    {selectedSummary.affectedSessions} session{selectedSummary.affectedSessions !== 1 ? 's are' : ' is'} inside a holiday range and may need rescheduling.
+                  </span>
+                </div>
+              )}
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="w-44 px-3 py-2 font-bold">Month</th>
+                      <th className="w-24 px-3 py-2 font-bold">Sessions</th>
+                      <th className="px-3 py-2 font-bold">Session Dates</th>
+                      <th className="px-3 py-2 font-bold">Holidays</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedMonths.map(month => (
+                      <tr key={month.key} className="align-top">
+                        <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
+                        <td className="px-3 py-3 font-bold text-gray-700">
+                          {month.sessions.filter(session => session.holidays.length === 0).length}
+                        </td>
+                        <td className="px-3 py-3 text-gray-600">
+                          {month.sessions.length ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {month.sessions.map(session => (
+                                <span
+                                  key={`${month.key}-${session.date}-${session.time}`}
+                                  className={`rounded-md border px-2 py-1 ${session.holidays.length ? 'border-red-200 bg-red-50 text-red-800 shadow-sm' : 'border-transparent bg-slate-100'}`}
+                                  title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
+                                >
+                                  {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
+                                  <strong className={session.holidays.length ? 'text-red-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
+                                  {' '}({session.time}) - Tutor: {session.tutor} - Coach: {session.coach}
+                                  {session.holidays.length > 0 && (
+                                    <span className="ml-1 font-bold text-red-700">
+                                      - Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
+                                    </span>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">No sessions</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-gray-600">
+                          {month.holidays.length ? (
+                            <div className="space-y-1">
+                              {month.holidays.map(holiday => (
+                                <div key={holiday.id} className="flex items-start gap-2">
+                                  <span className="mt-1.5 h-2 w-2 rounded-full shrink-0" style={{ background: holiday.color }} />
+                                  <span>
+                                    <strong className="text-gray-800">{holiday.label}</strong>
+                                    <span className="text-gray-400"> ({holiday.type}) </span>
+                                    {holiday.dateRange}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">No holidays</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1110,9 +1600,8 @@ export default function ApprenticeshipTimeline() {
   }, [catalogModules, groups, visibleEditChoice]);
 
   const todaySessions = useMemo(() => {
-    const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const;
     const today = new Date();
-    const todayKey = dayNames[today.getDay()];
+    const todayKey = DAY_NAMES[today.getDay()];
     const tStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
     const sessions: Array<{ cohortName: string; program: string; groupName: string; coach: string; tutor: string; startTime?: string; endTime?: string }> = [];
 
@@ -1139,6 +1628,10 @@ export default function ApprenticeshipTimeline() {
 
     return sessions;
   }, [groups]);
+  const monthlyModuleSummaries = useMemo(
+    () => buildMonthlyModuleSummaries(groups, holidays, customModules),
+    [customModules, groups, holidays],
+  );
 
   return (
     <div className="min-h-screen bg-kbc-bg font-sans">
@@ -1429,34 +1922,37 @@ export default function ApprenticeshipTimeline() {
           isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
-            <div className="bg-white rounded-xl overflow-visible border border-gray-200">
-              <GanttTimeline
-                groups={groups}
-                holidays={holidays}
-                customModules={customModules}
-                catalogModules={catalogModules}
-                zoom={zoom}
-                onZoomChange={setZoom}
-                onManageHolidays={() => setShowHolidayMgr(true)}
-                onAddRow={(gi) => {
-                  if (!canManageCohorts) {
-                    return;
-                  }
-                  setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-                }}
-                onEditRow={handleEditRow}
-                onEditCatalogModule={(moduleId) => {
-                  setInitialManageModuleId(moduleId);
-                  setShowManageModules(true);
-                }}
-                onDeleteRow={handleDeleteRow}
-                onEditProgram={handleEditProgram}
-                onDeleteProgram={handleDeleteProgram}
-                onReorderRow={handleReorderRow}
-                onReorderGroup={handleReorderGroup}
-                canManageCohorts={canManageCohorts}
-              />
-            </div>
+            <>
+              <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
+              <div className="bg-white rounded-xl overflow-visible border border-gray-200">
+                <GanttTimeline
+                  groups={groups}
+                  holidays={holidays}
+                  customModules={customModules}
+                  catalogModules={catalogModules}
+                  zoom={zoom}
+                  onZoomChange={setZoom}
+                  onManageHolidays={() => setShowHolidayMgr(true)}
+                  onAddRow={(gi) => {
+                    if (!canManageCohorts) {
+                      return;
+                    }
+                    setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                  }}
+                  onEditRow={handleEditRow}
+                  onEditCatalogModule={(moduleId) => {
+                    setInitialManageModuleId(moduleId);
+                    setShowManageModules(true);
+                  }}
+                  onDeleteRow={handleDeleteRow}
+                  onEditProgram={handleEditProgram}
+                  onDeleteProgram={handleDeleteProgram}
+                  onReorderRow={handleReorderRow}
+                  onReorderGroup={handleReorderGroup}
+                  canManageCohorts={canManageCohorts}
+                />
+              </div>
+            </>
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-kbc-navy/5 text-kbc-navy">
