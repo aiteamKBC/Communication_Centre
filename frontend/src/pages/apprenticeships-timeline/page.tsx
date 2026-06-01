@@ -523,10 +523,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           coach: block.coachName || 'TBD',
           dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(block.endDate)}`,
           totalSessions: block.sessions || 0,
-          countedSessions: sortedMonths.reduce(
-            (count, month) => count + month.sessions.filter(session => session.holidays.length === 0).length,
-            0,
-          ),
+          countedSessions: sortedMonths.reduce((count, month) => count + month.sessions.length, 0),
           color: meta.bg,
           textColor: meta.tx,
           affectedSessions,
@@ -537,11 +534,135 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
   ).filter(summary => summary.months.length > 0);
 }
 
+function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthlySummary; onClose: () => void }) {
+  const selectedMonths = summary.months;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close monthly breakdown"
+        className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${summary.color}` }}>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-sm" style={{ background: summary.color }} />
+              <h3 className="truncate text-base font-extrabold text-kbc-navy">{summary.moduleName}</h3>
+            </div>
+            <p className="mt-1 text-xs text-gray-500">{summary.programme} - {summary.cohort}</p>
+            <p className="mt-0.5 text-xs text-gray-400">{summary.dateRange}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
+          >
+            <i className="ri-close-line text-lg" />
+          </button>
+        </div>
+
+        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-5">
+          <span><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
+          <span><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
+          <span><strong className="text-gray-700">Coach:</strong> {summary.coach}</span>
+          <span><strong className="text-gray-700">Sessions:</strong> {summary.countedSessions} counted</span>
+          <span className={summary.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
+            <strong>Affected:</strong> {summary.affectedSessions}
+          </span>
+        </div>
+
+        <div className="overflow-auto p-5">
+          {summary.affectedSessions > 0 && (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <i className="ri-alert-line mt-0.5" />
+              <span>
+                {summary.affectedSessions} session{summary.affectedSessions !== 1 ? 's are' : ' is'} inside a holiday range and may need rescheduling.
+              </span>
+            </div>
+          )}
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <table className="min-w-full text-left text-xs">
+              <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
+                <tr>
+                  <th className="w-44 px-3 py-2 font-bold">Month</th>
+                  <th className="w-24 px-3 py-2 font-bold">Sessions</th>
+                  <th className="px-3 py-2 font-bold">Session Dates</th>
+                  <th className="px-3 py-2 font-bold">Holidays</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {selectedMonths.map(month => (
+                  <tr key={month.key} className="align-top">
+                    <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
+                    <td className="px-3 py-3 font-bold text-gray-700">
+                      {month.sessions.length}
+                    </td>
+                    <td className="px-3 py-3 text-gray-600">
+                      {month.sessions.length ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {month.sessions.map(session => (
+                            <span
+                              key={`${month.key}-${session.date}-${session.time}`}
+                              className={`rounded-md border px-2 py-1 ${session.holidays.length ? 'border-red-200 bg-red-50 text-red-800 shadow-sm' : 'border-transparent bg-slate-100'}`}
+                              title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
+                            >
+                              {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
+                              <strong className={session.holidays.length ? 'text-red-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
+                              {' '}({session.time}) - Tutor: {session.tutor} - Coach: {session.coach}
+                              {session.holidays.length > 0 && (
+                                <span className="ml-1 font-bold text-red-700">
+                                  - Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
+                                </span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">No sessions</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-gray-600">
+                      {month.holidays.length ? (
+                        <div className="space-y-1">
+                          {month.holidays.map(holiday => (
+                            <div key={holiday.id} className="flex items-start gap-2">
+                              <span className="mt-1.5 h-2 w-2 rounded-full shrink-0" style={{ background: holiday.color }} />
+                              <span>
+                                <strong className="text-gray-800">{holiday.label}</strong>
+                                <span className="text-gray-400"> ({holiday.type}) </span>
+                                {holiday.dateRange}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">No holidays</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
+  type ProgrammeSummaryGroup = { programme: string; color: string; summaries: ModuleMonthlySummary[]; countedSessions: number; affectedSessions: number };
   const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
+  const [selectedProgrammeGroup, setSelectedProgrammeGroup] = useState<ProgrammeSummaryGroup | null>(null);
+  const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [programmeFilter, setProgrammeFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
+  const [programmeModalSearch, setProgrammeModalSearch] = useState('');
+  const [programmeModalRiskFilter, setProgrammeModalRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
   const programmeOptions = useMemo(
     () => Array.from(new Set(summaries.map(summary => summary.programme))).sort((a, b) => a.localeCompare(b)),
     [summaries],
@@ -566,8 +687,48 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
       return searchable.includes(query);
     });
   }, [programmeFilter, riskFilter, searchQuery, summaries]);
-  const selectedMonths = selectedSummary ? selectedSummary.months : [];
+  const programmeGroups = useMemo(() => {
+    const grouped = new Map<string, ProgrammeSummaryGroup>();
+    filteredSummaries.forEach(summary => {
+      const existing = grouped.get(summary.programme);
+      if (existing) {
+        existing.summaries.push(summary);
+        existing.countedSessions += summary.countedSessions;
+        existing.affectedSessions += summary.affectedSessions;
+        return;
+      }
+
+      grouped.set(summary.programme, {
+        programme: summary.programme,
+        color: summary.programmeColor,
+        summaries: [summary],
+        countedSessions: summary.countedSessions,
+        affectedSessions: summary.affectedSessions,
+      });
+    });
+    return Array.from(grouped.values()).sort((a, b) => a.programme.localeCompare(b.programme));
+  }, [filteredSummaries]);
   const hasActiveFilters = searchQuery.trim() || programmeFilter !== 'all' || riskFilter !== 'all';
+  const visibleProgrammeSummaries = useMemo(() => {
+    if (!selectedProgrammeGroup) return [];
+    const query = programmeModalSearch.trim().toLowerCase();
+    return selectedProgrammeGroup.summaries.filter(summary => {
+      if (programmeModalRiskFilter === 'affected' && summary.affectedSessions === 0) return false;
+      if (programmeModalRiskFilter === 'clear' && summary.affectedSessions > 0) return false;
+      if (!query) return true;
+
+      const searchable = [
+        summary.moduleName,
+        summary.cohort,
+        summary.groupName,
+        summary.tutor,
+        summary.coach,
+        summary.dateRange,
+      ].join(' ').toLowerCase();
+      return searchable.includes(query);
+    });
+  }, [programmeModalRiskFilter, programmeModalSearch, selectedProgrammeGroup]);
+  const hasProgrammeModalFilters = programmeModalSearch.trim() || programmeModalRiskFilter !== 'all';
 
   if (!summaries.length) {
     return null;
@@ -576,226 +737,256 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
   return (
     <>
       <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-bold text-kbc-navy">Monthly Module Breakdown</h2>
-            <p className="mt-0.5 text-xs text-gray-400">Click any module to view monthly sessions, holidays, tutors, and coaches.</p>
-          </div>
+        <button
+          type="button"
+          onClick={() => setIsBreakdownCollapsed(value => !value)}
+          className={`flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50 ${isBreakdownCollapsed ? '' : 'border-b border-gray-100'}`}
+        >
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-kbc-navy text-white">
+              <i className={`ri-arrow-down-s-line text-lg transition-transform ${isBreakdownCollapsed ? '-rotate-90' : 'rotate-0'}`} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-kbc-navy">Monthly Module Breakdown</span>
+              <span className="mt-0.5 block text-xs text-gray-400">Click any module to view monthly sessions, holidays, tutors, and coaches.</span>
+            </span>
+          </span>
           <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
             {filteredSummaries.length}/{summaries.length} module{summaries.length !== 1 ? 's' : ''}
           </span>
-        </div>
+        </button>
 
-        <div className="grid gap-2 border-b border-gray-100 bg-slate-50/70 px-4 py-3 md:grid-cols-[minmax(180px,1.4fr)_minmax(150px,1fr)_minmax(160px,0.9fr)_auto]">
-          <label className="relative min-w-0">
-            <span className="sr-only">Search modules</span>
-            <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
-            <input
-              value={searchQuery}
-              onChange={event => setSearchQuery(event.target.value)}
-              placeholder="Search module, group, tutor..."
-              className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs font-medium text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
-            />
-          </label>
+        {!isBreakdownCollapsed && (
+          <>
+            <div className="grid gap-2 border-b border-gray-100 bg-slate-50/70 px-4 py-3 md:grid-cols-[minmax(180px,1.4fr)_minmax(150px,1fr)_minmax(160px,0.9fr)_auto]">
+              <label className="relative min-w-0">
+                <span className="sr-only">Search modules</span>
+                <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
+                <input
+                  value={searchQuery}
+                  onChange={event => setSearchQuery(event.target.value)}
+                  placeholder="Search module, group, tutor..."
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs font-medium text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
+                />
+              </label>
 
-          <select
-            value={programmeFilter}
-            onChange={event => setProgrammeFilter(event.target.value)}
-            className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
-          >
-            <option value="all">All programmes</option>
-            {programmeOptions.map(programme => (
-              <option key={programme} value={programme}>{programme}</option>
-            ))}
-          </select>
+              <select
+                value={programmeFilter}
+                onChange={event => setProgrammeFilter(event.target.value)}
+                className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
+              >
+                <option value="all">All programmes</option>
+                {programmeOptions.map(programme => (
+                  <option key={programme} value={programme}>{programme}</option>
+                ))}
+              </select>
 
-          <div className="flex h-9 rounded-lg border border-slate-200 bg-white p-1">
-            {([
-              { key: 'all', label: 'All' },
-              { key: 'affected', label: 'Clashes' },
-              { key: 'clear', label: 'Clear' },
-            ] as const).map(option => (
+              <div className="flex h-9 rounded-lg border border-slate-200 bg-white p-1">
+                {([
+                  { key: 'all', label: 'All' },
+                  { key: 'affected', label: 'Clashes' },
+                  { key: 'clear', label: 'Clear' },
+                ] as const).map(option => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setRiskFilter(option.key)}
+                    className={`flex-1 rounded-md px-2 text-xs font-bold transition-colors ${riskFilter === option.key ? 'bg-kbc-navy text-white' : 'text-gray-500 hover:bg-slate-50 hover:text-kbc-navy'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
               <button
-                key={option.key}
                 type="button"
-                onClick={() => setRiskFilter(option.key)}
-                className={`flex-1 rounded-md px-2 text-xs font-bold transition-colors ${riskFilter === option.key ? 'bg-kbc-navy text-white' : 'text-gray-500 hover:bg-slate-50 hover:text-kbc-navy'}`}
+                onClick={() => {
+                  setSearchQuery('');
+                  setProgrammeFilter('all');
+                  setRiskFilter('all');
+                }}
+                disabled={!hasActiveFilters}
+                className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-white hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {option.label}
+                Reset
               </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery('');
-              setProgrammeFilter('all');
-              setRiskFilter('all');
-            }}
-            disabled={!hasActiveFilters}
-            className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-white hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Reset
-          </button>
-        </div>
-
-        <div className="max-h-[360px] overflow-auto">
-          {filteredSummaries.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-gray-400">
-              No modules match the current filters.
             </div>
-          ) : filteredSummaries.map(summary => (
-            <button
-              key={summary.key}
-              type="button"
-              onClick={() => setSelectedSummary(summary)}
-              className="grid w-full grid-cols-[18px_minmax(0,1.5fr)_minmax(0,1fr)_72px_72px_30px] items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-50"
-            >
-              <span className="h-2.5 w-2.5 rounded-sm" style={{ background: summary.color }} />
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-extrabold text-kbc-navy">{summary.moduleName}</span>
-                <span className="mt-0.5 block truncate text-gray-400">{summary.programme} - {summary.cohort}</span>
-              </span>
-              <span className="min-w-0 text-gray-500">
-                <span className="block truncate"><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
-                <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
-              </span>
-              <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
-                {summary.countedSessions}
-              </span>
-              <span
-                className={`rounded-md px-2 py-1 text-center font-bold ${summary.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
-                title="Sessions inside holiday ranges"
-              >
-                {summary.affectedSessions ? (
-                  <span className="inline-flex items-center justify-center gap-1">
-                    <i className="ri-alert-line" />
-                    {summary.affectedSessions}
+
+            <div className="max-h-[360px] overflow-auto">
+              {filteredSummaries.length === 0 ? (
+                <div className="px-4 py-10 text-center text-sm text-gray-400">
+                  No modules match the current filters.
+                </div>
+              ) : programmeGroups.map(group => (
+                <button
+                  key={group.programme}
+                  type="button"
+                  onClick={() => {
+                    setProgrammeModalSearch('');
+                    setProgrammeModalRiskFilter('all');
+                    setSelectedProgrammeGroup(group);
+                  }}
+                  className="grid w-full grid-cols-[42px_minmax(0,1fr)_88px_88px_32px] items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-100"
+                >
+                  <span className="flex items-center gap-2">
+                    <i className="ri-external-link-line text-sm text-gray-400" />
+                    <span className="h-3 w-3 rounded-sm" style={{ background: group.color }} />
                   </span>
-                ) : '0'}
-              </span>
-              <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
-                <i className="ri-external-link-line text-sm" />
-              </span>
-            </button>
-          ))}
-        </div>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-extrabold text-kbc-navy">{group.programme}</span>
+                    <span className="mt-0.5 block text-gray-400">{group.summaries.length} module{group.summaries.length !== 1 ? 's' : ''}</span>
+                  </span>
+                  <span className="rounded-md bg-white px-2 py-1 text-center font-bold text-kbc-navy">
+                    {group.countedSessions}
+                  </span>
+                  <span
+                    className={`rounded-md px-2 py-1 text-center font-bold ${group.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
+                    title="Sessions inside holiday ranges"
+                  >
+                    {group.affectedSessions ? (
+                      <span className="inline-flex items-center justify-center gap-1">
+                        <i className="ri-alert-line" />
+                        {group.affectedSessions}
+                      </span>
+                    ) : '0'}
+                  </span>
+                  <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
+                    <i className="ri-arrow-right-s-line text-base" />
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </section>
 
-      {selectedSummary && (
+      {selectedProgrammeGroup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
             type="button"
-            aria-label="Close monthly breakdown"
+            aria-label="Close programme modules"
             className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
-            onClick={() => setSelectedSummary(null)}
+            onClick={() => setSelectedProgrammeGroup(null)}
           />
-          <div className="relative flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${selectedSummary.color}` }}>
+          <div className="relative flex max-h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${selectedProgrammeGroup.color}` }}>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="h-3 w-3 rounded-sm" style={{ background: selectedSummary.color }} />
-                  <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedSummary.moduleName}</h3>
+                  <span className="h-3 w-3 rounded-sm" style={{ background: selectedProgrammeGroup.color }} />
+                  <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedProgrammeGroup.programme}</h3>
                 </div>
-                <p className="mt-1 text-xs text-gray-500">{selectedSummary.programme} - {selectedSummary.cohort}</p>
-                <p className="mt-0.5 text-xs text-gray-400">{selectedSummary.dateRange}</p>
+                <p className="mt-1 text-xs text-gray-500">
+                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''} - {selectedProgrammeGroup.countedSessions} counted sessions
+                </p>
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedSummary(null)}
+                onClick={() => setSelectedProgrammeGroup(null)}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
               >
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
 
-            <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-5">
-              <span><strong className="text-gray-700">Group:</strong> {selectedSummary.groupName}</span>
-              <span><strong className="text-gray-700">Tutor:</strong> {selectedSummary.tutor}</span>
-              <span><strong className="text-gray-700">Coach:</strong> {selectedSummary.coach}</span>
-              <span><strong className="text-gray-700">Sessions:</strong> {selectedSummary.countedSessions} counted</span>
-              <span className={selectedSummary.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
-                <strong>Affected:</strong> {selectedSummary.affectedSessions}
+            <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3">
+              <span><strong className="text-gray-700">Modules:</strong> {selectedProgrammeGroup.summaries.length}</span>
+              <span><strong className="text-gray-700">Sessions:</strong> {selectedProgrammeGroup.countedSessions} counted</span>
+              <span className={selectedProgrammeGroup.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
+                <strong>Clashes:</strong> {selectedProgrammeGroup.affectedSessions}
               </span>
             </div>
 
-            <div className="overflow-auto p-5">
-              {selectedSummary.affectedSessions > 0 && (
-                <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  <i className="ri-alert-line mt-0.5" />
-                  <span>
-                    {selectedSummary.affectedSessions} session{selectedSummary.affectedSessions !== 1 ? 's are' : ' is'} inside a holiday range and may need rescheduling.
-                  </span>
-                </div>
-              )}
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <table className="min-w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
-                    <tr>
-                      <th className="w-44 px-3 py-2 font-bold">Month</th>
-                      <th className="w-24 px-3 py-2 font-bold">Sessions</th>
-                      <th className="px-3 py-2 font-bold">Session Dates</th>
-                      <th className="px-3 py-2 font-bold">Holidays</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {selectedMonths.map(month => (
-                      <tr key={month.key} className="align-top">
-                        <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
-                        <td className="px-3 py-3 font-bold text-gray-700">
-                          {month.sessions.filter(session => session.holidays.length === 0).length}
-                        </td>
-                        <td className="px-3 py-3 text-gray-600">
-                          {month.sessions.length ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {month.sessions.map(session => (
-                                <span
-                                  key={`${month.key}-${session.date}-${session.time}`}
-                                  className={`rounded-md border px-2 py-1 ${session.holidays.length ? 'border-red-200 bg-red-50 text-red-800 shadow-sm' : 'border-transparent bg-slate-100'}`}
-                                  title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
-                                >
-                                  {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
-                                  <strong className={session.holidays.length ? 'text-red-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
-                                  {' '}({session.time}) - Tutor: {session.tutor} - Coach: {session.coach}
-                                  {session.holidays.length > 0 && (
-                                    <span className="ml-1 font-bold text-red-700">
-                                      - Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
-                                    </span>
-                                  )}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">No sessions</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-gray-600">
-                          {month.holidays.length ? (
-                            <div className="space-y-1">
-                              {month.holidays.map(holiday => (
-                                <div key={holiday.id} className="flex items-start gap-2">
-                                  <span className="mt-1.5 h-2 w-2 rounded-full shrink-0" style={{ background: holiday.color }} />
-                                  <span>
-                                    <strong className="text-gray-800">{holiday.label}</strong>
-                                    <span className="text-gray-400"> ({holiday.type}) </span>
-                                    {holiday.dateRange}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">No holidays</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div className="grid gap-2 border-b border-slate-100 bg-white px-5 py-3 md:grid-cols-[minmax(180px,1fr)_minmax(160px,0.65fr)_auto]">
+              <label className="relative min-w-0">
+                <span className="sr-only">Search programme modules</span>
+                <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
+                <input
+                  value={programmeModalSearch}
+                  onChange={event => setProgrammeModalSearch(event.target.value)}
+                  placeholder="Search module, group, tutor..."
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 text-xs font-medium text-kbc-navy outline-none transition-colors focus:border-kbc-navy"
+                />
+              </label>
+
+              <div className="flex h-9 rounded-lg border border-slate-200 bg-white p-1">
+                {([
+                  { key: 'all', label: 'All' },
+                  { key: 'affected', label: 'Clashes' },
+                  { key: 'clear', label: 'Clear' },
+                ] as const).map(option => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setProgrammeModalRiskFilter(option.key)}
+                    className={`flex-1 rounded-md px-2 text-xs font-bold transition-colors ${programmeModalRiskFilter === option.key ? 'bg-kbc-navy text-white' : 'text-gray-500 hover:bg-slate-50 hover:text-kbc-navy'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setProgrammeModalSearch('');
+                  setProgrammeModalRiskFilter('all');
+                }}
+                disabled={!hasProgrammeModalFilters}
+                className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-slate-50 hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Reset
+              </button>
+            </div>
+
+            <div className="overflow-auto">
+              {visibleProgrammeSummaries.length === 0 ? (
+                <div className="px-5 py-10 text-center text-sm text-gray-400">
+                  No modules match the current filters.
+                </div>
+              ) : visibleProgrammeSummaries.map(summary => (
+                <button
+                  key={summary.key}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSummary(summary);
+                  }}
+                  className="grid w-full grid-cols-[18px_minmax(0,1.5fr)_minmax(0,1fr)_72px_72px_30px] items-center gap-3 border-b border-slate-100 px-5 py-3 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-50"
+                >
+                  <span className="h-2.5 w-2.5 rounded-sm" style={{ background: summary.color }} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-extrabold text-kbc-navy">{summary.moduleName}</span>
+                    <span className="mt-0.5 block truncate text-gray-400">{summary.cohort} - {summary.dateRange}</span>
+                  </span>
+                  <span className="min-w-0 text-gray-500">
+                    <span className="block truncate"><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
+                    <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
+                  </span>
+                  <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
+                    {summary.countedSessions}
+                  </span>
+                  <span
+                    className={`rounded-md px-2 py-1 text-center font-bold ${summary.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
+                    title="Sessions inside holiday ranges"
+                  >
+                    {summary.affectedSessions ? (
+                      <span className="inline-flex items-center justify-center gap-1">
+                        <i className="ri-alert-line" />
+                        {summary.affectedSessions}
+                      </span>
+                    ) : '0'}
+                  </span>
+                  <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
+                    <i className="ri-external-link-line text-sm" />
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         </div>
+      )}
+
+      {selectedSummary && (
+        <MonthlyModuleSummaryModal summary={selectedSummary} onClose={() => setSelectedSummary(null)} />
       )}
     </>
   );
@@ -875,6 +1066,7 @@ export default function ApprenticeshipTimeline() {
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
   const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
+  const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<ModuleMonthlySummary | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors'>('gantt');
@@ -1632,6 +1824,13 @@ export default function ApprenticeshipTimeline() {
     () => buildMonthlyModuleSummaries(groups, holidays, customModules),
     [customModules, groups, holidays],
   );
+  const openMonthlySummary = (groupId: string, rowId: string, blockId: string) => {
+    const targetKey = `${groupId}-${rowId}-${blockId}`;
+    const summary = monthlyModuleSummaries.find(item => item.key === targetKey);
+    if (summary) {
+      setSelectedMonthlySummary(summary);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-kbc-bg font-sans">
@@ -1944,6 +2143,12 @@ export default function ApprenticeshipTimeline() {
                     setInitialManageModuleId(moduleId);
                     setShowManageModules(true);
                   }}
+                  onViewMonthlyBreakdown={(groupIdx, rowIdx, blockId) => {
+                    const group = groups[groupIdx];
+                    const row = group?.rows[rowIdx];
+                    if (!group || !row) return;
+                    openMonthlySummary(group.id, row.id, blockId);
+                  }}
                   onDeleteRow={handleDeleteRow}
                   onEditProgram={handleEditProgram}
                   onDeleteProgram={handleDeleteProgram}
@@ -2029,7 +2234,7 @@ export default function ApprenticeshipTimeline() {
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
-            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-2">
+            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-3">
               <button
                 type="button"
                 onClick={() => {
@@ -2075,9 +2280,36 @@ export default function ApprenticeshipTimeline() {
                     : 'No matching catalogue module found'}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  openMonthlySummary(
+                    visibleEditChoiceDetails.group.id,
+                    visibleEditChoiceDetails.row.id,
+                    visibleEditChoiceDetails.block.id,
+                  );
+                }}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white">
+                  <i className="ri-calendar-check-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Monthly Module Breakdown</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  View monthly sessions, holiday clashes, tutors, coaches, and session totals.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {visibleEditChoiceDetails.block.startDate} to {visibleEditChoiceDetails.block.endDate}
+                </span>
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {selectedMonthlySummary && (
+        <MonthlyModuleSummaryModal summary={selectedMonthlySummary} onClose={() => setSelectedMonthlySummary(null)} />
       )}
 
       {canManageCohorts && modal.open && (

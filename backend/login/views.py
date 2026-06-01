@@ -335,9 +335,13 @@ def activity_view(request):
 			},
 		)
 		if not created:
+			effective_duration_seconds = duration_seconds
+			if action != 'page_view' and page_visit.last_seen_at:
+				server_elapsed_seconds = max(0, min(int((now - page_visit.last_seen_at).total_seconds()), 3600))
+				effective_duration_seconds = max(duration_seconds, server_elapsed_seconds)
 			page_visit.title = title or page_visit.title
 			page_visit.last_seen_at = now
-			page_visit.duration_seconds = page_visit.duration_seconds + duration_seconds
+			page_visit.duration_seconds = page_visit.duration_seconds + effective_duration_seconds
 			if action == 'page_view':
 				page_visit.view_count = page_visit.view_count + 1
 			page_visit.save(update_fields=['title', 'last_seen_at', 'duration_seconds', 'view_count', 'updated_at'])

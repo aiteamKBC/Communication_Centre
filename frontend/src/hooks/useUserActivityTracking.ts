@@ -36,23 +36,26 @@ function writeStoredUser(user: StoredUser) {
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
 }
 
-function postActivity(payload: Record<string, unknown>, useBeacon = false) {
+async function postActivity(payload: Record<string, unknown>, useBeacon = false): Promise<boolean> {
   const body = JSON.stringify(payload);
 
   if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
     const blob = new Blob([body], { type: 'application/json' });
-    navigator.sendBeacon(ACTIVITY_ENDPOINT, blob);
-    return;
+    return navigator.sendBeacon(ACTIVITY_ENDPOINT, blob);
   }
 
-  void fetch(ACTIVITY_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-    keepalive: useBeacon,
-  }).catch(() => {
+  try {
+    const response = await fetch(ACTIVITY_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: useBeacon,
+    });
+    return response.ok;
+  } catch {
     // Tracking should never interrupt normal navigation.
-  });
+    return false;
+  }
 }
 
 function userDisplayName(user: StoredUser): string {
@@ -73,7 +76,7 @@ export function useUserActivityTracking() {
   const location = useLocation();
   const currentPathRef = useRef('');
   const enteredAtRef = useRef(Date.now());
-  const activeRef = useRef(typeof document === 'undefined' ? true : document.visibilityState === 'visible' && document.hasFocus());
+  const activeRef = useRef(typeof document === 'undefined' ? true : document.visibilityState === 'visible');
   const startInFlightRef = useRef(false);
 
   const ensureTrackingSession = async (): Promise<StoredUser | null> => {
@@ -129,7 +132,7 @@ export function useUserActivityTracking() {
     };
   }, []);
 
-  const flushCurrentPath = (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false, force = false) => {
+  const flushCurrentPath = async (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false, force = false) => {
     const user = readStoredUser();
     if (!user?.trackingSessionId || !currentPathRef.current) return;
     if (!force && action !== 'logout' && !activeRef.current) return;
@@ -138,7 +141,7 @@ export function useUserActivityTracking() {
     const durationSeconds = Math.max(0, Math.round((now - enteredAtRef.current) / 1000));
     if (durationSeconds === 0 && action !== 'logout') return;
 
-    postActivity(
+    const sent = await postActivity(
       {
         action,
         trackingSessionId: user.trackingSessionId,
@@ -152,23 +155,25 @@ export function useUserActivityTracking() {
       useBeacon,
     );
 
-    enteredAtRef.current = now;
+    if (sent) {
+      enteredAtRef.current = now;
+    }
   };
 
   useEffect(() => {
     const nextPath = `${location.pathname}${location.search}${location.hash}`;
-    void ensureTrackingSession().then(user => {
+    void ensureTrackingSession().then(async user => {
       if (!user?.trackingSessionId) return;
 
       if (currentPathRef.current && currentPathRef.current !== nextPath) {
-        flushCurrentPath('page_exit');
+        await flushCurrentPath('page_exit');
       }
 
       currentPathRef.current = nextPath;
       enteredAtRef.current = Date.now();
-      activeRef.current = document.visibilityState === 'visible' && document.hasFocus();
+      activeRef.current = document.visibilityState === 'visible';
 
-      postActivity({
+      void postActivity({
         action: 'page_view',
         trackingSessionId: user.trackingSessionId,
         userId: user.id,
@@ -183,18 +188,18 @@ export function useUserActivityTracking() {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (!activeRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
-      flushCurrentPath('heartbeat');
+      if (!activeRef.current || document.visibilityState !== 'visible') return;
+      void flushCurrentPath('heartbeat');
     }, HEARTBEAT_MS);
 
     const pauseTracking = () => {
       if (!activeRef.current) return;
-      flushCurrentPath('page_exit', true, true);
+      void flushCurrentPath('page_exit', true, true);
       activeRef.current = false;
     };
 
     const resumeTracking = () => {
-      if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
+      if (document.visibilityState !== 'visible') return;
       activeRef.current = true;
       enteredAtRef.current = Date.now();
     };
@@ -205,21 +210,19 @@ export function useUserActivityTracking() {
     };
 
     const handleBeforeUnload = () => {
-      flushCurrentPath('page_exit', true, true);
+      void flushCurrentPath('page_exit', true, true);
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('blur', pauseTracking);
-    window.addEventListener('focus', resumeTracking);
+    window.addEventListener('pagehide', handleBeforeUnload);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('blur', pauseTracking);
-      window.removeEventListener('focus', resumeTracking);
+      window.removeEventListener('pagehide', handleBeforeUnload);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      flushCurrentPath('page_exit', true, true);
+      void flushCurrentPath('page_exit', true, true);
     };
   }, []);
 }

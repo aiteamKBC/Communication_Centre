@@ -5,7 +5,7 @@ import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
   formatDate, formatDateShort, durationWeeksByDay, getHolidayOverlaps, startOfWeek,
-  ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
+  rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
 const LEFT_W    = 220;
@@ -123,41 +123,48 @@ function resolveCatalogModuleForBlock(blk: ModuleBlock, customModules: CustomMod
   });
 }
 
-function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[]) {
-  const total = Math.max(1, blk.sessions || 1);
+function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[], activeHolidays: Holiday[] = []) {
+  const plannedTotal = Math.max(1, blk.sessions || 1);
   const weekdays = blk.days?.length ? blk.days : [];
   const start = parseLocalIsoDate(blk.startDate);
   const end = parseLocalIsoDate(blk.endDate || blk.startDate);
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
-  const dates: string[] = [];
+  const dates: Array<{ date: string; originalNumber: number }> = [];
 
   if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
     const cursor = new Date(start);
-    while (cursor <= end && dates.length < total) {
+    while (cursor <= end && dates.length < plannedTotal) {
       const key = (['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const)[cursor.getDay()];
       if (!weekdays.length || weekdays.includes(key as any)) {
-        dates.push(localIsoDate(cursor));
+        dates.push({ date: localIsoDate(cursor), originalNumber: dates.length + 1 });
       }
       cursor.setDate(cursor.getDate() + 1);
     }
   }
 
-  const sessionDates = dates.length ? dates : [blk.startDate];
-  const completed = Math.min(total, sessionDates.filter(date => hasSessionEnded(date, endTime, now)).length);
+  const sessionDates = dates.length ? dates : [{ date: blk.startDate, originalNumber: 1 }];
+  const affected = sessionDates.filter(session =>
+    activeHolidays.some(holiday => rangesOverlap(session.date, session.date, holiday.startDate, holiday.endDate)),
+  ).length;
+  const total = plannedTotal;
+  const completed = Math.min(total, sessionDates.filter(session => hasSessionEnded(session.date, endTime, now)).length);
   const isFinished = total > 0 && completed >= total;
-  const nextIndex = sessionDates.findIndex(date => !hasSessionEnded(date, endTime, now));
-  const index = nextIndex >= 0 ? nextIndex : Math.min(completed, total - 1);
-  const number = Math.min(total, Math.max(1, index + 1));
+  const nextIndex = sessionDates.findIndex(session => !hasSessionEnded(session.date, endTime, now));
+  const index = total > 0 ? (nextIndex >= 0 ? nextIndex : Math.min(completed, total - 1)) : 0;
+  const selectedSession = sessionDates[index] || sessionDates[0];
+  const number = total > 0 ? Math.min(total, Math.max(1, index + 1)) : 0;
   const catalogModule = resolveCatalogModuleForBlock(blk, customModules, catalogModules);
-  const savedName = catalogModule?.sessionNames?.[number - 1]?.trim() || '';
+  const savedName = selectedSession ? catalogModule?.sessionNames?.[selectedSession.originalNumber - 1]?.trim() || '' : '';
 
   return {
     number,
     total,
+    plannedTotal,
     completed,
     isFinished,
-    date: sessionDates[index] || blk.startDate,
+    affected,
+    date: selectedSession?.date || blk.startDate,
     name: savedName,
     hasRealName: Boolean(savedName),
   };
@@ -238,6 +245,7 @@ interface Props {
   onAddRow: (groupIdx: number) => void;
   onEditRow: (groupIdx: number, rowIdx: number, blockId?: string, returnToChoice?: boolean) => void;
   onEditCatalogModule?: (moduleId: number) => void;
+  onViewMonthlyBreakdown?: (groupIdx: number, rowIdx: number, blockId: string) => void;
   onDeleteRow: (groupIdx: number, rowIdx: number) => void | Promise<void>;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
@@ -306,6 +314,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
   const displayName = getBlockDisplayName(data.blk, data.customModules);
   const weeks = durationWeeksByDay(data.blk.startDate, data.blk.endDate, data.blk.days);
   const hasHolidays = data.holidays.length > 0;
+  const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays);
 
   return (
     <div className="fixed z-50 pointer-events-none"
@@ -355,15 +364,6 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               <p className="text-xs text-gray-400">{weeks} weeks</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-5 h-5 flex items-center justify-center shrink-0">
-              <i className="ri-stack-line text-gray-400 text-xs" />
-            </div>
-            <div>
-              <p className="text-xs text-gray-400 leading-none">Sessions</p>
-              <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.sessions} sessions total</p>
-            </div>
-          </div>
           {(data.blk.days?.length || data.blk.sessionStartTime) && (
             <div className="flex items-center gap-2">
               <div className="w-5 h-5 flex items-center justify-center shrink-0">
@@ -395,6 +395,11 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
                   {h.label} ({formatDateShort(h.startDate)}–{formatDateShort(h.endDate)})
                 </p>
               ))}
+              {sessionSummary.affected > 0 && (
+                <p className="mt-1.5 border-t border-amber-200 pt-1.5 text-xs font-semibold text-red-600">
+                  {sessionSummary.affected} session{sessionSummary.affected !== 1 ? 's' : ''} clashed with the holiday range{sessionSummary.affected !== 1 ? 's' : ''}.
+                </p>
+              )}
             </div>
           )}
           {data.blk.notes && (
@@ -410,7 +415,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
-  onEditCatalogModule, onReorderRow, onReorderGroup, canManageCohorts = true,
+  onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, canManageCohorts = true,
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -897,9 +902,11 @@ export default function GanttTimeline({
     const tutorLabel = blk.tutor.trim();
     const showTutor = pos.width > 72 && Boolean(tutorLabel);
     const coachLabel = (blk.coachName || '').trim();
-    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules);
+    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
     const sessionLabel = sessionSummary.isFinished
       ? 'Finished'
+      : sessionSummary.total === 0
+      ? 'No sessions'
       : sessionSummary.hasRealName
       ? `S${sessionSummary.number}: ${sessionSummary.name}`
       : `S${sessionSummary.number}: no saved name`;
@@ -985,7 +992,7 @@ export default function GanttTimeline({
 
             {pos.width > 180 && (
               <span
-                title={`${sessionSummary.isFinished ? 'Finished module' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.affected ? ` - ${sessionSummary.affected} holiday clash${sessionSummary.affected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                 style={{
                   color: mod.tx,
                   fontSize: '9px',
@@ -1444,7 +1451,7 @@ export default function GanttTimeline({
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
-            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-2">
+            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-3">
               <button
                 type="button"
                 onClick={() => {
@@ -1485,6 +1492,28 @@ export default function GanttTimeline({
                 </span>
                 <span className="mt-3 block text-xs font-semibold text-gray-400">
                   {editChoice.catalogModule ? `${editChoice.catalogModule.name} - ${editChoice.catalogModule.sessions || 0} sessions` : 'No matching catalogue module found'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = editChoice;
+                  if (!onViewMonthlyBreakdown) return;
+                  onViewMonthlyBreakdown(target.groupIdx, target.rowIdx, target.blk.id);
+                }}
+                disabled={!onViewMonthlyBreakdown}
+                className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-200 disabled:hover:shadow-none"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white">
+                  <i className="ri-calendar-check-line" />
+                </span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Monthly Module Breakdown</span>
+                <span className="mt-1 block text-xs leading-5 text-gray-500">
+                  View monthly sessions, holiday clashes, tutors, coaches, and session totals.
+                </span>
+                <span className="mt-3 block text-xs font-semibold text-gray-400">
+                  {formatDateShort(editChoice.blk.startDate)} to {formatDateShort(editChoice.blk.endDate)}
                 </span>
               </button>
             </div>
