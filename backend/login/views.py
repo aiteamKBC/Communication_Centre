@@ -126,7 +126,11 @@ def _sync_session_totals(session: UserActivitySession, now=None) -> None:
 	session.total_seconds = int(aggregate.get('total') or 0)
 	session.page_count = session.page_visits.count()
 	session.last_seen_at = now
-	session.save(update_fields=['total_seconds', 'page_count', 'last_seen_at', 'updated_at'])
+	update_fields = ['total_seconds', 'page_count', 'last_seen_at', 'updated_at']
+	if session.login_at and session.login_at > now:
+		session.login_at = now
+		update_fields.append('login_at')
+	session.save(update_fields=update_fields)
 
 
 def _user_payload(user, auth_provider: str, activity_session: UserActivitySession) -> dict:

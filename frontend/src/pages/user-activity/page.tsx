@@ -274,6 +274,29 @@ function sessionLoginMs(session: ActivitySession): number {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
+function isSameLocalDate(left: Date, right: Date): boolean {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function sessionLoginDateLabel(session: ActivitySession): string {
+  const loginTimestamp = sessionLoginMs(session);
+  if (!loginTimestamp) return '';
+
+  const activityTimestamp = sessionLastSeenMs(session);
+  if (!activityTimestamp) return '';
+
+  const loginDate = new Date(loginTimestamp);
+  const activityDate = new Date(activityTimestamp);
+  if (isSameLocalDate(loginDate, activityDate)) return '';
+
+  return loginDate.toLocaleDateString(undefined, {
+    day: '2-digit',
+    month: 'short',
+  });
+}
+
 function auditCreatedMs(log: AuditLog): number {
   const timestamp = new Date(log.createdAt).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -1485,7 +1508,12 @@ export default function UserActivityPage() {
                           <span className="block truncate text-sm font-extrabold text-kbc-navy">{userLabel(session)}</span>
                           <span className="block truncate text-xs text-gray-400">{session.email || session.username}</span>
                         </span>
-                        <span className="text-xs font-extrabold text-gray-700">{formatTime(session.loginAt)}</span>
+                        <span className="text-xs font-extrabold text-gray-700">
+                          {sessionLoginDateLabel(session) && (
+                            <span className="block text-[10px] font-bold uppercase text-gray-400">{sessionLoginDateLabel(session)}</span>
+                          )}
+                          <span>{formatTime(session.loginAt)}</span>
+                        </span>
                         <span className="flex items-center gap-2 text-xs font-semibold text-gray-600">
                           <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-extrabold ${
                             session.isActive ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200' : 'bg-gray-100 text-gray-500 ring-1 ring-gray-200'

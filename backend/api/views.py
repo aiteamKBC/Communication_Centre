@@ -1675,8 +1675,21 @@ def risk_register(request):
 ACTIVITY_ACTIVE_WINDOW_SECONDS = 7
 
 
+def _session_display_login_at(session: UserActivitySession, now):
+	login_at = session.login_at
+	if not login_at:
+		return None
+	latest_allowed = session.last_seen_at or session.logout_at or now
+	if latest_allowed and login_at > latest_allowed:
+		return latest_allowed
+	if login_at > now:
+		return now
+	return login_at
+
+
 def serialize_user_activity_session(session: UserActivitySession, now=None) -> dict:
 	now = now or timezone.now()
+	display_login_at = _session_display_login_at(session, now)
 	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
 	is_active = bool(session.logout_at is None and session.last_seen_at and session.last_seen_at >= active_cutoff)
 	visits = list(session.page_visits.all())
@@ -1706,7 +1719,7 @@ def serialize_user_activity_session(session: UserActivitySession, now=None) -> d
 		'email': session.email,
 		'displayName': session.display_name,
 		'authProvider': session.auth_provider,
-		'loginAt': session.login_at.isoformat() if session.login_at else '',
+		'loginAt': display_login_at.isoformat() if display_login_at else '',
 		'logoutAt': session.logout_at.isoformat() if session.logout_at else '',
 		'lastSeenAt': session.last_seen_at.isoformat() if session.last_seen_at else '',
 		'totalSeconds': session.total_seconds,
