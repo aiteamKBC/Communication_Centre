@@ -36,14 +36,28 @@ type ActivitySession = {
   pageVisits: PageVisit[];
 };
 
+type Pagination = {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  returnedItems: number;
+  hasNext: boolean;
+  hasPrevious: boolean;
+};
+
 type ActivityPayload = {
   summary: {
     totalSessions: number;
     returnedSessions: number;
+    matchingSessions?: number;
+    activeSessions?: number;
+    completedSessions?: number;
     uniqueUsers: number;
     totalSeconds: number;
     totalPageViews: number;
   };
+  pagination: Pagination;
   sessions: ActivitySession[];
 };
 
@@ -70,6 +84,7 @@ type AuditPayload = {
     totalLogs: number;
     returnedLogs: number;
   };
+  pagination: Pagination;
   logs: AuditLog[];
 };
 
@@ -83,6 +98,15 @@ const emptyPayload: ActivityPayload = {
     totalSeconds: 0,
     totalPageViews: 0,
   },
+  pagination: {
+    page: 1,
+    pageSize: 10,
+    totalItems: 0,
+    totalPages: 1,
+    returnedItems: 0,
+    hasNext: false,
+    hasPrevious: false,
+  },
   sessions: [],
 };
 
@@ -90,6 +114,15 @@ const emptyAuditPayload: AuditPayload = {
   summary: {
     totalLogs: 0,
     returnedLogs: 0,
+  },
+  pagination: {
+    page: 1,
+    pageSize: 10,
+    totalItems: 0,
+    totalPages: 1,
+    returnedItems: 0,
+    hasNext: false,
+    hasPrevious: false,
   },
   logs: [],
 };
@@ -503,6 +536,50 @@ function SortHeader<TSortKey extends string>({
       <span>{label}</span>
       <i className={`${icon} text-xs`} />
     </button>
+  );
+}
+
+function PaginationControls({
+  pagination,
+  onPageChange,
+  label,
+}: {
+  pagination: Pagination;
+  onPageChange: (page: number) => void;
+  label: string;
+}) {
+  const start = pagination.totalItems === 0 ? 0 : ((pagination.page - 1) * pagination.pageSize) + 1;
+  const end = pagination.totalItems === 0 ? 0 : Math.min(pagination.totalItems, start + pagination.returnedItems - 1);
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-slate-50 px-4 py-3">
+      <p className="text-xs font-bold text-gray-500">
+        Showing {start}-{end} of {pagination.totalItems} {label}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-white px-3 py-1 text-xs font-extrabold text-gray-500 ring-1 ring-gray-200">
+          Page {pagination.page} of {pagination.totalPages}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.max(1, pagination.page - 1))}
+          disabled={!pagination.hasPrevious}
+          className="flex h-8 items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-gray-600 transition-colors hover:border-kbc-navy hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <i className="ri-arrow-left-s-line text-base" />
+          Previous
+        </button>
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.min(pagination.totalPages, pagination.page + 1))}
+          disabled={!pagination.hasNext}
+          className="flex h-8 items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-gray-600 transition-colors hover:border-kbc-navy hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Next
+          <i className="ri-arrow-right-s-line text-base" />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -984,6 +1061,9 @@ export default function UserActivityPage() {
   const [pageVisitSort, setPageVisitSort] = useState<PageVisitSort>({ key: 'time', direction: 'desc' });
   const [auditLogSort, setAuditLogSort] = useState<AuditLogSort>({ key: 'time', direction: 'desc' });
   const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
+  const [sessionPage, setSessionPage] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => {
     let timeoutId: number | null = null;
@@ -1005,29 +1085,48 @@ export default function UserActivityPage() {
     };
   }, []);
 
-  const query = useMemo(() => {
-    const params = new URLSearchParams({ limit: '200' });
+  const baseQuery = useMemo(() => {
+    const params = new URLSearchParams();
     if (search.trim()) params.set('search', search.trim());
     if (from) params.set('from', from);
     if (to) params.set('to', to);
     return params.toString();
   }, [from, search, to]);
 
-  const activeSessions = useMemo(() => payload.sessions.filter(session => session.isActive).length, [payload.sessions]);
-  const completedSessions = useMemo(() => payload.sessions.filter(session => !session.isActive).length, [payload.sessions]);
+  const sessionQuery = useMemo(() => {
+    const params = new URLSearchParams(baseQuery);
+    params.set('page', String(sessionPage));
+    params.set('pageSize', String(pageSize));
+    params.set('status', sessionFilter);
+    return params.toString();
+  }, [baseQuery, sessionFilter, sessionPage]);
+
+  const auditQuery = useMemo(() => {
+    const params = new URLSearchParams(baseQuery);
+    params.set('page', String(auditPage));
+    params.set('pageSize', String(pageSize));
+    return params.toString();
+  }, [auditPage, baseQuery]);
+
+  useEffect(() => {
+    setSessionPage(1);
+    setAuditPage(1);
+  }, [baseQuery]);
+
+  useEffect(() => {
+    setSessionPage(1);
+  }, [sessionFilter]);
+
+  const activeSessions = payload.summary.activeSessions ?? payload.sessions.filter(session => session.isActive).length;
+  const completedSessions = payload.summary.completedSessions ?? payload.sessions.filter(session => !session.isActive).length;
   const visibleSessions = useMemo(() => {
     return payload.sessions
-      .filter(session => {
-        if (sessionFilter === 'active') return session.isActive;
-        if (sessionFilter === 'completed') return !session.isActive;
-        return true;
-      })
       .sort((a, b) => (
         dateSortOrder === 'newest'
           ? sessionLastSeenMs(b) - sessionLastSeenMs(a)
           : sessionLastSeenMs(a) - sessionLastSeenMs(b)
       ));
-  }, [dateSortOrder, payload.sessions, sessionFilter]);
+  }, [dateSortOrder, payload.sessions]);
   const visibleAuditLogs = useMemo(() => {
     return sortedAuditLogs(auditPayload.logs, auditLogSort);
   }, [auditLogSort, auditPayload.logs]);
@@ -1124,7 +1223,7 @@ export default function UserActivityPage() {
       if (showSpinner) setLoading(true);
       setError('');
 
-      fetch(`/api/user-activity/?${query}`, { signal: controller.signal })
+      fetch(`/api/user-activity/?${sessionQuery}`, { signal: controller.signal })
         .then(async response => {
           if (!response.ok) throw new Error('Unable to load user activity.');
           return response.json() as Promise<ActivityPayload>;
@@ -1148,7 +1247,7 @@ export default function UserActivityPage() {
       window.clearInterval(intervalId);
       controller?.abort();
     };
-  }, [canView, query]);
+  }, [canView, sessionQuery]);
 
   useEffect(() => {
     if (!canView) {
@@ -1165,7 +1264,7 @@ export default function UserActivityPage() {
       if (showSpinner) setAuditLoading(true);
       setAuditError('');
 
-      fetch(`/api/audit-logs/?${query}`, { signal: controller.signal })
+      fetch(`/api/audit-logs/?${auditQuery}`, { signal: controller.signal })
         .then(async response => {
           if (!response.ok) throw new Error('Unable to load audit logs.');
           return response.json() as Promise<AuditPayload>;
@@ -1189,7 +1288,7 @@ export default function UserActivityPage() {
       window.clearInterval(intervalId);
       controller?.abort();
     };
-  }, [canView, query]);
+  }, [auditQuery, canView]);
 
   if (!canView) {
     return (
@@ -1437,7 +1536,7 @@ export default function UserActivityPage() {
             </div>
             <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
               {[
-                ['all', `All (${payload.sessions.length})`],
+                ['all', `All (${payload.summary.matchingSessions ?? payload.pagination.totalItems})`],
                 ['active', `Active (${activeSessions})`],
                 ['completed', `Not active (${completedSessions})`],
               ].map(([value, label]) => (
@@ -1568,6 +1667,13 @@ export default function UserActivityPage() {
                 </div>
               ))
             )}
+            {!loading && (
+              <PaginationControls
+                pagination={payload.pagination}
+                onPageChange={setSessionPage}
+                label="sessions"
+              />
+            )}
           </div>
 
           <section className="mt-8">
@@ -1686,6 +1792,13 @@ export default function UserActivityPage() {
                     ))}
                   </div>
                 ))
+              )}
+              {!auditLoading && (
+                <PaginationControls
+                  pagination={auditPayload.pagination}
+                  onPageChange={setAuditPage}
+                  label="logs"
+                />
               )}
             </div>
           </section>

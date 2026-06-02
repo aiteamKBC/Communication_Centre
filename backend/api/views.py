@@ -1675,6 +1675,31 @@ def risk_register(request):
 ACTIVITY_ACTIVE_WINDOW_SECONDS = 7
 
 
+def _pagination_params(request, *, default_size: int = 50, max_size: int = 200) -> tuple[int, int]:
+	try:
+		page = max(1, int(request.GET.get('page', '1')))
+	except ValueError:
+		page = 1
+	try:
+		page_size = max(1, min(int(request.GET.get('pageSize', str(default_size))), max_size))
+	except ValueError:
+		page_size = default_size
+	return page, page_size
+
+
+def _pagination_payload(*, page: int, page_size: int, total: int, returned: int) -> dict:
+	total_pages = max(1, (total + page_size - 1) // page_size)
+	return {
+		'page': page,
+		'pageSize': page_size,
+		'totalItems': total,
+		'totalPages': total_pages,
+		'returnedItems': returned,
+		'hasNext': page < total_pages,
+		'hasPrevious': page > 1,
+	}
+
+
 def _session_display_login_at(session: UserActivitySession, now):
 	login_at = session.login_at
 	if not login_at:
@@ -1744,40 +1769,56 @@ def user_activity(request):
 	search = str(request.GET.get('search', '')).strip()
 	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
 	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
-	try:
-		limit = max(1, min(int(request.GET.get('limit', '100')), 500))
-	except ValueError:
-		limit = 100
+	status = str(request.GET.get('status', 'all')).strip().lower()
+	page, page_size = _pagination_params(request, default_size=25, max_size=100)
 
-	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-last_seen_at', '-login_at')
+	base_records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-last_seen_at', '-login_at')
 	if search:
-		records = records.filter(
+		base_records = base_records.filter(
 			models.Q(email__icontains=search)
 			| models.Q(username__icontains=search)
 			| models.Q(display_name__icontains=search)
 			| models.Q(page_visits__path__icontains=search)
 		).distinct()
 	if from_date:
-		records = records.filter(last_seen_at__date__gte=from_date)
+		base_records = base_records.filter(last_seen_at__date__gte=from_date)
 	if to_date:
-		records = records.filter(last_seen_at__date__lte=to_date)
+		base_records = base_records.filter(last_seen_at__date__lte=to_date)
 
-	sessions = list(records[:limit])
+	now = timezone.now()
+	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
+	active_query = models.Q(logout_at__isnull=True, last_seen_at__gte=active_cutoff)
+	active_count = base_records.filter(active_query).count()
+	total_matching_before_status = base_records.count()
+
+	records = base_records
+	if status == 'active':
+		records = records.filter(active_query)
+	elif status in {'completed', 'not_active', 'inactive'}:
+		records = records.filter(models.Q(logout_at__isnull=False) | models.Q(last_seen_at__lt=active_cutoff))
+
 	total_sessions = records.count()
+	total_pages = max(1, (total_sessions + page_size - 1) // page_size)
+	page = min(page, total_pages)
+	offset = (page - 1) * page_size
+	sessions = list(records[offset:offset + page_size])
 	total_seconds = sum(session.total_seconds for session in sessions)
 	unique_users = len({(session.email or session.username or str(session.user_id)).lower() for session in sessions})
 	total_page_views = sum(sum(visit.view_count for visit in session.page_visits.all()) for session in sessions)
 
-	now = timezone.now()
 	return JsonResponse(
 		{
 			'summary': {
 				'totalSessions': total_sessions,
 				'returnedSessions': len(sessions),
+				'matchingSessions': total_matching_before_status,
+				'activeSessions': active_count,
+				'completedSessions': max(0, total_matching_before_status - active_count),
 				'uniqueUsers': unique_users,
 				'totalSeconds': total_seconds,
 				'totalPageViews': total_page_views,
 			},
+			'pagination': _pagination_payload(page=page, page_size=page_size, total=total_sessions, returned=len(sessions)),
 			'sessions': [serialize_user_activity_session(session, now) for session in sessions],
 		}
 	)
@@ -1813,10 +1854,7 @@ def audit_logs(request):
 	action = str(request.GET.get('action', '')).strip()
 	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
 	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
-	try:
-		limit = max(1, min(int(request.GET.get('limit', '200')), 500))
-	except ValueError:
-		limit = 200
+	page, page_size = _pagination_params(request, default_size=25, max_size=100)
 
 	records = AuditLog.objects.order_by('-created_at')
 	if search:
@@ -1837,13 +1875,18 @@ def audit_logs(request):
 	if to_date:
 		records = records.filter(created_at__date__lte=to_date)
 
-	logs = list(records[:limit])
+	total_logs = records.count()
+	total_pages = max(1, (total_logs + page_size - 1) // page_size)
+	page = min(page, total_pages)
+	offset = (page - 1) * page_size
+	logs = list(records[offset:offset + page_size])
 	return JsonResponse(
 		{
 			'summary': {
-				'totalLogs': records.count(),
+				'totalLogs': total_logs,
 				'returnedLogs': len(logs),
 			},
+			'pagination': _pagination_payload(page=page, page_size=page_size, total=total_logs, returned=len(logs)),
 			'logs': [serialize_audit_log(item) for item in logs],
 		}
 	)
