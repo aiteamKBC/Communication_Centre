@@ -16,6 +16,7 @@ import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleT
 import TutorProfiles from './components/TutorProfiles';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
+import { buildHolidayAdjustedSessionPlan } from './utils';
 
 type ModalState =
   | { open: false }
@@ -57,6 +58,9 @@ interface MonthlySessionDetail {
   coach: string;
   time: string;
   holidays: MonthlyHolidayDetail[];
+  isClash: boolean;
+  isReplacement: boolean;
+  countedNumber: number | null;
 }
 
 interface MonthlyHolidayDetail {
@@ -85,10 +89,16 @@ interface ModuleMonthlySummary {
   coach: string;
   dateRange: string;
   totalSessions: number;
+  scheduledSessions: number;
   countedSessions: number;
+  baselineEndDate: string;
+  effectiveEndDate: string;
+  extensionDays: number;
+  sessionDayLabel: string;
   color: string;
   textColor: string;
   affectedSessions: number;
+  extensionAffectedSessions: number;
   months: ModuleMonthSummary[];
 }
 
@@ -373,6 +383,32 @@ function formatPlanMonth(value: string): string {
   return parseLocalDate(`${value}-01`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
 
+function extensionWeeksLabel(extensionDays: number): string {
+  if (extensionDays <= 0) return '';
+  const weeks = Math.max(1, Math.round(extensionDays / 7));
+  return `${weeks} week${weeks !== 1 ? 's' : ''}`;
+}
+
+function sessionDayLabel(days?: string[]): string {
+  const cleanDays = (days || []).map(day => day.trim()).filter(Boolean);
+  if (!cleanDays.length) return 'weekly';
+  return cleanDays.map(day => day.charAt(0).toUpperCase() + day.slice(1)).join('/');
+}
+
+function getSessionStatusLabel(session: MonthlySessionDetail): string {
+  if (session.isReplacement && session.isClash) return 'Replacement clash, not counted';
+  if (session.isClash) return 'Holiday clash, not counted';
+  if (session.isReplacement) return 'Replacement session';
+  return 'Normal session';
+}
+
+function getSessionStatusClass(session: MonthlySessionDetail): string {
+  if (session.isReplacement && session.isClash) return 'border-red-200 bg-red-50 text-red-800';
+  if (session.isClash) return 'border-red-200 bg-red-50 text-red-800';
+  if (session.isReplacement) return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  return 'border-transparent bg-slate-100 text-gray-700';
+}
+
 function monthKeyFromDate(value: string): string {
   return value.slice(0, 7);
 }
@@ -406,42 +442,6 @@ function resolveTrainingModuleMeta(block: { mod: MKey | string; color?: string }
   return { ...base, bg: block.color };
 }
 
-function buildSessionDates(block: { startDate: string; endDate: string; sessions: number; days?: WeekDayKey[] }): string[] {
-  const total = Math.max(1, block.sessions || 1);
-  const start = parseLocalDate(block.startDate);
-  const end = parseLocalDate(block.endDate || block.startDate);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
-    return [];
-  }
-
-  if (block.days?.length) {
-    const targets = new Set(block.days);
-    const dates: string[] = [];
-    const cursor = new Date(start);
-    while (cursor <= end && dates.length < total) {
-      if (targets.has(DAY_NAMES[cursor.getDay()] as WeekDayKey)) {
-        dates.push(toLocalDateKey(cursor));
-      }
-      cursor.setDate(cursor.getDate() + 1);
-    }
-    return dates;
-  }
-
-  if (total === 1) {
-    return [toLocalDateKey(start)];
-  }
-
-  const spanDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
-  const dates = new Set<string>();
-  for (let i = 0; i < total; i += 1) {
-    const offset = Math.round((spanDays * i) / Math.max(1, total - 1));
-    const next = new Date(start);
-    next.setDate(start.getDate() + offset);
-    dates.add(toLocalDateKey(next));
-  }
-  return Array.from(dates);
-}
-
 function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[]): ModuleMonthlySummary[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
@@ -452,9 +452,12 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
         const scopedHolidays = selectedHolidayIds.size
           ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id))
           : holidays;
+        const sessionPlan = buildHolidayAdjustedSessionPlan(block, scopedHolidays);
         let affectedSessions = 0;
+        let extensionAffectedSessions = 0;
 
-        buildSessionDates(block).forEach(date => {
+        sessionPlan.sessions.forEach(sessionDate => {
+          const date = sessionDate.date;
           const monthKey = monthKeyFromDate(date);
           if (!months.has(monthKey)) {
             months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
@@ -469,7 +472,11 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
               color: holiday.color,
             }));
           if (sessionHolidays.length) {
-            affectedSessions += 1;
+            if (sessionDate.isExtension) {
+              extensionAffectedSessions += 1;
+            } else {
+              affectedSessions += 1;
+            }
           }
           months.get(monthKey)!.sessions.push({
             date,
@@ -477,11 +484,14 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
             holidays: sessionHolidays,
+            isClash: sessionDate.isClash,
+            isReplacement: sessionDate.isExtension,
+            countedNumber: sessionDate.countedNumber,
           });
         });
 
         scopedHolidays
-          .filter(holiday => dateRangesOverlap(block.startDate, block.endDate, holiday.startDate, holiday.endDate))
+          .filter(holiday => dateRangesOverlap(block.startDate, sessionPlan.effectiveEndDate, holiday.startDate, holiday.endDate))
           .forEach(holiday => {
             const startMonth = parseLocalDate(holiday.startDate);
             const endMonth = parseLocalDate(holiday.endDate);
@@ -491,7 +501,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
             while (cursor <= last) {
               const monthKey = `${cursor.getFullYear()}-${`${cursor.getMonth() + 1}`.padStart(2, '0')}`;
               const bounds = monthBounds(monthKey);
-              if (dateRangesOverlap(block.startDate, block.endDate, bounds.start, bounds.end) && dateRangesOverlap(holiday.startDate, holiday.endDate, bounds.start, bounds.end)) {
+              if (dateRangesOverlap(block.startDate, sessionPlan.effectiveEndDate, bounds.start, bounds.end) && dateRangesOverlap(holiday.startDate, holiday.endDate, bounds.start, bounds.end)) {
                 if (!months.has(monthKey)) {
                   months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
                 }
@@ -521,12 +531,21 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           groupName: block.groupName || 'No group name',
           tutor: block.tutor || 'TBD',
           coach: block.coachName || 'TBD',
-          dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(block.endDate)}`,
+          dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(sessionPlan.effectiveEndDate)}`,
           totalSessions: block.sessions || 0,
-          countedSessions: sortedMonths.reduce((count, month) => count + month.sessions.length, 0),
+          scheduledSessions: sortedMonths.reduce((count, month) => count + month.sessions.length, 0),
+          countedSessions: sortedMonths.reduce(
+            (count, month) => count + month.sessions.filter(session => session.holidays.length === 0).length,
+            0,
+          ),
+          baselineEndDate: sessionPlan.baselineEndDate,
+          effectiveEndDate: sessionPlan.effectiveEndDate,
+          extensionDays: sessionPlan.extensionDays,
+          sessionDayLabel: sessionDayLabel(block.days),
           color: meta.bg,
           textColor: meta.tx,
           affectedSessions,
+          extensionAffectedSessions,
           months: sortedMonths,
         };
       }),
@@ -536,6 +555,9 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
 
 function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthlySummary; onClose: () => void }) {
   const selectedMonths = summary.months;
+  const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
+  const scheduledSessions = summary.scheduledSessions || summary.countedSessions + totalClashedSessions;
+  const extensionLabel = extensionWeeksLabel(summary.extensionDays);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -564,25 +586,55 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           </button>
         </div>
 
-        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-5">
+        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-7">
           <span><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
           <span><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
           <span><strong className="text-gray-700">Coach:</strong> {summary.coach}</span>
-          <span><strong className="text-gray-700">Sessions:</strong> {summary.countedSessions} counted</span>
-          <span className={summary.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
-            <strong>Affected:</strong> {summary.affectedSessions}
+          <span><strong className="text-gray-700">Required counted sessions:</strong> {summary.totalSessions}</span>
+          <span><strong className="text-gray-700">Scheduled dates:</strong> {scheduledSessions}</span>
+          <span><strong className="text-gray-700">Valid counted sessions:</strong> {summary.countedSessions}</span>
+          <span className={totalClashedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
+            <strong>Holiday clashes:</strong> {totalClashedSessions} total
+            {summary.extensionAffectedSessions > 0 && (
+              <span className="ml-1 text-[11px] text-amber-600">
+                ({summary.affectedSessions} original + {summary.extensionAffectedSessions} replacement)
+              </span>
+            )}
           </span>
         </div>
 
         <div className="overflow-auto p-5">
-          {summary.affectedSessions > 0 && (
-            <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              <i className="ri-alert-line mt-0.5" />
-              <span>
-                {summary.affectedSessions} session{summary.affectedSessions !== 1 ? 's are' : ' is'} inside a holiday range and may need rescheduling.
-              </span>
+          {totalClashedSessions > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900">
+              <div className="flex items-start gap-2">
+                <i className="ri-alert-line mt-0.5 text-amber-600" />
+                <div>
+                  <p className="font-extrabold text-amber-950">Holiday clashes detected</p>
+                  <p className="mt-1 leading-relaxed">
+                    This module requires {summary.totalSessions} counted session{summary.totalSessions !== 1 ? 's' : ''}. Without holidays, it would finish on {formatPlanDate(summary.baselineEndDate)}. {totalClashedSessions} {summary.sessionDayLabel} session{totalClashedSessions !== 1 ? 's' : ''} clash with holiday ranges, so they are shown but not counted. The system generated replacement {summary.sessionDayLabel} sessions until it reached {summary.countedSessions} valid counted session{summary.countedSessions !== 1 ? 's' : ''}. The final effective finish date is {formatPlanDate(summary.effectiveEndDate)}.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-5">
+                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Required: {summary.totalSessions}</span>
+                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Counted: {summary.countedSessions}</span>
+                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Holiday clashes: {totalClashedSessions}</span>
+                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Scheduled dates: {scheduledSessions}</span>
+                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Final date: {formatPlanDate(summary.effectiveEndDate)}</span>
+              </div>
+              {extensionLabel && (
+                <p className="mt-2 text-[11px] font-bold text-amber-800">
+                  Extended by around {extensionLabel} to preserve the required counted sessions.
+                </p>
+              )}
             </div>
           )}
+          <div className="mb-3 flex flex-wrap gap-2 text-[11px] font-bold text-gray-600">
+            <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-1">Normal session = counted</span>
+            <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-red-700">Holiday clash = shown but not counted</span>
+            <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">Replacement session = added to preserve required count</span>
+            <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-red-700">Replacement clash = replacement date also landed in a holiday and is not counted</span>
+          </div>
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <table className="min-w-full text-left text-xs">
               <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
@@ -594,11 +646,19 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {selectedMonths.map(month => (
+                {selectedMonths.map(month => {
+                  const clashedCount = month.sessions.filter(session => session.holidays.length > 0).length;
+
+                  return (
                   <tr key={month.key} className="align-top">
                     <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
-                    <td className="px-3 py-3 font-bold text-gray-700">
-                      {month.sessions.length}
+                    <td className="px-3 py-3">
+                      <span className="block font-bold text-gray-700">{month.sessions.length}</span>
+                      {clashedCount > 0 && (
+                        <span className="mt-1 block text-[11px] font-bold text-red-600">
+                          {clashedCount} clashed
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-3 text-gray-600">
                       {month.sessions.length ? (
@@ -606,12 +666,15 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                           {month.sessions.map(session => (
                             <span
                               key={`${month.key}-${session.date}-${session.time}`}
-                              className={`rounded-md border px-2 py-1 ${session.holidays.length ? 'border-red-200 bg-red-50 text-red-800 shadow-sm' : 'border-transparent bg-slate-100'}`}
+                              className={`rounded-md border px-2 py-1 shadow-sm ${getSessionStatusClass(session)}`}
                               title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
                             >
                               {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
-                              <strong className={session.holidays.length ? 'text-red-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
+                              <strong className={session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
                               {' '}({session.time}) - Tutor: {session.tutor} - Coach: {session.coach}
+                              <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-extrabold ${session.isClash ? 'bg-red-100 text-red-800' : session.isReplacement ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-gray-600'}`}>
+                                {getSessionStatusLabel(session)}
+                              </span>
                               {session.holidays.length > 0 && (
                                 <span className="ml-1 font-bold text-red-700">
                                   - Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
@@ -643,7 +706,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -655,6 +719,7 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
 
 function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
   type ProgrammeSummaryGroup = { programme: string; color: string; summaries: ModuleMonthlySummary[]; countedSessions: number; affectedSessions: number };
+  const totalSummaryClashes = (summary: ModuleMonthlySummary) => summary.affectedSessions + summary.extensionAffectedSessions;
   const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
   const [selectedProgrammeGroup, setSelectedProgrammeGroup] = useState<ProgrammeSummaryGroup | null>(null);
   const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(false);
@@ -670,9 +735,10 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
   const filteredSummaries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return summaries.filter(summary => {
+      const clashes = totalSummaryClashes(summary);
       if (programmeFilter !== 'all' && summary.programme !== programmeFilter) return false;
-      if (riskFilter === 'affected' && summary.affectedSessions === 0) return false;
-      if (riskFilter === 'clear' && summary.affectedSessions > 0) return false;
+      if (riskFilter === 'affected' && clashes === 0) return false;
+      if (riskFilter === 'clear' && clashes > 0) return false;
       if (!query) return true;
 
       const searchable = [
@@ -691,10 +757,11 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
     const grouped = new Map<string, ProgrammeSummaryGroup>();
     filteredSummaries.forEach(summary => {
       const existing = grouped.get(summary.programme);
+      const clashes = totalSummaryClashes(summary);
       if (existing) {
         existing.summaries.push(summary);
         existing.countedSessions += summary.countedSessions;
-        existing.affectedSessions += summary.affectedSessions;
+        existing.affectedSessions += clashes;
         return;
       }
 
@@ -703,7 +770,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
         color: summary.programmeColor,
         summaries: [summary],
         countedSessions: summary.countedSessions,
-        affectedSessions: summary.affectedSessions,
+        affectedSessions: clashes,
       });
     });
     return Array.from(grouped.values()).sort((a, b) => a.programme.localeCompare(b.programme));
@@ -713,8 +780,9 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
     if (!selectedProgrammeGroup) return [];
     const query = programmeModalSearch.trim().toLowerCase();
     return selectedProgrammeGroup.summaries.filter(summary => {
-      if (programmeModalRiskFilter === 'affected' && summary.affectedSessions === 0) return false;
-      if (programmeModalRiskFilter === 'clear' && summary.affectedSessions > 0) return false;
+      const clashes = totalSummaryClashes(summary);
+      if (programmeModalRiskFilter === 'affected' && clashes === 0) return false;
+      if (programmeModalRiskFilter === 'clear' && clashes > 0) return false;
       if (!query) return true;
 
       const searchable = [
@@ -840,8 +908,8 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                     {group.countedSessions}
                   </span>
                   <span
-                    className={`rounded-md px-2 py-1 text-center font-bold ${group.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
-                    title="Sessions inside holiday ranges"
+                    className={`rounded-md px-2 py-1 text-center font-bold ${group.affectedSessions ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
+                    title="Holiday clashes"
                   >
                     {group.affectedSessions ? (
                       <span className="inline-flex items-center justify-center gap-1">
@@ -876,7 +944,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                   <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedProgrammeGroup.programme}</h3>
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
-                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''} - {selectedProgrammeGroup.countedSessions} counted sessions
+                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''} - {selectedProgrammeGroup.countedSessions} valid counted sessions
                 </p>
               </div>
               <button
@@ -890,9 +958,9 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
 
             <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3">
               <span><strong className="text-gray-700">Modules:</strong> {selectedProgrammeGroup.summaries.length}</span>
-              <span><strong className="text-gray-700">Sessions:</strong> {selectedProgrammeGroup.countedSessions} counted</span>
-              <span className={selectedProgrammeGroup.affectedSessions ? 'font-bold text-red-700' : 'text-emerald-700'}>
-                <strong>Clashes:</strong> {selectedProgrammeGroup.affectedSessions}
+              <span><strong className="text-gray-700">Valid counted sessions:</strong> {selectedProgrammeGroup.countedSessions}</span>
+              <span className={selectedProgrammeGroup.affectedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
+                <strong>Holiday clashes:</strong> {selectedProgrammeGroup.affectedSessions}
               </span>
             </div>
 
@@ -943,43 +1011,46 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                 <div className="px-5 py-10 text-center text-sm text-gray-400">
                   No modules match the current filters.
                 </div>
-              ) : visibleProgrammeSummaries.map(summary => (
-                <button
-                  key={summary.key}
-                  type="button"
-                  onClick={() => {
-                    setSelectedSummary(summary);
-                  }}
-                  className="grid w-full grid-cols-[18px_minmax(0,1.5fr)_minmax(0,1fr)_72px_72px_30px] items-center gap-3 border-b border-slate-100 px-5 py-3 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-50"
-                >
-                  <span className="h-2.5 w-2.5 rounded-sm" style={{ background: summary.color }} />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-extrabold text-kbc-navy">{summary.moduleName}</span>
-                    <span className="mt-0.5 block truncate text-gray-400">{summary.cohort} - {summary.dateRange}</span>
-                  </span>
-                  <span className="min-w-0 text-gray-500">
-                    <span className="block truncate"><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
-                    <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
-                  </span>
-                  <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
-                    {summary.countedSessions}
-                  </span>
-                  <span
-                    className={`rounded-md px-2 py-1 text-center font-bold ${summary.affectedSessions ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}
-                    title="Sessions inside holiday ranges"
+              ) : visibleProgrammeSummaries.map(summary => {
+                const clashes = totalSummaryClashes(summary);
+                return (
+                  <button
+                    key={summary.key}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSummary(summary);
+                    }}
+                    className="grid w-full grid-cols-[18px_minmax(0,1.5fr)_minmax(0,1fr)_72px_72px_30px] items-center gap-3 border-b border-slate-100 px-5 py-3 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-50"
                   >
-                    {summary.affectedSessions ? (
-                      <span className="inline-flex items-center justify-center gap-1">
-                        <i className="ri-alert-line" />
-                        {summary.affectedSessions}
-                      </span>
-                    ) : '0'}
-                  </span>
-                  <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
-                    <i className="ri-external-link-line text-sm" />
-                  </span>
-                </button>
-              ))}
+                    <span className="h-2.5 w-2.5 rounded-sm" style={{ background: summary.color }} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-extrabold text-kbc-navy">{summary.moduleName}</span>
+                      <span className="mt-0.5 block truncate text-gray-400">{summary.cohort} - {summary.dateRange}</span>
+                    </span>
+                    <span className="min-w-0 text-gray-500">
+                      <span className="block truncate"><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
+                      <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
+                    </span>
+                    <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
+                      {summary.countedSessions}
+                    </span>
+                    <span
+                      className={`rounded-md px-2 py-1 text-center font-bold ${clashes ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
+                      title="Holiday clashes"
+                    >
+                      {clashes ? (
+                        <span className="inline-flex items-center justify-center gap-1">
+                          <i className="ri-alert-line" />
+                          {clashes}
+                        </span>
+                      ) : '0'}
+                    </span>
+                    <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
+                      <i className="ri-external-link-line text-sm" />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>

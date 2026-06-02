@@ -89,6 +89,122 @@ export function getHolidayOverlaps(blk: ModuleBlock, holidays: Holiday[]): Holid
   return holidays.filter(h => rangesOverlap(blk.startDate, blk.endDate, h.startDate, h.endDate));
 }
 
+const SESSION_WEEKDAY_JS: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
+export interface HolidayAdjustedSession {
+  date: string;
+  holidays: Holiday[];
+  isClash: boolean;
+  isExtension: boolean;
+  countedNumber: number | null;
+  originalNumber: number;
+}
+
+export interface HolidayAdjustedSessionPlan {
+  sessions: HolidayAdjustedSession[];
+  countedSessions: number;
+  clashedSessions: number;
+  originalClashedSessions: number;
+  extensionClashedSessions: number;
+  plannedSessions: number;
+  originalEndDate: string;
+  baselineEndDate: string;
+  effectiveEndDate: string;
+  extensionDays: number;
+}
+
+function parseIsoLocal(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year || 1970, (month || 1) - 1, day || 1);
+}
+
+export function buildHolidayAdjustedSessionPlan(
+  block: { startDate: string; endDate: string; sessions: number; days?: string[] },
+  holidays: Holiday[] = [],
+): HolidayAdjustedSessionPlan {
+  const plannedSessions = Math.max(0, block.sessions || 0);
+  const start = parseIsoLocal(block.startDate);
+
+  if (!plannedSessions || Number.isNaN(start.getTime())) {
+    const fallbackEnd = block.endDate || block.startDate;
+    return {
+      sessions: [],
+      countedSessions: 0,
+      clashedSessions: 0,
+      originalClashedSessions: 0,
+      extensionClashedSessions: 0,
+      plannedSessions,
+      originalEndDate: fallbackEnd,
+      baselineEndDate: fallbackEnd,
+      effectiveEndDate: fallbackEnd,
+      extensionDays: 0,
+    };
+  }
+
+  const targetWeekdays = block.days?.length
+    ? new Set(block.days.map(day => SESSION_WEEKDAY_JS[day.toLowerCase()]).filter(day => day !== undefined))
+    : new Set([start.getDay()]);
+  const maxIterations = Math.max(3660, plannedSessions * 60);
+  const baselineSessions: string[] = [];
+  let baselineCursor = new Date(start);
+  let baselineGuard = 0;
+  while (baselineSessions.length < plannedSessions && baselineGuard < maxIterations) {
+    if (targetWeekdays.has(baselineCursor.getDay())) {
+      baselineSessions.push(toLocalIsoDate(baselineCursor));
+    }
+    baselineCursor = addDays(baselineCursor, 1);
+    baselineGuard += 1;
+  }
+  const baselineEndDate = baselineSessions[baselineSessions.length - 1] || block.endDate || block.startDate;
+  const baselineEnd = parseIsoLocal(baselineEndDate);
+  const sessions: HolidayAdjustedSession[] = [];
+  let countedSessions = 0;
+  let cursor = new Date(start);
+  let guard = 0;
+
+  while (countedSessions < plannedSessions && guard < maxIterations) {
+    const date = toLocalIsoDate(cursor);
+    if (targetWeekdays.has(cursor.getDay())) {
+      const sessionHolidays = holidays.filter(holiday => rangesOverlap(date, date, holiday.startDate, holiday.endDate));
+      const isClash = sessionHolidays.length > 0;
+      const isExtension = !Number.isNaN(baselineEnd.getTime()) && cursor > baselineEnd;
+      if (!isClash) countedSessions += 1;
+      sessions.push({
+        date,
+        holidays: sessionHolidays,
+        isClash,
+        isExtension,
+        countedNumber: isClash ? null : countedSessions,
+        originalNumber: sessions.length + 1,
+      });
+    }
+    cursor = addDays(cursor, 1);
+    guard += 1;
+  }
+
+  const effectiveEndDate = sessions[sessions.length - 1]?.date || block.endDate || block.startDate;
+  const effectiveEnd = parseIsoLocal(effectiveEndDate);
+  const extensionDays = !Number.isNaN(baselineEnd.getTime()) && effectiveEnd > baselineEnd
+    ? Math.ceil((effectiveEnd.getTime() - baselineEnd.getTime()) / 86400000)
+    : 0;
+
+  return {
+    sessions,
+    countedSessions,
+    clashedSessions: sessions.filter(session => session.isClash).length,
+    originalClashedSessions: sessions.filter(session => session.isClash && !session.isExtension).length,
+    extensionClashedSessions: sessions.filter(session => session.isClash && session.isExtension).length,
+    plannedSessions,
+    originalEndDate: block.endDate || block.startDate,
+    baselineEndDate,
+    effectiveEndDate,
+    extensionDays,
+  };
+}
+
 // ── Zoom level helpers ────────────────────────────────────────────────────
 export function getZoomLabel(zoom: ZoomLevel): string {
   const map: Record<ZoomLevel, string> = {

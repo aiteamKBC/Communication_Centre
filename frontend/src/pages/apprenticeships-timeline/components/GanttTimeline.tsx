@@ -4,8 +4,8 @@ import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
-  formatDate, formatDateShort, durationWeeksByDay, getHolidayOverlaps, startOfWeek,
-  rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
+  formatDate, formatDateShort, durationWeeksByDay, startOfWeek,
+  buildHolidayAdjustedSessionPlan, rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
 const LEFT_W    = 220;
@@ -27,15 +27,33 @@ interface GanttRow {
   laneCount: number;   // 1 = single full-height row, 2 = two half-height lanes
 }
 
-function datesOverlap(a: ModuleBlock, b: ModuleBlock): boolean {
-  return a.startDate <= b.endDate && b.startDate <= a.endDate;
+function effectiveBlockEndDate(blk: ModuleBlock, holidays: Holiday[] = []): string {
+  return buildHolidayAdjustedSessionPlan(blk, holidays).effectiveEndDate || blk.endDate;
+}
+
+function extensionWeeksLabel(extensionDays: number): string {
+  if (extensionDays <= 0) return '';
+  const weeks = Math.max(1, Math.round(extensionDays / 7));
+  return `${weeks} week${weeks !== 1 ? 's' : ''}`;
+}
+
+function sessionDayLabel(days?: string[]): string {
+  const cleanDays = (days || []).map(day => day.trim()).filter(Boolean);
+  if (!cleanDays.length) return 'weekly';
+  return cleanDays.map(day => day.charAt(0).toUpperCase() + day.slice(1)).join('/');
+}
+
+function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []): boolean {
+  const aEnd = effectiveBlockEndDate(a, holidays);
+  const bEnd = effectiveBlockEndDate(b, holidays);
+  return a.startDate <= bEnd && b.startDate <= aEnd;
 }
 
 // One row per distinct groupName.
 // Within a group, sequential modules share lane 0. If a module overlaps with
 // an existing lane-0 block it is placed in lane 1 (bottom). This way non-
 // overlapping modules sit side-by-side on one row, and overlapping pairs stack.
-function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
+function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = []): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
 
@@ -57,7 +75,7 @@ function buildGanttRows(blks: ModuleBlock[]): GanttRow[] {
     // Try to fit in lane 0 first, then lane 1
     const overlapsLane0 = row.lanes
       .filter(lb => lb.lane === 0)
-      .some(lb => datesOverlap(lb.blk, blk));
+      .some(lb => datesOverlap(lb.blk, blk, holidays));
 
     if (overlapsLane0) {
       row.lanes.push({ blk, lane: 1 });
@@ -82,18 +100,6 @@ function extractGroup(label: string): string {
 
 function getBlockDisplayName(blk: ModuleBlock, customModules: CustomModule[]) {
   return resolveModuleMeta(blk.mod as string, customModules).lbl;
-}
-
-function parseLocalIsoDate(isoDate: string): Date {
-  const [year, month, day] = isoDate.split('-').map(Number);
-  return new Date(year || 1970, (month || 1) - 1, day || 1);
-}
-
-function localIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function parseLocalDateTime(isoDate: string, time24: string): Date {
@@ -125,28 +131,11 @@ function resolveCatalogModuleForBlock(blk: ModuleBlock, customModules: CustomMod
 
 function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[], activeHolidays: Holiday[] = []) {
   const plannedTotal = Math.max(1, blk.sessions || 1);
-  const weekdays = blk.days?.length ? blk.days : [];
-  const start = parseLocalIsoDate(blk.startDate);
-  const end = parseLocalIsoDate(blk.endDate || blk.startDate);
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
-  const dates: Array<{ date: string; originalNumber: number }> = [];
-
-  if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
-    const cursor = new Date(start);
-    while (cursor <= end && dates.length < plannedTotal) {
-      const key = (['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const)[cursor.getDay()];
-      if (!weekdays.length || weekdays.includes(key as any)) {
-        dates.push({ date: localIsoDate(cursor), originalNumber: dates.length + 1 });
-      }
-      cursor.setDate(cursor.getDate() + 1);
-    }
-  }
-
-  const sessionDates = dates.length ? dates : [{ date: blk.startDate, originalNumber: 1 }];
-  const affected = sessionDates.filter(session =>
-    activeHolidays.some(holiday => rangesOverlap(session.date, session.date, holiday.startDate, holiday.endDate)),
-  ).length;
+  const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+  const sessionDates = plan.sessions.length ? plan.sessions : [{ date: blk.startDate, originalNumber: 1, isClash: false, isExtension: false, holidays: [], countedNumber: 1 }];
+  const affected = plan.originalClashedSessions;
   const total = plannedTotal;
   const completed = Math.min(total, sessionDates.filter(session => hasSessionEnded(session.date, endTime, now)).length);
   const isFinished = total > 0 && completed >= total;
@@ -164,6 +153,14 @@ function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[
     completed,
     isFinished,
     affected,
+    extensionAffected: plan.extensionClashedSessions,
+    allAffected: plan.clashedSessions,
+    scheduledDates: plan.sessions.length,
+    validCountedSessions: plan.countedSessions,
+    effectiveEndDate: plan.effectiveEndDate,
+    originalEndDate: plan.originalEndDate,
+    baselineEndDate: plan.baselineEndDate,
+    extensionDays: plan.extensionDays,
     date: selectedSession?.date || blk.startDate,
     name: savedName,
     hasRealName: Boolean(savedName),
@@ -255,13 +252,18 @@ interface Props {
 }
 
 // ── View window per zoom level ────────────────────────────────────────────
-function getMaxModuleEndDate(groups: ProgrammeGroup[]): Date | null {
+function getMaxModuleEndDate(groups: ProgrammeGroup[], holidays: Holiday[] = []): Date | null {
   let max: Date | null = null;
   for (const grp of groups) {
     for (const row of grp.rows) {
+      const selectedHolidayIds = new Set(row.holidayIds || []);
+      const rowHolidays = selectedHolidayIds.size
+        ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id))
+        : [];
       for (const blk of row.blks) {
-        if (!blk.endDate) continue;
-        const d = new Date(blk.endDate);
+        const endDate = effectiveBlockEndDate(blk, rowHolidays);
+        if (!endDate) continue;
+        const d = new Date(endDate);
         if (!Number.isNaN(d.getTime()) && (max === null || d > max)) max = d;
       }
     }
@@ -269,12 +271,12 @@ function getMaxModuleEndDate(groups: ProgrammeGroup[]): Date | null {
   return max;
 }
 
-function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[]): { start: Date; end: Date } {
+function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holidays: Holiday[] = []): { start: Date; end: Date } {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
 
   // Compute end from last module end date, padded to end of that year
-  const maxEnd = groups ? getMaxModuleEndDate(groups) : null;
+  const maxEnd = groups ? getMaxModuleEndDate(groups, holidays) : null;
   const dynamicEnd = maxEnd
     ? new Date(maxEnd.getFullYear(), 11, 31)   // Dec 31 of last module's year
     : null;
@@ -312,14 +314,18 @@ function shiftDateByDays(date: Date, days: number): Date {
 function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
   const mod = resolveBlockMeta(data.blk, data.customModules);
   const displayName = getBlockDisplayName(data.blk, data.customModules);
-  const weeks = durationWeeksByDay(data.blk.startDate, data.blk.endDate, data.blk.days);
   const hasHolidays = data.holidays.length > 0;
   const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays);
+  const displayEndDate = sessionSummary.effectiveEndDate || data.blk.endDate;
+  const weeks = durationWeeksByDay(data.blk.startDate, displayEndDate, data.blk.days);
+  const extensionLabel = extensionWeeksLabel(sessionSummary.extensionDays);
+  const scheduleDayLabel = sessionDayLabel(data.blk.days);
+  const hasHolidayClashes = sessionSummary.allAffected > 0;
 
   return (
     <div className="fixed z-50 pointer-events-none"
-      style={{ left: Math.min(data.x + 12, window.innerWidth - 300), top: Math.max(data.y - 10, 8) }}>
-      <div className="bg-white rounded-xl border border-gray-200 shadow-lg w-72 overflow-hidden pointer-events-auto">
+      style={{ left: Math.max(12, Math.min(data.x + 12, window.innerWidth - 400)), top: Math.max(data.y - 10, 8) }}>
+      <div className="bg-white rounded-xl border border-gray-200 shadow-lg w-96 max-w-[calc(100vw-24px)] overflow-hidden pointer-events-auto">
         <div className="px-4 py-3 flex items-center gap-2" style={{ background: mod.bg }}>
           <span className="font-extrabold text-sm flex-1 truncate" style={{ color: mod.tx }}>{displayName}</span>
           <button onClick={onClose} className="w-5 h-5 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 cursor-pointer transition-opacity" style={{ color: mod.tx }}>
@@ -359,9 +365,11 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
             <div>
               <p className="text-xs text-gray-400 leading-none">Dates</p>
               <p className="text-xs font-bold text-gray-800 mt-0.5">
-                {formatDate(data.blk.startDate)} &rarr; {formatDate(data.blk.endDate)}
+                {formatDate(data.blk.startDate)} &rarr; {formatDate(displayEndDate)}
               </p>
-              <p className="text-xs text-gray-400">{weeks} weeks</p>
+              <p className="text-xs text-gray-400">
+                {weeks} weeks{sessionSummary.extensionDays > 0 ? ` - no-holiday baseline ${formatDate(sessionSummary.baselineEndDate)}` : ''}
+              </p>
             </div>
           </div>
           {(data.blk.days?.length || data.blk.sessionStartTime) && (
@@ -384,7 +392,43 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               </div>
             </div>
           )}
-          {hasHolidays && (
+          {(hasHolidays || hasHolidayClashes) && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-950">
+              <div>
+                <p className="font-extrabold text-amber-950">Session requirement</p>
+                <div className="mt-1 grid grid-cols-2 gap-1 text-[11px]">
+                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Required counted sessions: {sessionSummary.plannedTotal}</span>
+                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Valid counted sessions: {sessionSummary.validCountedSessions}</span>
+                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Scheduled dates: {sessionSummary.scheduledDates}</span>
+                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Holiday clashes: {sessionSummary.allAffected}</span>
+                </div>
+                {sessionSummary.extensionAffected > 0 && (
+                  <p className="mt-1 text-[11px] font-bold text-amber-700">
+                    {sessionSummary.affected} original + {sessionSummary.extensionAffected} replacement clashes
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-2 border-t border-amber-200 pt-2">
+                <p className="font-extrabold text-amber-950">Timeline dates</p>
+                <div className="mt-1 space-y-1 text-[11px] font-bold text-amber-900">
+                  <p>No-holiday finish date: {formatDate(sessionSummary.baselineEndDate)}</p>
+                  <p>Final effective finish date: {formatDate(displayEndDate)}</p>
+                  {extensionLabel && <p>Extension: around {extensionLabel}</p>}
+                </div>
+              </div>
+
+              {hasHolidayClashes && (
+                <div className="mt-2 border-t border-amber-200 pt-2">
+                  <p className="font-extrabold text-amber-950">Why did this happen?</p>
+                  <p className="mt-1 leading-relaxed text-amber-900">
+                    {sessionSummary.allAffected} {scheduleDayLabel} session{sessionSummary.allAffected !== 1 ? 's' : ''} fell within holiday ranges, so they were shown as clashes but excluded from the counted total. The system added weekly {scheduleDayLabel} replacement sessions until the module reached the required {sessionSummary.plannedTotal} counted session{sessionSummary.plannedTotal !== 1 ? 's' : ''}.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          {false && hasHolidays && (
             <div className="rounded-lg p-2.5 border" style={{ background: '#FFF8E0', borderColor: '#F7A800' }}>
               <div className="flex items-center gap-1.5 mb-1.5">
                 <i className="ri-alert-line text-xs" style={{ color: '#C49A00' }} />
@@ -398,6 +442,16 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               {sessionSummary.affected > 0 && (
                 <p className="mt-1.5 border-t border-amber-200 pt-1.5 text-xs font-semibold text-red-600">
                   {sessionSummary.affected} session{sessionSummary.affected !== 1 ? 's' : ''} clashed with the holiday range{sessionSummary.affected !== 1 ? 's' : ''}.
+                </p>
+              )}
+              {sessionSummary.extensionAffected > 0 && (
+                <p className="mt-1 text-xs font-semibold text-red-600">
+                  {sessionSummary.extensionAffected} replacement session{sessionSummary.extensionAffected !== 1 ? 's' : ''} also clashed during the extension.
+                </p>
+              )}
+              {sessionSummary.extensionDays > 0 && (
+                <p className="mt-1 text-xs font-semibold text-amber-800">
+                  The no-holiday {sessionSummary.plannedTotal}-session schedule would have ended on {formatDate(sessionSummary.baselineEndDate)}. Because {sessionSummary.allAffected} {scheduleDayLabel} session{sessionSummary.allAffected !== 1 ? 's' : ''} clashed with holidays, the timeline was extended{extensionLabel ? ` by around ${extensionLabel}` : ''} to {formatDate(displayEndDate)} to preserve the required {sessionSummary.plannedTotal} counted session{sessionSummary.plannedTotal !== 1 ? 's' : ''}.
                 </p>
               )}
             </div>
@@ -428,7 +482,7 @@ export default function GanttTimeline({
     rowIdx: number;
     catalogModule?: CatalogModule;
   } | null>(null);
-  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups));
+  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -502,7 +556,7 @@ export default function GanttTimeline({
   }, []);
 
   // Stretch the view end whenever module data extends beyond current window
-  const dataEnd = useMemo(() => getMaxModuleEndDate(groups), [groups]);
+  const dataEnd = useMemo(() => getMaxModuleEndDate(groups, holidays), [groups, holidays]);
   const effectiveEnd = useMemo(() => {
     if (!dataEnd) return viewWindow.end;
     const dec31 = new Date(dataEnd.getFullYear(), 11, 31);
@@ -511,9 +565,9 @@ export default function GanttTimeline({
 
   const handleZoomChange = useCallback((z: ZoomLevel) => {
     onZoomChange(z);
-    setViewWindow(getDefaultViewWindow(z, groups));
+    setViewWindow(getDefaultViewWindow(z, groups, holidays));
     setTooltip(null);
-  }, [onZoomChange, groups]);
+  }, [onZoomChange, groups, holidays]);
 
   const effectiveViewWindow = useMemo(() => {
     const base = zoom === 'week' ? getNormalizedWeekWindow(viewWindow.start) : viewWindow;
@@ -894,15 +948,16 @@ export default function GanttTimeline({
     topPx: number,
     heightPx: number,
   ) => {
-    const pos = getBlockPosition(blk.startDate, blk.endDate, cols);
+    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+    const displayEndDate = sessionSummary.effectiveEndDate || blk.endDate;
+    const pos = getBlockPosition(blk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const mod = resolveBlockMeta(blk, customModules);
-    const overlaps = getHolidayOverlaps(blk, activeHolidays);
-    const hasOverlap = overlaps.length > 0;
+    const overlaps = activeHolidays.filter(holiday => rangesOverlap(blk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
+    const hasOverlap = overlaps.length > 0 || sessionSummary.extensionDays > 0;
     const tutorLabel = blk.tutor.trim();
     const showTutor = pos.width > 72 && Boolean(tutorLabel);
     const coachLabel = (blk.coachName || '').trim();
-    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
     const sessionLabel = sessionSummary.isFinished
       ? 'Finished'
       : sessionSummary.total === 0
@@ -969,7 +1024,7 @@ export default function GanttTimeline({
             )}
 
             {/* Dates */}
-            {pos.width > 120 && blk.startDate && blk.endDate && (
+            {pos.width > 120 && blk.startDate && displayEndDate && (
               <span
                 style={{
                   color: mod.tx,
@@ -990,9 +1045,28 @@ export default function GanttTimeline({
               </span>
             )}
 
+            {sessionSummary.extensionDays > 0 && pos.width > 190 && (
+              <span
+                style={{
+                  color: mod.tx,
+                  fontSize: '9px',
+                  fontWeight: 800,
+                  opacity: 0.92,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  background: 'rgba(247,168,0,0.28)',
+                  borderRadius: 3,
+                  padding: '1px 5px',
+                  marginLeft: 2,
+                }}
+              >
+                extended to {formatDateShort(displayEndDate)}
+              </span>
+            )}
+
             {pos.width > 180 && (
               <span
-                title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.affected ? ` - ${sessionSummary.affected} holiday clash${sessionSummary.affected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                 style={{
                   color: mod.tx,
                   fontSize: '9px',
@@ -1068,7 +1142,7 @@ export default function GanttTimeline({
           <div className="flex items-center gap-1 ml-auto">
             <button
               onClick={() => {
-                setViewWindow(getDefaultViewWindow(zoom));
+                setViewWindow(getDefaultViewWindow(zoom, groups, holidays));
               }}
               className="px-2.5 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 cursor-pointer transition-all text-xs font-semibold"
             >
@@ -1248,13 +1322,13 @@ export default function GanttTimeline({
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
               {!isCollapsed && grp.rows.map((row, ri) => {
-                const ganttRows = buildGanttRows(row.blks);
                 const group = extractGroup(row.label);
-                const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
                 const rowColor = row.color || grp.color;
                 const tunnelBg = `${grp.color}0D`;
                 const selectedHolidayIds = new Set(row.holidayIds || []);
                 const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
+                const ganttRows = buildGanttRows(row.blks, rowHolidays);
+                const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
 
