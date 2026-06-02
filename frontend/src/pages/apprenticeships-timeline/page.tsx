@@ -54,6 +54,7 @@ interface TrainingPlanItem {
 
 interface MonthlySessionDetail {
   date: string;
+  sessionName: string;
   tutor: string;
   coach: string;
   time: string;
@@ -91,6 +92,7 @@ interface ModuleMonthlySummary {
   totalSessions: number;
   scheduledSessions: number;
   countedSessions: number;
+  totalWeeks: number;
   baselineEndDate: string;
   effectiveEndDate: string;
   extensionDays: number;
@@ -383,12 +385,6 @@ function formatPlanMonth(value: string): string {
   return parseLocalDate(`${value}-01`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
 
-function extensionWeeksLabel(extensionDays: number): string {
-  if (extensionDays <= 0) return '';
-  const weeks = Math.max(1, Math.round(extensionDays / 7));
-  return `${weeks} week${weeks !== 1 ? 's' : ''}`;
-}
-
 function sessionDayLabel(days?: string[]): string {
   const cleanDays = (days || []).map(day => day.trim()).filter(Boolean);
   if (!cleanDays.length) return 'weekly';
@@ -442,11 +438,26 @@ function resolveTrainingModuleMeta(block: { mod: MKey | string; color?: string }
   return { ...base, bg: block.color };
 }
 
-function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[]): ModuleMonthlySummary[] {
+function normalizeModuleLookup(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function resolveCatalogModuleForBlock(block: { mod: MKey | string }, moduleName: string, catalogModules: CatalogModule[]): CatalogModule | undefined {
+  const rawValue = String(block.mod || '');
+  const normalizedRaw = normalizeModuleLookup(rawValue);
+  const normalizedModuleName = normalizeModuleLookup(moduleName);
+  return catalogModules.find(module => {
+    const normalizedName = normalizeModuleLookup(module.name);
+    return String(module.id) === rawValue || normalizedName === normalizedRaw || normalizedName === normalizedModuleName;
+  });
+}
+
+function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[], catalogModules: CatalogModule[]): ModuleMonthlySummary[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
       row.blks.map(block => {
         const meta = resolveTrainingModuleMeta(block, customModules);
+        const catalogModule = resolveCatalogModuleForBlock(block, meta.lbl, catalogModules);
         const months = new Map<string, ModuleMonthSummary>();
         const selectedHolidayIds = new Set(row.holidayIds || []);
         const scopedHolidays = selectedHolidayIds.size
@@ -480,6 +491,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           }
           months.get(monthKey)!.sessions.push({
             date,
+            sessionName: catalogModule?.sessionNames?.[(sessionDate.countedNumber || sessionDate.originalNumber) - 1]?.trim() || `Session ${sessionDate.countedNumber || sessionDate.originalNumber}`,
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
@@ -538,6 +550,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
             (count, month) => count + month.sessions.filter(session => session.holidays.length === 0).length,
             0,
           ),
+          totalWeeks: sessionPlan.sessions.length,
           baselineEndDate: sessionPlan.baselineEndDate,
           effectiveEndDate: sessionPlan.effectiveEndDate,
           extensionDays: sessionPlan.extensionDays,
@@ -556,8 +569,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
 function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthlySummary; onClose: () => void }) {
   const selectedMonths = summary.months;
   const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
-  const scheduledSessions = summary.scheduledSessions || summary.countedSessions + totalClashedSessions;
-  const extensionLabel = extensionWeeksLabel(summary.extensionDays);
+  const totalWeeks = summary.totalWeeks || summary.scheduledSessions || summary.totalSessions + totalClashedSessions;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -586,55 +598,18 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           </button>
         </div>
 
-        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-7">
+        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-6">
           <span><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
           <span><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
           <span><strong className="text-gray-700">Coach:</strong> {summary.coach}</span>
-          <span><strong className="text-gray-700">Required counted sessions:</strong> {summary.totalSessions}</span>
-          <span><strong className="text-gray-700">Scheduled dates:</strong> {scheduledSessions}</span>
-          <span><strong className="text-gray-700">Valid counted sessions:</strong> {summary.countedSessions}</span>
+          <span><strong className="text-gray-700">Module sessions:</strong> {summary.totalSessions}</span>
           <span className={totalClashedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
-            <strong>Holiday clashes:</strong> {totalClashedSessions} total
-            {summary.extensionAffectedSessions > 0 && (
-              <span className="ml-1 text-[11px] text-amber-600">
-                ({summary.affectedSessions} original + {summary.extensionAffectedSessions} replacement)
-              </span>
-            )}
+            <strong>Holiday weeks:</strong> {totalClashedSessions}
           </span>
+          <span><strong className="text-gray-700">Total weeks:</strong> {totalWeeks}</span>
         </div>
 
         <div className="overflow-auto p-5">
-          {totalClashedSessions > 0 && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900">
-              <div className="flex items-start gap-2">
-                <i className="ri-alert-line mt-0.5 text-amber-600" />
-                <div>
-                  <p className="font-extrabold text-amber-950">Holiday clashes detected</p>
-                  <p className="mt-1 leading-relaxed">
-                    This module requires {summary.totalSessions} counted session{summary.totalSessions !== 1 ? 's' : ''}. Without holidays, it would finish on {formatPlanDate(summary.baselineEndDate)}. {totalClashedSessions} {summary.sessionDayLabel} session{totalClashedSessions !== 1 ? 's' : ''} clash with holiday ranges, so they are shown but not counted. The system generated replacement {summary.sessionDayLabel} sessions until it reached {summary.countedSessions} valid counted session{summary.countedSessions !== 1 ? 's' : ''}. The final effective finish date is {formatPlanDate(summary.effectiveEndDate)}.
-                  </p>
-                </div>
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-5">
-                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Required: {summary.totalSessions}</span>
-                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Counted: {summary.countedSessions}</span>
-                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Holiday clashes: {totalClashedSessions}</span>
-                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Scheduled dates: {scheduledSessions}</span>
-                <span className="rounded-md bg-white/80 px-2 py-1 font-bold text-amber-950">Final date: {formatPlanDate(summary.effectiveEndDate)}</span>
-              </div>
-              {extensionLabel && (
-                <p className="mt-2 text-[11px] font-bold text-amber-800">
-                  Extended by around {extensionLabel} to preserve the required counted sessions.
-                </p>
-              )}
-            </div>
-          )}
-          <div className="mb-3 flex flex-wrap gap-2 text-[11px] font-bold text-gray-600">
-            <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-1">Normal session = counted</span>
-            <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-red-700">Holiday clash = shown but not counted</span>
-            <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">Replacement session = added to preserve required count</span>
-            <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-red-700">Replacement clash = replacement date also landed in a holiday and is not counted</span>
-          </div>
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <table className="min-w-full text-left text-xs">
               <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
@@ -648,15 +623,16 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
               <tbody className="divide-y divide-slate-100">
                 {selectedMonths.map(month => {
                   const clashedCount = month.sessions.filter(session => session.holidays.length > 0).length;
+                  const validCount = month.sessions.filter(session => !session.isClash).length;
 
                   return (
                   <tr key={month.key} className="align-top">
                     <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
                     <td className="px-3 py-3">
-                      <span className="block font-bold text-gray-700">{month.sessions.length}</span>
+                      <span className="block font-bold text-gray-700">{validCount}</span>
                       {clashedCount > 0 && (
                         <span className="mt-1 block text-[11px] font-bold text-red-600">
-                          {clashedCount} clashed
+                          {clashedCount} clash{clashedCount !== 1 ? 'es' : ''} not counted
                         </span>
                       )}
                     </td>
@@ -671,7 +647,7 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                             >
                               {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
                               <strong className={session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
-                              {' '}({session.time}) - Tutor: {session.tutor} - Coach: {session.coach}
+                              <span className="ml-1 font-semibold">{session.sessionName}</span>
                               <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-extrabold ${session.isClash ? 'bg-red-100 text-red-800' : session.isReplacement ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-gray-600'}`}>
                                 {getSessionStatusLabel(session)}
                               </span>
@@ -1892,8 +1868,8 @@ export default function ApprenticeshipTimeline() {
     return sessions;
   }, [groups]);
   const monthlyModuleSummaries = useMemo(
-    () => buildMonthlyModuleSummaries(groups, holidays, customModules),
-    [customModules, groups, holidays],
+    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules),
+    [catalogModules, customModules, groups, holidays],
   );
   const openMonthlySummary = (groupId: string, rowId: string, blockId: string) => {
     const targetKey = `${groupId}-${rowId}-${blockId}`;

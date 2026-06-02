@@ -368,7 +368,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
                 {formatDate(data.blk.startDate)} &rarr; {formatDate(displayEndDate)}
               </p>
               <p className="text-xs text-gray-400">
-                {weeks} weeks{sessionSummary.extensionDays > 0 ? ` - no-holiday baseline ${formatDate(sessionSummary.baselineEndDate)}` : ''}
+                {weeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}
               </p>
             </div>
           </div>
@@ -394,38 +394,19 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
           )}
           {(hasHolidays || hasHolidayClashes) && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-950">
-              <div>
-                <p className="font-extrabold text-amber-950">Session requirement</p>
-                <div className="mt-1 grid grid-cols-2 gap-1 text-[11px]">
-                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Required counted sessions: {sessionSummary.plannedTotal}</span>
-                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Valid counted sessions: {sessionSummary.validCountedSessions}</span>
-                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Scheduled dates: {sessionSummary.scheduledDates}</span>
-                  <span className="rounded bg-white/80 px-2 py-1 font-bold">Holiday clashes: {sessionSummary.allAffected}</span>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded bg-white/80 px-2 py-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Module sessions</p>
+                  <p className="mt-0.5 text-sm font-extrabold text-amber-950">{sessionSummary.plannedTotal}</p>
                 </div>
-                {sessionSummary.extensionAffected > 0 && (
-                  <p className="mt-1 text-[11px] font-bold text-amber-700">
-                    {sessionSummary.affected} original + {sessionSummary.extensionAffected} replacement clashes
-                  </p>
-                )}
-              </div>
-
-              <div className="mt-2 border-t border-amber-200 pt-2">
-                <p className="font-extrabold text-amber-950">Timeline dates</p>
-                <div className="mt-1 space-y-1 text-[11px] font-bold text-amber-900">
-                  <p>No-holiday finish date: {formatDate(sessionSummary.baselineEndDate)}</p>
-                  <p>Final effective finish date: {formatDate(displayEndDate)}</p>
-                  {extensionLabel && <p>Extension: around {extensionLabel}</p>}
+                <div className="rounded bg-white/80 px-2 py-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Holiday weeks</p>
+                  <p className="mt-0.5 text-sm font-extrabold text-amber-950">{sessionSummary.allAffected} week{sessionSummary.allAffected !== 1 ? 's' : ''}</p>
                 </div>
               </div>
-
-              {hasHolidayClashes && (
-                <div className="mt-2 border-t border-amber-200 pt-2">
-                  <p className="font-extrabold text-amber-950">Why did this happen?</p>
-                  <p className="mt-1 leading-relaxed text-amber-900">
-                    {sessionSummary.allAffected} {scheduleDayLabel} session{sessionSummary.allAffected !== 1 ? 's' : ''} fell within holiday ranges, so they were shown as clashes but excluded from the counted total. The system added weekly {scheduleDayLabel} replacement sessions until the module reached the required {sessionSummary.plannedTotal} counted session{sessionSummary.plannedTotal !== 1 ? 's' : ''}.
-                  </p>
-                </div>
-              )}
+              <p className="mt-2 rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold text-amber-900">
+                Total: {sessionSummary.scheduledDates || sessionSummary.plannedTotal + sessionSummary.allAffected} weeks
+              </p>
             </div>
           )}
           {false && hasHolidays && (
