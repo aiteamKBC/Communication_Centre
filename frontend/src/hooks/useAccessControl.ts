@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-
-const AUTH_STORAGE_KEY = 'kbc-auth-user';
+import { AUTH_STORAGE_KEY, clearAuthStorage, readStoredAuthUser, type StoredAuthUser } from '../utils/authStorage';
 
 export interface AccessControl {
   adminAccess: boolean;
@@ -11,6 +10,7 @@ export interface AccessControl {
   canManageEvents: boolean;
   canManageCohorts: boolean;
   canManageNews: boolean;
+  sessionInvalid: boolean;
 }
 
 const EMPTY_ACCESS: AccessControl = {
@@ -22,18 +22,20 @@ const EMPTY_ACCESS: AccessControl = {
   canManageEvents: false,
   canManageCohorts: false,
   canManageNews: false,
+  sessionInvalid: false,
 };
 
-type StoredUser = {
-  id?: number | string;
-  username?: string;
-  email?: string;
-  access?: Partial<AccessControl>;
-  groups?: string[];
-  [key: string]: unknown;
-};
+const ACCESS_REFRESH_TTL_MS = 60000;
+let sharedAccessKey = '';
+let sharedAccessFetchedAt = 0;
+let sharedAccessValue: AccessControl | null = null;
+let sharedAccessPromise: Promise<AccessControl | null> | null = null;
 
-function deriveAccessFromUser(user: StoredUser | null | undefined): AccessControl {
+function invalidSessionAccess(): AccessControl {
+  return { ...EMPTY_ACCESS, sessionInvalid: true };
+}
+
+function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessControl {
   if (!user) {
     return EMPTY_ACCESS;
   }
@@ -71,28 +73,21 @@ function deriveAccessFromUser(user: StoredUser | null | undefined): AccessContro
     canManageEvents: eventManagerAccess,
     canManageCohorts: operationsAccess,
     canManageNews: adminAccess || itAccess || marketingAccess,
+    sessionInvalid: false,
   };
 }
 
-function parseStoredUser(): StoredUser | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as StoredUser;
-  } catch {
-    return null;
-  }
+function parseAccessFromStorage(): AccessControl {
+  // Access in localStorage is cache only for temporary UI continuity. The
+  // backend/database response below is the source of truth.
+  return deriveAccessFromUser(readStoredAuthUser());
 }
 
-function parseAccessFromStorage(): AccessControl {
-  return deriveAccessFromUser(parseStoredUser());
+function resetSharedAccessCache() {
+  sharedAccessKey = '';
+  sharedAccessFetchedAt = 0;
+  sharedAccessValue = null;
+  sharedAccessPromise = null;
 }
 
 export default function useAccessControl(): AccessControl {
@@ -102,8 +97,9 @@ export default function useAccessControl(): AccessControl {
     const syncFromStorage = () => setAccess(parseAccessFromStorage());
 
     const syncFromServer = async () => {
-      const user = parseStoredUser();
+      const user = readStoredAuthUser();
       if (!user) {
+        setAccess(EMPTY_ACCESS);
         return;
       }
 
@@ -118,24 +114,64 @@ export default function useAccessControl(): AccessControl {
         return;
       }
 
-      try {
+      const accessKey = searchParams.toString();
+      const now = Date.now();
+
+      if (sharedAccessKey === accessKey && now - sharedAccessFetchedAt < ACCESS_REFRESH_TTL_MS) {
+        if (sharedAccessValue) {
+          setAccess(sharedAccessValue);
+        }
+        return;
+      }
+
+      if (sharedAccessKey === accessKey && sharedAccessPromise) {
+        const nextAccess = await sharedAccessPromise;
+        if (nextAccess) {
+          setAccess(nextAccess);
+        }
+        return;
+      }
+
+      sharedAccessKey = accessKey;
+      sharedAccessPromise = (async () => {
         const response = await fetch(`/api/auth/access/?${searchParams.toString()}`);
+        sharedAccessFetchedAt = Date.now();
         if (!response.ok) {
-          return;
+          if (response.status === 404) {
+            // A 404 from access means the cached auth user is stale or invalid
+            // (for example a deleted login_db user id). Clear it immediately so
+            // the app stops sending invalid ids and asks for a fresh login.
+            clearAuthStorage();
+            sharedAccessValue = invalidSessionAccess();
+            return sharedAccessValue;
+          }
+          sharedAccessValue = null;
+          return null;
         }
 
-        const payload = (await response.json()) as StoredUser;
-        const merged: StoredUser = {
+        const payload = (await response.json()) as StoredAuthUser;
+        const merged: StoredAuthUser = {
           ...user,
           ...payload,
           access: payload.access || user.access,
           groups: Array.isArray(payload.groups) ? payload.groups : user.groups,
         };
 
+        // Keep localStorage as a cache of the latest database-backed access.
         window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(merged));
-        setAccess(deriveAccessFromUser(merged));
+        sharedAccessValue = deriveAccessFromUser(merged);
+        return sharedAccessValue;
+      })();
+
+      try {
+        const nextAccess = await sharedAccessPromise;
+        if (nextAccess) {
+          setAccess(nextAccess);
+        }
       } catch {
         // Keep local access when refresh fails.
+      } finally {
+        sharedAccessPromise = null;
       }
     };
 
@@ -144,14 +180,22 @@ export default function useAccessControl(): AccessControl {
       void syncFromServer();
     };
 
+    const handleAuthChanged = () => {
+      resetSharedAccessCache();
+      syncFromStorage();
+      void syncFromServer();
+    };
+
     syncFromStorage();
     void syncFromServer();
 
     window.addEventListener('storage', syncFromStorage);
+    window.addEventListener('kbc-auth-changed', handleAuthChanged);
     window.addEventListener('focus', handleFocus);
 
     return () => {
       window.removeEventListener('storage', syncFromStorage);
+      window.removeEventListener('kbc-auth-changed', handleAuthChanged);
       window.removeEventListener('focus', handleFocus);
     };
   }, []);
