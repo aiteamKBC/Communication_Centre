@@ -53,11 +53,33 @@ class TrainingPlan(models.Model):
 	session_week_day = models.TextField(blank=True, default='')
 	session_start_time = models.TextField(blank=True, default='')
 	session_end_time = models.TextField(blank=True, default='')
+	session_ksb_json = models.TextField(blank=True, default='')
+	ksb_profile_id = models.BigIntegerField(null=True, blank=True)
 	notes = models.TextField(blank=True, default='')
 
 	class Meta:
 		db_table = 'Training_plan'
 		managed = False
+
+
+class KsbProfile(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	name = models.CharField(max_length=255)
+	programme_name = models.CharField(max_length=255, blank=True, default='')
+	description = models.TextField(blank=True, default='')
+	knowledge_codes = models.JSONField(default=list, blank=True)
+	skill_codes = models.JSONField(default=list, blank=True)
+	behaviour_codes = models.JSONField(default=list, blank=True)
+	is_active = models.BooleanField(default=True)
+	created_by = models.TextField(blank=True, default='')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'ksb_profiles'
+		indexes = [
+			models.Index(fields=['is_active', 'name']),
+		]
 
 
 class TrainingPlanHoliday(models.Model):

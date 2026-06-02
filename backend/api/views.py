@@ -1,6 +1,8 @@
 import base64
+import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import date, datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -15,7 +17,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import AuditLog, Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
+from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
 
 
 def _client_ip(request) -> str | None:
@@ -642,8 +644,94 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'sessionWeekDay': item.session_week_day,
 		'sessionStartTime': item.session_start_time,
 		'sessionEndTime': item.session_end_time,
+		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
+		'ksbProfileId': str(item.ksb_profile_id) if getattr(item, 'ksb_profile_id', None) else '',
 		'notes': item.notes,
 	}
+
+
+KSB_CODE_PATTERNS = {
+	'knowledgeCodes': re.compile(r'^K\d+$', re.IGNORECASE),
+	'skillCodes': re.compile(r'^S\d+$', re.IGNORECASE),
+	'behaviourCodes': re.compile(r'^B\d+$', re.IGNORECASE),
+}
+
+
+def normalize_ksb_codes(value, field_name: str) -> list[str]:
+	pattern = KSB_CODE_PATTERNS[field_name]
+	if not isinstance(value, list):
+		return []
+	seen = set()
+	codes = []
+	for item in value:
+		code = str(item or '').strip().upper()
+		if not code or code in seen or not pattern.match(code):
+			continue
+		seen.add(code)
+		codes.append(code)
+	return codes
+
+
+def normalize_session_ksb_mappings(value) -> list[dict]:
+	if isinstance(value, str):
+		try:
+			raw = json.loads(value or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw = []
+	else:
+		raw = value
+	if not isinstance(raw, list):
+		return []
+	normalized = []
+	for item in raw:
+		if not isinstance(item, dict):
+			item = {}
+		normalized.append({
+			'knowledgeCodes': normalize_ksb_codes(item.get('knowledgeCodes', []), 'knowledgeCodes'),
+			'skillCodes': normalize_ksb_codes(item.get('skillCodes', []), 'skillCodes'),
+			'behaviourCodes': normalize_ksb_codes(item.get('behaviourCodes', []), 'behaviourCodes'),
+		})
+	return normalized
+
+
+def normalize_nullable_int(value) -> int | None:
+	if value in {None, ''}:
+		return None
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return None
+
+
+def serialize_ksb_profile(item: KsbProfile) -> dict:
+	return {
+		'id': str(item.id),
+		'name': item.name,
+		'programmeName': item.programme_name or '',
+		'description': item.description or '',
+		'knowledgeCodes': normalize_ksb_codes(item.knowledge_codes, 'knowledgeCodes'),
+		'skillCodes': normalize_ksb_codes(item.skill_codes, 'skillCodes'),
+		'behaviourCodes': normalize_ksb_codes(item.behaviour_codes, 'behaviourCodes'),
+		'isActive': bool(item.is_active),
+		'createdBy': item.created_by or '',
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+		'updatedAt': item.updated_at.isoformat() if item.updated_at else '',
+	}
+
+
+def ksb_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
+	name = str(payload.get('name', '')).strip()
+	if not name:
+		return {}, 'Profile name is required.'
+	return {
+		'name': name,
+		'programme_name': str(payload.get('programmeName', payload.get('programme_name', ''))).strip(),
+		'description': str(payload.get('description', '')).strip(),
+		'knowledge_codes': normalize_ksb_codes(payload.get('knowledgeCodes', []), 'knowledgeCodes'),
+		'skill_codes': normalize_ksb_codes(payload.get('skillCodes', []), 'skillCodes'),
+		'behaviour_codes': normalize_ksb_codes(payload.get('behaviourCodes', []), 'behaviourCodes'),
+		'is_active': bool(payload.get('isActive', True)),
+	}, ''
 
 
 TRAINING_PLAN_HOLIDAY_COLORS = {
@@ -666,6 +754,27 @@ def serialize_training_plan_holiday(item: TrainingPlanHoliday) -> dict:
 		'type': item.type or 'holiday',
 		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
 	}
+
+
+def training_plan_holidays_queryset():
+	return TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
+
+
+def training_plan_holidays_version() -> str:
+	records = training_plan_holidays_queryset().order_by('id').values('id', 'label', 'start_date', 'end_date', 'type', 'color', 'updated_at')
+	payload = [
+		{
+			'id': str(record['id']),
+			'label': record['label'] or '',
+			'startDate': record['start_date'].isoformat() if record['start_date'] else '',
+			'endDate': record['end_date'].isoformat() if record['end_date'] else '',
+			'type': record['type'] or 'holiday',
+			'color': record['color'] or '',
+			'updatedAt': record['updated_at'].isoformat() if record['updated_at'] else '',
+		}
+		for record in records
+	]
+	return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
@@ -826,6 +935,8 @@ def training_plan(request):
 					session_week_day=str(row.get('sessionWeekDay', '')).strip(),
 					session_start_time=str(row.get('sessionStartTime', '')).strip(),
 					session_end_time=str(row.get('sessionEndTime', '')).strip(),
+					session_ksb_json=json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
+					ksb_profile_id=normalize_nullable_int(row.get('ksbProfileId', None)),
 					notes=str(row.get('notes', '')).strip(),
 				)
 			)
@@ -852,10 +963,78 @@ def training_plan(request):
 
 
 @csrf_exempt
+def ksb_profiles(request):
+	if request.method == 'GET':
+		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
+		records = KsbProfile.objects.all() if include_inactive else KsbProfile.objects.filter(is_active=True)
+		return JsonResponse([serialize_ksb_profile(item) for item in records.order_by('name', 'id')], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = ksb_profile_values_from_payload(payload)
+		if error:
+			return HttpResponseBadRequest(error)
+		values['created_by'] = _header_text(request, 'X-KBC-Display-Name') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-User-Email')
+		record = KsbProfile.objects.create(**values)
+		serialized = serialize_ksb_profile(record)
+		_audit_log(request, action='create', entity='KsbProfile', object_id=record.id, object_label=record.name, after=serialized)
+		return JsonResponse(serialized, status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def ksb_profile_detail(request, profile_id: int):
+	try:
+		record = KsbProfile.objects.get(pk=profile_id)
+	except KsbProfile.DoesNotExist:
+		return JsonResponse({'detail': 'KSB profile not found.'}, status=404)
+
+	if request.method == 'PATCH':
+		before = serialize_ksb_profile(record)
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = ksb_profile_values_from_payload({**before, **payload})
+		if error:
+			return HttpResponseBadRequest(error)
+		for key, value in values.items():
+			setattr(record, key, value)
+		record.save()
+		serialized = serialize_ksb_profile(record)
+		_audit_log(request, action='update', entity='KsbProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+		return JsonResponse(serialized)
+
+	if request.method == 'DELETE':
+		before = serialize_ksb_profile(record)
+		in_use = TrainingPlan.objects.filter(ksb_profile_id=record.id).exists()
+		if in_use:
+			record.is_active = False
+			record.save(update_fields=['is_active', 'updated_at'])
+			serialized = serialize_ksb_profile(record)
+			_audit_log(request, action='deactivate', entity='KsbProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+			return JsonResponse({'deleted': False, 'deactivated': True, 'item': serialized})
+		record.delete()
+		_audit_log(request, action='delete', entity='KsbProfile', object_id=profile_id, object_label=before.get('name', ''), before=before)
+		return JsonResponse({'deleted': True, 'deactivated': False})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
 def training_plan_holidays(request):
 	if request.method == 'GET':
-		records = TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('start_date', 'end_date', 'id')
-		return JsonResponse([serialize_training_plan_holiday(item) for item in records], safe=False)
+		records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+		return JsonResponse({
+			'items': [serialize_training_plan_holiday(item) for item in records],
+			'version': training_plan_holidays_version(),
+		})
 
 	if request.method == 'POST':
 		try:
@@ -866,6 +1045,7 @@ def training_plan_holidays(request):
 		items = payload.get('items') if isinstance(payload, dict) else None
 		if not isinstance(items, list):
 			return HttpResponseBadRequest('Payload must include an items array.')
+		submitted_version = str(payload.get('version', '') or '').strip() if isinstance(payload, dict) else ''
 
 		validated_items = []
 		invalid_count = 0
@@ -906,7 +1086,17 @@ def training_plan_holidays(request):
 				status=400,
 			)
 
-		before = [serialize_training_plan_holiday(item) for item in TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('id')]
+		current_version = training_plan_holidays_version()
+		if submitted_version and submitted_version != current_version:
+			return JsonResponse(
+				{
+					'detail': 'The holiday list was updated by another user. Reload the latest holidays before saving.',
+					'currentVersion': current_version,
+				},
+				status=409,
+			)
+
+		before = [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('id')]
 		with transaction.atomic():
 			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
 			created = [
@@ -925,6 +1115,7 @@ def training_plan_holidays(request):
 		return JsonResponse({
 			'saved': len(created),
 			'items': after,
+			'version': training_plan_holidays_version(),
 		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)

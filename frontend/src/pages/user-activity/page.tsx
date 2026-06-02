@@ -88,7 +88,8 @@ type AuditPayload = {
   logs: AuditLog[];
 };
 
-const ACTIVITY_REFRESH_MS = 2000;
+const ACTIVITY_REFRESH_MS = 30000;
+const AUDIT_LOG_REFRESH_MS = 60000;
 
 const emptyPayload: ActivityPayload = {
   summary: {
@@ -1053,7 +1054,6 @@ export default function UserActivityPage() {
   const [to, setTo] = useState('');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedAuditId, setExpandedAuditId] = useState<number | null>(null);
-  const [openSessionDays, setOpenSessionDays] = useState<Record<string, boolean>>({});
   const [openAuditDays, setOpenAuditDays] = useState<Record<string, boolean>>({});
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [dateSortOrder, setDateSortOrder] = useState<DateSortOrder>('newest');
@@ -1183,9 +1183,6 @@ export default function UserActivityPage() {
           : summaryModal === 'time'
           ? 'Total period by user'
           : '';
-  const toggleSessionDay = (key: string) => {
-    setOpenSessionDays(current => ({ ...current, [key]: !current[key] }));
-  };
   const toggleAuditDay = (key: string) => {
     setOpenAuditDays(current => ({ ...current, [key]: !current[key] }));
   };
@@ -1216,8 +1213,11 @@ export default function UserActivityPage() {
 
     let cancelled = false;
     let controller: AbortController | null = null;
+    let inFlight = false;
 
     const loadActivity = (showSpinner = false) => {
+      if (inFlight) return;
+      inFlight = true;
       controller?.abort();
       controller = new AbortController();
       if (showSpinner) setLoading(true);
@@ -1235,12 +1235,16 @@ export default function UserActivityPage() {
           if (!cancelled && err.name !== 'AbortError') setError('Unable to load user activity right now.');
         })
         .finally(() => {
+          inFlight = false;
+          controller = null;
           if (!cancelled && showSpinner) setLoading(false);
         });
     };
 
     loadActivity(true);
-    const intervalId = window.setInterval(() => loadActivity(), ACTIVITY_REFRESH_MS);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadActivity();
+    }, ACTIVITY_REFRESH_MS);
 
     return () => {
       cancelled = true;
@@ -1257,8 +1261,11 @@ export default function UserActivityPage() {
 
     let cancelled = false;
     let controller: AbortController | null = null;
+    let inFlight = false;
 
     const loadAuditLogs = (showSpinner = false) => {
+      if (inFlight) return;
+      inFlight = true;
       controller?.abort();
       controller = new AbortController();
       if (showSpinner) setAuditLoading(true);
@@ -1276,12 +1283,16 @@ export default function UserActivityPage() {
           if (!cancelled && err.name !== 'AbortError') setAuditError('Unable to load audit logs right now.');
         })
         .finally(() => {
+          inFlight = false;
+          controller = null;
           if (!cancelled && showSpinner) setAuditLoading(false);
         });
     };
 
     loadAuditLogs(true);
-    const intervalId = window.setInterval(() => loadAuditLogs(), 10000);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadAuditLogs();
+    }, AUDIT_LOG_REFRESH_MS);
 
     return () => {
       cancelled = true;
@@ -1585,18 +1596,13 @@ export default function UserActivityPage() {
             ) : (
               sessionGroups.map(group => (
                 <div key={group.key}>
-                  <button
-                    type="button"
-                    onClick={() => toggleSessionDay(group.key)}
-                    className="flex w-full flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-slate-100 px-4 py-3 text-left text-xs font-extrabold uppercase tracking-wide text-slate-700 hover:bg-slate-200"
-                  >
+                  <div className="flex w-full flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-slate-100 px-4 py-3 text-left text-xs font-extrabold uppercase tracking-wide text-slate-700">
                     <span>{group.label}</span>
                     <span className="flex flex-wrap items-center justify-end gap-2">
                       <DaySessionStats sessions={group.items} />
-                      <i className={openSessionDays[group.key] ? 'ri-arrow-up-s-line text-base text-slate-500' : 'ri-arrow-down-s-line text-base text-slate-500'} />
                     </span>
-                  </button>
-                  {openSessionDays[group.key] && group.items.map(session => (
+                  </div>
+                  {group.items.map(session => (
                     <div key={session.id} className={`border-b border-gray-100 last:border-b-0 ${session.isActive ? 'bg-emerald-50/40' : 'bg-white'}`}>
                       <button
                         type="button"

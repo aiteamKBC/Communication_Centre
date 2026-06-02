@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram, CatalogModule } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionKsbMapping, KsbProfile } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
@@ -12,6 +12,7 @@ import AddModuleCatalogModal from './components/AddModuleCatalogModal';
 import ManageModulesModal from './components/ManageModulesModal';
 import AddProgramModal from './components/AddProgramModal';
 import ManageProgramModal from './components/ManageProgramModal';
+import KsbProfilesManager from './components/KsbProfilesManager';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
 import TutorProfiles from './components/TutorProfiles';
 import useAccessControl from '@/hooks/useAccessControl';
@@ -49,12 +50,15 @@ interface TrainingPlanItem {
   sessionWeekDay: string;
   sessionStartTime: string;
   sessionEndTime: string;
+  sessionKsbMappings?: SessionKsbMapping[];
+  ksbProfileId?: string;
   notes: string;
 }
 
 interface MonthlySessionDetail {
   date: string;
   sessionName: string;
+  ksbMappings: SessionKsbMapping;
   tutor: string;
   coach: string;
   time: string;
@@ -111,6 +115,37 @@ const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+function emptySessionKsbMapping(): SessionKsbMapping {
+  return { knowledgeCodes: [], skillCodes: [], behaviourCodes: [] };
+}
+
+function normalizeKsbCodes(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
+  if (!Array.isArray(value)) return [];
+  const pattern = new RegExp(`^${prefix}\\d+$`, 'i');
+  const seen = new Set<string>();
+  return value.reduce<string[]>((codes, item) => {
+    const code = String(item || '').trim().toUpperCase();
+    if (!code || seen.has(code) || !pattern.test(code)) return codes;
+    seen.add(code);
+    codes.push(code);
+    return codes;
+  }, []);
+}
+
+function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMapping[] {
+  const raw = Array.isArray(value) ? value : [];
+  const length = Math.max(count, raw.length);
+  return Array.from({ length }, (_, index) => {
+    const item = raw[index];
+    const record = item && typeof item === 'object' ? item as Partial<SessionKsbMapping> : {};
+    return {
+      knowledgeCodes: normalizeKsbCodes(record.knowledgeCodes, 'K'),
+      skillCodes: normalizeKsbCodes(record.skillCodes, 'S'),
+      behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
+    };
+  });
+}
 
 function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; notes: string } {
   const value = (raw || '').trim();
@@ -304,6 +339,7 @@ function buildGroupsFromTrainingRows(
         intake: 'Intake 1',
         quarter: 'Q1 2026',
         color: undefined,
+        ksbProfileId: item.ksbProfileId || undefined,
         blks: [],
       };
       cohortIndex.set(cohortKey, cohort);
@@ -322,6 +358,9 @@ function buildGroupsFromTrainingRows(
     if (parsedNotes.cohortEndDate && !cohort.endDateLbl) {
       cohort.endDateLbl = parsedNotes.cohortEndDate;
     }
+    if (item.ksbProfileId && !cohort.ksbProfileId) {
+      cohort.ksbProfileId = item.ksbProfileId;
+    }
     cohort.blks.push({
       id: `db-blk-${index + 1}`,
       mod: modKey,
@@ -335,6 +374,7 @@ function buildGroupsFromTrainingRows(
       days: parseDays(item.sessionWeekDay || ''),
       sessionStartTime: item.sessionStartTime || '09:00',
       sessionEndTime: item.sessionEndTime || '11:00',
+      sessionKsbMappings: normalizeSessionKsbMappings(item.sessionKsbMappings, sessions),
       notes: parsedNotes.notes || '',
     });
   });
@@ -359,6 +399,8 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         sessionWeekDay: (block.days || []).join(', '),
         sessionStartTime: block.sessionStartTime || '09:00',
         sessionEndTime: block.sessionEndTime || '11:00',
+        sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
+        ksbProfileId: row.ksbProfileId || '',
         notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl),
       })),
     ),
@@ -489,9 +531,11 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
               affectedSessions += 1;
             }
           }
+          const mappingIndex = Math.max(0, (sessionDate.countedNumber || sessionDate.originalNumber) - 1);
           months.get(monthKey)!.sessions.push({
             date,
             sessionName: catalogModule?.sessionNames?.[(sessionDate.countedNumber || sessionDate.originalNumber) - 1]?.trim() || `Session ${sessionDate.countedNumber || sessionDate.originalNumber}`,
+            ksbMappings: block.sessionKsbMappings?.[mappingIndex] || emptySessionKsbMapping(),
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
@@ -579,7 +623,7 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
         className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+      <div className="relative flex max-h-[88vh] w-full max-w-7xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${summary.color}` }}>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -616,8 +660,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                 <tr>
                   <th className="w-44 px-3 py-2 font-bold">Month</th>
                   <th className="w-24 px-3 py-2 font-bold">Sessions</th>
-                  <th className="px-3 py-2 font-bold">Session Dates</th>
-                  <th className="px-3 py-2 font-bold">Holidays</th>
+                  <th className="min-w-[560px] px-3 py-2 font-bold">Session Dates</th>
+                  <th className="min-w-48 px-3 py-2 font-bold">Holidays</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -640,23 +684,26 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                       {month.sessions.length ? (
                         <div className="flex flex-wrap gap-1.5">
                           {month.sessions.map(session => (
-                            <span
+                            <div
                               key={`${month.key}-${session.date}-${session.time}`}
-                              className={`rounded-md border px-2 py-1 shadow-sm ${getSessionStatusClass(session)}`}
+                              className={`min-w-56 rounded-lg border px-2.5 py-2 shadow-sm ${getSessionStatusClass(session)}`}
                               title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
                             >
-                              {session.holidays.length > 0 && <i className="ri-alert-line mr-1 align-[-1px] text-red-600" />}
-                              <strong className={session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
-                              <span className="ml-1 font-semibold">{session.sessionName}</span>
-                              <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-extrabold ${session.isClash ? 'bg-red-100 text-red-800' : session.isReplacement ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-gray-600'}`}>
-                                {getSessionStatusLabel(session)}
-                              </span>
-                              {session.holidays.length > 0 && (
-                                <span className="ml-1 font-bold text-red-700">
-                                  - Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {session.holidays.length > 0 && <i className="ri-alert-line align-[-1px] text-red-600" />}
+                                <strong className={session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
+                                <span className="font-semibold text-gray-700">{session.sessionName}</span>
+                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-extrabold ${session.isClash ? 'bg-red-100 text-red-800' : session.isReplacement ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-gray-600'}`}>
+                                  {getSessionStatusLabel(session)}
                                 </span>
+                              </div>
+                              <KsbBadges mapping={session.ksbMappings} />
+                              {session.holidays.length > 0 && (
+                                <div className="mt-1 font-bold text-red-700">
+                                  Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
+                                </div>
                               )}
-                            </span>
+                            </div>
                           ))}
                         </div>
                       ) : (
@@ -689,6 +736,31 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function KsbBadges({ mapping }: { mapping: SessionKsbMapping }) {
+  const groups = [
+    { label: 'K', codes: mapping.knowledgeCodes, labelClassName: 'bg-sky-600 text-white', codeClassName: 'border-sky-200 bg-sky-50 text-sky-800' },
+    { label: 'S', codes: mapping.skillCodes, labelClassName: 'bg-emerald-600 text-white', codeClassName: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
+    { label: 'B', codes: mapping.behaviourCodes, labelClassName: 'bg-amber-500 text-white', codeClassName: 'border-amber-200 bg-amber-50 text-amber-800' },
+  ].filter(group => group.codes.length > 0);
+  if (!groups.length) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5">
+      {groups.map(group => (
+        <span key={group.label} className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
+          <span className={`flex h-4 min-w-4 items-center justify-center rounded px-1 text-[10px] font-extrabold leading-none ${group.labelClassName}`}>
+            {group.label}
+          </span>
+          {group.codes.map(code => (
+            <span key={code} className={`rounded border px-1.5 py-0.5 text-[10px] font-extrabold leading-none ${group.codeClassName}`}>
+              {code}
+            </span>
+          ))}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1040,6 +1112,21 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
 }
 
 type TrainingPlanProgramConfigPayload = CustomProgram;
+type TrainingPlanHolidayPayload = { items: Holiday[]; version?: string };
+
+function parseHolidayPayload(payload: unknown): TrainingPlanHolidayPayload | null {
+  if (Array.isArray(payload)) {
+    return { items: payload as Holiday[], version: undefined };
+  }
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)) {
+    const typedPayload = payload as { items: Holiday[]; version?: unknown };
+    return {
+      items: typedPayload.items,
+      version: typeof typedPayload.version === 'string' ? typedPayload.version : undefined,
+    };
+  }
+  return null;
+}
 
 function TrainingPlanPanelSkeleton() {
   return (
@@ -1102,14 +1189,17 @@ export default function ApprenticeshipTimeline() {
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
   const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
   const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
+  const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
+  const [holidayVersion, setHolidayVersion] = useState<string | undefined>(undefined);
   const [modal,    setModal]    = useState<ModalState>({ open: false });
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
   const [showAddModule,  setShowAddModule]  = useState(false);
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [showManageModules, setShowManageModules] = useState(false);
+  const [showKsbProfiles, setShowKsbProfiles] = useState(false);
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
   const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
@@ -1125,6 +1215,26 @@ export default function ApprenticeshipTimeline() {
   const [hasLoadedTrainingPlan, setHasLoadedTrainingPlan] = useState(false);
   const [hasLoadedProgramConfigs, setHasLoadedProgramConfigs] = useState(false);
   const skipPersistRef = useRef(true);
+
+  const reloadTrainingPlanHolidays = async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/training-plan-holidays/');
+      if (!response.ok) {
+        return false;
+      }
+
+      const payload = parseHolidayPayload(await response.json());
+      if (!payload) {
+        return false;
+      }
+
+      setHolidays(payload.items);
+      setHolidayVersion(payload.version);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1215,21 +1325,10 @@ export default function ApprenticeshipTimeline() {
     }
 
     async function loadTrainingPlanHolidays() {
-      try {
-        const response = await fetch('/api/training-plan-holidays/');
-        if (!response.ok) {
-          return;
-        }
-
-        const items = (await response.json()) as Holiday[];
-        if (!Array.isArray(items) || cancelled) {
-          return;
-        }
-
-        setHolidays(items);
-      } catch {
-        // Keep the current in-memory holidays if loading fails.
+      if (cancelled) {
+        return;
       }
+      await reloadTrainingPlanHolidays();
     }
 
     async function loadCatalogModules() {
@@ -1251,10 +1350,27 @@ export default function ApprenticeshipTimeline() {
       }
     }
 
+    async function loadKsbProfiles() {
+      try {
+        const response = await fetch('/api/ksb-profiles/?includeInactive=1');
+        if (!response.ok) {
+          return;
+        }
+        const items = (await response.json()) as KsbProfile[];
+        if (!Array.isArray(items) || cancelled) {
+          return;
+        }
+        setKsbProfiles(items);
+      } catch {
+        // Keep profiles empty if loading fails.
+      }
+    }
+
     void loadTrainingPlanModules();
     void loadTrainingPlanProgramConfigs();
     void loadTrainingPlanHolidays();
     void loadCatalogModules();
+    void loadKsbProfiles();
     return () => {
       cancelled = true;
     };
@@ -1362,7 +1478,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const persistHolidays = async (nextHolidays: Holiday[]) => {
-    const payload = { items: nextHolidays };
+    const payload = { items: nextHolidays, version: holidayVersion };
 
     try {
       const response = await fetch('/api/training-plan-holidays/', {
@@ -1372,11 +1488,45 @@ export default function ApprenticeshipTimeline() {
       });
 
       if (!response.ok) {
+        if (response.status === 409) {
+          let detail = 'The holiday list was updated by someone else while you were editing. Please reload the latest version before saving to avoid overwriting their changes.';
+          try {
+            const conflict = await response.json() as { detail?: string; currentVersion?: string };
+            if (conflict.detail) {
+              detail = conflict.detail;
+            }
+          } catch {
+            // Use the default conflict message.
+          }
+
+          const result = await kbcSwal.fire({
+            title: 'Holiday List Changed',
+            html: `${detail}<br /><br />Reload the latest holidays before saving again.`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Reload latest holidays',
+            cancelButtonText: 'Keep editing',
+          });
+
+          if (result.isConfirmed) {
+            const reloaded = await reloadTrainingPlanHolidays();
+            await kbcSwal.fire({
+              title: reloaded ? 'Latest Holidays Loaded' : 'Reload Failed',
+              html: reloaded
+                ? 'The current holiday list has been loaded. Please review your changes before saving again.'
+                : 'The latest holiday list could not be loaded. Please refresh the page and try again.',
+              icon: reloaded ? 'success' : 'error',
+              confirmButtonText: 'OK',
+            });
+          }
+
+          return false;
+        }
         const errorText = (await response.text()).trim();
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
 
-      const result = await response.json() as { saved?: number; items?: Holiday[] };
+      const result = await response.json() as { saved?: number; items?: Holiday[]; version?: string };
       const persistedItems = Array.isArray(result.items) ? result.items : [];
 
       if (typeof result.saved !== 'number') {
@@ -1419,6 +1569,7 @@ export default function ApprenticeshipTimeline() {
       }
 
       setHolidays(persistedItems);
+      setHolidayVersion(result.version);
       await kbcSuccessSwal.fire({
         icon: 'success',
         title: 'Holiday periods saved successfully',
@@ -1490,6 +1641,60 @@ export default function ApprenticeshipTimeline() {
 
     const result = await response.json() as { items?: TrainingPlanProgramConfigPayload[] };
     return Array.isArray(result.items) ? result.items : payload.items;
+  };
+
+  const createKsbProfile = async (profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
+    try {
+      const response = await fetch('/api/ksb-profiles/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile),
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
+      const saved = await response.json() as KsbProfile;
+      setKsbProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+      return saved;
+    } catch (error) {
+      await kbcSwal.fire({ title: 'KSB Profile Not Saved', html: error instanceof Error ? error.message : 'Unknown save error', icon: 'error', confirmButtonText: 'OK' });
+      return null;
+    }
+  };
+
+  const updateKsbProfile = async (id: string, profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
+    try {
+      const response = await fetch(`/api/ksb-profiles/${id}/`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile),
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
+      const saved = await response.json() as KsbProfile;
+      setKsbProfiles(prev => prev.map(item => item.id === saved.id ? saved : item).sort((a, b) => a.name.localeCompare(b.name)));
+      return saved;
+    } catch (error) {
+      await kbcSwal.fire({ title: 'KSB Profile Not Updated', html: error instanceof Error ? error.message : 'Unknown update error', icon: 'error', confirmButtonText: 'OK' });
+      return null;
+    }
+  };
+
+  const deleteKsbProfile = async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/ksb-profiles/${id}/`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
+      const result = await response.json() as { deleted?: boolean; deactivated?: boolean; item?: KsbProfile };
+      setKsbProfiles(prev => result.item
+        ? prev.map(item => item.id === result.item!.id ? result.item! : item)
+        : prev.filter(item => item.id !== id));
+      await kbcSwal.fire({
+        icon: 'success',
+        title: result.deactivated ? 'KSB Profile Deactivated' : 'KSB Profile Deleted',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      await kbcSwal.fire({ title: 'KSB Profile Not Deleted', html: error instanceof Error ? error.message : 'Unknown delete error', icon: 'error', confirmButtonText: 'OK' });
+      return false;
+    }
   };
 
   const handleSave = async (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
@@ -2159,6 +2364,13 @@ export default function ApprenticeshipTimeline() {
                 <i className="ri-add-circle-line" />
                 Add Programme
               </button>
+              <button
+                onClick={() => setShowKsbProfiles(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
+                style={{ background: '#F8FAFC', color: '#7C3AED', borderColor: '#DDD6FE' }}>
+                <i className="ri-links-line" />
+                KSB Profiles
+              </button>
             </div>
           )}
         </div>
@@ -2366,6 +2578,7 @@ export default function ApprenticeshipTimeline() {
           holidays={holidays}
           customModules={customModules}
           catalogModules={catalogModules}
+          ksbProfiles={ksbProfiles}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
@@ -2391,6 +2604,16 @@ export default function ApprenticeshipTimeline() {
           holidays={holidays}
           onSave={persistHolidays}
           onClose={() => setShowHolidayMgr(false)}
+        />
+      )}
+
+      {canManageCohorts && showKsbProfiles && (
+        <KsbProfilesManager
+          profiles={ksbProfiles}
+          onCreate={createKsbProfile}
+          onUpdate={updateKsbProfile}
+          onDelete={deleteKsbProfile}
+          onClose={() => setShowKsbProfiles(false)}
         />
       )}
 

@@ -13,6 +13,12 @@ export interface ModuleMeta {
   tx: string;
 }
 
+export interface SessionKsbMapping {
+  knowledgeCodes: string[];
+  skillCodes: string[];
+  behaviourCodes: string[];
+}
+
 export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday';
 
 export interface ModuleBlock {
@@ -28,6 +34,7 @@ export interface ModuleBlock {
   days?: WeekDayKey[];
   sessionStartTime?: string; // HH:mm, e.g. "13:00"
   sessionEndTime?: string;   // HH:mm, e.g. "15:00"
+  sessionKsbMappings?: SessionKsbMapping[];
   notes?: string;
 }
 
@@ -40,6 +47,7 @@ export interface CohortRow {
   quarter: string;     // e.g. "Q1 2025"
   color?: string;
   holidayIds?: string[];
+  ksbProfileId?: string;
   blks: ModuleBlock[];
 }
 
@@ -92,4 +100,18 @@ export interface CatalogModule {
   notes: string;
   sessionNames: string[];
   sessionDescriptions: string[];
+}
+
+export interface KsbProfile {
+  id: string;
+  name: string;
+  programmeName: string;
+  description: string;
+  knowledgeCodes: string[];
+  skillCodes: string[];
+  behaviourCodes: string[];
+  isActive: boolean;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }

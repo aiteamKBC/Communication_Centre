@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 const ACTIVITY_ENDPOINT = '/api/auth/activity/';
-const HEARTBEAT_MS = 3000;
+const HEARTBEAT_MS = 30000;
 
 type StoredUser = {
   id?: number | string;
@@ -34,6 +34,7 @@ function readStoredUser(): StoredUser | null {
 function writeStoredUser(user: StoredUser) {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+  window.dispatchEvent(new Event('kbc-auth-changed'));
 }
 
 async function postActivity(payload: Record<string, unknown>, useBeacon = false): Promise<boolean> {
@@ -100,6 +101,10 @@ export function useUserActivityTracking() {
       if (!response.ok) return null;
       const payload = await response.json() as { trackingSessionId?: string; activitySessionId?: number | string };
       if (!payload.trackingSessionId) return null;
+      const currentUser = readStoredUser();
+      if (!currentUser || String(currentUser.id || '') !== String(user.id || '') || String(currentUser.email || '') !== String(user.email || '')) {
+        return null;
+      }
       const nextUser = {
         ...user,
         trackingSessionId: payload.trackingSessionId,

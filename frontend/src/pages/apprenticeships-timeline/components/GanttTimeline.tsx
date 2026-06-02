@@ -231,6 +231,35 @@ interface TooltipData {
   customModules: CustomModule[];
 }
 
+interface ClashMarker {
+  date: string;
+  type: 'Holiday clash' | 'Tutor conflict' | 'Replacement clash';
+  modules: string[];
+  cohorts: string[];
+  groups: string[];
+  explanation: string;
+  count?: number;
+  endDate?: string;
+}
+
+interface ClassSummary {
+  key: string;
+  groupIdx: number;
+  rowIdx: number;
+  className: string;
+  programmeName: string;
+  cohortName: string;
+  moduleCount: number;
+  color: string;
+  dateRange: string;
+  targetDate: string;
+  firstClashDate: string;
+  clashCount: number;
+  holidayClashCount: number;
+  tutorConflictCount: number;
+  replacementClashCount: number;
+}
+
 interface Props {
   groups: ProgrammeGroup[];
   holidays: Holiday[];
@@ -311,6 +340,65 @@ function shiftDateByDays(date: Date, days: number): Date {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────
+function daysBetweenIsoDates(a: string, b: string): number {
+  const start = new Date(a);
+  const end = new Date(b);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.round((end.getTime() - start.getTime()) / 86400000);
+}
+
+function groupClashMarkers(markers: ClashMarker[], maxGapDays = 14): ClashMarker[] {
+  const grouped: ClashMarker[] = [];
+  [...markers].sort((a, b) => a.date.localeCompare(b.date)).forEach(marker => {
+    const last = grouped[grouped.length - 1];
+    if (!last || last.type !== marker.type || daysBetweenIsoDates(last.endDate || last.date, marker.date) > maxGapDays) {
+      grouped.push({ ...marker, count: marker.count || 1, endDate: marker.endDate || marker.date });
+      return;
+    }
+    last.endDate = marker.endDate || marker.date;
+    last.count = (last.count || 1) + (marker.count || 1);
+    last.modules = Array.from(new Set([...last.modules, ...marker.modules]));
+    last.cohorts = Array.from(new Set([...last.cohorts, ...marker.cohorts]));
+    last.groups = Array.from(new Set([...last.groups, ...marker.groups]));
+    last.explanation = `${last.count} ${last.type.toLowerCase()} markers grouped from ${formatDateShort(last.date)} to ${formatDateShort(last.endDate)}.`;
+  });
+  return grouped;
+}
+
+function getClashTone(type: ClashMarker['type']) {
+  if (type === 'Tutor conflict') {
+    return {
+      label: 'Tutor Conflict',
+      line: '#7C3AED',
+      bg: 'rgba(124,58,237,0.12)',
+      shadow: 'rgba(124,58,237,0.28)',
+      header: '#7C3AED',
+      border: '#DDD6FE',
+      text: '#6D28D9',
+    };
+  }
+  if (type === 'Replacement clash') {
+    return {
+      label: 'Replacement Clash',
+      line: '#EA580C',
+      bg: 'rgba(234,88,12,0.12)',
+      shadow: 'rgba(234,88,12,0.28)',
+      header: '#EA580C',
+      border: '#FED7AA',
+      text: '#C2410C',
+    };
+  }
+  return {
+    label: 'Holiday Clash',
+    line: '#DC2626',
+    bg: 'rgba(220,38,38,0.10)',
+    shadow: 'rgba(220,38,38,0.30)',
+    header: '#DC2626',
+    border: '#FECACA',
+    text: '#B91C1C',
+  };
+}
+
 function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
   const mod = resolveBlockMeta(data.blk, data.customModules);
   const displayName = getBlockDisplayName(data.blk, data.customModules);
@@ -446,6 +534,30 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
   );
 }
 
+function ClashTooltip({ marker, x, y }: { marker: ClashMarker; x: number; y: number }) {
+  const isGrouped = (marker.count || 1) > 1 || Boolean(marker.endDate && marker.endDate !== marker.date);
+  const tone = getClashTone(marker.type);
+  return (
+    <div className="fixed pointer-events-none z-50" style={{ left: Math.min(x + 12, window.innerWidth - 320), top: Math.max(y - 8, 8) }}>
+      <div className="w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: tone.border }}>
+        <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: tone.header }}>
+          <i className="ri-alert-line text-sm" />
+          <span className="truncate text-sm font-extrabold">
+            {isGrouped ? `${marker.count || 1} ${tone.label}s` : tone.label} {isGrouped ? `${formatDateShort(marker.date)} to ${formatDateShort(marker.endDate || marker.date)}` : `on ${formatDateShort(marker.date)}`}
+          </span>
+        </div>
+        <div className="space-y-2 px-3 py-2 text-xs">
+          <p className="font-extrabold" style={{ color: tone.text }}>{tone.label}</p>
+          <p className="font-semibold text-gray-700">{marker.explanation}</p>
+          {marker.modules.length > 0 && <p className="text-gray-500"><strong>Modules:</strong> {marker.modules.join(', ')}</p>}
+          {marker.cohorts.length > 0 && <p className="text-gray-500"><strong>Cohorts:</strong> {marker.cohorts.join(', ')}</p>}
+          {marker.groups.length > 0 && <p className="text-gray-500"><strong>Groups:</strong> {marker.groups.join(', ')}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
@@ -454,6 +566,9 @@ export default function GanttTimeline({
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
+  const [clashTip, setClashTip] = useState<{ marker: ClashMarker; x: number; y: number } | null>(null);
+  const [classesOpen, setClassesOpen] = useState(false);
+  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
   const [editChoice, setEditChoice] = useState<{
     blk: ModuleBlock;
     moduleLabel: string;
@@ -687,7 +802,192 @@ export default function GanttTimeline({
       .filter(x => x.pos !== null),
   [holidays, cols]);
 
+  const rowClashMarkers = useMemo(() => {
+    const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
+    return groups.map(grp => grp.rows.map(row => {
+      void grp;
+      const selectedHolidayIds = new Set(row.holidayIds || []);
+      const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+      const markers = new Map<string, ClashMarker>();
+      const addMarker = (date: string, marker: Omit<ClashMarker, 'date'>) => {
+        const markerKey = `${date}|${marker.type}`;
+        const existing = markers.get(markerKey);
+        if (!existing) {
+          markers.set(markerKey, { date, ...marker });
+          return;
+        }
+        existing.modules = Array.from(new Set([...existing.modules, ...marker.modules]));
+        existing.cohorts = Array.from(new Set([...existing.cohorts, ...marker.cohorts]));
+        existing.groups = Array.from(new Set([...existing.groups, ...marker.groups]));
+        if (existing.type !== marker.type && marker.type === 'Replacement clash') existing.type = marker.type;
+      };
+
+      row.blks.forEach(blk => {
+        const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+        plan.sessions.filter(session => session.isClash).forEach(session => {
+          const holidayLabels = session.holidays.map(holiday => holiday.label).join(', ');
+          addMarker(session.date, {
+            type: session.isExtension ? 'Replacement clash' : 'Holiday clash',
+            modules: [moduleName(blk)],
+            cohorts: [row.label],
+            groups: [blk.groupName || row.label],
+            explanation: `${moduleName(blk)} session falls within ${holidayLabels || 'a linked holiday range'}.`,
+          });
+        });
+      });
+
+      const sessionIndex = new Map<string, { blk: ModuleBlock; date: string }[]>();
+      row.blks.forEach(blk => {
+        const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+        plan.sessions.filter(session => !session.isClash).forEach(session => {
+          const key = `${session.date}|${blk.sessionStartTime || ''}|${blk.sessionEndTime || ''}|${(blk.tutor || '').trim().toLowerCase()}`;
+          const entries = sessionIndex.get(key) || [];
+          entries.push({ blk, date: session.date });
+          sessionIndex.set(key, entries);
+        });
+      });
+      sessionIndex.forEach(entries => {
+        if (entries.length < 2) return;
+        addMarker(entries[0].date, {
+          type: 'Tutor conflict',
+          modules: entries.map(entry => moduleName(entry.blk)),
+          cohorts: [row.label],
+          groups: entries.map(entry => entry.blk.groupName || row.label),
+          explanation: 'The same tutor is scheduled for multiple sessions at the same time.',
+        });
+      });
+
+      return Array.from(markers.values()).sort((a, b) => a.date.localeCompare(b.date));
+    }));
+  }, [customModules, groups, holidays]);
+
+  const renderClashMarkers = (markers: ClashMarker[], showLabel: boolean) => groupClashMarkers(markers).map(marker => {
+    const pos = getBlockPosition(marker.date, marker.endDate || marker.date, cols);
+    if (!pos) return null;
+    const isGrouped = (marker.count || 1) > 1 || Boolean(marker.endDate && marker.endDate !== marker.date);
+    const tone = getClashTone(marker.type);
+    return (
+      <div
+        key={`${marker.date}-${marker.type}`}
+        className="absolute top-0 bottom-0"
+        style={{
+          left: pos.left,
+          width: isGrouped ? Math.max(pos.width, 8) : 0,
+          borderLeft: `3px solid ${tone.line}`,
+          background: isGrouped ? tone.bg : 'transparent',
+          boxShadow: isGrouped ? `inset 1px 0 0 ${tone.shadow}, inset -1px 0 0 ${tone.shadow}` : undefined,
+          zIndex: 18,
+        }}
+        onMouseEnter={event => setClashTip({ marker, x: event.clientX, y: event.clientY })}
+        onMouseLeave={() => setClashTip(null)}
+        onMouseMove={event => setClashTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null)}
+      >
+        {showLabel && (
+          <span className="absolute -top-px left-0 rounded px-1.5 py-px text-[7px] font-extrabold text-white" style={{ transform: 'translateX(-50%)', background: tone.header }}>
+            {isGrouped ? `${marker.count} ${tone.label}s` : tone.label}
+          </span>
+        )}
+      </div>
+    );
+  });
+
   // ── Header rows ───────────────────────────────────────────────────────
+  const classSummaries = useMemo<ClassSummary[]>(() => {
+    const summaries = new Map<string, ClassSummary>();
+    groups.forEach((grp, groupIdx) => {
+      grp.rows.forEach((row, rowIdx) => {
+        const rowClashes = rowClashMarkers[groupIdx]?.[rowIdx] || [];
+        row.blks.forEach(blk => {
+          const className = (blk.groupName || row.label || 'Unnamed class').trim();
+          const key = `${grp.id}|${row.id}|${className}`;
+          const classClashes = rowClashes.filter(marker => marker.groups.includes(className) || marker.cohorts.includes(row.label));
+          const firstClashDate = classClashes[0]?.date || '';
+          const holidayClashCount = classClashes.filter(marker => marker.type === 'Holiday clash').length;
+          const tutorConflictCount = classClashes.filter(marker => marker.type === 'Tutor conflict').length;
+          const replacementClashCount = classClashes.filter(marker => marker.type === 'Replacement clash').length;
+          const existing = summaries.get(key);
+          if (existing) {
+            existing.moduleCount += 1;
+            if (blk.startDate && (!existing.targetDate || blk.startDate < existing.targetDate)) {
+              existing.targetDate = blk.startDate;
+            }
+            if (firstClashDate && (!existing.firstClashDate || firstClashDate < existing.firstClashDate)) {
+              existing.firstClashDate = firstClashDate;
+            }
+            existing.clashCount = Math.max(existing.clashCount, classClashes.length);
+            existing.holidayClashCount = Math.max(existing.holidayClashCount, holidayClashCount);
+            existing.tutorConflictCount = Math.max(existing.tutorConflictCount, tutorConflictCount);
+            existing.replacementClashCount = Math.max(existing.replacementClashCount, replacementClashCount);
+            return;
+          }
+          summaries.set(key, {
+            key,
+            groupIdx,
+            rowIdx,
+            className,
+            programmeName: grp.name.replace('\n', ' '),
+            cohortName: row.label,
+            moduleCount: 1,
+            color: row.color || blk.color || grp.color,
+            dateRange: blk.startDate && blk.endDate ? `${formatDateShort(blk.startDate)} to ${formatDateShort(blk.endDate)}` : '',
+            targetDate: blk.startDate || row.dateLbl || '',
+            firstClashDate,
+            clashCount: classClashes.length,
+            holidayClashCount,
+            tutorConflictCount,
+            replacementClashCount,
+          });
+        });
+      });
+    });
+    return Array.from(summaries.values()).sort((a, b) => (
+      (b.clashCount > 0 ? 1 : 0) - (a.clashCount > 0 ? 1 : 0) ||
+      a.className.localeCompare(b.className) ||
+      a.programmeName.localeCompare(b.programmeName) ||
+      a.cohortName.localeCompare(b.cohortName)
+    ));
+  }, [groups, rowClashMarkers]);
+
+  const navigateToClass = useCallback((item: ClassSummary) => {
+    setClassesOpen(false);
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      const groupId = groups[item.groupIdx]?.id;
+      if (groupId) next.delete(groupId);
+      return next;
+    });
+    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    setFocusedRowKey(rowKey);
+
+    const targetDate = item.firstClashDate || item.targetDate;
+    let scrollColumns = cols;
+    if (targetDate && (zoom === 'week' || zoom === 'day')) {
+      const [year, month, day] = targetDate.split('-').map(Number);
+      const target = new Date(year || 1970, (month || 1) - 1, day || 1);
+      let nextWindow: { start: Date; end: Date };
+      if (zoom === 'week') {
+        nextWindow = getNormalizedWeekWindow(target);
+      } else {
+        nextWindow = { start: shiftDateByDays(target, -14), end: shiftDateByDays(target, 28) };
+      }
+      setViewWindow(nextWindow);
+      scrollColumns = generateColumns(zoom, nextWindow.start, nextWindow.end);
+    }
+
+    window.setTimeout(() => {
+      const rowEl = document.querySelector(`[data-row-target="${rowKey}"]`);
+      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      window.setTimeout(() => {
+        const pos = targetDate ? getBlockPosition(targetDate, targetDate, scrollColumns) : null;
+        if (pos && scrollRef.current) {
+          scrollRef.current.scrollTo({ left: Math.max(0, pos.left - 160), behavior: 'smooth' });
+        }
+      }, 80);
+    }, 50);
+
+    window.setTimeout(() => setFocusedRowKey(prev => prev === rowKey ? null : prev), 2200);
+  }, [cols, groups, zoom]);
+
   const renderHeaders = () => {
     if (zoom === 'month') {
       const yearGroups: { year: string; cols: typeof cols }[] = [];
@@ -1129,6 +1429,66 @@ export default function GanttTimeline({
             >
               {zoom === 'week' ? 'This Week' : 'Today'}
             </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setClassesOpen(prev => !prev)}
+                className="px-2.5 h-7 flex items-center gap-1.5 justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 cursor-pointer transition-all text-xs font-semibold"
+              >
+                <i className="ri-group-line text-sm" />
+                Classes
+                <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-extrabold text-slate-500">{classSummaries.length}</span>
+              </button>
+              {classesOpen && (
+                <div className="absolute left-0 top-9 z-50 w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+                  <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2">
+                    <div>
+                      <p className="text-xs font-extrabold text-kbc-navy">Classes</p>
+                      <p className="text-[11px] font-semibold text-gray-400">{classSummaries.length} class{classSummaries.length === 1 ? '' : 'es'} found</p>
+                    </div>
+                    <button type="button" onClick={() => setClassesOpen(false)} className="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                      <i className="ri-close-line" />
+                    </button>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto p-2">
+                    {classSummaries.length ? classSummaries.map(item => (
+                      <button key={item.key} type="button" onClick={() => navigateToClass(item)} className="mb-1 w-full rounded-lg border border-gray-100 bg-white px-3 py-2 text-left transition-all hover:border-kbc-navy hover:bg-slate-50">
+                        <div className="flex items-start gap-2">
+                          <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.color }} />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-extrabold text-gray-800">{item.className}</p>
+                            <p className="mt-0.5 truncate text-[11px] font-semibold text-gray-400">{item.programmeName} - {item.cohortName}</p>
+                            {item.dateRange && <p className="mt-0.5 text-[11px] font-semibold text-gray-400">{item.dateRange}</p>}
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            {item.holidayClashCount > 0 && (
+                              <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-extrabold text-red-700">
+                                {item.holidayClashCount} holiday
+                              </span>
+                            )}
+                            {item.tutorConflictCount > 0 && (
+                              <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-extrabold text-violet-700">
+                                {item.tutorConflictCount} tutor conflict{item.tutorConflictCount === 1 ? '' : 's'}
+                              </span>
+                            )}
+                            {item.replacementClashCount > 0 && (
+                              <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-extrabold text-orange-700">
+                                {item.replacementClashCount} replacement
+                              </span>
+                            )}
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-600">
+                              {item.moduleCount} module{item.moduleCount === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    )) : (
+                      <p className="px-3 py-6 text-center text-xs font-semibold text-gray-400">No classes yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               onClick={() => {
                 const days = zoom === 'week' ? 7 : 14;
@@ -1163,6 +1523,10 @@ export default function GanttTimeline({
 
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
           <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px dashed #F7A800' }} />Now</span>
+          <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
+          <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DCFCE7' }} />Bank holidays</span>
+          <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px solid #DC2626' }} />Holiday clash</span>
+          <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px solid #7C3AED' }} />Tutor conflict</span>
           {holidays.length > 0 && (
             <>
               <span className="text-gray-300">|</span>
@@ -1310,15 +1674,19 @@ export default function GanttTimeline({
                 const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
                 const ganttRows = buildGanttRows(row.blks, rowHolidays);
                 const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
+                const clashMarkers = rowClashMarkers[gi]?.[ri] || [];
+                const rowTargetKey = `${gi}-${ri}`;
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
 
                 return (
                   <div
                     key={row.id}
+                    data-row-target={rowTargetKey}
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
                       ...(isCohortDragOver ? { boxShadow: `inset 0 2px 0 ${rowColor}` } : {}),
+                      ...(focusedRowKey === rowTargetKey ? { boxShadow: `inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)` } : {}),
                     }}
                     onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri }) : undefined}
                     onDragLeave={canManageCohorts ? handleDragLeave : undefined}
@@ -1377,6 +1745,7 @@ export default function GanttTimeline({
                           <div className="absolute inset-y-0 pointer-events-none"
                             style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
                         )}
+                        {renderClashMarkers(clashMarkers, gi === 0 && ri === 0)}
                       </div>
                     </div>
 
@@ -1458,6 +1827,7 @@ export default function GanttTimeline({
                             )}
                           </div>
                         )}
+                        {renderClashMarkers(clashMarkers, false)}
                       </div>
                     </div>
                   </div>
@@ -1491,6 +1861,7 @@ export default function GanttTimeline({
       </div>
 
       {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
+      {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
 
       {editChoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

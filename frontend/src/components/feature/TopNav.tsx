@@ -1,25 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import useAccessControl from '../../hooks/useAccessControl';
-
-const AUTH_STORAGE_KEY = 'kbc-auth-user';
+import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
 
 function hasAuthSession(): boolean {
   if (typeof window === 'undefined') {
     return false;
   }
 
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!raw) {
-    return false;
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    return !!parsed && typeof parsed === 'object';
-  } catch {
-    return true;
-  }
+  return Boolean(readStoredAuthUser());
 }
 
 const navLinks = [
@@ -52,19 +41,14 @@ export default function TopNav() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) {
+    const parsed = readStoredAuthUser();
+    if (!parsed) {
       setUserName(null);
       return;
     }
 
-    try {
-      const parsed = JSON.parse(raw);
-      const rawName = parsed?.displayName || parsed?.name || parsed?.username || parsed?.email || null;
-      setUserName(rawName ? formatDisplayName(rawName) : null);
-    } catch {
-      setUserName(null);
-    }
+    const rawName = parsed?.displayName || parsed?.name || parsed?.username || parsed?.email || null;
+    setUserName(rawName ? formatDisplayName(String(rawName)) : null);
   }, [location.pathname]);
 
   function formatDisplayName(raw: string): string {
@@ -78,13 +62,19 @@ export default function TopNav() {
 
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
-      if (event.key === AUTH_STORAGE_KEY) {
+      if (event.key?.startsWith('kbc-auth-')) {
         setIsAuthenticated(hasAuthSession());
       }
     }
 
+    const handleAuthChanged = () => setIsAuthenticated(hasAuthSession());
+
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener('kbc-auth-changed', handleAuthChanged);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('kbc-auth-changed', handleAuthChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -111,16 +101,11 @@ export default function TopNav() {
     let username = '';
 
     if (typeof window !== 'undefined') {
-      try {
-        const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-        const user = raw ? JSON.parse(raw) : null;
-        trackingSessionId = user?.trackingSessionId || '';
-        userId = user?.id || '';
-        email = user?.email || '';
-        username = user?.username || '';
-      } catch {
-        trackingSessionId = '';
-      }
+      const user = readStoredAuthUser();
+      trackingSessionId = String(user?.trackingSessionId || '');
+      userId = String(user?.id || '');
+      email = String(user?.email || '');
+      username = String(user?.username || '');
     }
 
     try {
@@ -142,7 +127,7 @@ export default function TopNav() {
     }
 
     if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      clearAuthStorage();
     }
 
     setIsAuthenticated(false);

@@ -97,6 +97,13 @@ export default function HolidayManager({ holidays, onSave, onClose }: Props) {
   const initialSnapshot = JSON.stringify(holidays);
 
   useEffect(() => {
+    setList(holidays);
+    setEditId(null);
+    setForm(prev => ({ ...EMPTY_FORM, type: prev.type }));
+    setErrors({});
+  }, [holidays]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadCustomTypes() {

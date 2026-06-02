@@ -371,9 +371,28 @@ def access_view(request):
 	user_id = str(request.GET.get('userId', '')).strip()
 	email = str(request.GET.get('email', '')).strip()
 	username = str(request.GET.get('username', '')).strip()
+	tracking_session_id = str(request.GET.get('trackingSessionId', '') or request.headers.get('X-KBC-Tracking-Session-Id', '')).strip()
+
+	# The frontend still sends explicit identifiers today because login is
+	# payload/localStorage based, not Django-session based. Header and tracking
+	# fallbacks make GET /api/auth/access/ safer, but login_db remains the source
+	# of truth for permissions.
+	if not user_id:
+		user_id = str(request.headers.get('X-KBC-User-Id', '')).strip()
+	if not email:
+		email = str(request.headers.get('X-KBC-User-Email', '')).strip()
+	if not username:
+		username = str(request.headers.get('X-KBC-Username', '')).strip()
+
+	if not user_id and not email and not username and tracking_session_id:
+		activity_session = _get_activity_session(tracking_session_id)
+		if activity_session:
+			user_id = str(activity_session.user_id or '').strip()
+			email = activity_session.email or ''
+			username = activity_session.username or ''
 
 	if not user_id and not email and not username:
-		return HttpResponseBadRequest('Provide one of userId, email, or username.')
+		return HttpResponseBadRequest('Provide one of userId, email, username, or trackingSessionId.')
 
 	user_model = get_user_model()
 	queryset = user_model.objects.using('login_db')
