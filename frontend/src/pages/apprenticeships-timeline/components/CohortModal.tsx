@@ -545,6 +545,8 @@ export default function CohortModal({
     () => holidays.filter(item => data.holidayIds.includes(item.id)),
     [holidays, data.holidayIds],
   );
+  const allHolidayIds = useMemo(() => holidays.map(item => item.id), [holidays]);
+  const allHolidaysSelected = allHolidayIds.length > 0 && allHolidayIds.every(id => data.holidayIds.includes(id));
   const displayHolidays = useMemo(() => {
     const selectedIds = new Set(data.holidayIds);
     const getPriority = (holiday: Holiday) => {
@@ -623,6 +625,20 @@ export default function CohortModal({
     setData(prev => {
       const exists = prev.holidayIds.includes(holidayId);
       const nextHolidayIds = exists ? prev.holidayIds.filter(id => id !== holidayId) : [...prev.holidayIds, holidayId];
+      const nextSelectedHolidays = holidays.filter(item => nextHolidayIds.includes(item.id));
+      return {
+        ...prev,
+        holidayIds: nextHolidayIds,
+        groups: recalculateModuleEndDates(prev.groups, nextSelectedHolidays),
+      };
+    });
+  };
+
+  const toggleAllHolidays = () => {
+    if (!allHolidayIds.length) return;
+    markUserEdited();
+    setData(prev => {
+      const nextHolidayIds = allHolidayIds.every(id => prev.holidayIds.includes(id)) ? [] : allHolidayIds;
       const nextSelectedHolidays = holidays.filter(item => nextHolidayIds.includes(item.id));
       return {
         ...prev,
@@ -1154,6 +1170,20 @@ export default function CohortModal({
               <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em]">Linked Holidays (optional)</label>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-500">{data.holidayIds.length} selected</span>
+                {holidays.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={toggleAllHolidays}
+                    className="px-3 py-1.5 rounded-md text-sm font-semibold border cursor-pointer transition-all"
+                    style={{
+                      borderColor: allHolidaysSelected ? '#CBD5E1' : '#1B2A4A',
+                      background: allHolidaysSelected ? '#F8FAFC' : '#E8EEF9',
+                      color: allHolidaysSelected ? '#64748B' : '#1B2A4A',
+                    }}
+                  >
+                    {allHolidaysSelected ? 'Clear all' : 'Select all'}
+                  </button>
+                )}
                 {onManageHolidays && <button type="button" onClick={onManageHolidays} className="px-3 py-1.5 rounded-md text-sm font-semibold border cursor-pointer transition-all" style={{ borderColor: '#F7A800', background: '#FFF8E0', color: '#C49A00' }}>Manage Holidays</button>}
               </div>
             </div>
