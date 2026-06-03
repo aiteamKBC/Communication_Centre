@@ -684,6 +684,223 @@ function buildSaveRiskAlertHtml(risks: SaveRiskSummary): string {
   `;
 }
 
+function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
+  const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
+  const totalWeeks = summary.totalWeeks || summary.scheduledSessions || summary.totalSessions + totalClashedSessions;
+  const originalClashCount = summary.affectedSessions;
+  const replacementAttemptClashCount = summary.extensionAffectedSessions;
+  const generatedAt = new Date().toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const metricRows = [
+    ['Group', summary.groupName],
+    ['Tutor', summary.tutor],
+    ['Coach', summary.coach],
+    ['Module sessions', String(summary.totalSessions)],
+    ['Holiday weeks', String(totalClashedSessions)],
+    ['Total weeks', String(totalWeeks)],
+  ];
+  const renderKsbBadges = (mapping: SessionKsbMapping) => {
+    const rows = [
+      ['K', mapping.knowledgeCodes],
+      ['S', mapping.skillCodes],
+      ['B', mapping.behaviourCodes],
+    ].filter(([, codes]) => Array.isArray(codes) && codes.length > 0) as [string, string[]][];
+    if (!rows.length) return '';
+    return `
+      <div class="ksb-row">
+        ${rows.map(([label, codes]) => `
+          <span class="ksb-group">
+            <span class="ksb-label">${escapeAlertHtml(label)}</span>
+            ${codes.map(code => `<span class="ksb-code">${escapeAlertHtml(code)}</span>`).join('')}
+          </span>
+        `).join('')}
+      </div>
+    `;
+  };
+  const monthRows = summary.months.map(month => {
+    const clashedCount = month.sessions.filter(session => session.holidays.length > 0).length;
+    const validCount = month.sessions.filter(session => !session.isClash).length;
+    const sessionsHtml = month.sessions.length
+      ? month.sessions.map(session => {
+        const status = session.isClash || session.isReplacement
+          ? `<span class="status-pill ${session.isClash ? 'status-clash' : 'status-replacement'}">${escapeAlertHtml(getSessionStatusLabel(session))}</span>`
+          : '';
+        const holidayNote = session.holidays.length
+          ? `<div class="session-note">${
+            session.isReplacement
+              ? `Replacement attempt blocked this week: clashed with ${escapeAlertHtml(session.holidays.map(holiday => holiday.label).join(', '))}${session.shiftedTo ? `, delivery remains shifted to ${escapeAlertHtml(formatPlanDate(session.shiftedTo))}.` : '.'}`
+              : `Not delivered this week: clashed with ${escapeAlertHtml(session.holidays.map(holiday => holiday.label).join(', '))}${session.shiftedTo ? `, shifted to ${escapeAlertHtml(formatPlanDate(session.shiftedTo))}.` : '.'}`
+          }</div>`
+          : '';
+        return `
+          <div class="session-card ${session.isClash ? 'session-clash' : session.isReplacement ? 'session-replacement' : ''}">
+            <div class="session-grid">
+              <strong>${escapeAlertHtml(formatPlanDate(session.date))}</strong>
+              <span>${escapeAlertHtml(session.sessionName)}</span>
+              ${status}
+            </div>
+            ${renderKsbBadges(session.ksbMappings)}
+            ${holidayNote}
+          </div>
+        `;
+      }).join('')
+      : '<span class="muted">No sessions</span>';
+    const holidaysHtml = month.holidays.length
+      ? month.holidays.map(holiday => `
+        <div class="holiday-item">
+          <span class="holiday-dot" style="background:${escapeAlertHtml(holiday.color)}"></span>
+          <span><strong>${escapeAlertHtml(holiday.label)}</strong> <span class="muted">(${escapeAlertHtml(holiday.type)})</span> ${escapeAlertHtml(holiday.dateRange)}</span>
+        </div>
+      `).join('')
+      : '<span class="muted">No holidays</span>';
+
+    return `
+      <tr>
+        <td class="month-cell">
+          <strong>${escapeAlertHtml(month.label)}</strong>
+        </td>
+        <td class="sessions-count">
+          <strong>${validCount}</strong>
+          ${clashedCount > 0 ? `<span>${clashedCount} clash${clashedCount !== 1 ? 'es' : ''} not counted</span>` : ''}
+        </td>
+        <td>${sessionsHtml}</td>
+        <td>${holidaysHtml}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeAlertHtml(summary.moduleName)} - Training Plan Report</title>
+  <style>
+    @page { size: A4 landscape; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #17233d; font-family: Arial, Helvetica, sans-serif; font-size: 11px; background: #ffffff; }
+    .report-shell { width: 100%; }
+    .top-rule { height: 5px; border-radius: 999px; background: ${escapeAlertHtml(summary.color)}; margin-bottom: 14px; }
+    .header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 12px; }
+    h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.15; }
+    .subtitle { color: #64748b; font-size: 12px; line-height: 1.45; }
+    .generated { text-align: right; color: #64748b; white-space: nowrap; }
+    .metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 12px 0; }
+    .metric { border: 1px solid #dbe3ee; border-radius: 8px; padding: 8px; background: #f8fafc; min-height: 48px; }
+    .metric-label { display: block; color: #71829a; font-size: 9px; font-weight: 800; text-transform: uppercase; margin-bottom: 4px; }
+    .metric-value { display: block; color: #17233d; font-size: 12px; font-weight: 800; }
+    .metric-warning .metric-value { color: #b45309; }
+    .warning { display: flex; gap: 8px; border: 1px solid #fde68a; background: #fffbeb; color: #7c2d12; padding: 9px 10px; border-radius: 8px; font-weight: 700; margin: 10px 0 14px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #dbe3ee; border-radius: 10px; overflow: hidden; }
+    thead th { background: #eef3f8; color: #536882; font-size: 10px; text-transform: uppercase; text-align: left; padding: 8px; }
+    tbody td { vertical-align: top; border-top: 1px solid #e7edf5; padding: 8px; }
+    tbody tr { break-inside: avoid; page-break-inside: avoid; }
+    .month-cell { width: 130px; color: #17233d; }
+    .sessions-count { width: 90px; }
+    .sessions-count span { display: block; margin-top: 4px; color: #dc2626; font-weight: 800; font-size: 10px; }
+    .session-card { border: 1px solid #dbe3ee; border-left: 4px solid #cbd5e1; border-radius: 7px; padding: 7px 9px; margin-bottom: 5px; background: #fff; break-inside: avoid; }
+    .session-clash { border-color: #fecaca; border-left-color: #ef4444; background: #fff5f5; color: #991b1b; }
+    .session-replacement { border-color: #a7f3d0; border-left-color: #10b981; background: #ecfdf5; color: #065f46; }
+    .session-grid { display: grid; grid-template-columns: 110px minmax(180px, 1fr) 155px; gap: 10px; align-items: center; }
+    .status-pill { justify-self: end; border-radius: 6px; padding: 4px 7px; font-size: 9px; font-weight: 800; }
+    .status-clash { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+    .status-replacement { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+    .session-note { margin-top: 6px; border: 1px solid #fecaca; background: rgba(255,255,255,.75); color: #991b1b; border-radius: 5px; padding: 5px 6px; font-weight: 700; }
+    .ksb-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .ksb-group { display: inline-flex; align-items: center; gap: 3px; border: 1px solid #dbe3ee; border-radius: 6px; background: #fff; padding: 3px; }
+    .ksb-label { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; border-radius: 4px; background: #0ea5e9; color: #fff; font-size: 9px; font-weight: 800; }
+    .ksb-code { border: 1px solid #dbe3ee; border-radius: 4px; padding: 2px 4px; color: #17233d; font-size: 9px; font-weight: 800; }
+    .holiday-item { display: flex; gap: 7px; align-items: flex-start; margin-bottom: 5px; }
+    .holiday-dot { width: 8px; height: 8px; border-radius: 99px; margin-top: 4px; flex: 0 0 auto; }
+    .muted { color: #8a98aa; }
+    @media print {
+      .no-print { display: none !important; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-shell">
+    <div class="top-rule"></div>
+    <div class="header">
+      <div>
+        <h1>${escapeAlertHtml(summary.moduleName)}</h1>
+        <div class="subtitle">
+          ${escapeAlertHtml(summary.programme)} - ${escapeAlertHtml(summary.cohort)}<br />
+          ${escapeAlertHtml(summary.dateRange)}
+        </div>
+      </div>
+      <div class="generated">
+        Training Plan PDF<br />
+        Generated ${escapeAlertHtml(generatedAt)}
+      </div>
+    </div>
+    <div class="metrics">
+      ${metricRows.map(([label, value]) => `
+        <div class="metric ${label === 'Holiday weeks' && totalClashedSessions ? 'metric-warning' : ''}">
+          <span class="metric-label">${escapeAlertHtml(label)}</span>
+          <span class="metric-value">${escapeAlertHtml(value)}</span>
+        </div>
+      `).join('')}
+    </div>
+    ${totalClashedSessions > 0 ? `
+      <div class="warning">
+        <span>Warning</span>
+        <span>
+          ${originalClashCount} original session${originalClashCount !== 1 ? 's' : ''} clashed with holiday week${originalClashCount !== 1 ? 's' : ''}.
+          ${replacementAttemptClashCount > 0 ? `${replacementAttemptClashCount} replacement attempt${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by holiday weeks.` : ''}
+          Affected sessions shift to the next available training week, so the timeline extends to ${escapeAlertHtml(formatPlanDate(summary.effectiveEndDate))}.
+        </span>
+      </div>
+    ` : ''}
+    <table>
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th>Sessions</th>
+          <th>Session Dates</th>
+          <th>Holidays</th>
+        </tr>
+      </thead>
+      <tbody>${monthRows}</tbody>
+    </table>
+  </div>
+  <script>
+    window.addEventListener('load', function () {
+      window.focus();
+      window.print();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function exportMonthlySummaryToPdf(summary: ModuleMonthlySummary) {
+  const printWindow = window.open('', '_blank', 'width=1200,height=800');
+  if (!printWindow) {
+    void kbcSwal.fire({
+      title: 'Export Window Blocked',
+      html: 'Please allow popups for this site, then try exporting the PDF again.',
+      icon: 'warning',
+      confirmButtonText: 'OK',
+    });
+    return;
+  }
+
+  const safeFileName = `${summary.moduleName}-${summary.cohort}-${summary.dateRange}`
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || 'training-plan-report';
+  printWindow.document.open();
+  printWindow.document.write(buildMonthlySummaryPrintHtml(summary));
+  printWindow.document.close();
+  printWindow.document.title = `${safeFileName}.pdf`;
+}
+
 function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[], catalogModules: CatalogModule[]): ModuleMonthlySummary[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
@@ -864,13 +1081,24 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
             <p className="mt-1 text-xs text-gray-500">{summary.programme} - {summary.cohort}</p>
             <p className="mt-0.5 text-xs text-gray-400">{summary.dateRange}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
-          >
-            <i className="ri-close-line text-lg" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => exportMonthlySummaryToPdf(summary)}
+              className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm transition-colors hover:border-cyan-200 hover:bg-cyan-50 hover:text-cyan-800"
+              title="Export this module breakdown as a PDF"
+            >
+              <i className="ri-download-2-line text-base" />
+              <span>Export PDF</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
+            >
+              <i className="ri-close-line text-lg" />
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-2 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
