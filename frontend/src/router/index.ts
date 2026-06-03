@@ -1,10 +1,11 @@
 import { useNavigate, type NavigateFunction } from "react-router-dom";
 import { useRoutes } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { createElement, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import routes from "./config";
 import { useUserActivityTracking } from "../hooks/useUserActivityTracking";
 import { useRealtimeUpdates } from "../hooks/useRealtimeUpdates";
+import { EventsProvider } from "../contexts/EventsContext";
 import { readStoredAuthUser } from "../utils/authStorage";
 
 function hasAuthSession(): boolean {
@@ -69,5 +70,5 @@ export function AppRoutes() {
     return null;
   }
 
-  return element;
+  return createElement(EventsProvider, null, element);
 }
