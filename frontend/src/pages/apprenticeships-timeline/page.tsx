@@ -1501,6 +1501,19 @@ export default function ApprenticeshipTimeline() {
   };
 
   const persistHolidays = async (nextHolidays: Holiday[]) => {
+    if (!holidayVersion) {
+      const reloaded = await reloadTrainingPlanHolidays();
+      await kbcSwal.fire({
+        title: reloaded ? 'Latest Holidays Loaded' : 'Reload Failed',
+        html: reloaded
+          ? 'The current holiday list has been loaded. Please review your changes before saving again.'
+          : 'The latest holiday list could not be loaded. Please refresh the page and try again.',
+        icon: reloaded ? 'warning' : 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
     const payload = { items: nextHolidays, version: holidayVersion };
 
     try {

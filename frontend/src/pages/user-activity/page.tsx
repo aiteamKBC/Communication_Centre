@@ -1132,6 +1132,15 @@ export default function UserActivityPage() {
   }, [auditLogSort, auditPayload.logs]);
   const sessionGroups = useMemo(() => groupedSortedSessions(visibleSessions, sessionSort, dateSortOrder), [currentDateValue, dateSortOrder, sessionSort, visibleSessions]);
   const auditLogGroups = useMemo(() => groupedSortedAuditLogs(auditPayload.logs, auditLogSort), [auditLogSort, auditPayload.logs, currentDateValue]);
+  useEffect(() => {
+    const firstGroupKey = auditLogGroups[0]?.key;
+    if (!firstGroupKey) return;
+    setOpenAuditDays(current => (
+      Object.prototype.hasOwnProperty.call(current, firstGroupKey)
+        ? current
+        : { ...current, [firstGroupKey]: true }
+    ));
+  }, [auditLogGroups]);
   const visibleTotalSeconds = useMemo(() => (
     visibleSessions.reduce((sum, session) => sum + session.totalSeconds, 0)
   ), [visibleSessions]);

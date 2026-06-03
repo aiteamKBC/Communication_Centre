@@ -1148,16 +1148,27 @@ def training_plan_holidays(request):
 			)
 
 		current_version = training_plan_holidays_version()
-		if submitted_version and submitted_version != current_version:
+		current_items = [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('id')]
+		if not submitted_version:
+			return JsonResponse(
+				{
+					'detail': 'Reload the latest holiday list before saving. This prevents an older page from overwriting newer holiday periods.',
+					'currentVersion': current_version,
+					'items': current_items,
+				},
+				status=409,
+			)
+		if submitted_version != current_version:
 			return JsonResponse(
 				{
 					'detail': 'The holiday list was updated by another user. Reload the latest holidays before saving.',
 					'currentVersion': current_version,
+					'items': current_items,
 				},
 				status=409,
 			)
 
-		before = [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('id')]
+		before = current_items
 		with transaction.atomic():
 			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
 			created = [
