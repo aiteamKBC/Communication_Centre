@@ -101,10 +101,19 @@ export interface HolidayAdjustedSession {
   isExtension: boolean;
   countedNumber: number | null;
   originalNumber: number;
+  shiftedFrom?: HolidaySkippedSession;
+}
+
+export interface HolidaySkippedSession {
+  date: string;
+  holidays: Holiday[];
+  isExtension: boolean;
+  originalNumber: number;
 }
 
 export interface HolidayAdjustedSessionPlan {
   sessions: HolidayAdjustedSession[];
+  skippedSessions: HolidaySkippedSession[];
   countedSessions: number;
   clashedSessions: number;
   originalClashedSessions: number;
@@ -132,6 +141,7 @@ export function buildHolidayAdjustedSessionPlan(
     const fallbackEnd = block.endDate || block.startDate;
     return {
       sessions: [],
+      skippedSessions: [],
       countedSessions: 0,
       clashedSessions: 0,
       originalClashedSessions: 0,
@@ -161,7 +171,9 @@ export function buildHolidayAdjustedSessionPlan(
   const baselineEndDate = baselineSessions[baselineSessions.length - 1] || block.endDate || block.startDate;
   const baselineEnd = parseIsoLocal(baselineEndDate);
   const sessions: HolidayAdjustedSession[] = [];
+  const skippedSessions: HolidaySkippedSession[] = [];
   let countedSessions = 0;
+  const pendingReplacements: HolidaySkippedSession[] = [];
   let cursor = new Date(start);
   let guard = 0;
 
@@ -171,15 +183,28 @@ export function buildHolidayAdjustedSessionPlan(
       const sessionHolidays = holidays.filter(holiday => rangesOverlap(date, date, holiday.startDate, holiday.endDate));
       const isClash = sessionHolidays.length > 0;
       const isExtension = !Number.isNaN(baselineEnd.getTime()) && cursor > baselineEnd;
-      if (!isClash) countedSessions += 1;
-      sessions.push({
-        date,
-        holidays: sessionHolidays,
-        isClash,
-        isExtension,
-        countedNumber: isClash ? null : countedSessions,
-        originalNumber: sessions.length + 1,
-      });
+      if (isClash) {
+        const skippedSession = {
+          date,
+          holidays: sessionHolidays,
+          isExtension,
+          originalNumber: Math.min(plannedSessions, countedSessions + pendingReplacements.length + 1),
+        };
+        pendingReplacements.push(skippedSession);
+        skippedSessions.push(skippedSession);
+      } else {
+        countedSessions += 1;
+        const shiftedFrom = pendingReplacements.shift();
+        sessions.push({
+          date,
+          holidays: [],
+          isClash: false,
+          isExtension: Boolean(shiftedFrom),
+          countedNumber: countedSessions,
+          originalNumber: countedSessions,
+          shiftedFrom,
+        });
+      }
     }
     cursor = addDays(cursor, 1);
     guard += 1;
@@ -193,10 +218,11 @@ export function buildHolidayAdjustedSessionPlan(
 
   return {
     sessions,
+    skippedSessions,
     countedSessions,
-    clashedSessions: sessions.filter(session => session.isClash).length,
-    originalClashedSessions: sessions.filter(session => session.isClash && !session.isExtension).length,
-    extensionClashedSessions: sessions.filter(session => session.isClash && session.isExtension).length,
+    clashedSessions: skippedSessions.length,
+    originalClashedSessions: skippedSessions.filter(session => !session.isExtension).length,
+    extensionClashedSessions: skippedSessions.filter(session => session.isExtension).length,
     plannedSessions,
     originalEndDate: block.endDate || block.startDate,
     baselineEndDate,

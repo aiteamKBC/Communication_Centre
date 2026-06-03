@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { CalendarEvent, EventMedia, sortCalendarEvents } from '../mocks/events';
+import { useRealtimeResource } from '../hooks/useRealtimeUpdates';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,9 +93,9 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
-  const fetchEvents = useCallback(async () => {
+  const fetchEvents = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const response = await fetch('/api/events/');
       if (!response.ok) throw new Error('Failed to load events.');
       const payload = (await response.json()) as ApiEvent[];
@@ -103,11 +104,12 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
     } catch {
       setError('Unable to load events from the database.');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, []);
 
   useEffect(() => { void fetchEvents(); }, [fetchEvents]);
+  useRealtimeResource('events', () => fetchEvents(false));
 
   const serializePayload = (event: CalendarEvent) => {
     const coverItem = event.media?.find(m => m.isCover);

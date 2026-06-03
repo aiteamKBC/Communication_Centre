@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
@@ -18,6 +18,7 @@ import TutorProfiles from './components/TutorProfiles';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 import { buildHolidayAdjustedSessionPlan } from './utils';
+import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
 
 type ModalState =
   | { open: false }
@@ -66,6 +67,11 @@ interface MonthlySessionDetail {
   isClash: boolean;
   isReplacement: boolean;
   countedNumber: number | null;
+  shiftedFrom?: {
+    date: string;
+    holidays: MonthlyHolidayDetail[];
+  };
+  shiftedTo?: string;
 }
 
 interface MonthlyHolidayDetail {
@@ -435,16 +441,16 @@ function sessionDayLabel(days?: string[]): string {
 
 function getSessionStatusLabel(session: MonthlySessionDetail): string {
   if (session.isReplacement && session.isClash) return 'Replacement clash, not counted';
-  if (session.isClash) return 'Holiday clash, not counted';
+  if (session.isClash) return 'Shifted, not counted';
   if (session.isReplacement) return 'Replacement session';
   return 'Normal session';
 }
 
 function getSessionStatusClass(session: MonthlySessionDetail): string {
-  if (session.isReplacement && session.isClash) return 'border-red-200 bg-red-50 text-red-800';
-  if (session.isClash) return 'border-red-200 bg-red-50 text-red-800';
-  if (session.isReplacement) return 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  return 'border-transparent bg-slate-100 text-gray-700';
+  if (session.isReplacement && session.isClash) return 'border-red-200 border-l-red-500 bg-red-50 text-red-800';
+  if (session.isClash) return 'border-red-200 border-l-red-500 bg-red-50 text-red-800';
+  if (session.isReplacement) return 'border-emerald-200 border-l-emerald-500 bg-emerald-50 text-emerald-800';
+  return 'border-slate-200 border-l-slate-300 bg-white text-gray-700';
 }
 
 function monthKeyFromDate(value: string): string {
@@ -506,8 +512,21 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id))
           : holidays;
         const sessionPlan = buildHolidayAdjustedSessionPlan(block, scopedHolidays);
-        let affectedSessions = 0;
-        let extensionAffectedSessions = 0;
+        const affectedSessions = sessionPlan.originalClashedSessions;
+        const extensionAffectedSessions = sessionPlan.extensionClashedSessions;
+        const toMonthlyHoliday = (holiday: Holiday): MonthlyHolidayDetail => ({
+          id: holiday.id,
+          label: holiday.label,
+          type: holiday.type,
+          dateRange: `${formatPlanDate(holiday.startDate)} - ${formatPlanDate(holiday.endDate)}`,
+          color: holiday.color,
+        });
+        const shiftedToByDate = new Map<string, string>();
+        sessionPlan.sessions.forEach(sessionDate => {
+          if (sessionDate.shiftedFrom) {
+            shiftedToByDate.set(sessionDate.shiftedFrom.date, sessionDate.date);
+          }
+        });
 
         sessionPlan.sessions.forEach(sessionDate => {
           const date = sessionDate.date;
@@ -515,23 +534,13 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           if (!months.has(monthKey)) {
             months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
           }
-          const sessionHolidays = scopedHolidays
-            .filter(holiday => dateRangesOverlap(date, date, holiday.startDate, holiday.endDate))
-            .map(holiday => ({
-              id: holiday.id,
-              label: holiday.label,
-              type: holiday.type,
-              dateRange: `${formatPlanDate(holiday.startDate)} - ${formatPlanDate(holiday.endDate)}`,
-              color: holiday.color,
-            }));
-          if (sessionHolidays.length) {
-            if (sessionDate.isExtension) {
-              extensionAffectedSessions += 1;
-            } else {
-              affectedSessions += 1;
-            }
-          }
           const mappingIndex = Math.max(0, (sessionDate.countedNumber || sessionDate.originalNumber) - 1);
+          const shiftedFrom = sessionDate.shiftedFrom
+            ? {
+              date: sessionDate.shiftedFrom.date,
+              holidays: sessionDate.shiftedFrom.holidays.map(toMonthlyHoliday),
+            }
+            : undefined;
           months.get(monthKey)!.sessions.push({
             date,
             sessionName: catalogModule?.sessionNames?.[(sessionDate.countedNumber || sessionDate.originalNumber) - 1]?.trim() || `Session ${sessionDate.countedNumber || sessionDate.originalNumber}`,
@@ -539,10 +548,33 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
-            holidays: sessionHolidays,
+            holidays: [],
             isClash: sessionDate.isClash,
             isReplacement: sessionDate.isExtension,
             countedNumber: sessionDate.countedNumber,
+            shiftedFrom,
+          });
+        });
+
+        sessionPlan.skippedSessions.forEach(skippedSession => {
+          const date = skippedSession.date;
+          const monthKey = monthKeyFromDate(date);
+          if (!months.has(monthKey)) {
+            months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
+          }
+          const mappingIndex = Math.max(0, skippedSession.originalNumber - 1);
+          months.get(monthKey)!.sessions.push({
+            date,
+            sessionName: catalogModule?.sessionNames?.[skippedSession.originalNumber - 1]?.trim() || `Session ${skippedSession.originalNumber}`,
+            ksbMappings: block.sessionKsbMappings?.[mappingIndex] || emptySessionKsbMapping(),
+            tutor: block.tutor || 'TBD',
+            coach: block.coachName || 'TBD',
+            time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
+            holidays: skippedSession.holidays.map(toMonthlyHoliday),
+            isClash: true,
+            isReplacement: false,
+            countedNumber: null,
+            shiftedTo: shiftedToByDate.get(date),
           });
         });
 
@@ -577,6 +609,14 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           });
 
         const sortedMonths = Array.from(months.values()).sort((a, b) => a.key.localeCompare(b.key));
+        sortedMonths.forEach(month => {
+          month.sessions.sort((a, b) => (
+            a.date.localeCompare(b.date) ||
+            Number(a.isReplacement) - Number(b.isReplacement) ||
+            Number(b.isClash) - Number(a.isClash) ||
+            a.sessionName.localeCompare(b.sessionName)
+          ));
+        });
 
         return {
           key: `${group.id}-${row.id}-${block.id}`,
@@ -589,12 +629,12 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           coach: block.coachName || 'TBD',
           dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(sessionPlan.effectiveEndDate)}`,
           totalSessions: block.sessions || 0,
-          scheduledSessions: sortedMonths.reduce((count, month) => count + month.sessions.length, 0),
+          scheduledSessions: sortedMonths.reduce((count, month) => count + month.sessions.filter(session => !session.isClash).length, 0),
           countedSessions: sortedMonths.reduce(
-            (count, month) => count + month.sessions.filter(session => session.holidays.length === 0).length,
+            (count, month) => count + month.sessions.filter(session => !session.isClash).length,
             0,
           ),
-          totalWeeks: sessionPlan.sessions.length,
+          totalWeeks: sessionPlan.sessions.length + sessionPlan.clashedSessions,
           baselineEndDate: sessionPlan.baselineEndDate,
           effectiveEndDate: sessionPlan.effectiveEndDate,
           extensionDays: sessionPlan.extensionDays,
@@ -623,8 +663,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
         className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative flex max-h-[88vh] w-full max-w-7xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderTop: `5px solid ${summary.color}` }}>
+      <div className="relative flex max-h-[88vh] w-full max-w-[1500px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 bg-white px-5 py-4" style={{ borderTop: `5px solid ${summary.color}` }}>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="h-3 w-3 rounded-sm" style={{ background: summary.color }} />
@@ -642,16 +682,29 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           </button>
         </div>
 
-        <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-6">
-          <span><strong className="text-gray-700">Group:</strong> {summary.groupName}</span>
-          <span><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
-          <span><strong className="text-gray-700">Coach:</strong> {summary.coach}</span>
-          <span><strong className="text-gray-700">Module sessions:</strong> {summary.totalSessions}</span>
-          <span className={totalClashedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
-            <strong>Holiday weeks:</strong> {totalClashedSessions}
-          </span>
-          <span><strong className="text-gray-700">Total weeks:</strong> {totalWeeks}</span>
+        <div className="grid gap-2 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
+          {[
+            ['Group', summary.groupName],
+            ['Tutor', summary.tutor],
+            ['Coach', summary.coach],
+            ['Module sessions', summary.totalSessions],
+            ['Holiday weeks', totalClashedSessions],
+            ['Total weeks', totalWeeks],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-md border border-slate-200 bg-white px-3 py-2 shadow-sm">
+              <span className="block text-[10px] font-extrabold uppercase text-slate-400">{label}</span>
+              <span className={`mt-0.5 block font-extrabold ${label === 'Holiday weeks' && totalClashedSessions ? 'text-amber-700' : 'text-gray-800'}`}>{value}</span>
+            </div>
+          ))}
         </div>
+        {totalClashedSessions > 0 && (
+          <div className="flex items-start gap-2 border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-xs font-semibold text-amber-900">
+            <i className="ri-alert-line mt-0.5 text-sm text-amber-700" />
+            <span>
+              {totalClashedSessions} session{totalClashedSessions !== 1 ? 's' : ''} clashed with holiday week{totalClashedSessions !== 1 ? 's' : ''}. Each affected session is shifted to the next available training week, so the timeline extends to {formatPlanDate(summary.effectiveEndDate)}.
+            </span>
+          </div>
+        )}
 
         <div className="overflow-auto p-5">
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -660,7 +713,7 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                 <tr>
                   <th className="w-44 px-3 py-2 font-bold">Month</th>
                   <th className="w-24 px-3 py-2 font-bold">Sessions</th>
-                  <th className="min-w-[560px] px-3 py-2 font-bold">Session Dates</th>
+                  <th className="min-w-[740px] px-3 py-2 font-bold">Session Dates</th>
                   <th className="min-w-48 px-3 py-2 font-bold">Holidays</th>
                 </tr>
               </thead>
@@ -682,29 +735,43 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                     </td>
                     <td className="px-3 py-3 text-gray-600">
                       {month.sessions.length ? (
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="min-w-[700px]">
+                          <div className="mb-1 grid grid-cols-[128px_minmax(180px,1fr)_150px] gap-3 px-3 text-[10px] font-extrabold uppercase text-slate-400">
+                            <span>Date</span>
+                            <span>Session</span>
+                            <span aria-hidden="true" />
+                          </div>
+                          <div className="space-y-1.5">
                           {month.sessions.map(session => (
                             <div
-                              key={`${month.key}-${session.date}-${session.time}`}
-                              className={`min-w-56 rounded-lg border px-2.5 py-2 shadow-sm ${getSessionStatusClass(session)}`}
+                              key={`${month.key}-${session.date}-${session.time}-${session.sessionName}-${session.isClash ? 'clash' : 'session'}`}
+                              className={`rounded-md border border-l-4 px-3 py-2 shadow-sm transition-colors hover:bg-slate-50/80 ${getSessionStatusClass(session)}`}
                               title={session.holidays.length ? `Holiday clash: ${session.holidays.map(holiday => holiday.label).join(', ')}` : undefined}
                             >
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                {session.holidays.length > 0 && <i className="ri-alert-line align-[-1px] text-red-600" />}
-                                <strong className={session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}>{formatPlanDate(session.date)}</strong>
-                                <span className="font-semibold text-gray-700">{session.sessionName}</span>
-                                <span className={`rounded px-1.5 py-0.5 text-[10px] font-extrabold ${session.isClash ? 'bg-red-100 text-red-800' : session.isReplacement ? 'bg-emerald-100 text-emerald-800' : 'bg-white/80 text-gray-600'}`}>
-                                  {getSessionStatusLabel(session)}
-                                </span>
+                              <div className="grid grid-cols-[128px_minmax(180px,1fr)_150px] items-center gap-3">
+                                <strong className={`flex items-center gap-1 whitespace-nowrap ${session.holidays.length ? 'text-red-900' : session.isReplacement ? 'text-emerald-900' : 'text-gray-800'}`}>
+                                  {session.isClash && <i className="ri-close-circle-line text-red-600" />}
+                                  {formatPlanDate(session.date)}
+                                </strong>
+                                <span className="min-w-0 truncate font-semibold text-gray-700" title={session.sessionName}>{session.sessionName}</span>
+                                {(session.isClash || session.isReplacement) ? (
+                                  <span className={`justify-self-end rounded-md border px-2 py-1 text-[10px] font-extrabold whitespace-nowrap ${session.isClash ? 'border-red-200 bg-red-100 text-red-800' : 'border-emerald-200 bg-emerald-100 text-emerald-800'}`}>
+                                    {getSessionStatusLabel(session)}
+                                  </span>
+                                ) : (
+                                  <span aria-hidden="true" />
+                                )}
                               </div>
                               <KsbBadges mapping={session.ksbMappings} />
                               {session.holidays.length > 0 && (
-                                <div className="mt-1 font-bold text-red-700">
-                                  Clash: {session.holidays.map(holiday => holiday.label).join(', ')}
+                                <div className="mt-1 rounded border border-red-200 bg-white/80 px-2 py-1 text-[11px] font-semibold text-red-800">
+                                  Not delivered this week: clashed with {session.holidays.map(holiday => holiday.label).join(', ')}
+                                  {session.shiftedTo ? `, shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}
                                 </div>
                               )}
                             </div>
                           ))}
+                          </div>
                         </div>
                       ) : (
                         <span className="text-gray-400">No sessions</span>
@@ -1216,7 +1283,27 @@ export default function ApprenticeshipTimeline() {
   const [hasLoadedProgramConfigs, setHasLoadedProgramConfigs] = useState(false);
   const skipPersistRef = useRef(true);
 
-  const reloadTrainingPlanHolidays = async (): Promise<boolean> => {
+  const reloadTrainingPlan = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/training-plan/');
+      if (!response.ok) {
+        return false;
+      }
+
+      const items = (await response.json()) as TrainingPlanItem[];
+      if (!Array.isArray(items)) {
+        return false;
+      }
+
+      setTrainingPlanItems(items);
+      setHasLoadedTrainingPlan(true);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const reloadTrainingPlanHolidays = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch('/api/training-plan-holidays/');
       if (!response.ok) {
@@ -1234,38 +1321,66 @@ export default function ApprenticeshipTimeline() {
     } catch {
       return false;
     }
-  };
+  }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const reloadTrainingPlanSupportData = useCallback(async (): Promise<void> => {
+    const [
+      moduleDefinitionsResult,
+      programConfigsResult,
+      holidaysResult,
+      catalogModulesResult,
+      ksbProfilesResult,
+    ] = await Promise.allSettled([
+      fetch('/api/training-plan-modules/'),
+      fetch('/api/training-plan-program-configs/'),
+      reloadTrainingPlanHolidays(),
+      fetch('/api/modules/'),
+      fetch('/api/ksb-profiles/?includeInactive=1'),
+    ]);
 
-    async function loadTrainingPlan() {
-      try {
-        const response = await fetch('/api/training-plan/');
-        if (!response.ok) {
-          return;
-        }
-
-        const items = (await response.json()) as TrainingPlanItem[];
-        if (!Array.isArray(items) || cancelled) {
-          return;
-        }
-
-        setTrainingPlanItems(items);
-      } catch {
-        // Keep initial in-memory data if loading fails.
-      } finally {
-        if (!cancelled) {
-          setHasLoadedTrainingPlan(true);
-        }
+    if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
+      const items = (await moduleDefinitionsResult.value.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
+      if (Array.isArray(items)) {
+        setCustomModules(items.map(item => ({
+          id: item.id,
+          name: item.name,
+          defaultSessions: item.defaultSessions,
+          bg: item.bg,
+          tx: item.tx,
+        })));
       }
     }
 
-    void loadTrainingPlan();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (programConfigsResult.status === 'fulfilled' && programConfigsResult.value.ok) {
+      const items = (await programConfigsResult.value.json()) as TrainingPlanProgramConfigPayload[];
+      if (Array.isArray(items)) {
+        setCustomPrograms(items);
+      }
+      setHasLoadedProgramConfigs(true);
+    }
+
+    if (holidaysResult.status === 'rejected') {
+      // Keep current holidays if the reload fails.
+    }
+
+    if (catalogModulesResult.status === 'fulfilled' && catalogModulesResult.value.ok) {
+      const raw = (await catalogModulesResult.value.json()) as (CatalogModule & { sessionNames?: string[]; sessionDescriptions?: string[] })[];
+      if (Array.isArray(raw)) {
+        setCatalogModules(raw.map(m => ({ ...m, sessionNames: m.sessionNames ?? [], sessionDescriptions: m.sessionDescriptions ?? [] })));
+      }
+    }
+
+    if (ksbProfilesResult.status === 'fulfilled' && ksbProfilesResult.value.ok) {
+      const items = (await ksbProfilesResult.value.json()) as KsbProfile[];
+      if (Array.isArray(items)) {
+        setKsbProfiles(items);
+      }
+    }
+  }, [reloadTrainingPlanHolidays]);
+
+  useEffect(() => {
+    void reloadTrainingPlan();
+  }, [reloadTrainingPlan]);
 
   useEffect(() => {
     setGroups(
@@ -1276,105 +1391,13 @@ export default function ApprenticeshipTimeline() {
   }, [trainingPlanItems, customPrograms]);
 
   useEffect(() => {
-    let cancelled = false;
+    void reloadTrainingPlanSupportData();
+  }, [reloadTrainingPlanSupportData]);
 
-    async function loadTrainingPlanModules() {
-      try {
-        const response = await fetch('/api/training-plan-modules/');
-        if (!response.ok) {
-          return;
-        }
-
-        const items = (await response.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
-        if (!Array.isArray(items) || cancelled) {
-          return;
-        }
-
-        setCustomModules(items.map(item => ({
-          id: item.id,
-          name: item.name,
-          defaultSessions: item.defaultSessions,
-          bg: item.bg,
-          tx: item.tx,
-        })));
-      } catch {
-        // Keep current in-memory modules if loading fails.
-      }
-    }
-
-    async function loadTrainingPlanProgramConfigs() {
-      try {
-        const response = await fetch('/api/training-plan-program-configs/');
-        if (!response.ok) {
-          return;
-        }
-
-        const items = (await response.json()) as TrainingPlanProgramConfigPayload[];
-        if (!Array.isArray(items) || cancelled) {
-          return;
-        }
-
-        setCustomPrograms(items);
-      } catch {
-        // Keep current in-memory programme configs if loading fails.
-      } finally {
-        if (!cancelled) {
-          setHasLoadedProgramConfigs(true);
-        }
-      }
-    }
-
-    async function loadTrainingPlanHolidays() {
-      if (cancelled) {
-        return;
-      }
-      await reloadTrainingPlanHolidays();
-    }
-
-    async function loadCatalogModules() {
-      try {
-        const response = await fetch('/api/modules/');
-        if (!response.ok) {
-          return;
-        }
-
-        const raw = (await response.json()) as (CatalogModule & { sessionNames?: string[]; sessionDescriptions?: string[] })[];
-        if (!Array.isArray(raw) || cancelled) {
-          return;
-        }
-
-        const items: CatalogModule[] = raw.map(m => ({ ...m, sessionNames: m.sessionNames ?? [], sessionDescriptions: m.sessionDescriptions ?? [] }));
-        setCatalogModules(items);
-      } catch {
-        // Keep current catalog modules if loading fails.
-      }
-    }
-
-    async function loadKsbProfiles() {
-      try {
-        const response = await fetch('/api/ksb-profiles/?includeInactive=1');
-        if (!response.ok) {
-          return;
-        }
-        const items = (await response.json()) as KsbProfile[];
-        if (!Array.isArray(items) || cancelled) {
-          return;
-        }
-        setKsbProfiles(items);
-      } catch {
-        // Keep profiles empty if loading fails.
-      }
-    }
-
-    void loadTrainingPlanModules();
-    void loadTrainingPlanProgramConfigs();
-    void loadTrainingPlanHolidays();
-    void loadCatalogModules();
-    void loadKsbProfiles();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useRealtimeResource('trainingPlan', () => {
+    void reloadTrainingPlan();
+    void reloadTrainingPlanSupportData();
+  });
 
   useEffect(() => {
     return;

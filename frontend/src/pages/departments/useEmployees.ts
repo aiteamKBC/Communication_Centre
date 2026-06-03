@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Employee } from '../../mocks/employees';
+import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
 
 export function useEmployees() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const res = await fetch('/api/employees/');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as Employee[];
@@ -16,11 +17,12 @@ export function useEmployees() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load employees');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useRealtimeResource('employees', () => load(false));
 
   const addEmployee = useCallback(async (emp: Omit<Employee, 'id' | 'avatar'>): Promise<Employee> => {
     const res = await fetch('/api/employees/', {

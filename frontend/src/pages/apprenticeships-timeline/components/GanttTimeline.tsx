@@ -495,6 +495,11 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               <p className="mt-2 rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold text-amber-900">
                 Total: {sessionSummary.scheduledDates || sessionSummary.plannedTotal + sessionSummary.allAffected} weeks
               </p>
+              {sessionSummary.allAffected > 0 && (
+                <p className="mt-1.5 rounded bg-white/70 px-2 py-1 text-[11px] font-semibold text-amber-900">
+                  {sessionSummary.allAffected} {scheduleDayLabel} session{sessionSummary.allAffected !== 1 ? 's' : ''} clashed with holiday week{sessionSummary.allAffected !== 1 ? 's' : ''}, so each one shifts to the next available week and the timeline extends{extensionLabel ? ` by around ${extensionLabel}` : ''} to {formatDate(displayEndDate)}.
+                </p>
+              )}
             </div>
           )}
           {false && hasHolidays && (
@@ -538,8 +543,14 @@ function ClashTooltip({ marker, x, y }: { marker: ClashMarker; x: number; y: num
   const isGrouped = (marker.count || 1) > 1 || Boolean(marker.endDate && marker.endDate !== marker.date);
   const tone = getClashTone(marker.type);
   return (
-    <div className="fixed pointer-events-none z-50" style={{ left: Math.min(x + 12, window.innerWidth - 320), top: Math.max(y - 8, 8) }}>
-      <div className="w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: tone.border }}>
+    <div
+      className="fixed pointer-events-none z-50"
+      style={{ left: Math.min(x + 12, window.innerWidth - 320), top: Math.max(y - 8, 8), pointerEvents: 'none' }}
+    >
+      <div
+        className="w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg"
+        style={{ borderColor: tone.border, pointerEvents: 'none' }}
+      >
         <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: tone.header }}>
           <i className="ri-alert-line text-sm" />
           <span className="truncate text-sm font-extrabold">
@@ -824,7 +835,7 @@ export default function GanttTimeline({
 
       row.blks.forEach(blk => {
         const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
-        plan.sessions.filter(session => session.isClash).forEach(session => {
+        plan.skippedSessions.forEach(session => {
           const holidayLabels = session.holidays.map(holiday => holiday.label).join(', ');
           addMarker(session.date, {
             type: session.isExtension ? 'Replacement clash' : 'Holiday clash',
@@ -861,7 +872,7 @@ export default function GanttTimeline({
     }));
   }, [customModules, groups, holidays]);
 
-  const renderClashMarkers = (markers: ClashMarker[], showLabel: boolean) => groupClashMarkers(markers).map(marker => {
+  const renderClashMarkers = (markers: ClashMarker[], showLabel: boolean, zIndex = 18) => groupClashMarkers(markers).map(marker => {
     const pos = getBlockPosition(marker.date, marker.endDate || marker.date, cols);
     if (!pos) return null;
     const isGrouped = (marker.count || 1) > 1 || Boolean(marker.endDate && marker.endDate !== marker.date);
@@ -876,7 +887,7 @@ export default function GanttTimeline({
           borderLeft: `3px solid ${tone.line}`,
           background: isGrouped ? tone.bg : 'transparent',
           boxShadow: isGrouped ? `inset 1px 0 0 ${tone.shadow}, inset -1px 0 0 ${tone.shadow}` : undefined,
-          zIndex: 18,
+          zIndex,
         }}
         onMouseEnter={event => setClashTip({ marker, x: event.clientX, y: event.clientY })}
         onMouseLeave={() => setClashTip(null)}
@@ -1264,7 +1275,10 @@ export default function GanttTimeline({
           display: 'flex',
           alignItems: 'center',
         }}
-        onMouseEnter={e => setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules })}
+        onMouseEnter={e => {
+          setClashTip(null);
+          setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules });
+        }}
         onMouseLeave={() => setTooltip(null)}
         onMouseMove={e => { if (tooltip) setTooltip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null); }}
         onClick={() => {
@@ -1827,7 +1841,7 @@ export default function GanttTimeline({
                             )}
                           </div>
                         )}
-                        {renderClashMarkers(clashMarkers, false)}
+                        {renderClashMarkers(clashMarkers, false, 8)}
                       </div>
                     </div>
                   </div>

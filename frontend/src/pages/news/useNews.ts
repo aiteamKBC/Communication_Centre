@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { NewsItem } from '../../mocks/news';
+import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
 
 export interface NewNewsPayload {
   title: string;
@@ -19,6 +20,21 @@ export function useNews(initialItems?: NewsItem[]) {
   const [loading, setLoading] = useState(initialItems === undefined);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchNews = useCallback(async (showLoading = true) => {
+    try {
+      if (showLoading) setLoading(true);
+      const response = await fetch('/api/news/');
+      if (!response.ok) throw new Error('Failed to load news.');
+      const payload = (await response.json()) as NewsItem[];
+      setItems(payload);
+      setError(null);
+    } catch {
+      setError('Unable to load news from the database.');
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (initialItems !== undefined) {
       setItems(initialItems);
@@ -27,23 +43,10 @@ export function useNews(initialItems?: NewsItem[]) {
       return;
     }
 
-    async function fetchNews() {
-      try {
-        setLoading(true);
-        const response = await fetch('/api/news/');
-        if (!response.ok) throw new Error('Failed to load news.');
-        const payload = (await response.json()) as NewsItem[];
-        setItems(payload);
-        setError(null);
-      } catch {
-        setError('Unable to load news from the database.');
-      } finally {
-        setLoading(false);
-      }
-    }
-
     void fetchNews();
-  }, [initialItems]);
+  }, [fetchNews, initialItems]);
+
+  useRealtimeResource('news', () => fetchNews(false));
 
   const addNews = async (payload: NewNewsPayload): Promise<void> => {
     const response = await fetch('/api/news/', {

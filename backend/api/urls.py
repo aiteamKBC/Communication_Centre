@@ -1,9 +1,10 @@
 from django.urls import path
 
-from .views import audit_logs, documents_live, employee_detail, employees, event_detail, events, feedback, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, risk_register, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
+from .views import audit_logs, documents_live, employee_detail, employees, event_detail, events, feedback, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
 urlpatterns = [
     path('employees/', employees, name='employees'),
+    path('realtime/', realtime, name='realtime'),
     path('employees/<int:employee_id>/', employee_detail, name='employee-detail'),
 	path('events/', events, name='events'),
 	path('events/<int:event_id>/', event_detail, name='event-detail'),

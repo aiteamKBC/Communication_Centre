@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -11,13 +12,32 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from django.conf import settings
 from django.core.files.storage import default_storage
-from django.http import HttpResponseBadRequest, JsonResponse
+from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.db import models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
 from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
+
+
+REALTIME_RESOURCE_ENTITIES = {
+	'events': {'Event'},
+	'news': {'News'},
+	'urgentNotice': {'UrgentNotice'},
+	'leadershipMessage': {'LeadershipMessage', 'Image'},
+	'trainingPlan': {
+		'TrainingPlan',
+		'TrainingPlanHoliday',
+		'TrainingPlanHolidayType',
+		'TrainingPlanModuleDefinition',
+		'TrainingPlanProgramConfig',
+		'Module',
+		'KsbProfile',
+	},
+	'employees': {'Employee'},
+	'feedback': {'Feedback'},
+}
 
 
 def _client_ip(request) -> str | None:
@@ -83,6 +103,47 @@ def _model_snapshot(record) -> dict:
 			value = value.isoformat()
 		data[field.name] = value
 	return data
+
+
+def _realtime_versions_payload() -> dict:
+	entity_versions = {
+		row['entity']: int(row['version'] or 0)
+		for row in AuditLog.objects.values('entity').annotate(version=models.Max('id'))
+	}
+	resources = {}
+	for resource, entities in REALTIME_RESOURCE_ENTITIES.items():
+		resources[resource] = max((entity_versions.get(entity, 0) for entity in entities), default=0)
+	return {
+		'version': max(entity_versions.values(), default=0),
+		'resources': resources,
+		'serverTime': timezone.now().isoformat(),
+	}
+
+
+def realtime(request):
+	if request.method != 'GET':
+		return HttpResponseBadRequest('Only GET is supported.')
+
+	if request.GET.get('stream') != '1':
+		return JsonResponse(_realtime_versions_payload())
+
+	def event_stream():
+		last_payload = _realtime_versions_payload()
+		yield f"event: snapshot\ndata: {json.dumps(last_payload)}\n\n"
+		deadline = time.monotonic() + 300
+		while time.monotonic() < deadline:
+			time.sleep(2)
+			payload = _realtime_versions_payload()
+			if payload['version'] != last_payload['version'] or payload['resources'] != last_payload['resources']:
+				last_payload = payload
+				yield f"event: update\ndata: {json.dumps(payload)}\n\n"
+			else:
+				yield f"event: ping\ndata: {json.dumps({'serverTime': payload['serverTime']})}\n\n"
+
+	response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+	response['Cache-Control'] = 'no-cache'
+	response['X-Accel-Buffering'] = 'no'
+	return response
 
 
 def _without_keys(item: dict, keys: set[str]) -> dict:

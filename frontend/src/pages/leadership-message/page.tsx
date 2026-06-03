@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Footer from '../../components/feature/Footer';
 import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
+import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
 
 type LeadershipMessage = {
   id: string;
@@ -132,9 +133,9 @@ export default function LeadershipMessagePage() {
     setDatePickerOpen(false);
   };
 
-  const loadMessages = async () => {
+  const loadMessages = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const response = await fetch('/api/leadership-message/?list=1');
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
@@ -145,13 +146,14 @@ export default function LeadershipMessagePage() {
     } catch {
       setMessages([]);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void loadMessages();
-  }, []);
+  }, [loadMessages]);
+  useRealtimeResource('leadershipMessage', () => loadMessages(false));
 
   useEffect(() => {
     const editId = searchParams.get('edit');
