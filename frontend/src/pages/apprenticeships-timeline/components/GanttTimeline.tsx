@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo } from 'react';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
@@ -241,6 +241,20 @@ interface ClashMarker {
   count?: number;
   endDate?: string;
 }
+
+type BadgeTooltipData = {
+  type: 'tutor' | 'holiday';
+  title: string;
+  tone: {
+    header: string;
+    border: string;
+    text: string;
+  };
+  summary: string;
+  rows: string[];
+  x: number;
+  y: number;
+};
 
 interface ClassSummary {
   key: string;
@@ -570,6 +584,34 @@ function ClashTooltip({ marker, x, y }: { marker: ClashMarker; x: number; y: num
 }
 
 // ── Main component ────────────────────────────────────────────────────────
+function BadgeTooltip({ data }: { data: BadgeTooltipData }) {
+  return (
+    <div
+      className="fixed pointer-events-none z-50"
+      style={{ left: Math.min(data.x + 12, window.innerWidth - 340), top: Math.max(data.y - 8, 8) }}
+    >
+      <div className="w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: data.tone.border }}>
+        <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: data.tone.header }}>
+          <i className="ri-alert-line text-sm" />
+          <span className="truncate text-sm font-extrabold">{data.title}</span>
+        </div>
+        <div className="space-y-2 px-3 py-2 text-xs">
+          <p className="font-semibold text-gray-700">{data.summary}</p>
+          {data.rows.length > 0 && (
+            <div className="space-y-1">
+              {data.rows.map((row, index) => (
+                <p key={`${data.type}-${index}`} className="rounded-md bg-slate-50 px-2 py-1 font-semibold text-gray-600">
+                  {row}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
@@ -578,6 +620,7 @@ export default function GanttTimeline({
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
   const [clashTip, setClashTip] = useState<{ marker: ClashMarker; x: number; y: number } | null>(null);
+  const [badgeTip, setBadgeTip] = useState<BadgeTooltipData | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
   const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
   const [editChoice, setEditChoice] = useState<{
@@ -871,36 +914,6 @@ export default function GanttTimeline({
       return Array.from(markers.values()).sort((a, b) => a.date.localeCompare(b.date));
     }));
   }, [customModules, groups, holidays]);
-
-  const renderClashMarkers = (markers: ClashMarker[], showLabel: boolean, zIndex = 18) => groupClashMarkers(markers).map(marker => {
-    const pos = getBlockPosition(marker.date, marker.endDate || marker.date, cols);
-    if (!pos) return null;
-    const isGrouped = (marker.count || 1) > 1 || Boolean(marker.endDate && marker.endDate !== marker.date);
-    const tone = getClashTone(marker.type);
-    return (
-      <div
-        key={`${marker.date}-${marker.type}`}
-        className="absolute top-0 bottom-0"
-        style={{
-          left: pos.left,
-          width: isGrouped ? Math.max(pos.width, 8) : 0,
-          borderLeft: `3px solid ${tone.line}`,
-          background: isGrouped ? tone.bg : 'transparent',
-          boxShadow: isGrouped ? `inset 1px 0 0 ${tone.shadow}, inset -1px 0 0 ${tone.shadow}` : undefined,
-          zIndex,
-        }}
-        onMouseEnter={event => setClashTip({ marker, x: event.clientX, y: event.clientY })}
-        onMouseLeave={() => setClashTip(null)}
-        onMouseMove={event => setClashTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null)}
-      >
-        {showLabel && (
-          <span className="absolute -top-px left-0 rounded px-1.5 py-px text-[7px] font-extrabold text-white" style={{ transform: 'translateX(-50%)', background: tone.header }}>
-            {isGrouped ? `${marker.count} ${tone.label}s` : tone.label}
-          </span>
-        )}
-      </div>
-    );
-  });
 
   // ── Header rows ───────────────────────────────────────────────────────
   const classSummaries = useMemo<ClassSummary[]>(() => {
@@ -1247,6 +1260,23 @@ export default function GanttTimeline({
     const mod = resolveBlockMeta(blk, customModules);
     const overlaps = activeHolidays.filter(holiday => rangesOverlap(blk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
     const hasOverlap = overlaps.length > 0 || sessionSummary.extensionDays > 0;
+    const hasHolidayClash = sessionSummary.allAffected > 0;
+    const tutorConflictMarkers = (rowClashMarkers[groupIdx]?.[rowIdx] || []).filter(marker => (
+      marker.type === 'Tutor conflict'
+      && marker.modules.includes(mod.lbl)
+      && marker.groups.includes(blk.groupName || cohortLabel)
+    ));
+    const hasTutorConflict = tutorConflictMarkers.length > 0;
+    const holidayPlan = hasHolidayClash ? buildHolidayAdjustedSessionPlan(blk, activeHolidays) : null;
+    const shiftedToByDate = new Map<string, string>();
+    holidayPlan?.sessions.forEach(session => {
+      if (session.shiftedFrom) shiftedToByDate.set(session.shiftedFrom.date, session.date);
+    });
+    const holidayClashRows = holidayPlan?.skippedSessions.map(session => {
+      const holidaysLabel = session.holidays.map(holiday => holiday.label).join(', ') || 'linked holiday';
+      const shiftedTo = shiftedToByDate.get(session.date);
+      return `${formatDateShort(session.date)} clashed with ${holidaysLabel}${shiftedTo ? `, shifted to ${formatDateShort(shiftedTo)}` : ''}`;
+    }) || [];
     const tutorLabel = blk.tutor.trim();
     const showTutor = pos.width > 72 && Boolean(tutorLabel);
     const coachLabel = (blk.coachName || '').trim();
@@ -1258,6 +1288,14 @@ export default function GanttTimeline({
       ? `S${sessionSummary.number}: ${sessionSummary.name}`
       : `S${sessionSummary.number}: no saved name`;
     const stackLabel = false;
+    const showBadgeTip = (event: ReactMouseEvent, data: Omit<BadgeTooltipData, 'x' | 'y'>) => {
+      setTooltip(null);
+      setClashTip(null);
+      setBadgeTip({ ...data, x: event.clientX, y: event.clientY });
+    };
+    const moveBadgeTip = (event: ReactMouseEvent) => {
+      setBadgeTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+    };
 
     return (
       <div
@@ -1270,8 +1308,8 @@ export default function GanttTimeline({
           height: heightPx,
           background: mod.bg,
           borderRadius: 3,
-          outline: hasOverlap ? '2px solid #F7A800' : 'none',
-          outlineOffset: hasOverlap ? '1px' : '0',
+          outline: hasTutorConflict ? '2px solid #F7A800' : hasHolidayClash ? '2px solid #DC2626' : 'none',
+          outlineOffset: hasTutorConflict || hasHolidayClash ? '1px' : '0',
           display: 'flex',
           alignItems: 'center',
         }}
@@ -1390,10 +1428,54 @@ export default function GanttTimeline({
             )}
           </div>
         )}
-        {hasOverlap && (
-          <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 flex items-center justify-center rounded-full"
-            style={{ background: '#F7A800' }}>
-            <i className="ri-alert-line" style={{ fontSize: '8px', color: '#1B2A4A' }} />
+        {(hasTutorConflict || hasHolidayClash) && (
+          <span className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
+            {hasTutorConflict && (
+              <span
+                className="flex h-3 w-3 items-center justify-center rounded-sm shadow-sm"
+                style={{ background: '#F7A800', color: '#1B2A4A' }}
+                onMouseEnter={event => {
+                  event.stopPropagation();
+                  showBadgeTip(event, {
+                    type: 'tutor',
+                    title: 'Tutor conflict',
+                    tone: { header: '#F7A800', border: '#F7A800', text: '#92400E' },
+                    summary: `${tutorLabel || 'This tutor'} has another session at the same time.`,
+                    rows: tutorConflictMarkers.map(marker => `${formatDateShort(marker.date)} - ${marker.modules.join(', ')} - ${marker.groups.join(', ')}`),
+                  });
+                }}
+                onMouseMove={event => {
+                  event.stopPropagation();
+                  moveBadgeTip(event);
+                }}
+                onMouseLeave={() => setBadgeTip(null)}
+              >
+                <i className="ri-alert-line" style={{ fontSize: '9px', lineHeight: 1 }} />
+              </span>
+            )}
+            {hasHolidayClash && (
+              <span
+                className="flex h-3 w-3 items-center justify-center rounded-sm shadow-sm"
+                style={{ background: '#DC2626', color: '#FFFFFF' }}
+                onMouseEnter={event => {
+                  event.stopPropagation();
+                  showBadgeTip(event, {
+                    type: 'holiday',
+                    title: 'Holiday clash',
+                    tone: { header: '#DC2626', border: '#FCA5A5', text: '#B91C1C' },
+                    summary: `${sessionSummary.allAffected} session${sessionSummary.allAffected !== 1 ? 's' : ''} will not be delivered on the holiday week and will shift to the next available training week.`,
+                    rows: holidayClashRows,
+                  });
+                }}
+                onMouseMove={event => {
+                  event.stopPropagation();
+                  moveBadgeTip(event);
+                }}
+                onMouseLeave={() => setBadgeTip(null)}
+              >
+                <i className="ri-alert-line" style={{ fontSize: '9px', lineHeight: 1 }} />
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -1538,20 +1620,6 @@ export default function GanttTimeline({
         <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
           <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px dashed #F7A800' }} />Now</span>
           <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
-          <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DCFCE7' }} />Bank holidays</span>
-          <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px solid #DC2626' }} />Holiday clash</span>
-          <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px solid #7C3AED' }} />Tutor conflict</span>
-          {holidays.length > 0 && (
-            <>
-              <span className="text-gray-300">|</span>
-              {Array.from(new Map(holidays.map(h => [h.type, h])).values()).map(h => (
-                <span key={h.type} className="flex items-center gap-1">
-                  <span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: h.color }} />
-                  <span className="text-gray-500">{h.type}</span>
-                </span>
-              ))}
-            </>
-          )}
         </div>
       </div>
 
@@ -1582,7 +1650,15 @@ export default function GanttTimeline({
             <div
               key={`band-${h.id}`}
               className="absolute bottom-0"
-              style={{ top: 0, left: LEFT_W + pos.left, width: Math.max(pos.width, 4), background: h.color, opacity: 1.50, zIndex: 2, cursor: 'default' }}
+              style={{
+                top: 0,
+                left: LEFT_W + pos.left,
+                width: Math.max(pos.width, 4),
+                background: h.color,
+                opacity: 0.5,
+                zIndex: 2,
+                cursor: 'default',
+              }}
               onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
               onMouseMove={e => setHolidayTip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
               onMouseLeave={() => setHolidayTip(null)}
@@ -1688,7 +1764,6 @@ export default function GanttTimeline({
                 const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
                 const ganttRows = buildGanttRows(row.blks, rowHolidays);
                 const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
-                const clashMarkers = rowClashMarkers[gi]?.[ri] || [];
                 const rowTargetKey = `${gi}-${ri}`;
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
@@ -1759,7 +1834,6 @@ export default function GanttTimeline({
                           <div className="absolute inset-y-0 pointer-events-none"
                             style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
                         )}
-                        {renderClashMarkers(clashMarkers, gi === 0 && ri === 0)}
                       </div>
                     </div>
 
@@ -1841,7 +1915,6 @@ export default function GanttTimeline({
                             )}
                           </div>
                         )}
-                        {renderClashMarkers(clashMarkers, false, 8)}
                       </div>
                     </div>
                   </div>
@@ -1876,6 +1949,7 @@ export default function GanttTimeline({
 
       {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
       {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
+      {badgeTip && <BadgeTooltip data={badgeTip} />}
 
       {editChoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

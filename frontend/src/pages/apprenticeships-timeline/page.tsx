@@ -500,6 +500,173 @@ function resolveCatalogModuleForBlock(block: { mod: MKey | string }, moduleName:
   });
 }
 
+function escapeAlertHtml(value: string): string {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function getTrainingModuleLabel(block: { mod: MKey | string; color?: string }, customModules: CustomModule[]): string {
+  return resolveTrainingModuleMeta(block, customModules).lbl;
+}
+
+interface TimelineSessionRisk {
+  blockId: string;
+  moduleName: string;
+  programmeName: string;
+  cohortName: string;
+  groupName: string;
+  tutor: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+}
+
+interface SaveRiskSummary {
+  holidayClashes: {
+    moduleName: string;
+    date: string;
+    holidays: string;
+  }[];
+  tutorConflicts: {
+    date: string;
+    time: string;
+    tutor: string;
+    moduleName: string;
+    groupName: string;
+    conflictWith: string;
+  }[];
+}
+
+function getRowActiveHolidays(row: CohortRow, holidays: Holiday[]): Holiday[] {
+  const selectedHolidayIds = new Set(row.holidayIds || []);
+  return selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+}
+
+function collectTimelineSessions(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[]): TimelineSessionRisk[] {
+  return groups.flatMap(group =>
+    group.rows.flatMap(row => {
+      const rowHolidays = getRowActiveHolidays(row, holidays);
+      return row.blks.flatMap(block => {
+        const tutor = (block.tutor || '').trim();
+        const startTime = block.sessionStartTime || '';
+        const endTime = block.sessionEndTime || '';
+        if (!tutor || !startTime || !endTime) {
+          return [];
+        }
+
+        const plan = buildHolidayAdjustedSessionPlan(block, rowHolidays);
+        return plan.sessions.map(session => ({
+          blockId: block.id,
+          moduleName: getTrainingModuleLabel(block, customModules),
+          programmeName: group.name.replace('\n', ' '),
+          cohortName: row.label,
+          groupName: block.groupName || row.label,
+          tutor,
+          date: session.date,
+          startTime,
+          endTime,
+        }));
+      });
+    }),
+  );
+}
+
+function analyzeSavedRowRisks(
+  nextGroups: ProgrammeGroup[],
+  savedRow: CohortRow,
+  holidays: Holiday[],
+  customModules: CustomModule[],
+): SaveRiskSummary {
+  const rowHolidays = getRowActiveHolidays(savedRow, holidays);
+  const holidayClashes = savedRow.blks.flatMap(block => {
+    const plan = buildHolidayAdjustedSessionPlan(block, rowHolidays);
+    return plan.skippedSessions.map(session => ({
+      moduleName: getTrainingModuleLabel(block, customModules),
+      date: session.date,
+      holidays: session.holidays.map(holiday => holiday.label).join(', ') || 'linked holiday',
+    }));
+  });
+
+  const allSessions = collectTimelineSessions(nextGroups, holidays, customModules);
+  const sessionsByKey = new Map<string, TimelineSessionRisk[]>();
+  allSessions.forEach(session => {
+    const key = `${session.date}|${session.startTime}|${session.endTime}|${session.tutor.trim().toLowerCase()}`;
+    const list = sessionsByKey.get(key) || [];
+    list.push(session);
+    sessionsByKey.set(key, list);
+  });
+
+  const savedBlockIds = new Set(savedRow.blks.map(block => block.id));
+  const seenConflicts = new Set<string>();
+  const tutorConflicts: SaveRiskSummary['tutorConflicts'] = [];
+  allSessions
+    .filter(session => savedBlockIds.has(session.blockId))
+    .forEach(session => {
+      const key = `${session.date}|${session.startTime}|${session.endTime}|${session.tutor.trim().toLowerCase()}`;
+      const conflicts = (sessionsByKey.get(key) || []).filter(other => other.blockId !== session.blockId);
+      conflicts.forEach(other => {
+        const conflictKey = [session.blockId, other.blockId].sort().join('|') + `|${key}`;
+        if (seenConflicts.has(conflictKey)) {
+          return;
+        }
+        seenConflicts.add(conflictKey);
+        tutorConflicts.push({
+          date: session.date,
+          time: `${session.startTime} - ${session.endTime}`,
+          tutor: session.tutor,
+          moduleName: session.moduleName,
+          groupName: session.groupName,
+          conflictWith: `${other.moduleName} / ${other.programmeName} / ${other.groupName || other.cohortName}`,
+        });
+      });
+    });
+
+  return { holidayClashes, tutorConflicts };
+}
+
+function buildSaveRiskAlertHtml(risks: SaveRiskSummary): string {
+  const holidayRows = risks.holidayClashes.slice(0, 5).map(item => `
+    <li style="margin:4px 0;">
+      <strong>${escapeAlertHtml(item.moduleName)}</strong> on ${escapeAlertHtml(formatPlanDate(item.date))}
+      clashes with ${escapeAlertHtml(item.holidays)}.
+    </li>
+  `).join('');
+  const tutorRows = risks.tutorConflicts.slice(0, 5).map(item => `
+    <li style="margin:4px 0;">
+      <strong>${escapeAlertHtml(item.tutor)}</strong> has ${escapeAlertHtml(item.moduleName)}
+      at ${escapeAlertHtml(item.time)} on ${escapeAlertHtml(formatPlanDate(item.date))}
+      conflicting with ${escapeAlertHtml(item.conflictWith)}.
+    </li>
+  `).join('');
+  const hiddenHolidayCount = Math.max(0, risks.holidayClashes.length - 5);
+  const hiddenTutorCount = Math.max(0, risks.tutorConflicts.length - 5);
+
+  return `
+    <div style="text-align:left;color:#334155;font-size:13px;line-height:1.45;">
+      <p style="margin:0 0 10px;">
+        This module/cohort can be saved, but it will create timeline warnings.
+        You can continue now and fix them later, or go back and edit the dates/tutor.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px;">
+        <span style="display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:#FEF2F2;color:#B91C1C;padding:5px 9px;font-weight:800;">
+          ${risks.holidayClashes.length} holiday clash${risks.holidayClashes.length === 1 ? '' : 'es'}
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:#FFFBEB;color:#92400E;padding:5px 9px;font-weight:800;">
+          ${risks.tutorConflicts.length} tutor conflict${risks.tutorConflicts.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      ${holidayRows ? `<p style="margin:10px 0 4px;font-weight:800;color:#B91C1C;">Holiday clashes</p><ul style="margin:0 0 8px 18px;padding:0;">${holidayRows}</ul>` : ''}
+      ${hiddenHolidayCount ? `<p style="margin:0 0 8px;color:#64748B;">+${hiddenHolidayCount} more holiday clash${hiddenHolidayCount === 1 ? '' : 'es'}.</p>` : ''}
+      ${tutorRows ? `<p style="margin:10px 0 4px;font-weight:800;color:#92400E;">Tutor conflicts</p><ul style="margin:0 0 8px 18px;padding:0;">${tutorRows}</ul>` : ''}
+      ${hiddenTutorCount ? `<p style="margin:0;color:#64748B;">+${hiddenTutorCount} more tutor conflict${hiddenTutorCount === 1 ? '' : 's'}.</p>` : ''}
+    </div>
+  `;
+}
+
 function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[], catalogModules: CatalogModule[]): ModuleMonthlySummary[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
@@ -1740,13 +1907,35 @@ export default function ApprenticeshipTimeline() {
 
     // Build next state synchronously so we can persist immediately and ensure UI updates.
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
+    let savedRow = row;
     if (modal.open && modal.mode === 'edit') {
       const pgi = prevGroupIdx ?? groupIdx;
       next[pgi].rows.splice(modal.rowIdx, 1);
       const insertAt = groupIdx === pgi ? modal.rowIdx : next[groupIdx].rows.length;
       next[groupIdx].rows.splice(insertAt, 0, row);
+      savedRow = next[groupIdx].rows[insertAt];
     } else {
       next[groupIdx].rows.push(row);
+      savedRow = next[groupIdx].rows[next[groupIdx].rows.length - 1];
+    }
+
+    const saveRisks = analyzeSavedRowRisks(next, savedRow, holidays, customModules);
+    if (saveRisks.holidayClashes.length > 0 || saveRisks.tutorConflicts.length > 0) {
+      const result = await kbcSwal.fire({
+        title: 'Timeline warnings found',
+        html: buildSaveRiskAlertHtml(saveRisks),
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Continue Anyway',
+        cancelButtonText: 'Back to Edit',
+        reverseButtons: true,
+        focusCancel: true,
+        width: 620,
+      });
+
+      if (!result.isConfirmed) {
+        return false;
+      }
     }
 
     const saved = await persistTrainingPlan(next);
