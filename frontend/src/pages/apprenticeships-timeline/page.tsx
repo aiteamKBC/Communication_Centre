@@ -120,6 +120,7 @@ const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
+const PROGRAM_ID_MARKER_PREFIX = '__program_id:';
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 
 function emptySessionKsbMapping(): SessionKsbMapping {
@@ -153,10 +154,10 @@ function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMappi
   });
 }
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX)) {
-    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, notes: raw || '' };
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX)) {
+    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, notes: raw || '' };
   }
 
   const lines = value.split('\n');
@@ -167,6 +168,7 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let cohortEndDate: string | undefined;
   let groupName: string | undefined;
   let coachName: string | undefined;
+  let programId: string | undefined;
   let readingMarkers = true;
 
   lines.forEach(line => {
@@ -210,15 +212,24 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
       return;
     }
 
+    if (readingMarkers && line.startsWith(PROGRAM_ID_MARKER_PREFIX)) {
+      const nextProgramId = line.slice(PROGRAM_ID_MARKER_PREFIX.length).trim();
+      programId = nextProgramId || undefined;
+      return;
+    }
+
     readingMarkers = false;
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, programId, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string): string {
   const markers: string[] = [];
+  if (programId) {
+    markers.push(`${PROGRAM_ID_MARKER_PREFIX}${programId}`);
+  }
   if (holidayIds.length) {
     markers.push(`${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`);
   }
@@ -272,6 +283,10 @@ function normalizeProgramLabel(value: string): string {
 
 function inferGroupId(program: string, groups: ProgrammeGroup[]): string {
   const normalizedProgram = normalizeProgramLabel(program);
+  const exactIdMatch = groups.find(group => normalizeProgramLabel(group.id) === normalizedProgram);
+  if (exactIdMatch) {
+    return exactIdMatch.id;
+  }
   const matchedGroup = groups.find(group => {
     const programmeLabel = normalizeProgramLabel(toProgrammeLabel(group));
     const displayLabel = normalizeProgramLabel(group.name.replace('\n', ' '));
@@ -328,7 +343,10 @@ function buildGroupsFromTrainingRows(
   const cohortIndex = new Map<string, CohortRow>();
 
   items.forEach((item, index) => {
-    const groupId = inferGroupId(item.program || '', allGroups);
+    const parsedNotes = splitPersistedNotes(item.notes || '');
+    const groupId = parsedNotes.programId && templatesById.has(parsedNotes.programId)
+      ? parsedNotes.programId
+      : inferGroupId(item.program || '', allGroups);
     const group = templatesById.get(groupId);
     if (!group) {
       return;
@@ -354,7 +372,6 @@ function buildGroupsFromTrainingRows(
 
     const modKey = moduleKeyByLabel[(item.moduleName || '').toLowerCase()] || item.moduleName || 'Untitled Module';
     const sessions = Math.max(1, Number.parseInt(item.sessionsNumber || '1', 10) || 1);
-    const parsedNotes = splitPersistedNotes(item.notes || '');
     if (parsedNotes.holidayIds.length && (!cohort.holidayIds || cohort.holidayIds.length === 0)) {
       cohort.holidayIds = parsedNotes.holidayIds;
     }
@@ -407,7 +424,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         sessionEndTime: block.sessionEndTime || '11:00',
         sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
         ksbProfileId: row.ksbProfileId || '',
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id),
       })),
     ),
   );
@@ -440,7 +457,7 @@ function sessionDayLabel(days?: string[]): string {
 }
 
 function getSessionStatusLabel(session: MonthlySessionDetail): string {
-  if (session.isReplacement && session.isClash) return 'Replacement clash, not counted';
+  if (session.isReplacement && session.isClash) return 'Replacement attempt blocked';
   if (session.isClash) return 'Shifted, not counted';
   if (session.isReplacement) return 'Replacement session';
   return 'Normal session';
@@ -689,9 +706,11 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           color: holiday.color,
         });
         const shiftedToByDate = new Map<string, string>();
+        const shiftedToByOriginalNumber = new Map<number, string>();
         sessionPlan.sessions.forEach(sessionDate => {
           if (sessionDate.shiftedFrom) {
             shiftedToByDate.set(sessionDate.shiftedFrom.date, sessionDate.date);
+            shiftedToByOriginalNumber.set(sessionDate.shiftedFrom.originalNumber, sessionDate.date);
           }
         });
 
@@ -730,18 +749,21 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
             months.set(monthKey, { key: monthKey, label: formatPlanMonth(monthKey), sessions: [], holidays: [] });
           }
           const mappingIndex = Math.max(0, skippedSession.originalNumber - 1);
+          const isReplacementAttempt = skippedSession.isExtension;
           months.get(monthKey)!.sessions.push({
             date,
-            sessionName: catalogModule?.sessionNames?.[skippedSession.originalNumber - 1]?.trim() || `Session ${skippedSession.originalNumber}`,
+            sessionName: isReplacementAttempt
+              ? `Replacement attempt for Session ${skippedSession.originalNumber}`
+              : catalogModule?.sessionNames?.[skippedSession.originalNumber - 1]?.trim() || `Session ${skippedSession.originalNumber}`,
             ksbMappings: block.sessionKsbMappings?.[mappingIndex] || emptySessionKsbMapping(),
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
             holidays: skippedSession.holidays.map(toMonthlyHoliday),
             isClash: true,
-            isReplacement: false,
+            isReplacement: isReplacementAttempt,
             countedNumber: null,
-            shiftedTo: shiftedToByDate.get(date),
+            shiftedTo: shiftedToByDate.get(date) || (isReplacementAttempt ? shiftedToByOriginalNumber.get(skippedSession.originalNumber) : undefined),
           });
         });
 
@@ -821,6 +843,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
   const selectedMonths = summary.months;
   const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
   const totalWeeks = summary.totalWeeks || summary.scheduledSessions || summary.totalSessions + totalClashedSessions;
+  const originalClashCount = summary.affectedSessions;
+  const replacementAttemptClashCount = summary.extensionAffectedSessions;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -868,7 +892,9 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           <div className="flex items-start gap-2 border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-xs font-semibold text-amber-900">
             <i className="ri-alert-line mt-0.5 text-sm text-amber-700" />
             <span>
-              {totalClashedSessions} session{totalClashedSessions !== 1 ? 's' : ''} clashed with holiday week{totalClashedSessions !== 1 ? 's' : ''}. Each affected session is shifted to the next available training week, so the timeline extends to {formatPlanDate(summary.effectiveEndDate)}.
+              {originalClashCount} original session{originalClashCount !== 1 ? 's' : ''} clashed with holiday week{originalClashCount !== 1 ? 's' : ''}.
+              {replacementAttemptClashCount > 0 ? ` ${replacementAttemptClashCount} replacement attempt${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by holiday weeks.` : ''}
+              {' '}Affected sessions shift to the next available training week, so the timeline extends to {formatPlanDate(summary.effectiveEndDate)}.
             </span>
           </div>
         )}
@@ -932,8 +958,9 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                               <KsbBadges mapping={session.ksbMappings} />
                               {session.holidays.length > 0 && (
                                 <div className="mt-1 rounded border border-red-200 bg-white/80 px-2 py-1 text-[11px] font-semibold text-red-800">
-                                  Not delivered this week: clashed with {session.holidays.map(holiday => holiday.label).join(', ')}
-                                  {session.shiftedTo ? `, shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}
+                                  {session.isReplacement
+                                    ? `Replacement attempt blocked this week: clashed with ${session.holidays.map(holiday => holiday.label).join(', ')}${session.shiftedTo ? `, delivery remains shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}`
+                                    : `Not delivered this week: clashed with ${session.holidays.map(holiday => holiday.label).join(', ')}${session.shiftedTo ? `, shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}`}
                                 </div>
                               )}
                             </div>
@@ -2119,10 +2146,24 @@ export default function ApprenticeshipTimeline() {
   const handleAddProgram = async (prog: CustomProgram) => {
     const existingCustom = customPrograms.some(program => program.id === prog.id);
     const nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
+    const nextGroups = existingCustom
+      ? groups.map(group => group.id === prog.id ? { ...group, name: prog.name, sub: prog.sub, color: prog.color } : group)
+      : groups;
+    const shouldPersistTimeline = existingCustom && nextGroups.some(group => group.id === prog.id && group.rows.length > 0);
 
     try {
       const persistedItems = await persistProgramConfigs(nextCustomPrograms);
+      if (shouldPersistTimeline) {
+        const timelineSaved = await persistTrainingPlan(nextGroups, true);
+        if (!timelineSaved) {
+          throw new Error('Programme details were saved, but the linked timeline rows could not be re-saved safely.');
+        }
+      }
       setCustomPrograms(persistedItems);
+      if (shouldPersistTimeline) {
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups));
+        setGroups(nextGroups);
+      }
       setProgramModal({ open: false });
       void kbcSuccessSwal.fire({
         icon: 'success',

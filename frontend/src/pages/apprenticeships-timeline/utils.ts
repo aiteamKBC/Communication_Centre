@@ -188,9 +188,13 @@ export function buildHolidayAdjustedSessionPlan(
           date,
           holidays: sessionHolidays,
           isExtension,
-          originalNumber: Math.min(plannedSessions, countedSessions + pendingReplacements.length + 1),
+          originalNumber: isExtension && pendingReplacements.length
+            ? pendingReplacements[0].originalNumber
+            : Math.min(plannedSessions, countedSessions + pendingReplacements.length + 1),
         };
-        pendingReplacements.push(skippedSession);
+        if (!isExtension) {
+          pendingReplacements.push(skippedSession);
+        }
         skippedSessions.push(skippedSession);
       } else {
         countedSessions += 1;
