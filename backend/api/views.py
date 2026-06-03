@@ -127,6 +127,15 @@ def realtime(request):
 	if request.GET.get('stream') != '1':
 		return JsonResponse(_realtime_versions_payload())
 
+	if os.getenv('ENABLE_REALTIME_SSE', 'false').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+		return JsonResponse(
+			{
+				'detail': 'Realtime SSE streaming is disabled in this deployment. Use /api/realtime/ polling.',
+				'payload': _realtime_versions_payload(),
+			},
+			status=409,
+		)
+
 	def event_stream():
 		last_payload = _realtime_versions_payload()
 		yield f"event: snapshot\ndata: {json.dumps(last_payload)}\n\n"

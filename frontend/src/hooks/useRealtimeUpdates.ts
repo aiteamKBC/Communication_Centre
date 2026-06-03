@@ -12,16 +12,12 @@ export type RealtimeUpdateDetail = {
 };
 
 const REALTIME_EVENT_NAME = 'kbc:realtime-update';
+const BASE_POLL_MS = 10000;
+const MAX_POLL_MS = 60000;
 
-function parsePayload(event: MessageEvent): RealtimePayload | null {
-  try {
-    const payload = JSON.parse(event.data) as RealtimePayload;
-    if (!payload || typeof payload.version !== 'number' || !payload.resources) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-}
+type RealtimeOptions = {
+  enabled?: boolean;
+};
 
 function changedResources(previous: RealtimePayload | null, next: RealtimePayload): string[] {
   if (!previous) return [];
@@ -35,12 +31,21 @@ function emitRealtimeUpdate(payload: RealtimePayload, resources: string[]) {
   }));
 }
 
-export function useRealtimeUpdates() {
+export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
   const lastPayloadRef = useRef<RealtimePayload | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    let pollTimer: number | undefined;
+    if (!enabled) {
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+      lastPayloadRef.current = null;
+      return;
+    }
+
+    let timer: number | undefined;
     let stopped = false;
+    let delayMs = BASE_POLL_MS;
 
     const applyPayload = (payload: RealtimePayload) => {
       const resources = changedResources(lastPayloadRef.current, payload);
@@ -48,49 +53,49 @@ export function useRealtimeUpdates() {
       emitRealtimeUpdate(payload, resources);
     };
 
-    const startPollingFallback = () => {
-      if (pollTimer !== undefined) return;
-      const poll = async () => {
-        if (stopped) return;
-        try {
-          const response = await fetch('/api/realtime/');
-          if (!response.ok) return;
-          applyPayload((await response.json()) as RealtimePayload);
-        } catch {
-          // Keep retrying quietly.
+    const scheduleNext = () => {
+      if (stopped) return;
+      timer = window.setTimeout(poll, delayMs);
+    };
+
+    const poll = async () => {
+      if (stopped) return;
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      try {
+        const response = await fetch('/api/realtime/', { signal: controller.signal });
+        if (response.status === 401 || response.status === 403) {
+          stopped = true;
+          return;
         }
-      };
-      void poll();
-      pollTimer = window.setInterval(poll, 5000);
+        if (!response.ok) {
+          delayMs = Math.min(delayMs * 2, MAX_POLL_MS);
+          return;
+        }
+        applyPayload((await response.json()) as RealtimePayload);
+        delayMs = BASE_POLL_MS;
+      } catch (error) {
+        if (!stopped && !(error instanceof DOMException && error.name === 'AbortError')) {
+          delayMs = Math.min(delayMs * 2, MAX_POLL_MS);
+        }
+      } finally {
+        if (controllerRef.current === controller) {
+          controllerRef.current = null;
+        }
+        scheduleNext();
+      }
     };
 
-    if (!('EventSource' in window)) {
-      startPollingFallback();
-      return () => {
-        stopped = true;
-        if (pollTimer !== undefined) window.clearInterval(pollTimer);
-      };
-    }
-
-    const source = new EventSource('/api/realtime/?stream=1');
-    const handleMessage = (event: MessageEvent) => {
-      const payload = parsePayload(event);
-      if (payload) applyPayload(payload);
-    };
-
-    source.addEventListener('snapshot', handleMessage);
-    source.addEventListener('update', handleMessage);
-    source.onerror = () => {
-      source.close();
-      startPollingFallback();
-    };
+    void poll();
 
     return () => {
       stopped = true;
-      source.close();
-      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+      if (timer !== undefined) window.clearTimeout(timer);
+      controllerRef.current?.abort();
+      controllerRef.current = null;
     };
-  }, []);
+  }, [enabled]);
 }
 
 export function useRealtimeResource(resource: string, onChange: () => void | Promise<void>) {

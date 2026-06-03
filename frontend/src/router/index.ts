@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import routes from "./config";
 import { useUserActivityTracking } from "../hooks/useUserActivityTracking";
+import { useRealtimeUpdates } from "../hooks/useRealtimeUpdates";
 import { readStoredAuthUser } from "../utils/authStorage";
 
 function hasAuthSession(): boolean {
@@ -31,9 +32,13 @@ export function AppRoutes() {
   const navigate = useNavigate();
   const location = useLocation();
   const [authRevision, setAuthRevision] = useState(0);
-  useUserActivityTracking();
   const isAuthenticated = hasAuthSession();
   const isLoginRoute = location.pathname.startsWith('/login');
+  const realtimeEnabled = isAuthenticated && !isLoginRoute && import.meta.env.VITE_ENABLE_REALTIME !== 'false';
+  const activityTrackingEnabled = isAuthenticated && !isLoginRoute && import.meta.env.VITE_ENABLE_ACTIVITY_TRACKING !== 'false';
+
+  useRealtimeUpdates({ enabled: realtimeEnabled });
+  useUserActivityTracking({ enabled: activityTrackingEnabled });
 
   useEffect(() => {
     if (!isAuthenticated && !isLoginRoute) {

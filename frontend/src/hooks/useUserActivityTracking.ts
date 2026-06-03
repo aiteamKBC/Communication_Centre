@@ -5,6 +5,10 @@ const AUTH_STORAGE_KEY = 'kbc-auth-user';
 const ACTIVITY_ENDPOINT = '/api/auth/activity/';
 const HEARTBEAT_MS = 30000;
 
+type ActivityTrackingOptions = {
+  enabled?: boolean;
+};
+
 type StoredUser = {
   id?: number | string;
   email?: string;
@@ -37,7 +41,7 @@ function writeStoredUser(user: StoredUser) {
   window.dispatchEvent(new Event('kbc-auth-changed'));
 }
 
-async function postActivity(payload: Record<string, unknown>, useBeacon = false): Promise<boolean> {
+async function postActivity(payload: Record<string, unknown>, useBeacon = false, signal?: AbortSignal): Promise<boolean> {
   const body = JSON.stringify(payload);
 
   if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
@@ -51,6 +55,7 @@ async function postActivity(payload: Record<string, unknown>, useBeacon = false)
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: useBeacon,
+      signal,
     });
     return response.ok;
   } catch {
@@ -73,24 +78,29 @@ function applyAuditHeaders(headers: Headers, user: StoredUser | null) {
   if (user.trackingSessionId) headers.set('X-KBC-Tracking-Session-Id', user.trackingSessionId);
 }
 
-export function useUserActivityTracking() {
+export function useUserActivityTracking({ enabled = true }: ActivityTrackingOptions = {}) {
   const location = useLocation();
   const currentPathRef = useRef('');
   const enteredAtRef = useRef(Date.now());
   const activeRef = useRef(typeof document === 'undefined' ? true : document.visibilityState === 'visible');
   const startInFlightRef = useRef(false);
+  const startControllerRef = useRef<AbortController | null>(null);
 
   const ensureTrackingSession = async (): Promise<StoredUser | null> => {
+    if (!enabled) return null;
     const user = readStoredUser();
     if (!user) return null;
     if (user.trackingSessionId) return user;
     if (startInFlightRef.current) return null;
 
     startInFlightRef.current = true;
+    const controller = new AbortController();
+    startControllerRef.current = controller;
     try {
       const response = await fetch('/api/auth/activity/start/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           userId: user.id,
           email: user.email,
@@ -115,11 +125,16 @@ export function useUserActivityTracking() {
     } catch {
       return null;
     } finally {
+      if (startControllerRef.current === controller) {
+        startControllerRef.current = null;
+      }
       startInFlightRef.current = false;
     }
   };
 
   useEffect(() => {
+    if (!enabled) return;
+
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -135,9 +150,10 @@ export function useUserActivityTracking() {
     return () => {
       window.fetch = originalFetch;
     };
-  }, []);
+  }, [enabled]);
 
   const flushCurrentPath = async (action: 'heartbeat' | 'page_exit' | 'logout' = 'page_exit', useBeacon = false, force = false) => {
+    if (!enabled && action !== 'logout' && action !== 'page_exit') return;
     const user = readStoredUser();
     if (!user?.trackingSessionId || !currentPathRef.current) return;
     if (!force && action !== 'logout' && !activeRef.current) return;
@@ -166,6 +182,13 @@ export function useUserActivityTracking() {
   };
 
   useEffect(() => {
+    if (!enabled) {
+      startControllerRef.current?.abort();
+      startControllerRef.current = null;
+      currentPathRef.current = '';
+      return;
+    }
+
     const nextPath = `${location.pathname}${location.search}${location.hash}`;
     void ensureTrackingSession().then(async user => {
       if (!user?.trackingSessionId) return;
@@ -189,9 +212,16 @@ export function useUserActivityTracking() {
         durationSeconds: 0,
       });
     });
-  }, [location.pathname, location.search, location.hash]);
+  }, [enabled, location.pathname, location.search, location.hash]);
 
   useEffect(() => {
+    if (!enabled) {
+      startControllerRef.current?.abort();
+      startControllerRef.current = null;
+      currentPathRef.current = '';
+      return;
+    }
+
     const intervalId = window.setInterval(() => {
       if (!activeRef.current || document.visibilityState !== 'visible') return;
       void flushCurrentPath('heartbeat');
@@ -227,7 +257,9 @@ export function useUserActivityTracking() {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handleBeforeUnload);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      startControllerRef.current?.abort();
+      startControllerRef.current = null;
       void flushCurrentPath('page_exit', true, true);
     };
-  }, []);
+  }, [enabled]);
 }
