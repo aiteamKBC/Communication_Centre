@@ -985,14 +985,21 @@ export default function GanttTimeline({
 
     const targetDate = item.firstClashDate || item.targetDate;
     let scrollColumns = cols;
-    if (targetDate && (zoom === 'week' || zoom === 'day')) {
+    if (targetDate) {
       const [year, month, day] = targetDate.split('-').map(Number);
       const target = new Date(year || 1970, (month || 1) - 1, day || 1);
       let nextWindow: { start: Date; end: Date };
       if (zoom === 'week') {
         nextWindow = getNormalizedWeekWindow(target);
-      } else {
+      } else if (zoom === 'day') {
         nextWindow = { start: shiftDateByDays(target, -14), end: shiftDateByDays(target, 28) };
+      } else if (zoom === 'month') {
+        nextWindow = { start: new Date(target.getFullYear(), 0, 1), end: new Date(target.getFullYear(), 11, 31) };
+      } else if (zoom === 'intake') {
+        const intakeStartMonth = Math.floor(target.getMonth() / 4) * 4;
+        nextWindow = { start: new Date(target.getFullYear(), intakeStartMonth, 1), end: new Date(target.getFullYear(), intakeStartMonth + 4, 0) };
+      } else {
+        nextWindow = { start: new Date(target.getFullYear(), 0, 1), end: new Date(target.getFullYear(), 11, 31) };
       }
       setViewWindow(nextWindow);
       scrollColumns = generateColumns(zoom, nextWindow.start, nextWindow.end);
@@ -1515,8 +1522,8 @@ export default function GanttTimeline({
           </button>
         </div>
 
-        {(zoom === 'week' || zoom === 'day') && (
-          <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1 ml-auto">
+          {(zoom === 'week' || zoom === 'day') && (
             <button
               onClick={() => {
                 setViewWindow(getDefaultViewWindow(zoom, groups, holidays));
@@ -1525,6 +1532,7 @@ export default function GanttTimeline({
             >
               {zoom === 'week' ? 'This Week' : 'Today'}
             </button>
+          )}
             <div className="relative">
               <button
                 type="button"
@@ -1585,6 +1593,8 @@ export default function GanttTimeline({
                 </div>
               )}
             </div>
+          {(zoom === 'week' || zoom === 'day') && (
+            <>
             <button
               onClick={() => {
                 const days = zoom === 'week' ? 7 : 14;
@@ -1614,10 +1624,11 @@ export default function GanttTimeline({
               className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 cursor-pointer transition-all">
               <i className="ri-arrow-right-s-line text-sm" />
             </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
 
-        <div className="flex items-center gap-3 ml-auto text-xs text-gray-400 flex-wrap">
+        <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
           <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px dashed #F7A800' }} />Now</span>
           <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
         </div>
