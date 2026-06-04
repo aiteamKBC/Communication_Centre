@@ -949,7 +949,10 @@ export default function GanttTimeline({
         row.blks.forEach(blk => {
           const className = (blk.groupName || row.label || 'Unnamed class').trim();
           const key = `${grp.id}|${row.id}|${className}`;
-          const classClashes = rowClashes.filter(marker => marker.groups.includes(className) || marker.cohorts.includes(row.label));
+          const classClashes = rowClashes.filter(marker => (
+            marker.groups.includes(className) ||
+            (marker.groups.length === 0 && marker.cohorts.includes(row.label))
+          ));
           const firstClashDate = classClashes[0]?.date || '';
           const holidayClashCount = classClashes.filter(marker => marker.type === 'Holiday clash').length;
           const tutorConflictCount = classClashes.filter(marker => marker.type === 'Tutor conflict').length;
