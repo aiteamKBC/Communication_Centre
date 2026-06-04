@@ -100,6 +100,7 @@ export interface CatalogModule {
   notes: string;
   sessionNames: string[];
   sessionDescriptions: string[];
+  sessionKsbMappings?: SessionKsbMapping[];
 }
 
 export interface KsbProfile {
@@ -107,6 +108,7 @@ export interface KsbProfile {
   name: string;
   programmeName: string;
   description: string;
+  ksbItems?: KsbProfileItem[];
   knowledgeCodes: string[];
   skillCodes: string[];
   behaviourCodes: string[];
@@ -114,4 +116,11 @@ export interface KsbProfile {
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface KsbProfileItem {
+  type: 'K' | 'S' | 'B';
+  number: string;
+  code: string;
+  description: string;
 }

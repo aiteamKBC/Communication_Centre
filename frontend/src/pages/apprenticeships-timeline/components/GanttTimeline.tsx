@@ -1,4 +1,4 @@
-import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo } from 'react';
+import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
@@ -12,8 +12,8 @@ const LEFT_W    = 220;
 const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 46;
 const COHORT_H  = 32;  // thin cohort header strip
-const MODULE_H  = 56;  // full-height module row (no overlap)
-const LANE_H    = 28;  // half-height lane when two modules overlap
+const MODULE_H  = 64;  // full-height module row (no overlap)
+const LANE_H    = 40;  // stacked lane height when modules overlap
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface LanedBlock {
@@ -118,14 +118,23 @@ function normalizeModuleLookup(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+function moduleLookupVariants(value: string): string[] {
+  const raw = String(value || '').trim();
+  const withoutSessionSuffix = raw.replace(/\b\d+\s*s(?:essions?)?\b/gi, '').trim();
+  const normalized = [raw, withoutSessionSuffix].map(normalizeModuleLookup).filter(Boolean);
+  if (normalized.includes('social') || normalized.includes('socialmedia')) {
+    normalized.push('social', 'socialmedia');
+  }
+  return Array.from(new Set(normalized));
+}
+
 function resolveCatalogModuleForBlock(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[]): CatalogModule | undefined {
   const rawValue = String(blk.mod || '');
   const displayValue = getBlockDisplayName(blk, customModules);
-  const normalizedRaw = normalizeModuleLookup(rawValue);
-  const normalizedDisplay = normalizeModuleLookup(displayValue);
+  const lookupVariants = new Set([...moduleLookupVariants(rawValue), ...moduleLookupVariants(displayValue)]);
   return catalogModules.find(module => {
     const normalizedName = normalizeModuleLookup(module.name);
-    return String(module.id) === rawValue || normalizedName === normalizedRaw || normalizedName === normalizedDisplay;
+    return String(module.id) === rawValue || lookupVariants.has(normalizedName);
   });
 }
 
@@ -636,12 +645,28 @@ export default function GanttTimeline({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const classesPopupRef = useRef<HTMLDivElement>(null);
 
   // Drag-and-drop state
   type DragItem = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
   type DragOverTarget = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
   const dragItem    = useRef<DragItem | null>(null);
   const [dragOver, setDragOver] = useState<DragOverTarget | null>(null);
+
+  useEffect(() => {
+    if (!classesOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && classesPopupRef.current?.contains(target)) {
+        return;
+      }
+      setClassesOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [classesOpen]);
 
   const handleCohortDragStart = useCallback((e: React.DragEvent, groupIdx: number, rowIdx: number) => {
     e.stopPropagation();
@@ -1267,13 +1292,13 @@ export default function GanttTimeline({
     const mod = resolveBlockMeta(blk, customModules);
     const overlaps = activeHolidays.filter(holiday => rangesOverlap(blk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
     const hasOverlap = overlaps.length > 0 || sessionSummary.extensionDays > 0;
-    const hasHolidayClash = sessionSummary.allAffected > 0;
+    const hasHolidayClash = !sessionSummary.isFinished && sessionSummary.allAffected > 0;
     const tutorConflictMarkers = (rowClashMarkers[groupIdx]?.[rowIdx] || []).filter(marker => (
       marker.type === 'Tutor conflict'
       && marker.modules.includes(mod.lbl)
       && marker.groups.includes(blk.groupName || cohortLabel)
     ));
-    const hasTutorConflict = tutorConflictMarkers.length > 0;
+    const hasTutorConflict = !sessionSummary.isFinished && tutorConflictMarkers.length > 0;
     const holidayPlan = hasHolidayClash ? buildHolidayAdjustedSessionPlan(blk, activeHolidays) : null;
     const shiftedToByDate = new Map<string, string>();
     holidayPlan?.sessions.forEach(session => {
@@ -1294,6 +1319,12 @@ export default function GanttTimeline({
       : sessionSummary.hasRealName
       ? `S${sessionSummary.number}: ${sessionSummary.name}`
       : `S${sessionSummary.number}: no saved name`;
+    const sessionProgressLabel = sessionSummary.total === 0
+      ? 'No sessions'
+      : sessionSummary.isFinished
+      ? `${sessionSummary.total}/${sessionSummary.total} sessions complete`
+      : `Session ${sessionSummary.number}/${sessionSummary.total} - ${sessionSummary.completed}/${sessionSummary.total} done`;
+    const showStackedSessionProgress = pos.width > 72;
     const stackLabel = false;
     const showBadgeTip = (event: ReactMouseEvent, data: Omit<BadgeTooltipData, 'x' | 'y'>) => {
       setTooltip(null);
@@ -1302,6 +1333,14 @@ export default function GanttTimeline({
     };
     const moveBadgeTip = (event: ReactMouseEvent) => {
       setBadgeTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+    };
+    const openConflictFix = (event: { stopPropagation: () => void }) => {
+      event.stopPropagation();
+      if (!canManageCohorts) return;
+      setTooltip(null);
+      setBadgeTip(null);
+      setClashTip(null);
+      onEditRow(groupIdx, rowIdx, blk.id, true);
     };
 
     return (
@@ -1349,10 +1388,12 @@ export default function GanttTimeline({
         {pos.width > 30 && (
           <div
             className="min-w-0 w-full select-none"
-            style={{ padding: '0 8px', display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden' }}
+            style={{ padding: '0 8px', display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
           >
+            <div className="min-w-0 flex-1" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
             {/* Module name */}
-            <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', flexShrink: 0 }}>
+            <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {mod.lbl}
             </span>
 
@@ -1363,8 +1404,27 @@ export default function GanttTimeline({
               </span>
             )}
 
+              </div>
+              {showStackedSessionProgress && (
+                <span
+                  title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                  style={{
+                    color: mod.tx,
+                    fontSize: '9px',
+                    fontWeight: 800,
+                    opacity: 0.9,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {sessionProgressLabel}
+                </span>
+              )}
+            </div>
+
             {/* Dates */}
-            {pos.width > 120 && blk.startDate && displayEndDate && (
+            {pos.width > 180 && blk.startDate && displayEndDate && (
               <span
                 style={{
                   color: mod.tx,
@@ -1385,62 +1445,23 @@ export default function GanttTimeline({
               </span>
             )}
 
-            {sessionSummary.extensionDays > 0 && pos.width > 190 && (
-              <span
-                style={{
-                  color: mod.tx,
-                  fontSize: '9px',
-                  fontWeight: 800,
-                  opacity: 0.92,
-                  whiteSpace: 'nowrap',
-                  flexShrink: 0,
-                  background: 'rgba(247,168,0,0.28)',
-                  borderRadius: 3,
-                  padding: '1px 5px',
-                  marginLeft: 2,
-                }}
-              >
-                extended to {formatDateShort(displayEndDate)}
-              </span>
-            )}
-
-            {pos.width > 180 && (
-              <span
-                title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
-                style={{
-                  color: mod.tx,
-                  fontSize: '9px',
-                  fontWeight: 800,
-                  opacity: 0.95,
-                  whiteSpace: 'nowrap',
-                  flexShrink: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  background: sessionSummary.isFinished ? 'rgba(16,185,129,0.32)' : sessionSummary.hasRealName ? 'rgba(255,255,255,0.20)' : 'rgba(247,168,0,0.28)',
-                  borderRadius: 3,
-                  padding: '1px 5px',
-                  marginLeft: 2,
-                  maxWidth: Math.max(70, pos.width * 0.42),
-                }}
-              >
-                {sessionSummary.isFinished && <i className="ri-check-line" style={{ marginRight: 3 }} />}
-                {sessionLabel}
-              </span>
-            )}
-
-            {pos.width > 260 && (
-              <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.8, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                {sessionSummary.isFinished ? 'Finished' : `${sessionSummary.completed}/${sessionSummary.total} done`}
-              </span>
-            )}
           </div>
         )}
         {(hasTutorConflict || hasHolidayClash) && (
           <span className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
             {hasTutorConflict && (
               <span
+                role="button"
+                tabIndex={0}
+                title="Fix tutor conflict"
                 className="flex h-3 w-3 items-center justify-center rounded-sm shadow-sm"
                 style={{ background: '#F7A800', color: '#1B2A4A' }}
+                onClick={openConflictFix}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    openConflictFix(event);
+                  }
+                }}
                 onMouseEnter={event => {
                   event.stopPropagation();
                   showBadgeTip(event, {
@@ -1462,8 +1483,17 @@ export default function GanttTimeline({
             )}
             {hasHolidayClash && (
               <span
+                role="button"
+                tabIndex={0}
+                title="Fix holiday clash"
                 className="flex h-3 w-3 items-center justify-center rounded-sm shadow-sm"
                 style={{ background: '#DC2626', color: '#FFFFFF' }}
+                onClick={openConflictFix}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    openConflictFix(event);
+                  }
+                }}
                 onMouseEnter={event => {
                   event.stopPropagation();
                   showBadgeTip(event, {
@@ -1533,7 +1563,7 @@ export default function GanttTimeline({
               {zoom === 'week' ? 'This Week' : 'Today'}
             </button>
           )}
-            <div className="relative">
+            <div ref={classesPopupRef} className="relative">
               <button
                 type="button"
                 onClick={() => setClassesOpen(prev => !prev)}
@@ -1567,7 +1597,7 @@ export default function GanttTimeline({
                           <div className="flex shrink-0 flex-col items-end gap-1">
                             {item.holidayClashCount > 0 && (
                               <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-extrabold text-red-700">
-                                {item.holidayClashCount} holiday
+                                {item.holidayClashCount} class holiday
                               </span>
                             )}
                             {item.tutorConflictCount > 0 && (
@@ -1577,7 +1607,7 @@ export default function GanttTimeline({
                             )}
                             {item.replacementClashCount > 0 && (
                               <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-extrabold text-orange-700">
-                                {item.replacementClashCount} replacement
+                                {item.replacementClashCount} class replacement
                               </span>
                             )}
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-600">
@@ -1654,7 +1684,12 @@ export default function GanttTimeline({
       </div>
 
       {/* Scrollable gantt */}
-      <div ref={scrollRef} className="overflow-x-auto" onScroll={handleTimelineScroll}>
+      <div
+        ref={scrollRef}
+        className="overflow-x-scroll"
+        style={{ scrollbarGutter: 'stable' }}
+        onScroll={handleTimelineScroll}
+      >
         <div className="relative" style={{ width: totalWidth + LEFT_W }}>
           {/* Full-height holiday bands — start below headers, span all rows */}
           {holidayPositions.map(({ h, pos }) => pos && (

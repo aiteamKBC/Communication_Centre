@@ -1,9 +1,11 @@
 import { useState, useMemo } from 'react';
-import type { CatalogModule } from '../types';
+import { createPortal } from 'react-dom';
+import type { CatalogModule, KsbProfile, SessionKsbMapping } from '../types';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
   modules: CatalogModule[];
+  ksbProfiles?: KsbProfile[];
   onAdd: (mod: Omit<CatalogModule, 'id'>) => Promise<void>;
   onUpdate: (mod: CatalogModule) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -28,10 +30,11 @@ interface EditState {
   notes: string;
   sessionNames: string[];
   sessionDescriptions: string[];
+  sessionKsbMappings: SessionKsbMapping[];
 }
 
 function emptyEdit(): EditState {
-  return { id: null, name: '', colour: '#4A6DB0', sessions: '12', notes: '', sessionNames: [], sessionDescriptions: [] };
+  return { id: null, name: '', colour: '#4A6DB0', sessions: '12', notes: '', sessionNames: [], sessionDescriptions: [], sessionKsbMappings: [] };
 }
 
 function editStateFromModule(m: CatalogModule): EditState {
@@ -43,12 +46,44 @@ function editStateFromModule(m: CatalogModule): EditState {
     notes: m.notes || '',
     sessionNames: m.sessionNames ? [...m.sessionNames] : [],
     sessionDescriptions: m.sessionDescriptions ? [...m.sessionDescriptions] : [],
+    sessionKsbMappings: normalizeSessionKsbMappings(m.sessionKsbMappings, parseSessionCount(m.sessions)),
   };
 }
 
 function parseSessionCount(value: string | number | undefined): number {
   const count = parseInt(String(value || ''), 10);
   return Number.isNaN(count) || count < 1 ? 0 : count;
+}
+
+function emptySessionKsbMapping(): SessionKsbMapping {
+  return { knowledgeCodes: [], skillCodes: [], behaviourCodes: [] };
+}
+
+function normalizeKsbCodes(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
+  if (!Array.isArray(value)) return [];
+  const pattern = new RegExp(`^${prefix}\\d+$`, 'i');
+  const seen = new Set<string>();
+  return value.reduce<string[]>((codes, item) => {
+    const code = String(item || '').trim().toUpperCase();
+    if (!code || seen.has(code) || !pattern.test(code)) return codes;
+    seen.add(code);
+    codes.push(code);
+    return codes;
+  }, []);
+}
+
+function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMapping[] {
+  const raw = Array.isArray(value) ? value : [];
+  const length = Math.max(count, raw.length);
+  return Array.from({ length }, (_, index) => {
+    const item = raw[index];
+    const record = item && typeof item === 'object' ? item as Partial<SessionKsbMapping> : {};
+    return {
+      knowledgeCodes: normalizeKsbCodes(record.knowledgeCodes, 'K'),
+      skillCodes: normalizeKsbCodes(record.skillCodes, 'S'),
+      behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
+    };
+  });
 }
 
 function countNamedSessions(names: string[] | undefined, count: number): number {
@@ -59,7 +94,286 @@ function sessionPreviewItems(names: string[] | undefined, count: number): string
   return Array.from({ length: Math.min(count, 4) }, (_, i) => names?.[i]?.trim() || `Session ${i + 1} not named`);
 }
 
-export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
+type KsbCodeField = 'knowledgeCodes' | 'skillCodes' | 'behaviourCodes';
+type KsbProfileCodeOption = { code: string; profileName: string };
+
+function buildKsbDescriptionLookup(profiles: KsbProfile[] = []): Record<string, string> {
+  const lookup: Record<string, string> = {};
+  profiles.forEach(profile => {
+    (profile.ksbItems || []).forEach(item => {
+      const code = item.code || `${item.type}${item.number}`;
+      if (code && item.description && !lookup[code.toUpperCase()]) {
+        lookup[code.toUpperCase()] = item.description;
+      }
+    });
+  });
+  return lookup;
+}
+
+function buildKsbProfileCodeOptions(profiles: KsbProfile[] = []): Record<'K' | 'S' | 'B', KsbProfileCodeOption[]> {
+  const buckets: Record<'K' | 'S' | 'B', KsbProfileCodeOption[]> = { K: [], S: [], B: [] };
+  const seen: Record<'K' | 'S' | 'B', Set<string>> = { K: new Set(), S: new Set(), B: new Set() };
+
+  profiles.forEach(profile => {
+    (['K', 'S', 'B'] as const).forEach(prefix => {
+      const codes = prefix === 'K' ? profile.knowledgeCodes : prefix === 'S' ? profile.skillCodes : profile.behaviourCodes;
+      (codes || []).forEach(rawCode => {
+        const code = String(rawCode || '').trim().toUpperCase();
+        const key = `${code}|${profile.name}`;
+        if (!code || seen[prefix].has(key)) return;
+        seen[prefix].add(key);
+        buckets[prefix].push({ code, profileName: profile.name || 'KSB Profile' });
+      });
+    });
+  });
+
+  return buckets;
+}
+
+function KsbCodeInput({
+  label,
+  placeholder,
+  prefix,
+  value,
+  codeDescriptions = {},
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
+  prefix: 'K' | 'S' | 'B';
+  value: string[];
+  codeDescriptions?: Record<string, string>;
+  onChange: (codes: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState('');
+  const tone = prefix === 'K'
+    ? { label: 'bg-sky-600 text-white', border: 'border-sky-200 focus-within:border-sky-400', chip: 'border-sky-200 bg-sky-50 text-sky-800' }
+    : prefix === 'S'
+      ? { label: 'bg-emerald-600 text-white', border: 'border-emerald-200 focus-within:border-emerald-400', chip: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
+      : { label: 'bg-amber-500 text-white', border: 'border-amber-200 focus-within:border-amber-400', chip: 'border-amber-200 bg-amber-50 text-amber-800' };
+
+  const addDraftCodes = () => {
+    const parts = draft.split(/[,\s]+/).map(item => item.trim()).filter(Boolean);
+    if (!parts.length) {
+      setDraft('');
+      setError('');
+      return;
+    }
+    const valid = normalizeKsbCodes(parts, prefix);
+    const invalid = parts.some(part => !new RegExp(`^${prefix}\\d+$`, 'i').test(part));
+    onChange(normalizeKsbCodes([...value, ...valid], prefix));
+    setDraft('');
+    setError(invalid ? `${prefix} codes need ${prefix} followed by a number.` : '');
+  };
+
+  return (
+    <div>
+      <label className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">
+        <span className={`flex h-4 min-w-4 items-center justify-center rounded px-1 text-[10px] font-extrabold leading-none ${tone.label}`}>
+          {prefix}
+        </span>
+        <span>{label}</span>
+      </label>
+      <div className={`min-h-10 rounded-lg border bg-white px-2 py-1.5 transition-colors ${tone.border}`}>
+        <div className="flex flex-wrap items-center gap-1">
+          {value.map(code => (
+            <span key={code} title={codeDescriptions[code] || code} className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-extrabold leading-none ${tone.chip}`}>
+              {code}
+              <button type="button" aria-label={`Remove ${code}`} onClick={() => onChange(value.filter(item => item !== code))} className="text-current opacity-45 hover:opacity-100">
+                <i className="ri-close-line text-[10px]" />
+              </button>
+            </span>
+          ))}
+          <input
+            type="text"
+            value={draft}
+            onChange={event => {
+              setDraft(event.target.value.toUpperCase());
+              if (error) setError('');
+            }}
+            onBlur={addDraftCodes}
+            onKeyDown={event => {
+              if (event.key === 'Enter' || event.key === ',') {
+                event.preventDefault();
+                addDraftCodes();
+              }
+            }}
+            placeholder={value.length ? `Add ${prefix}...` : placeholder}
+            className="min-w-20 flex-1 bg-transparent px-1 py-0.5 text-xs font-semibold text-gray-700 placeholder:text-gray-300 focus:outline-none"
+          />
+        </div>
+      </div>
+      {value.some(code => codeDescriptions[code]) && (
+        <div className="mt-1 space-y-0.5">
+          {value.filter(code => codeDescriptions[code]).map(code => (
+            <p key={code} className="line-clamp-2 text-[10px] font-medium text-gray-400">
+              <span className="font-extrabold text-gray-500">{code}</span> {codeDescriptions[code]}
+            </p>
+          ))}
+        </div>
+      )}
+      {error && <p className="mt-1 text-[10px] font-semibold text-red-500">{error}</p>}
+    </div>
+  );
+}
+
+function KsbProfilePicker({
+  mapping,
+  codeDescriptions = {},
+  profileCodes,
+  onAddCode,
+}: {
+  mapping: SessionKsbMapping;
+  codeDescriptions?: Record<string, string>;
+  profileCodes?: Record<'K' | 'S' | 'B', KsbProfileCodeOption[]>;
+  onAddCode: (field: KsbCodeField, code: string) => void;
+}) {
+  const sections = [
+    { title: 'Knowledge', prefix: 'K' as const, field: 'knowledgeCodes' as const, selected: mapping.knowledgeCodes, codes: profileCodes?.K || [], tone: 'border-sky-200 bg-sky-50 text-sky-800' },
+    { title: 'Skills', prefix: 'S' as const, field: 'skillCodes' as const, selected: mapping.skillCodes, codes: profileCodes?.S || [], tone: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
+    { title: 'Behaviours', prefix: 'B' as const, field: 'behaviourCodes' as const, selected: mapping.behaviourCodes, codes: profileCodes?.B || [], tone: 'border-amber-200 bg-amber-50 text-amber-800' },
+  ];
+
+  return (
+    <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
+      <div className="grid gap-3 md:grid-cols-3">
+        {sections.map(section => {
+          const available = section.codes.filter(option => !section.selected.includes(option.code));
+          return (
+            <div key={section.prefix} className="rounded-lg bg-white p-2">
+              <p className="mb-2 text-[10px] font-extrabold uppercase tracking-wider text-gray-400">{section.title}</p>
+              {available.length ? (
+                <div className="flex flex-wrap gap-1">
+                  {available.map(option => (
+                    <button
+                      key={`${option.profileName}-${option.code}`}
+                      type="button"
+                      title={`${option.profileName}${codeDescriptions[option.code] ? ` - ${codeDescriptions[option.code]}` : ''}`}
+                      onClick={() => onAddCode(section.field, option.code)}
+                      className={`flex max-w-full flex-col items-start rounded-md border px-2 py-1 text-left transition-all hover:shadow-sm ${section.tone}`}
+                    >
+                      <span className="text-[10px] font-extrabold leading-none">+ {option.code}</span>
+                      <span className="mt-0.5 max-w-[8rem] truncate text-[9px] font-bold opacity-65">{option.profileName}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] font-semibold text-gray-300">All added</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function KsbSessionMappingRows({
+  sessionCount,
+  mappings,
+  sessionNames,
+  sessionDescriptions,
+  accentColor,
+  codeDescriptions,
+  profileCodes,
+  onChange,
+  onSessionNameChange,
+  onSessionDescriptionChange,
+}: {
+  sessionCount: number;
+  mappings: SessionKsbMapping[];
+  sessionNames?: string[];
+  sessionDescriptions?: string[];
+  accentColor: string;
+  codeDescriptions?: Record<string, string>;
+  profileCodes?: Record<'K' | 'S' | 'B', KsbProfileCodeOption[]>;
+  onChange: (sessionIndex: number, field: KsbCodeField, codes: string[]) => void;
+  onSessionNameChange: (sessionIndex: number, value: string) => void;
+  onSessionDescriptionChange: (sessionIndex: number, value: string) => void;
+}) {
+  const normalizedMappings = normalizeSessionKsbMappings(mappings, sessionCount);
+  const [openPickerIndex, setOpenPickerIndex] = useState<number | null>(null);
+  const sourceProfileNames = Array.from(new Set(
+    (['K', 'S', 'B'] as const).flatMap(prefix => (profileCodes?.[prefix] || []).map(option => option.profileName)),
+  ));
+  const sourceLabel = sourceProfileNames.length === 1
+    ? sourceProfileNames[0]
+    : sourceProfileNames.length > 1
+      ? `${sourceProfileNames.length} profiles`
+      : '';
+
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: sessionCount }, (_, i) => {
+        const mapping = normalizedMappings[i] || emptySessionKsbMapping();
+        return (
+          <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.85fr)_minmax(0,1.3fr)]">
+              <div className="flex items-start gap-2">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-extrabold" style={{ background: `${accentColor}16`, color: accentColor }}>
+                {i + 1}
+              </span>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Session {i + 1}</span>
+                  <span className={`text-[11px] font-semibold ${sessionNames?.[i]?.trim() ? 'text-emerald-600' : 'text-gray-300'}`}>
+                    {sessionNames?.[i]?.trim() ? 'Named' : 'Not named yet'}
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  placeholder={`Session ${i + 1} name`}
+                  value={sessionNames?.[i] ?? ''}
+                  onChange={event => onSessionNameChange(i, event.target.value)}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-800 focus:outline-none"
+                />
+                <input
+                  type="text"
+                  placeholder="Description (optional)"
+                  value={sessionDescriptions?.[i] ?? ''}
+                  onChange={event => onSessionDescriptionChange(i, event.target.value)}
+                  className="w-full rounded-lg border border-gray-100 bg-gray-50 px-3 py-1.5 text-xs text-gray-500 focus:outline-none"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
+                  >
+                    <i className="ri-add-circle-line" />
+                    Add from profile
+                  </button>
+                  {sourceLabel && (
+                    <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-500">
+                      Source: {sourceLabel}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <KsbCodeInput label="Knowledge" placeholder="K1, K3" prefix="K" value={mapping.knowledgeCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'knowledgeCodes', codes)} />
+                <KsbCodeInput label="Skills" placeholder="S2, S5" prefix="S" value={mapping.skillCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'skillCodes', codes)} />
+                <KsbCodeInput label="Behaviours" placeholder="B1, B4" prefix="B" value={mapping.behaviourCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'behaviourCodes', codes)} />
+              </div>
+            </div>
+            {openPickerIndex === i && (
+              <KsbProfilePicker
+                mapping={mapping}
+                codeDescriptions={codeDescriptions}
+                profileCodes={profileCodes}
+                onAddCode={(field, code) => onChange(i, field, normalizeKsbCodes([...(mapping[field] || []), code], field === 'knowledgeCodes' ? 'K' : field === 'skillCodes' ? 'S' : 'B'))}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
   const [editing, setEditing] = useState<EditState | null>(() => {
     const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
     return target ? editStateFromModule(target) : null;
@@ -71,6 +385,9 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [ksbEditorOpen, setKsbEditorOpen] = useState(false);
+  const codeDescriptions = useMemo(() => buildKsbDescriptionLookup(ksbProfiles), [ksbProfiles]);
+  const profileCodes = useMemo(() => buildKsbProfileCodeOptions(ksbProfiles), [ksbProfiles]);
 
   const openEdit = (m: CatalogModule) => {
     const next = editStateFromModule(m);
@@ -95,6 +412,7 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
     }
     setEditing(null);
     setEditingSnapshot('');
+    setKsbEditorOpen(false);
   };
 
   const sessionCount = useMemo(() => {
@@ -103,12 +421,26 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
   }, [editing]);
 
   const namedSessionCount = editing ? countNamedSessions(editing.sessionNames, sessionCount) : 0;
+  const mappedKsbCount = editing
+    ? normalizeSessionKsbMappings(editing.sessionKsbMappings, sessionCount).reduce(
+        (total, mapping) => total + mapping.knowledgeCodes.length + mapping.skillCodes.length + mapping.behaviourCodes.length,
+        0,
+      )
+    : 0;
 
   const changeSessionCount = (delta: number) => {
     setEditing(prev => {
       if (!prev) return prev;
       const nextCount = Math.max(1, parseSessionCount(prev.sessions) + delta);
-      return { ...prev, sessions: String(nextCount) };
+      return { ...prev, sessions: String(nextCount), sessionKsbMappings: normalizeSessionKsbMappings(prev.sessionKsbMappings, nextCount) };
+    });
+  };
+
+  const updateSessionCountValue = (value: string) => {
+    setEditing(prev => {
+      if (!prev) return prev;
+      const nextCount = Math.max(1, parseSessionCount(value) || 1);
+      return { ...prev, sessions: value, sessionKsbMappings: normalizeSessionKsbMappings(prev.sessionKsbMappings, nextCount) };
     });
   };
 
@@ -127,6 +459,20 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
       const next = [...prev.sessionDescriptions];
       next[idx] = value;
       return { ...prev, sessionDescriptions: next };
+    });
+  };
+
+  const updateSessionKsbMapping = (sessionIndex: number, field: KsbCodeField, value: string[]) => {
+    setEditing(prev => {
+      if (!prev) return prev;
+      const count = Math.max(1, parseSessionCount(prev.sessions) || 1);
+      const nextMappings = normalizeSessionKsbMappings(prev.sessionKsbMappings, count);
+      const prefix = field === 'knowledgeCodes' ? 'K' : field === 'skillCodes' ? 'S' : 'B';
+      nextMappings[sessionIndex] = {
+        ...(nextMappings[sessionIndex] || emptySessionKsbMapping()),
+        [field]: normalizeKsbCodes(value, prefix),
+      };
+      return { ...prev, sessionKsbMappings: nextMappings };
     });
   };
 
@@ -157,13 +503,15 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
     const count = Math.max(0, parseInt(editing.sessions, 10) || 0);
     const names = Array.from({ length: count }, (_, i) => editing.sessionNames[i] ?? '');
     const descs = Array.from({ length: count }, (_, i) => editing.sessionDescriptions[i] ?? '');
+    const ksbMappings = normalizeSessionKsbMappings(editing.sessionKsbMappings, count);
     try {
       if (editing.id === null) {
-        await onAdd({ name: editing.name.trim(), colour: editing.colour, sessions: editing.sessions, notes: editing.notes.trim(), sessionNames: names, sessionDescriptions: descs });
+        await onAdd({ name: editing.name.trim(), colour: editing.colour, sessions: editing.sessions, notes: editing.notes.trim(), sessionNames: names, sessionDescriptions: descs, sessionKsbMappings: ksbMappings });
       } else {
-        await onUpdate({ id: editing.id, name: editing.name.trim(), colour: editing.colour, sessions: editing.sessions, notes: editing.notes.trim(), sessionNames: names, sessionDescriptions: descs });
+        await onUpdate({ id: editing.id, name: editing.name.trim(), colour: editing.colour, sessions: editing.sessions, notes: editing.notes.trim(), sessionNames: names, sessionDescriptions: descs, sessionKsbMappings: ksbMappings });
       }
       setEditing(null);
+      setKsbEditorOpen(false);
     } finally {
       setSaving(false);
     }
@@ -332,7 +680,7 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
                       type="number"
                       min={1}
                       value={editing.sessions}
-                      onChange={e => setEditing(prev => prev ? { ...prev, sessions: e.target.value } : prev)}
+                      onChange={e => updateSessionCountValue(e.target.value)}
                       className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
                     />
                     <button type="button" onClick={() => changeSessionCount(1)} className="h-10 w-10 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 cursor-pointer">
@@ -365,53 +713,31 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
                 />
               </div>
 
-              {/* Session names + descriptions */}
-              {sessionCount > 0 && (
-                <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-                    <i className="ri-list-ordered text-sm" style={{ color: editing.colour }} />
-                    <div>
-                      <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Session Names</span>
-                      <p className="text-[11px] text-gray-400 mt-0.5">{namedSessionCount}/{sessionCount} named. These names appear in the schedule as the current lecture title.</p>
-                    </div>
-                    <span className="ml-auto text-xs font-bold rounded-full px-2.5 py-1" style={{ background: `${editing.colour}12`, color: editing.colour }}>{sessionCount} sessions</span>
-                  </div>
-                  <div className="px-4 py-4 space-y-4">
-                    {Array.from({ length: sessionCount }, (_, i) => (
-                      <div key={i} className="flex gap-3 rounded-lg border border-gray-100 bg-white p-3">
-                        <span
-                          className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
-                          style={{ background: `${editing.colour}18`, color: editing.colour }}
-                        >
-                          {i + 1}
-                        </span>
-                        <div className="flex-1 space-y-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Session {i + 1}</span>
-                            <span className={`text-[11px] font-semibold ${editing.sessionNames[i]?.trim() ? 'text-emerald-600' : 'text-gray-300'}`}>
-                              {editing.sessionNames[i]?.trim() ? 'Named' : 'Not named yet'}
-                            </span>
-                          </div>
-                          <input
-                            type="text"
-                            placeholder={`Session ${i + 1} name`}
-                            value={editing.sessionNames[i] ?? ''}
-                            onChange={e => updateSessionName(i, e.target.value)}
-                            className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none bg-white font-medium"
-                          />
-                          <input
-                            type="text"
-                            placeholder="Description (optional)"
-                            value={editing.sessionDescriptions[i] ?? ''}
-                            onChange={e => updateSessionDescription(i, e.target.value)}
-                            className="w-full border border-gray-100 rounded-lg px-3 py-1.5 text-xs focus:outline-none bg-gray-50 text-gray-500"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => setKsbEditorOpen(true)}
+                className="group flex w-full items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-left shadow-sm transition-all hover:border-gray-300 hover:shadow-md"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${editing.colour}14`, color: editing.colour }}>
+                  <i className="ri-links-line text-base" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-gray-800">Session KSB Mapping</span>
+                    <span className="rounded-full px-2 py-0.5 text-[10px] font-extrabold" style={{ background: `${editing.colour}12`, color: editing.colour }}>
+                      Optional
+                    </span>
+                  </span>
+                  <span className="mt-1 block truncate text-[11px] font-medium text-gray-400">
+                    {mappedKsbCount > 0 ? `${mappedKsbCount} KSB code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'Map the KSBs covered by each session.'}
+                  </span>
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-bold transition-colors group-hover:bg-gray-50" style={{ color: editing.colour }}>
+                  Open
+                  <i className="ri-arrow-right-s-line text-base" />
+                </span>
+              </button>
+
             </div>
 
             <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-white shrink-0">
@@ -428,8 +754,59 @@ export default function ManageModulesModal({ modules, onAdd, onUpdate, onDelete,
                 {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
+
           </div>
         </div>
+      )}
+      {editing && ksbEditorOpen && createPortal(
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-[3px]">
+          <button type="button" aria-label="Close KSB editor" className="absolute inset-0 cursor-default" onClick={() => setKsbEditorOpen(false)} />
+          <div className="relative flex h-[min(88vh,900px)] w-[min(1180px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b px-6 py-4" style={{ background: '#1B2A4A' }}>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-bold text-white/60">{editing.name.trim() || 'Untitled Module'}</p>
+                <h3 className="text-lg font-extrabold tracking-wide text-white">Session KSB Mapping</h3>
+              </div>
+              <button onClick={() => setKsbEditorOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-xl" />
+              </button>
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-100 bg-white px-6 py-4">
+              <span className="rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ background: `${editing.colour}12`, color: editing.colour }}>
+                {sessionCount} session{sessionCount === 1 ? '' : 's'}
+              </span>
+              <span className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-500">
+                {mappedKsbCount > 0 ? `${mappedKsbCount} code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'No KSBs mapped yet'}
+              </span>
+              <p className="w-full text-xs font-medium text-gray-400 sm:w-auto">
+                Map the KSBs covered by each session, for example K1, K3, S2, B1.
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50 p-5">
+              <KsbSessionMappingRows
+                sessionCount={sessionCount}
+                mappings={normalizeSessionKsbMappings(editing.sessionKsbMappings, sessionCount)}
+                sessionNames={editing.sessionNames}
+                sessionDescriptions={editing.sessionDescriptions}
+                accentColor={editing.colour}
+                codeDescriptions={codeDescriptions}
+                profileCodes={profileCodes}
+                onChange={updateSessionKsbMapping}
+                onSessionNameChange={updateSessionName}
+                onSessionDescriptionChange={updateSessionDescription}
+              />
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end border-t border-gray-200 bg-white px-6 py-4">
+              <button type="button" onClick={() => setKsbEditorOpen(false)} className="rounded-lg px-5 py-2.5 text-sm font-bold text-white transition-all hover:opacity-90" style={{ background: '#1B2A4A' }}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

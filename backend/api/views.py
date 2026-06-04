@@ -836,6 +836,41 @@ def normalize_ksb_codes(value, field_name: str) -> list[str]:
 	return codes
 
 
+def normalize_ksb_profile_items(value) -> list[dict]:
+	if not isinstance(value, list):
+		return []
+	seen = set()
+	items = []
+	for item in value:
+		if not isinstance(item, dict):
+			continue
+		item_type = str(item.get('type', '')).strip().upper()
+		if item_type not in {'K', 'S', 'B'}:
+			continue
+		number = str(item.get('number', '')).strip()
+		if not number.isdigit():
+			code = str(item.get('code', '')).strip().upper()
+			match = re.match(rf'^{item_type}(\d+)$', code)
+			number = match.group(1) if match else ''
+		if not number:
+			continue
+		code = f'{item_type}{int(number)}'
+		if code in seen:
+			continue
+		seen.add(code)
+		items.append({
+			'type': item_type,
+			'number': str(int(number)),
+			'code': code,
+			'description': str(item.get('description', '')).strip(),
+		})
+	return items
+
+
+def ksb_codes_from_items(items: list[dict], item_type: str) -> list[str]:
+	return [item['code'] for item in items if item.get('type') == item_type]
+
+
 def normalize_session_ksb_mappings(value) -> list[dict]:
 	if isinstance(value, str):
 		try:
@@ -868,14 +903,19 @@ def normalize_nullable_int(value) -> int | None:
 
 
 def serialize_ksb_profile(item: KsbProfile) -> dict:
+	ksb_items = normalize_ksb_profile_items(getattr(item, 'ksb_items', []))
+	knowledge_codes = ksb_codes_from_items(ksb_items, 'K') or normalize_ksb_codes(item.knowledge_codes, 'knowledgeCodes')
+	skill_codes = ksb_codes_from_items(ksb_items, 'S') or normalize_ksb_codes(item.skill_codes, 'skillCodes')
+	behaviour_codes = ksb_codes_from_items(ksb_items, 'B') or normalize_ksb_codes(item.behaviour_codes, 'behaviourCodes')
 	return {
 		'id': str(item.id),
 		'name': item.name,
 		'programmeName': item.programme_name or '',
 		'description': item.description or '',
-		'knowledgeCodes': normalize_ksb_codes(item.knowledge_codes, 'knowledgeCodes'),
-		'skillCodes': normalize_ksb_codes(item.skill_codes, 'skillCodes'),
-		'behaviourCodes': normalize_ksb_codes(item.behaviour_codes, 'behaviourCodes'),
+		'ksbItems': ksb_items,
+		'knowledgeCodes': knowledge_codes,
+		'skillCodes': skill_codes,
+		'behaviourCodes': behaviour_codes,
 		'isActive': bool(item.is_active),
 		'createdBy': item.created_by or '',
 		'createdAt': item.created_at.isoformat() if item.created_at else '',
@@ -887,13 +927,18 @@ def ksb_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
 	name = str(payload.get('name', '')).strip()
 	if not name:
 		return {}, 'Profile name is required.'
+	ksb_items = normalize_ksb_profile_items(payload.get('ksbItems', []))
+	knowledge_codes = ksb_codes_from_items(ksb_items, 'K') or normalize_ksb_codes(payload.get('knowledgeCodes', []), 'knowledgeCodes')
+	skill_codes = ksb_codes_from_items(ksb_items, 'S') or normalize_ksb_codes(payload.get('skillCodes', []), 'skillCodes')
+	behaviour_codes = ksb_codes_from_items(ksb_items, 'B') or normalize_ksb_codes(payload.get('behaviourCodes', []), 'behaviourCodes')
 	return {
 		'name': name,
 		'programme_name': str(payload.get('programmeName', payload.get('programme_name', ''))).strip(),
 		'description': str(payload.get('description', '')).strip(),
-		'knowledge_codes': normalize_ksb_codes(payload.get('knowledgeCodes', []), 'knowledgeCodes'),
-		'skill_codes': normalize_ksb_codes(payload.get('skillCodes', []), 'skillCodes'),
-		'behaviour_codes': normalize_ksb_codes(payload.get('behaviourCodes', []), 'behaviourCodes'),
+		'ksb_items': ksb_items,
+		'knowledge_codes': knowledge_codes,
+		'skill_codes': skill_codes,
+		'behaviour_codes': behaviour_codes,
 		'is_active': bool(payload.get('isActive', True)),
 	}, ''
 
@@ -1579,12 +1624,15 @@ def _serialize_module(item) -> dict:
 		'notes': item.notes,
 		'sessionNames': session_names,
 		'sessionDescriptions': session_descriptions,
+		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
 	}
 
 
-def _apply_session_data(record, session_names: list, session_descriptions: list):
+def _apply_session_data(record, session_names: list, session_descriptions: list, session_ksb_mappings: list | None = None):
 	record.session_names_json = json.dumps([str(s) for s in session_names], ensure_ascii=False)
 	record.session_descriptions_json = json.dumps([str(s) for s in session_descriptions], ensure_ascii=False)
+	if session_ksb_mappings is not None:
+		record.session_ksb_json = json.dumps(normalize_session_ksb_mappings(session_ksb_mappings), ensure_ascii=False)
 	for i, field in enumerate(_SESSION_NAME_FIELDS):
 		setattr(record, field, session_names[i] if i < len(session_names) else '')
 	for i, field in enumerate(_SESSION_DESC_FIELDS):
@@ -1609,6 +1657,7 @@ def modules(request):
 		notes = str(payload.get('notes', '')).strip()
 		session_names = [str(s) for s in payload.get('sessionNames', [])]
 		session_descriptions = [str(s) for s in payload.get('sessionDescriptions', [])]
+		session_ksb_mappings = payload.get('sessionKsbMappings', [])
 
 		if not name:
 			return HttpResponseBadRequest('Module name is required.')
@@ -1619,7 +1668,7 @@ def modules(request):
 			number_of_sessions=sessions,
 			notes=notes,
 		)
-		_apply_session_data(record, session_names, session_descriptions)
+		_apply_session_data(record, session_names, session_descriptions, session_ksb_mappings)
 		record.save()
 		_audit_log(request, action='create', entity='Module', object_id=record.module_id, object_label=record.module_name, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record), status=201)
@@ -1655,7 +1704,10 @@ def module_detail(request, module_id: int):
 		if 'sessionNames' in payload or 'sessionDescriptions' in payload:
 			names = [str(s) for s in payload.get('sessionNames', [getattr(record, f, '') or '' for f in _SESSION_NAME_FIELDS])]
 			descs = [str(s) for s in payload.get('sessionDescriptions', [getattr(record, f, '') or '' for f in _SESSION_DESC_FIELDS])]
-			_apply_session_data(record, names, descs)
+			mappings = payload.get('sessionKsbMappings') if 'sessionKsbMappings' in payload else None
+			_apply_session_data(record, names, descs, mappings)
+		elif 'sessionKsbMappings' in payload:
+			record.session_ksb_json = json.dumps(normalize_session_ksb_mappings(payload.get('sessionKsbMappings', [])), ensure_ascii=False)
 		record.save()
 		_audit_log(request, action='update', entity='Module', object_id=record.module_id, object_label=record.module_name, before=before, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record))
