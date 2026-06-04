@@ -720,6 +720,100 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 	}
 
 
+TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT = 100
+TRAINING_PLAN_PARTIAL_SAVE_RATIO = 0.75
+
+
+def training_plan_queryset():
+	return TrainingPlan.objects.all().order_by('id')
+
+
+def training_plan_items_snapshot() -> list[dict]:
+	return [serialize_training_plan(item) for item in training_plan_queryset()]
+
+
+def training_plan_version(items: list[dict] | None = None) -> str:
+	records = items if items is not None else training_plan_items_snapshot()
+	version_payload = [
+		_without_keys(item, {'id'})
+		for item in records
+	]
+	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def training_plan_recovery_confirmed(request, payload: dict) -> bool:
+	if payload.get('confirmAdminRecovery') is not True:
+		return False
+	expected_token = os.getenv('TRAINING_PLAN_RECOVERY_TOKEN', '').strip()
+	submitted_token = _header_text(request, 'X-KBC-Admin-Recovery-Token')
+	return bool(expected_token and submitted_token and submitted_token == expected_token)
+
+
+def audit_training_plan_rejection(request, *, reason: str, status_code: int, current_items: list[dict], incoming_count: int | None, submitted_version: str = '', current_version: str = '') -> None:
+	_audit_log(
+		request,
+		action='reject',
+		entity='TrainingPlan',
+		object_label='Training Plan timeline',
+		before={'count': len(current_items), 'version': current_version or training_plan_version(current_items)},
+		after={'count': incoming_count if incoming_count is not None else None, 'version': submitted_version},
+		metadata={
+			'accepted': False,
+			'reason': reason,
+			'status': status_code,
+			'previousCount': len(current_items),
+			'incomingCount': incoming_count,
+			'submittedVersion': submitted_version,
+			'currentVersion': current_version or training_plan_version(current_items),
+			'timestamp': timezone.now().isoformat(),
+		},
+	)
+
+
+def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, str]:
+	cohort_name = str(row.get('cohortName', '')).strip()
+	program = str(row.get('program', '')).strip()
+	module_name = str(row.get('moduleName', '')).strip()
+	start_date = str(row.get('startDate', '')).strip()
+	end_date = str(row.get('endDate', '')).strip()
+	sessions_number = str(row.get('sessionsNumber', '')).strip()
+
+	if not cohort_name:
+		return {}, f'Row {index + 1} is missing cohortName.'
+	if not program:
+		return {}, f'Row {index + 1} is missing program.'
+	if not module_name:
+		return {}, f'Row {index + 1} is missing moduleName.'
+	if parse_date(start_date) is None:
+		return {}, f'Row {index + 1} has an invalid startDate.'
+	if parse_date(end_date) is None:
+		return {}, f'Row {index + 1} has an invalid endDate.'
+	try:
+		if int(sessions_number) < 1:
+			return {}, f'Row {index + 1} must have at least one session.'
+	except (TypeError, ValueError):
+		return {}, f'Row {index + 1} has an invalid sessionsNumber.'
+
+	return {
+		'cohort_name': cohort_name,
+		'program': program,
+		'starting_date_lable': str(row.get('startingDateLabel', '')).strip(),
+		'module_name': module_name,
+		'group_name': str(row.get('groupName', '')).strip(),
+		'coach_name': str(row.get('coachName', '')).strip(),
+		'tutor_name': str(row.get('tutorName', '')).strip(),
+		'start_date': start_date,
+		'end_date': end_date,
+		'sessions_number': sessions_number,
+		'session_week_day': str(row.get('sessionWeekDay', '')).strip(),
+		'session_start_time': str(row.get('sessionStartTime', '')).strip(),
+		'session_end_time': str(row.get('sessionEndTime', '')).strip(),
+		'session_ksb_json': json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
+		'ksb_profile_id': normalize_nullable_int(row.get('ksbProfileId', None)),
+		'notes': str(row.get('notes', '')).strip(),
+	}, ''
+
+
 KSB_CODE_PATTERNS = {
 	'knowledgeCodes': re.compile(r'^K\d+$', re.IGNORECASE),
 	'skillCodes': re.compile(r'^S\d+$', re.IGNORECASE),
@@ -969,8 +1063,12 @@ def feedback(request):
 @csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
-		records = TrainingPlan.objects.all().order_by('id')
-		return JsonResponse([serialize_training_plan(item) for item in records], safe=False)
+		items = training_plan_items_snapshot()
+		return JsonResponse({
+			'items': items,
+			'version': training_plan_version(items),
+			'count': len(items),
+		})
 
 	if request.method == 'POST':
 		try:
@@ -979,55 +1077,101 @@ def training_plan(request):
 			return HttpResponseBadRequest('Invalid JSON payload.')
 
 		items = payload.get('items') if isinstance(payload, dict) else None
+		submitted_version = str(payload.get('version', '') or '').strip() if isinstance(payload, dict) else ''
+		current_items = training_plan_items_snapshot()
+		current_version = training_plan_version(current_items)
+		incoming_count = len(items) if isinstance(items, list) else None
 		if not isinstance(items, list):
+			audit_training_plan_rejection(request, reason='Payload must include an items array.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return HttpResponseBadRequest('Payload must include an items array.')
 
-		# If client posted an empty list, do not clear the table — ignore to avoid accidental wipe.
-		# Replace table content with the latest timeline state from the frontend.
-		before_items = [serialize_training_plan(item) for item in TrainingPlan.objects.all().order_by('id')]
-		TrainingPlan.objects.all().delete()
-		created = []
-		for row in items:
-			if not isinstance(row, dict):
-				continue
-			created.append(
-				TrainingPlan.objects.create(
-					cohort_name=str(row.get('cohortName', '')).strip(),
-					program=str(row.get('program', '')).strip(),
-					starting_date_lable=str(row.get('startingDateLabel', '')).strip(),
-					module_name=str(row.get('moduleName', '')).strip(),
-					group_name=str(row.get('groupName', '')).strip(),
-					coach_name=str(row.get('coachName', '')).strip(),
-					tutor_name=str(row.get('tutorName', '')).strip(),
-					start_date=str(row.get('startDate', '')).strip(),
-					end_date=str(row.get('endDate', '')).strip(),
-					sessions_number=str(row.get('sessionsNumber', '')).strip(),
-					session_week_day=str(row.get('sessionWeekDay', '')).strip(),
-					session_start_time=str(row.get('sessionStartTime', '')).strip(),
-					session_end_time=str(row.get('sessionEndTime', '')).strip(),
-					session_ksb_json=json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
-					ksb_profile_id=normalize_nullable_int(row.get('ksbProfileId', None)),
-					notes=str(row.get('notes', '')).strip(),
-				)
+		recovery_confirmed = training_plan_recovery_confirmed(request, payload if isinstance(payload, dict) else {})
+
+		if not submitted_version:
+			reason = 'Reload the latest Training Plan before saving. This prevents an older page from overwriting newer timeline data.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
+
+		if submitted_version != current_version:
+			reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
+
+		if not items and not recovery_confirmed:
+			audit_training_plan_rejection(request, reason='Empty Training Plan saves are not allowed.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': 'Empty Training Plan saves are not allowed.'}, status=400)
+
+		current_count = len(current_items)
+		if (
+			not recovery_confirmed
+			and current_count >= TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT
+			and incoming_count is not None
+			and incoming_count < int(current_count * TRAINING_PLAN_PARTIAL_SAVE_RATIO)
+		):
+			reason = 'Suspicious partial Training Plan save rejected.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse(
+				{
+					'detail': 'Suspicious partial Training Plan save rejected. Reload the latest Training Plan before saving.',
+					'currentVersion': current_version,
+					'items': current_items,
+					'previousCount': current_count,
+					'incomingCount': incoming_count,
+				},
+				status=409,
 			)
 
+		validated_items = []
+		for index, row in enumerate(items):
+			if not isinstance(row, dict):
+				reason = f'Row {index + 1} must be an object.'
+				audit_training_plan_rejection(request, reason=reason, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+				return JsonResponse({'detail': reason}, status=400)
+			values, error = training_plan_values_from_payload_row(row, index)
+			if error:
+				audit_training_plan_rejection(request, reason=error, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+				return JsonResponse({'detail': error}, status=400)
+			validated_items.append(values)
+
+		with transaction.atomic():
+			locked_items = [serialize_training_plan(item) for item in TrainingPlan.objects.select_for_update().order_by('id')]
+			locked_version = training_plan_version(locked_items)
+			if submitted_version != locked_version:
+				reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+				audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=locked_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=locked_version)
+				return JsonResponse({'detail': reason, 'currentVersion': locked_version, 'items': locked_items}, status=409)
+
+			TrainingPlan.objects.all().delete()
+			created = [
+				TrainingPlan.objects.create(**item)
+				for item in validated_items
+			]
+
 		after_items = [serialize_training_plan(item) for item in created]
-		diff = _bulk_diff(before_items, after_items, ignored_keys={'id'})
+		next_version = training_plan_version(after_items)
+		diff = _bulk_diff(current_items, after_items, ignored_keys={'id'})
 		_audit_log(
 			request,
 			action='replace',
 			entity='TrainingPlan',
 			object_label='Training Plan timeline',
-			before={'count': diff['beforeCount'], 'removed': diff['removed']},
-			after={'count': diff['afterCount'], 'added': diff['added']},
+			before={'count': diff['beforeCount'], 'version': current_version, 'removed': diff['removed']},
+			after={'count': diff['afterCount'], 'version': next_version, 'added': diff['added']},
 			metadata={
+				'accepted': True,
 				'received': len(items),
+				'previousCount': len(current_items),
+				'incomingCount': len(items),
 				'addedCount': diff['addedCount'],
 				'removedCount': diff['removedCount'],
 				'truncated': diff['truncated'],
+				'submittedVersion': submitted_version,
+				'currentVersion': current_version,
+				'nextVersion': next_version,
+				'timestamp': timezone.now().isoformat(),
 			},
 		)
-		return JsonResponse({'saved': len(created)})
+		return JsonResponse({'saved': len(created), 'items': after_items, 'version': next_version, 'count': len(after_items)})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 

@@ -1601,7 +1601,23 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
 }
 
 type TrainingPlanProgramConfigPayload = CustomProgram;
+type TrainingPlanPayload = { items: TrainingPlanItem[]; version?: string; count?: number };
 type TrainingPlanHolidayPayload = { items: Holiday[]; version?: string };
+
+function parseTrainingPlanPayload(payload: unknown): TrainingPlanPayload | null {
+  if (Array.isArray(payload)) {
+    return { items: payload as TrainingPlanItem[], version: undefined, count: payload.length };
+  }
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)) {
+    const typedPayload = payload as { items: TrainingPlanItem[]; version?: unknown; count?: unknown };
+    return {
+      items: typedPayload.items,
+      version: typeof typedPayload.version === 'string' ? typedPayload.version : undefined,
+      count: typeof typedPayload.count === 'number' ? typedPayload.count : typedPayload.items.length,
+    };
+  }
+  return null;
+}
 
 function parseHolidayPayload(payload: unknown): TrainingPlanHolidayPayload | null {
   if (Array.isArray(payload)) {
@@ -1680,6 +1696,7 @@ export default function ApprenticeshipTimeline() {
   const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
   const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
+  const [trainingPlanVersion, setTrainingPlanVersion] = useState<string | undefined>(undefined);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [holidayVersion, setHolidayVersion] = useState<string | undefined>(undefined);
@@ -1712,12 +1729,13 @@ export default function ApprenticeshipTimeline() {
         return false;
       }
 
-      const items = (await response.json()) as TrainingPlanItem[];
-      if (!Array.isArray(items)) {
+      const payload = parseTrainingPlanPayload(await response.json());
+      if (!payload || !Array.isArray(payload.items)) {
         return false;
       }
 
-      setTrainingPlanItems(items);
+      setTrainingPlanItems(payload.items);
+      setTrainingPlanVersion(payload.version);
       setHasLoadedTrainingPlan(true);
       return true;
     } catch {
@@ -1821,65 +1839,37 @@ export default function ApprenticeshipTimeline() {
     void reloadTrainingPlanSupportData();
   });
 
-  useEffect(() => {
-    return;
-
-    const controller = new AbortController();
-    const payload = { items: flattenGroupsForApi(groups) };
-
-    // Do not POST an empty items array — that would wipe the database on the server.
-    if (!Array.isArray(payload.items)) {
-      return () => controller.abort();
-    }
-
-    setTrainingPlanSaveState('saving');
-    setTrainingPlanSaveMessage('Saving cohorts...');
-
-    void (async () => {
-      try {
-        const response = await fetch('/api/training-plan/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          const errorText = (await response.text()).trim();
-          throw new Error(errorText || `Request failed with status ${response.status}`);
-        }
-
-        setTrainingPlanSaveState('saved');
-        setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        const message = error instanceof Error ? error.message : 'Unknown save error';
-        setTrainingPlanSaveState('error');
-        setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
-
-        void kbcSwal.fire({
-          title: 'Cohort Not Saved',
-          html: `The latest cohort change is visible on screen, but it did not reach the database.<br /><br /><strong>Details:</strong> ${message}`,
-          icon: 'error',
-          confirmButtonText: 'OK',
-        });
-      }
-    })();
-
-    return () => controller.abort();
-  }, [groups]);
 
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
 
   const persistTrainingPlan = async (nextGroups: ProgrammeGroup[], silent = false) => {
-    const payload = { items: flattenGroupsForApi(nextGroups) };
+    const items = flattenGroupsForApi(nextGroups);
 
-    if (!Array.isArray(payload.items)) {
+    if (!hasLoadedTrainingPlan || !trainingPlanVersion) {
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Reload the Training Plan before saving.');
+      await kbcSwal.fire({
+        title: 'Training Plan Not Ready',
+        html: 'The latest Training Plan version has not loaded yet. Please reload and review before saving.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
       return false;
     }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save blocked because the local Training Plan is empty.');
+      await kbcSwal.fire({
+        title: 'Training Plan Not Saved',
+        html: 'The local Training Plan data is empty, so the save was blocked to protect the database.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
+    const payload = { items, version: trainingPlanVersion };
 
     setTrainingPlanSaveState('saving');
     setTrainingPlanSaveMessage('Saving cohorts...');
@@ -1892,10 +1882,47 @@ export default function ApprenticeshipTimeline() {
       });
 
       if (!response.ok) {
+        if (response.status === 409) {
+          let detail = 'The Training Plan was updated by someone else. Please reload and review before saving.';
+          try {
+            const conflict = await response.json() as { detail?: string; currentVersion?: string; items?: TrainingPlanItem[] };
+            if (conflict.detail) {
+              detail = conflict.detail;
+            }
+            if (conflict.currentVersion) {
+              setTrainingPlanVersion(conflict.currentVersion);
+            }
+            if (Array.isArray(conflict.items)) {
+              setTrainingPlanItems(conflict.items);
+            }
+          } catch {
+            // Use the default conflict message.
+          }
+
+          setTrainingPlanSaveState('error');
+          setTrainingPlanSaveMessage('Save blocked because the Training Plan changed elsewhere.');
+          await kbcSwal.fire({
+            title: 'Training Plan Changed',
+            html: `${detail}<br /><br />Please reload and review before saving.`,
+            icon: 'warning',
+            confirmButtonText: 'OK',
+          });
+          return false;
+        }
         const errorText = (await response.text()).trim();
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
 
+      const result = await response.json() as { saved?: number; items?: TrainingPlanItem[]; version?: string };
+      if (!result.version) {
+        throw new Error('The server did not return a new Training Plan version.');
+      }
+      if (typeof result.saved !== 'number' || result.saved !== items.length) {
+        throw new Error(`Saved ${typeof result.saved === 'number' ? result.saved : 0} of ${items.length} Training Plan rows.`);
+      }
+
+      setTrainingPlanVersion(result.version);
+      setTrainingPlanItems(Array.isArray(result.items) ? result.items : items);
       setTrainingPlanSaveState('saved');
       setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
       if (!silent) {
@@ -2358,15 +2385,12 @@ export default function ApprenticeshipTimeline() {
         g.rows.some((row, ri) => row.blks.length !== groups[gi].rows[ri]?.blks.length)
       );
       if (hasChanges) {
-        const flattened = flattenGroupsForApi(nextGroups);
-        setTrainingPlanItems(flattened);
+        const saved = await persistTrainingPlan(nextGroups, true);
+        if (!saved) {
+          throw new Error('The linked Training Plan rows were not re-saved safely.');
+        }
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups));
         setGroups(nextGroups);
-        // Silently persist — no success toast needed since the delete confirmation covers it
-        void fetch('/api/training-plan/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: flattened }),
-        });
       }
     }
   };
