@@ -68,6 +68,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
   const [draft, setDraft] = useState<Omit<KsbProfile, 'id'>>(profiles[0] ? { ...profiles[0], ksbItems: itemsFromProfile(profiles[0]) } : emptyProfile());
   const [draftSnapshot, setDraftSnapshot] = useState(() => JSON.stringify(profiles[0] ? { ...profiles[0], ksbItems: itemsFromProfile(profiles[0]) } : emptyProfile()));
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -151,6 +152,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
       return;
     }
     setSaving(true);
+    let shouldClose = false;
     try {
       const ksbItems = normalizeItems(draft.ksbItems);
       const payload = {
@@ -169,9 +171,13 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
         setSelectedId(saved.id);
         setDraft(next);
         setDraftSnapshot(JSON.stringify(next));
+        shouldClose = true;
       }
     } finally {
       setSaving(false);
+    }
+    if (shouldClose) {
+      onClose();
     }
   };
 
@@ -191,12 +197,27 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
       reverseButtons: true,
     });
     if (!result.isConfirmed) return;
-    const ok = await onDelete(profileId);
-    if (ok && selectedId === profileId) {
-      const next = emptyProfile();
-      setSelectedId(null);
-      setDraft(next);
-      setDraftSnapshot(JSON.stringify(next));
+    setDeleting(true);
+    void kbcSwal.fire({
+      title: 'Deleting profile...',
+      html: 'Please wait while the KSB profile is being removed.',
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
+    try {
+      const ok = await onDelete(profileId);
+      if (ok && selectedId === profileId) {
+        const next = emptyProfile();
+        setSelectedId(null);
+        setDraft(next);
+        setDraftSnapshot(JSON.stringify(next));
+      }
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -210,7 +231,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-[3px]">
-      <button type="button" aria-label="Close KSB profiles" className="absolute inset-0 cursor-default" onClick={() => void handleClose()} />
+      <button type="button" aria-label="Close KSB profiles" className="absolute inset-0 cursor-default" onClick={() => { if (!deleting) void handleClose(); }} />
       <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="w-72 shrink-0 border-r border-gray-200 bg-gray-50">
           <div className="border-b border-gray-200 p-4">
@@ -219,7 +240,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
                 <h2 className="text-sm font-extrabold text-kbc-navy">KSB Profiles</h2>
                 <p className="mt-0.5 text-xs font-medium text-gray-400">{profiles.length} profile{profiles.length === 1 ? '' : 's'}</p>
               </div>
-              <button type="button" onClick={() => void startNew()} className="flex h-8 w-8 items-center justify-center rounded-lg bg-kbc-navy text-white">
+              <button type="button" onClick={() => void startNew()} disabled={deleting} className="flex h-8 w-8 items-center justify-center rounded-lg bg-kbc-navy text-white disabled:opacity-50">
                 <i className="ri-add-line" />
               </button>
             </div>
@@ -228,7 +249,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
           <div className="max-h-[calc(100vh-10rem)] overflow-y-auto p-2">
             {filtered.map(profile => (
               <div key={profile.id} className="mb-1 rounded-lg border px-3 py-2 transition-all" style={{ borderColor: selectedId === profile.id ? '#1B2A4A' : '#E5E7EB', background: selectedId === profile.id ? '#F8FAFC' : '#fff' }}>
-                <button type="button" onClick={() => void selectProfile(profile)} className="w-full text-left">
+                <button type="button" onClick={() => void selectProfile(profile)} disabled={deleting} className="w-full text-left disabled:cursor-not-allowed">
                   <span className="block truncate text-xs font-extrabold text-gray-800">{profile.name}</span>
                   <span className="mt-0.5 block truncate text-[11px] font-semibold text-gray-400">{profile.programmeName || 'No programme linked'}</span>
                 </button>
@@ -236,7 +257,8 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
                   <button
                     type="button"
                     onClick={() => void selectProfile(profile)}
-                    className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-extrabold text-kbc-navy hover:bg-gray-50"
+                    disabled={deleting}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-extrabold text-kbc-navy hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <i className="ri-pencil-line text-xs" />
                     Edit
@@ -244,7 +266,8 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
                   <button
                     type="button"
                     onClick={() => void deleteProfile(profile.id)}
-                    className="inline-flex items-center gap-1 rounded-md border border-red-100 bg-red-50 px-2 py-1 text-[11px] font-extrabold text-red-600 hover:bg-red-100"
+                    disabled={deleting}
+                    className="inline-flex items-center gap-1 rounded-md border border-red-100 bg-red-50 px-2 py-1 text-[11px] font-extrabold text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <i className="ri-delete-bin-line text-xs" />
                     Delete
@@ -261,7 +284,7 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
               <p className="text-xs font-bold text-white/60">{selectedId ? 'Edit profile' : 'New profile'}</p>
               <h3 className="truncate text-base font-extrabold text-white">{draft.name || 'KSB Profile'}</h3>
             </div>
-            <button type="button" onClick={() => void handleClose()} className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 hover:bg-white/15 hover:text-white">
+            <button type="button" onClick={() => void handleClose()} disabled={deleting} className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 hover:bg-white/15 hover:text-white disabled:opacity-50">
               <i className="ri-close-line text-lg" />
             </button>
           </div>
@@ -360,8 +383,8 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
           <div className="flex items-center justify-between border-t border-gray-200 bg-white px-5 py-3">
             <span className="text-xs font-bold text-gray-400">{counts} required KSB code{counts === 1 ? '' : 's'}</span>
             <div className="flex items-center gap-2">
-              {selectedId && <button type="button" onClick={deleteSelected} className="rounded-lg px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50">Delete</button>}
-              <button type="button" onClick={save} disabled={saving || !profileReady} className="rounded-lg bg-kbc-navy px-5 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-gray-300">
+              {selectedId && <button type="button" onClick={deleteSelected} disabled={deleting} className="rounded-lg px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">Delete</button>}
+              <button type="button" onClick={save} disabled={saving || deleting || !profileReady} className="rounded-lg bg-kbc-navy px-5 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-gray-300">
                 {saving ? 'Saving...' : 'Save Profile'}
               </button>
             </div>

@@ -114,6 +114,12 @@ interface ModuleMonthlySummary {
   months: ModuleMonthSummary[];
 }
 
+type KsbCodeSets = {
+  knowledgeCodes: Set<string>;
+  skillCodes: Set<string>;
+  behaviourCodes: Set<string>;
+};
+
 const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
@@ -163,6 +169,24 @@ function normalizeKsbProfileItems(profile: KsbProfile): KsbProfileItem[] {
     ...(profile.skillCodes || []).map(code => ({ type: 'S' as const, number: code.replace(/^S/i, ''), code: code.toUpperCase(), description: '' })),
     ...(profile.behaviourCodes || []).map(code => ({ type: 'B' as const, number: code.replace(/^B/i, ''), code: code.toUpperCase(), description: '' })),
   ];
+}
+
+function buildKsbCodeSets(profile: KsbProfile): KsbCodeSets {
+  const items = normalizeKsbProfileItems(profile);
+  return {
+    knowledgeCodes: new Set(normalizeKsbCodes(items.filter(item => item.type === 'K').map(item => item.code), 'K')),
+    skillCodes: new Set(normalizeKsbCodes(items.filter(item => item.type === 'S').map(item => item.code), 'S')),
+    behaviourCodes: new Set(normalizeKsbCodes(items.filter(item => item.type === 'B').map(item => item.code), 'B')),
+  };
+}
+
+function filterSessionKsbMappingForProfile(mapping: SessionKsbMapping | undefined, codeSets: KsbCodeSets | undefined): SessionKsbMapping {
+  if (!mapping || !codeSets) return emptySessionKsbMapping();
+  return {
+    knowledgeCodes: normalizeKsbCodes(mapping.knowledgeCodes, 'K').filter(code => codeSets.knowledgeCodes.has(code)),
+    skillCodes: normalizeKsbCodes(mapping.skillCodes, 'S').filter(code => codeSets.skillCodes.has(code)),
+    behaviourCodes: normalizeKsbCodes(mapping.behaviourCodes, 'B').filter(code => codeSets.behaviourCodes.has(code)),
+  };
 }
 
 function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; notes: string } {
@@ -468,9 +492,9 @@ function sessionDayLabel(days?: string[]): string {
 }
 
 function getSessionStatusLabel(session: MonthlySessionDetail): string {
-  if (session.isReplacement && session.isClash) return 'Replacement attempt blocked';
-  if (session.isClash) return 'Shifted, not counted';
-  if (session.isReplacement) return 'Replacement session';
+  if (session.isClash && session.shiftedTo) return 'Shifted to replacement';
+  if (session.isClash) return 'Needs replacement';
+  if (session.isReplacement) return 'Replacement delivered';
   return 'Normal session';
 }
 
@@ -571,9 +595,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     ['Group', summary.groupName],
     ['Tutor', summary.tutor],
     ['Coach', summary.coach],
-    ['Module sessions', String(summary.totalSessions)],
-    ['Holiday weeks', String(totalClashedSessions)],
-    ['Total weeks', String(totalWeeks)],
+    ['Planned sessions', String(summary.totalSessions)],
+    ['Skipped weeks', String(totalClashedSessions)],
+    ['Delivery weeks', String(totalWeeks)],
   ];
   const renderKsbBadges = (mapping: SessionKsbMapping) => {
     const rows = [
@@ -651,42 +675,43 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
   <meta charset="utf-8" />
   <title>${escapeAlertHtml(summary.moduleName)} - Training Plan Report</title>
   <style>
-    @page { size: A4 landscape; margin: 12mm; }
+    @page { size: A4 landscape; margin: 7mm; }
     * { box-sizing: border-box; }
-    body { margin: 0; color: #17233d; font-family: Arial, Helvetica, sans-serif; font-size: 11px; background: #ffffff; }
+    body { margin: 0; color: #17233d; font-family: Arial, Helvetica, sans-serif; font-size: 9.5px; background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .report-shell { width: 100%; }
-    .top-rule { height: 5px; border-radius: 999px; background: ${escapeAlertHtml(summary.color)}; margin-bottom: 14px; }
-    .header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 12px; }
-    h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.15; }
-    .subtitle { color: #64748b; font-size: 12px; line-height: 1.45; }
-    .generated { text-align: right; color: #64748b; white-space: nowrap; }
-    .metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 12px 0; }
-    .metric { border: 1px solid #dbe3ee; border-radius: 8px; padding: 8px; background: #f8fafc; min-height: 48px; }
-    .metric-label { display: block; color: #71829a; font-size: 9px; font-weight: 800; text-transform: uppercase; margin-bottom: 4px; }
-    .metric-value { display: block; color: #17233d; font-size: 12px; font-weight: 800; }
+    .top-rule { height: 4px; border-radius: 999px; background: ${escapeAlertHtml(summary.color)}; margin-bottom: 8px; }
+    .header { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 8px; }
+    h1 { margin: 0 0 3px; font-size: 17px; line-height: 1.1; }
+    .subtitle { color: #64748b; font-size: 10px; line-height: 1.35; }
+    .generated { text-align: right; color: #64748b; white-space: nowrap; font-size: 8.5px; line-height: 1.3; }
+    .metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; margin: 8px 0; }
+    .metric { border: 1px solid #dbe3ee; border-radius: 6px; padding: 6px 7px; background: #f8fafc; min-height: 36px; }
+    .metric-label { display: block; color: #71829a; font-size: 7.5px; font-weight: 800; text-transform: uppercase; margin-bottom: 3px; }
+    .metric-value { display: block; color: #17233d; font-size: 10px; font-weight: 800; }
     .metric-warning .metric-value { color: #b45309; }
-    .warning { display: flex; gap: 8px; border: 1px solid #fde68a; background: #fffbeb; color: #7c2d12; padding: 9px 10px; border-radius: 8px; font-weight: 700; margin: 10px 0 14px; }
-    table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #dbe3ee; border-radius: 10px; overflow: hidden; }
-    thead th { background: #eef3f8; color: #536882; font-size: 10px; text-transform: uppercase; text-align: left; padding: 8px; }
-    tbody td { vertical-align: top; border-top: 1px solid #e7edf5; padding: 8px; }
-    tbody tr { break-inside: avoid; page-break-inside: avoid; }
-    .month-cell { width: 130px; color: #17233d; }
-    .sessions-count { width: 90px; }
-    .sessions-count span { display: block; margin-top: 4px; color: #dc2626; font-weight: 800; font-size: 10px; }
-    .session-card { border: 1px solid #dbe3ee; border-left: 4px solid #cbd5e1; border-radius: 7px; padding: 7px 9px; margin-bottom: 5px; background: #fff; break-inside: avoid; }
+    .warning { display: flex; gap: 6px; border: 1px solid #fde68a; background: #fffbeb; color: #7c2d12; padding: 6px 8px; border-radius: 6px; font-weight: 700; margin: 7px 0 8px; font-size: 8.8px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #dbe3ee; border-radius: 8px; overflow: visible; page-break-inside: auto; }
+    thead { display: table-header-group; }
+    thead th { background: #eaf0f7; color: #536882; font-size: 8px; text-transform: uppercase; text-align: left; padding: 5px 6px; }
+    tbody td { vertical-align: top; border-top: 1px solid #e7edf5; padding: 5px 6px; page-break-inside: auto; }
+    tbody tr { break-inside: auto; page-break-inside: auto; }
+    .month-cell { width: 108px; color: #17233d; }
+    .sessions-count { width: 76px; }
+    .sessions-count span { display: block; margin-top: 3px; color: #dc2626; font-weight: 800; font-size: 8px; }
+    .session-card { border: 1px solid #dbe3ee; border-left: 3px solid #cbd5e1; border-radius: 5px; padding: 4px 6px; margin-bottom: 3px; background: #fff; break-inside: avoid; page-break-inside: avoid; }
     .session-clash { border-color: #fecaca; border-left-color: #ef4444; background: #fff5f5; color: #991b1b; }
     .session-replacement { border-color: #a7f3d0; border-left-color: #10b981; background: #ecfdf5; color: #065f46; }
-    .session-grid { display: grid; grid-template-columns: 110px minmax(180px, 1fr) 155px; gap: 10px; align-items: center; }
-    .status-pill { justify-self: end; border-radius: 6px; padding: 4px 7px; font-size: 9px; font-weight: 800; }
+    .session-grid { display: grid; grid-template-columns: 90px minmax(160px, 1fr) 125px; gap: 7px; align-items: center; }
+    .status-pill { justify-self: end; border-radius: 5px; padding: 3px 5px; font-size: 7.8px; font-weight: 800; }
     .status-clash { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
     .status-replacement { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-    .session-note { margin-top: 6px; border: 1px solid #fecaca; background: rgba(255,255,255,.75); color: #991b1b; border-radius: 5px; padding: 5px 6px; font-weight: 700; }
-    .ksb-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .ksb-group { display: inline-flex; align-items: center; gap: 3px; border: 1px solid #dbe3ee; border-radius: 6px; background: #fff; padding: 3px; }
-    .ksb-label { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; border-radius: 4px; background: #0ea5e9; color: #fff; font-size: 9px; font-weight: 800; }
-    .ksb-code { border: 1px solid #dbe3ee; border-radius: 4px; padding: 2px 4px; color: #17233d; font-size: 9px; font-weight: 800; }
-    .holiday-item { display: flex; gap: 7px; align-items: flex-start; margin-bottom: 5px; }
-    .holiday-dot { width: 8px; height: 8px; border-radius: 99px; margin-top: 4px; flex: 0 0 auto; }
+    .session-note { margin-top: 4px; border: 1px solid #fecaca; background: rgba(255,255,255,.75); color: #991b1b; border-radius: 4px; padding: 3px 5px; font-weight: 700; font-size: 8px; }
+    .ksb-row { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+    .ksb-group { display: inline-flex; align-items: center; gap: 2px; border: 1px solid #dbe3ee; border-radius: 5px; background: #fff; padding: 2px; }
+    .ksb-label { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; border-radius: 3px; background: #0ea5e9; color: #fff; font-size: 7.5px; font-weight: 800; }
+    .ksb-code { border: 1px solid #dbe3ee; border-radius: 3px; padding: 1px 3px; color: #17233d; font-size: 7.5px; font-weight: 800; }
+    .holiday-item { display: flex; gap: 5px; align-items: flex-start; margin-bottom: 3px; font-size: 8.4px; }
+    .holiday-dot { width: 7px; height: 7px; border-radius: 99px; margin-top: 3px; flex: 0 0 auto; }
     .muted { color: #8a98aa; }
     @media print {
       .no-print { display: none !important; }
@@ -712,7 +737,7 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     </div>
     <div class="metrics">
       ${metricRows.map(([label, value]) => `
-        <div class="metric ${label === 'Holiday weeks' && totalClashedSessions ? 'metric-warning' : ''}">
+        <div class="metric ${label === 'Skipped weeks' && totalClashedSessions ? 'metric-warning' : ''}">
           <span class="metric-label">${escapeAlertHtml(label)}</span>
           <span class="metric-value">${escapeAlertHtml(value)}</span>
         </div>
@@ -722,9 +747,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
       <div class="warning">
         <span>Warning</span>
         <span>
-          ${originalClashCount} original session${originalClashCount !== 1 ? 's' : ''} clashed with holiday week${originalClashCount !== 1 ? 's' : ''}.
-          ${replacementAttemptClashCount > 0 ? `${replacementAttemptClashCount} replacement attempt${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by holiday weeks.` : ''}
-          Affected sessions shift to the next available training week, so the timeline extends to ${escapeAlertHtml(formatPlanDate(summary.effectiveEndDate))}.
+          ${originalClashCount} planned session${originalClashCount !== 1 ? 's were' : ' was'} skipped on holiday week${originalClashCount !== 1 ? 's' : ''}.
+          ${replacementAttemptClashCount > 0 ? `${replacementAttemptClashCount} shifted session${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by another holiday week.` : ''}
+          Counted sessions stay at ${escapeAlertHtml(String(summary.totalSessions))}; delivery now ends on ${escapeAlertHtml(formatPlanDate(summary.effectiveEndDate))}.
         </span>
       </div>
     ` : ''}
@@ -772,17 +797,20 @@ function exportMonthlySummaryToPdf(summary: ModuleMonthlySummary) {
   printWindow.document.title = `${safeFileName}.pdf`;
 }
 
-function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[], catalogModules: CatalogModule[]): ModuleMonthlySummary[] {
+function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday[], customModules: CustomModule[], catalogModules: CatalogModule[], ksbProfiles: KsbProfile[]): ModuleMonthlySummary[] {
+  const activeProfileCodeSets = new Map(
+    ksbProfiles
+      .filter(profile => profile.isActive)
+      .map(profile => [profile.id, buildKsbCodeSets(profile)]),
+  );
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
       row.blks.map(block => {
+        const rowKsbCodeSets = row.ksbProfileId ? activeProfileCodeSets.get(row.ksbProfileId) : undefined;
         const meta = resolveTrainingModuleMeta(block, customModules);
         const catalogModule = resolveCatalogModuleForBlock(block, meta.lbl, catalogModules);
         const months = new Map<string, ModuleMonthSummary>();
-        const selectedHolidayIds = new Set(row.holidayIds || []);
-        const scopedHolidays = selectedHolidayIds.size
-          ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id))
-          : holidays;
+        const scopedHolidays = getRowActiveHolidays(row, holidays);
         const sessionPlan = buildHolidayAdjustedSessionPlan(block, scopedHolidays);
         const affectedSessions = sessionPlan.originalClashedSessions;
         const extensionAffectedSessions = sessionPlan.extensionClashedSessions;
@@ -818,7 +846,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           months.get(monthKey)!.sessions.push({
             date,
             sessionName: catalogModule?.sessionNames?.[(sessionDate.countedNumber || sessionDate.originalNumber) - 1]?.trim() || `Session ${sessionDate.countedNumber || sessionDate.originalNumber}`,
-            ksbMappings: block.sessionKsbMappings?.[mappingIndex] || emptySessionKsbMapping(),
+            ksbMappings: filterSessionKsbMappingForProfile(block.sessionKsbMappings?.[mappingIndex], rowKsbCodeSets),
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
@@ -840,10 +868,8 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           const isReplacementAttempt = skippedSession.isExtension;
           months.get(monthKey)!.sessions.push({
             date,
-            sessionName: isReplacementAttempt
-              ? `Replacement attempt for Session ${skippedSession.originalNumber}`
-              : catalogModule?.sessionNames?.[skippedSession.originalNumber - 1]?.trim() || `Session ${skippedSession.originalNumber}`,
-            ksbMappings: block.sessionKsbMappings?.[mappingIndex] || emptySessionKsbMapping(),
+            sessionName: catalogModule?.sessionNames?.[skippedSession.originalNumber - 1]?.trim() || `Session ${skippedSession.originalNumber}`,
+            ksbMappings: filterSessionKsbMappingForProfile(block.sessionKsbMappings?.[mappingIndex], rowKsbCodeSets),
             tutor: block.tutor || 'TBD',
             coach: block.coachName || 'TBD',
             time: `${block.sessionStartTime || '09:00'}${block.sessionEndTime ? ` - ${block.sessionEndTime}` : ''}`,
@@ -977,13 +1003,13 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
             ['Group', summary.groupName],
             ['Tutor', summary.tutor],
             ['Coach', summary.coach],
-            ['Module sessions', summary.totalSessions],
-            ['Holiday weeks', totalClashedSessions],
-            ['Total weeks', totalWeeks],
+            ['Planned sessions', summary.totalSessions],
+            ['Skipped weeks', totalClashedSessions],
+            ['Delivery weeks', totalWeeks],
           ].map(([label, value]) => (
             <div key={label} className="rounded-md border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <span className="block text-[10px] font-extrabold uppercase text-slate-400">{label}</span>
-              <span className={`mt-0.5 block font-extrabold ${label === 'Holiday weeks' && totalClashedSessions ? 'text-amber-700' : 'text-gray-800'}`}>{value}</span>
+              <span className={`mt-0.5 block font-extrabold ${label === 'Skipped weeks' && totalClashedSessions ? 'text-amber-700' : 'text-gray-800'}`}>{value}</span>
             </div>
           ))}
         </div>
@@ -991,9 +1017,9 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           <div className="flex items-start gap-2 border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-xs font-semibold text-amber-900">
             <i className="ri-alert-line mt-0.5 text-sm text-amber-700" />
             <span>
-              {originalClashCount} original session{originalClashCount !== 1 ? 's' : ''} clashed with holiday week{originalClashCount !== 1 ? 's' : ''}.
-              {replacementAttemptClashCount > 0 ? ` ${replacementAttemptClashCount} replacement attempt${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by holiday weeks.` : ''}
-              {' '}Affected sessions shift to the next available training week, so the timeline extends to {formatPlanDate(summary.effectiveEndDate)}.
+              {originalClashCount} planned session{originalClashCount !== 1 ? 's were' : ' was'} skipped on holiday week{originalClashCount !== 1 ? 's' : ''}.
+              {replacementAttemptClashCount > 0 ? ` ${replacementAttemptClashCount} shifted session${replacementAttemptClashCount !== 1 ? 's were' : ' was'} also blocked by another holiday week.` : ''}
+              {' '}Counted sessions stay at {summary.totalSessions}; delivery now ends on {formatPlanDate(summary.effectiveEndDate)}.
             </span>
           </div>
         )}
@@ -1004,7 +1030,7 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
               <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
                 <tr>
                   <th className="w-44 px-3 py-2 font-bold">Month</th>
-                  <th className="w-24 px-3 py-2 font-bold">Sessions</th>
+                  <th className="w-28 px-3 py-2 font-bold">Counted</th>
                   <th className="min-w-[740px] px-3 py-2 font-bold">Session Dates</th>
                   <th className="min-w-48 px-3 py-2 font-bold">Holidays</th>
                 </tr>
@@ -1019,9 +1045,10 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                     <td className="whitespace-nowrap px-3 py-3 font-extrabold text-kbc-navy">{month.label}</td>
                     <td className="px-3 py-3">
                       <span className="block font-bold text-gray-700">{validCount}</span>
+                      <span className="mt-0.5 block text-[10px] font-bold uppercase text-slate-400">delivered</span>
                       {clashedCount > 0 && (
                         <span className="mt-1 block text-[11px] font-bold text-red-600">
-                          {clashedCount} clash{clashedCount !== 1 ? 'es' : ''} not counted
+                          {clashedCount} skipped
                         </span>
                       )}
                     </td>
@@ -1057,9 +1084,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
                               <KsbBadges mapping={session.ksbMappings} />
                               {session.holidays.length > 0 && (
                                 <div className="mt-1 rounded border border-red-200 bg-white/80 px-2 py-1 text-[11px] font-semibold text-red-800">
-                                  {session.isReplacement
-                                    ? `Replacement attempt blocked this week: clashed with ${session.holidays.map(holiday => holiday.label).join(', ')}${session.shiftedTo ? `, delivery remains shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}`
-                                    : `Not delivered this week: clashed with ${session.holidays.map(holiday => holiday.label).join(', ')}${session.shiftedTo ? `, shifted to ${formatPlanDate(session.shiftedTo)}.` : '.'}`}
+                                  Blocked by {session.holidays.map(holiday => holiday.label).join(', ')}
+                                  {session.shiftedTo ? `; replacement scheduled on ${formatPlanDate(session.shiftedTo)}.` : '.'}
                                 </div>
                               )}
                             </div>
@@ -1744,6 +1770,18 @@ export default function ApprenticeshipTimeline() {
 
     setTrainingPlanSaveState('saving');
     setTrainingPlanSaveMessage('Saving cohorts...');
+    if (!silent) {
+      void kbcSwal.fire({
+        title: 'Saving cohort...',
+        html: 'Please wait while the Training Plan is being updated.',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+        didOpen: () => {
+          kbcSwal.showLoading();
+        },
+      });
+    }
 
     try {
       const response = await fetch('/api/training-plan/', {
@@ -2441,8 +2479,8 @@ export default function ApprenticeshipTimeline() {
     return sessions;
   }, [groups]);
   const monthlyModuleSummaries = useMemo(
-    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules),
-    [catalogModules, customModules, groups, holidays],
+    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
+    [catalogModules, customModules, groups, holidays, ksbProfiles],
   );
   const openMonthlySummary = (groupId: string, rowId: string, blockId: string) => {
     const targetKey = `${groupId}-${rowId}-${blockId}`;

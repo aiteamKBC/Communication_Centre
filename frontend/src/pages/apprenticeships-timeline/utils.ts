@@ -192,7 +192,7 @@ export function buildHolidayAdjustedSessionPlan(
             ? pendingReplacements[0].originalNumber
             : Math.min(plannedSessions, countedSessions + pendingReplacements.length + 1),
         };
-        if (!isExtension) {
+        if (!isExtension || pendingReplacements.length === 0) {
           pendingReplacements.push(skippedSession);
         }
         skippedSessions.push(skippedSession);
@@ -315,7 +315,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
         const clampS = s < viewStart ? viewStart : s;
         const clampE = e > viewEnd   ? viewEnd   : e;
         const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-        cols.push({ key: `i${y}-${ii}`, label: `${y} ${intake.label}`, subLabel: `${MONTH_NAMES[intake.months[0]]}–${MONTH_NAMES[lastM]}`, startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: days * 1.2 });
+        cols.push({ key: `i${y}-${ii}`, label: `${y} ${intake.label}`, subLabel: `${MONTH_NAMES[intake.months[0]]}–${MONTH_NAMES[lastM]}`, startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 1.2 });
       });
     }
   } else if (zoom === 'month') {
@@ -326,7 +326,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
       const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-      cols.push({ key: `m${cur.getFullYear()}-${cur.getMonth()}`, label: MONTH_NAMES[cur.getMonth()], subLabel: String(cur.getFullYear()), startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: Math.max(days * 2.8, 28) });
+      cols.push({ key: `m${cur.getFullYear()}-${cur.getMonth()}`, label: MONTH_NAMES[cur.getMonth()], subLabel: String(cur.getFullYear()), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: Math.max(days * 2.8, 28) });
       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
     }
   } else if (zoom === 'week') {
@@ -367,23 +367,39 @@ export function getBlockPosition(
   cols: TimelineColumn[],
 ): { left: number; width: number } | null {
   if (!cols.length) return null;
-  const totalWidth = cols.reduce((s, c) => s + c.widthPx, 0);
-  const viewStart  = new Date(cols[0].startDate);
-  const viewEnd    = new Date(cols[cols.length - 1].endDate);
-  const blockStart = new Date(startDate);
-  const blockEnd   = new Date(endDate);
+  const viewStart  = parseIsoLocal(cols[0].startDate);
+  const viewEnd    = parseIsoLocal(cols[cols.length - 1].endDate);
+  const blockStart = parseIsoLocal(startDate);
+  const blockEnd   = parseIsoLocal(endDate);
 
   if (blockEnd < viewStart || blockStart > viewEnd) return null;
 
   const clampStart = blockStart < viewStart ? viewStart : blockStart;
   const clampEnd   = blockEnd   > viewEnd   ? viewEnd   : blockEnd;
 
-  const viewDays  = Math.ceil((viewEnd.getTime()   - viewStart.getTime())  / 86400000) + 1;
-  const startOff  = Math.ceil((clampStart.getTime() - viewStart.getTime()) / 86400000);
-  const endOff    = Math.ceil((clampEnd.getTime()   - viewStart.getTime()) / 86400000);
+  const dayMs = 86400000;
+  const boundaryOffset = (date: Date): number => {
+    let offset = 0;
+    for (const col of cols) {
+      const colStart = parseIsoLocal(col.startDate);
+      const colEndExclusive = addDays(parseIsoLocal(col.endDate), 1);
+      const colDays = Math.max(1, Math.round((colEndExclusive.getTime() - colStart.getTime()) / dayMs));
+      if (date >= colEndExclusive) {
+        offset += col.widthPx;
+        continue;
+      }
+      if (date <= colStart) {
+        return offset;
+      }
+      const daysIntoColumn = (date.getTime() - colStart.getTime()) / dayMs;
+      return offset + (daysIntoColumn / colDays) * col.widthPx;
+    }
+    return offset;
+  };
 
-  const left  = (startOff / viewDays) * totalWidth;
-  const width = Math.max(((endOff - startOff + 1) / viewDays) * totalWidth, 4);
+  const left = boundaryOffset(clampStart);
+  const right = boundaryOffset(addDays(clampEnd, 1));
+  const width = Math.max(right - left, 4);
 
   return { left, width };
 }

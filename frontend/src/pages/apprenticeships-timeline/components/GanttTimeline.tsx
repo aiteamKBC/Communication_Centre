@@ -13,7 +13,7 @@ const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 46;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
-const LANE_H    = 40;  // stacked lane height when modules overlap
+const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface LanedBlock {
@@ -31,16 +31,10 @@ function effectiveBlockEndDate(blk: ModuleBlock, holidays: Holiday[] = []): stri
   return buildHolidayAdjustedSessionPlan(blk, holidays).effectiveEndDate || blk.endDate;
 }
 
-function extensionWeeksLabel(extensionDays: number): string {
-  if (extensionDays <= 0) return '';
-  const weeks = Math.max(1, Math.round(extensionDays / 7));
-  return `${weeks} week${weeks !== 1 ? 's' : ''}`;
-}
-
-function sessionDayLabel(days?: string[]): string {
-  const cleanDays = (days || []).map(day => day.trim()).filter(Boolean);
-  if (!cleanDays.length) return 'weekly';
-  return cleanDays.map(day => day.charAt(0).toUpperCase() + day.slice(1)).join('/');
+function nextIsoDate(dateStr: string): string {
+  const date = new Date(`${dateStr}T00:00:00`);
+  date.setDate(date.getDate() + 1);
+  return toLocalIsoDate(date);
 }
 
 function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []): boolean {
@@ -265,6 +259,17 @@ type BadgeTooltipData = {
   y: number;
 };
 
+type ExtensionTooltipData = {
+  moduleName: string;
+  expectedEndDate: string;
+  actualEndDate: string;
+  extensionWeeks: number;
+  affectedSessions: number;
+  reasons: string[];
+  x: number;
+  y: number;
+};
+
 interface ClassSummary {
   key: string;
   groupIdx: number;
@@ -281,6 +286,17 @@ interface ClassSummary {
   holidayClashCount: number;
   tutorConflictCount: number;
   replacementClashCount: number;
+  moduleBreakdown: {
+    label: string;
+    blockId: string;
+    dateRange: string;
+    targetDate: string;
+    clashCount: number;
+    isFinished: boolean;
+    holidayClashCount: number;
+    tutorConflictCount: number;
+    replacementClashCount: number;
+  }[];
 }
 
 interface Props {
@@ -429,21 +445,35 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
   const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays);
   const displayEndDate = sessionSummary.effectiveEndDate || data.blk.endDate;
   const weeks = durationWeeksByDay(data.blk.startDate, displayEndDate, data.blk.days);
-  const extensionLabel = extensionWeeksLabel(sessionSummary.extensionDays);
-  const scheduleDayLabel = sessionDayLabel(data.blk.days);
   const hasHolidayClashes = sessionSummary.allAffected > 0;
+  const holidayWeeksLabel = `${sessionSummary.allAffected} week${sessionSummary.allAffected !== 1 ? 's' : ''}`;
+  const scheduleDayLabel = data.blk.days?.length ? data.blk.days.join('/') : 'scheduled';
+  const extensionLabel = sessionSummary.extensionDays > 0
+    ? `${Math.max(1, Math.round(sessionSummary.extensionDays / 7))} week${Math.max(1, Math.round(sessionSummary.extensionDays / 7)) !== 1 ? 's' : ''}`
+    : '';
+  const holidayPlan = buildHolidayAdjustedSessionPlan(data.blk, data.holidays);
+  const shiftedToByDate = new Map<string, string>();
+  holidayPlan.sessions.forEach(session => {
+    if (session.shiftedFrom) shiftedToByDate.set(session.shiftedFrom.date, session.date);
+  });
+  const holidayDetails = data.holidays.map(holiday => ({
+    holiday,
+    skippedSessions: holidayPlan.skippedSessions.filter(session =>
+      session.holidays.some(item => item.id === holiday.id)
+    ),
+  }));
 
   return (
     <div className="fixed z-50 pointer-events-none"
       style={{ left: Math.max(12, Math.min(data.x + 12, window.innerWidth - 400)), top: Math.max(data.y - 10, 8) }}>
-      <div className="bg-white rounded-xl border border-gray-200 shadow-lg w-96 max-w-[calc(100vw-24px)] overflow-hidden pointer-events-auto">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-lg w-96 max-w-[calc(100vw-24px)] max-h-[calc(100vh-24px)] overflow-hidden pointer-events-auto">
         <div className="px-4 py-3 flex items-center gap-2" style={{ background: mod.bg }}>
           <span className="font-extrabold text-sm flex-1 truncate" style={{ color: mod.tx }}>{displayName}</span>
           <button onClick={onClose} className="w-5 h-5 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 cursor-pointer transition-opacity" style={{ color: mod.tx }}>
             <i className="ri-close-line text-xs" />
           </button>
         </div>
-        <div className="px-4 py-3 space-y-2.5">
+        <div className="max-h-[calc(100vh-78px)] overflow-y-auto px-4 py-3 space-y-2.5">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full shrink-0" style={{ background: data.programmeColor }} />
             <span className="text-xs font-semibold text-gray-700">{data.programmeName.replace('\n', ' ')}</span>
@@ -512,16 +542,52 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
                 </div>
                 <div className="rounded bg-white/80 px-2 py-1.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Holiday weeks</p>
-                  <p className="mt-0.5 text-sm font-extrabold text-amber-950">{sessionSummary.allAffected} week{sessionSummary.allAffected !== 1 ? 's' : ''}</p>
+                  <p className="mt-0.5 text-sm font-extrabold text-amber-950">{holidayWeeksLabel}</p>
                 </div>
               </div>
-              <p className="mt-2 rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold text-amber-900">
-                Total: {sessionSummary.scheduledDates || sessionSummary.plannedTotal + sessionSummary.allAffected} weeks
-              </p>
-              {sessionSummary.allAffected > 0 && (
-                <p className="mt-1.5 rounded bg-white/70 px-2 py-1 text-[11px] font-semibold text-amber-900">
-                  {sessionSummary.allAffected} {scheduleDayLabel} session{sessionSummary.allAffected !== 1 ? 's' : ''} clashed with holiday week{sessionSummary.allAffected !== 1 ? 's' : ''}, so each one shifts to the next available week and the timeline extends{extensionLabel ? ` by around ${extensionLabel}` : ''} to {formatDate(displayEndDate)}.
-                </p>
+              {data.holidays.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {holidayDetails.map(({ holiday, skippedSessions }) => (
+                    <div key={holiday.id} className="overflow-hidden rounded-md border border-amber-100 bg-white/90">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 px-2 py-1.5">
+                          <p className="truncate text-[11px] font-extrabold text-amber-950">{holiday.label}</p>
+                          {holiday.type && (
+                            <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">{holiday.type}</p>
+                          )}
+                        </div>
+                        <p className="shrink-0 rounded-bl-md bg-amber-100 px-2 py-1 text-right text-[10px] font-extrabold text-amber-800">
+                          {formatDateShort(holiday.startDate)} - {formatDateShort(holiday.endDate)}
+                        </p>
+                      </div>
+                      {skippedSessions.length > 0 && (
+                        <div className="border-t border-amber-100 bg-amber-50/70 px-2 py-1.5">
+                          <p className="text-[10px] font-extrabold uppercase tracking-wide text-amber-700">
+                            Affected sessions
+                          </p>
+                          <div className="mt-1 space-y-1">
+                            {skippedSessions.map(session => {
+                              const shiftedTo = shiftedToByDate.get(session.date);
+                              return (
+                                <div
+                                  key={`${holiday.id}-${session.date}-${session.originalNumber}`}
+                                  className="flex items-center justify-between gap-2 rounded border border-amber-100 bg-white px-2 py-1 text-[10.5px] font-bold text-amber-950"
+                                >
+                                  <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-800">
+                                    Session {session.originalNumber}
+                                  </span>
+                                  <span className="min-w-0 truncate text-right text-amber-900">
+                                    {formatDateShort(session.date)}{shiftedTo ? ` -> ${formatDateShort(shiftedTo)}` : ''}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -621,6 +687,40 @@ function BadgeTooltip({ data }: { data: BadgeTooltipData }) {
   );
 }
 
+function ExtensionTooltip({ data }: { data: ExtensionTooltipData }) {
+  return (
+    <div
+      className="fixed pointer-events-none z-50"
+      style={{ left: Math.min(data.x + 12, window.innerWidth - 360), top: Math.max(data.y - 8, 8) }}
+    >
+      <div className="w-[340px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-amber-300 bg-white shadow-lg">
+        <div className="flex items-center gap-2 bg-amber-500 px-3 py-2 text-white">
+          <i className="ri-time-line text-sm" />
+          <span className="truncate text-sm font-extrabold">Timeline extension</span>
+        </div>
+        <div className="space-y-2 px-3 py-2 text-xs">
+          <p className="font-extrabold text-gray-900">{data.moduleName}</p>
+          <p className="font-semibold text-gray-700">
+            Expected end was <strong>{formatDate(data.expectedEndDate)}</strong>, but {data.affectedSessions} affected session{data.affectedSessions !== 1 ? 's' : ''} needed replacement, so the module was extended by {data.extensionWeeks} week{data.extensionWeeks !== 1 ? 's' : ''}.
+          </p>
+          {data.reasons.length > 0 && (
+            <div className="space-y-1">
+              {data.reasons.map(reason => (
+                <p key={reason} className="rounded-md bg-amber-50 px-2 py-1 font-semibold text-amber-900">
+                  {reason}
+                </p>
+              ))}
+            </div>
+          )}
+          <p className="rounded-md bg-emerald-50 px-2 py-1 font-extrabold text-emerald-800">
+            Actual end: {formatDate(data.actualEndDate)}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
@@ -630,8 +730,14 @@ export default function GanttTimeline({
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
   const [clashTip, setClashTip] = useState<{ marker: ClashMarker; x: number; y: number } | null>(null);
   const [badgeTip, setBadgeTip] = useState<BadgeTooltipData | null>(null);
+  const [extensionTip, setExtensionTip] = useState<ExtensionTooltipData | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
-  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  const [classSearch, setClassSearch] = useState('');
+  const [showCompletedClasses, setShowCompletedClasses] = useState(false);
+  const [collapsedClassProgrammes, setCollapsedClassProgrammes] = useState<Set<string>>(new Set());
+  const [lastClassSelection, setLastClassSelection] = useState<{ classKey: string; moduleKey?: string } | null>(null);
+  const [focusedTimelineTarget, setFocusedTimelineTarget] = useState<{ groupIdx?: number; rowKey?: string; blockId?: string } | null>(null);
+  const [pendingTimelineNavigation, setPendingTimelineNavigation] = useState<{ groupIdx?: number; rowKey?: string; targetDate: string } | null>(null);
   const [editChoice, setEditChoice] = useState<{
     blk: ModuleBlock;
     moduleLabel: string;
@@ -667,6 +773,15 @@ export default function GanttTimeline({
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [classesOpen]);
+
+  useEffect(() => {
+    if (!classesOpen || !lastClassSelection) return;
+    const timeout = window.setTimeout(() => {
+      const selected = classesPopupRef.current?.querySelector('[data-class-selection-active="true"]');
+      selected?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timeout);
+  }, [classesOpen, lastClassSelection]);
 
   const handleCohortDragStart = useCallback((e: React.DragEvent, groupIdx: number, rowIdx: number) => {
     e.stopPropagation();
@@ -759,6 +874,42 @@ export default function GanttTimeline({
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
   const isZoomedGrid = zoom === 'day';
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
+
+  useEffect(() => {
+    if (!pendingTimelineNavigation) return;
+
+    const { groupIdx, rowKey, targetDate } = pendingTimelineNavigation;
+    const scrollToTarget = () => {
+      const targetEl = rowKey
+        ? document.querySelector(`[data-row-target="${rowKey}"]`)
+        : groupIdx !== undefined
+          ? document.querySelector(`[data-programme-target="${groupIdx}"]`)
+          : null;
+      targetEl?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+
+      window.setTimeout(() => {
+        const pos = targetDate ? getBlockPosition(targetDate, targetDate, cols) : null;
+        const el = scrollRef.current;
+        if (pos && el) {
+          el.scrollTo({ left: Math.max(0, pos.left - 160), behavior: 'smooth' });
+        }
+      }, 120);
+    };
+
+    const frame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(scrollToTarget);
+    });
+    const clear = window.setTimeout(() => {
+      setPendingTimelineNavigation(current =>
+        current?.rowKey === rowKey && current.groupIdx === groupIdx && current.targetDate === targetDate ? null : current
+      );
+    }, 700);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(clear);
+    };
+  }, [cols, pendingTimelineNavigation]);
 
   const isCurrentColumn = useCallback((startDate: string, endDate: string) => (
     startDate <= nowDate && endDate >= nowDate
@@ -919,6 +1070,7 @@ export default function GanttTimeline({
       row.blks.forEach(blk => {
         const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
         plan.sessions.filter(session => !session.isClash).forEach(session => {
+          if (hasSessionEnded(session.date, blk.sessionEndTime || '11:00', new Date())) return;
           const key = `${session.date}|${blk.sessionStartTime || ''}|${blk.sessionEndTime || ''}|${(blk.tutor || '').trim().toLowerCase()}`;
           const entries = sessionIndex.get(key) || [];
           entries.push({ blk, date: session.date });
@@ -946,17 +1098,40 @@ export default function GanttTimeline({
     groups.forEach((grp, groupIdx) => {
       grp.rows.forEach((row, rowIdx) => {
         const rowClashes = rowClashMarkers[groupIdx]?.[rowIdx] || [];
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const rowHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
         row.blks.forEach(blk => {
           const className = (blk.groupName || row.label || 'Unnamed class').trim();
           const key = `${grp.id}|${row.id}|${className}`;
+          const moduleLabel = getBlockDisplayName(blk, customModules);
+          const modulePlan = buildHolidayAdjustedSessionPlan(blk, rowHolidays);
+          const moduleSessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays);
+          const moduleTutorConflicts = rowClashes.filter(marker => (
+            marker.type === 'Tutor conflict' &&
+            marker.groups.includes(className) &&
+            marker.modules.includes(moduleLabel)
+          ));
+          const moduleFirstClashDate = modulePlan.skippedSessions[0]?.date || moduleTutorConflicts[0]?.date || '';
+          const moduleBreakdown = {
+            label: moduleLabel,
+            blockId: blk.id,
+            dateRange: blk.startDate && modulePlan.effectiveEndDate ? `${formatDateShort(blk.startDate)} to ${formatDateShort(modulePlan.effectiveEndDate)}` : '',
+            targetDate: moduleFirstClashDate || blk.startDate || row.dateLbl || '',
+            clashCount: modulePlan.originalClashedSessions + moduleTutorConflicts.length + modulePlan.extensionClashedSessions,
+            isFinished: moduleSessionSummary.isFinished,
+            holidayClashCount: modulePlan.originalClashedSessions,
+            tutorConflictCount: moduleTutorConflicts.length,
+            replacementClashCount: modulePlan.extensionClashedSessions,
+          };
           const classClashes = rowClashes.filter(marker => (
             marker.groups.includes(className) ||
             (marker.groups.length === 0 && marker.cohorts.includes(row.label))
           ));
-          const firstClashDate = classClashes[0]?.date || '';
-          const holidayClashCount = classClashes.filter(marker => marker.type === 'Holiday clash').length;
-          const tutorConflictCount = classClashes.filter(marker => marker.type === 'Tutor conflict').length;
-          const replacementClashCount = classClashes.filter(marker => marker.type === 'Replacement clash').length;
+          const firstClashDate = moduleFirstClashDate || classClashes[0]?.date || '';
+          const holidayClashCount = moduleBreakdown.holidayClashCount;
+          const tutorConflictCount = moduleBreakdown.tutorConflictCount;
+          const replacementClashCount = moduleBreakdown.replacementClashCount;
+          const moduleClashCount = holidayClashCount + tutorConflictCount + replacementClashCount;
           const existing = summaries.get(key);
           if (existing) {
             existing.moduleCount += 1;
@@ -966,10 +1141,11 @@ export default function GanttTimeline({
             if (firstClashDate && (!existing.firstClashDate || firstClashDate < existing.firstClashDate)) {
               existing.firstClashDate = firstClashDate;
             }
-            existing.clashCount = Math.max(existing.clashCount, classClashes.length);
-            existing.holidayClashCount = Math.max(existing.holidayClashCount, holidayClashCount);
-            existing.tutorConflictCount = Math.max(existing.tutorConflictCount, tutorConflictCount);
-            existing.replacementClashCount = Math.max(existing.replacementClashCount, replacementClashCount);
+            existing.clashCount += moduleClashCount;
+            existing.holidayClashCount += holidayClashCount;
+            existing.tutorConflictCount += tutorConflictCount;
+            existing.replacementClashCount += replacementClashCount;
+            existing.moduleBreakdown.push(moduleBreakdown);
             return;
           }
           summaries.set(key, {
@@ -981,13 +1157,14 @@ export default function GanttTimeline({
             cohortName: row.label,
             moduleCount: 1,
             color: row.color || blk.color || grp.color,
-            dateRange: blk.startDate && blk.endDate ? `${formatDateShort(blk.startDate)} to ${formatDateShort(blk.endDate)}` : '',
+            dateRange: blk.startDate && modulePlan.effectiveEndDate ? `${formatDateShort(blk.startDate)} to ${formatDateShort(modulePlan.effectiveEndDate)}` : '',
             targetDate: blk.startDate || row.dateLbl || '',
             firstClashDate,
-            clashCount: classClashes.length,
+            clashCount: moduleClashCount,
             holidayClashCount,
             tutorConflictCount,
             replacementClashCount,
+            moduleBreakdown: [moduleBreakdown],
           });
         });
       });
@@ -998,9 +1175,52 @@ export default function GanttTimeline({
       a.programmeName.localeCompare(b.programmeName) ||
       a.cohortName.localeCompare(b.cohortName)
     ));
-  }, [groups, rowClashMarkers]);
+  }, [catalogModules, customModules, groups, holidays, rowClashMarkers]);
 
-  const navigateToClass = useCallback((item: ClassSummary) => {
+  const filteredClassSummaries = useMemo(() => {
+    const q = classSearch.trim().toLowerCase();
+    if (!q) return classSummaries;
+    return classSummaries.filter(item => (
+      item.className.toLowerCase().includes(q) ||
+      item.programmeName.toLowerCase().includes(q) ||
+      item.cohortName.toLowerCase().includes(q) ||
+      item.moduleBreakdown.some(moduleItem => moduleItem.label.toLowerCase().includes(q))
+    ));
+  }, [classSearch, classSummaries]);
+
+  const classNavigationGroups = useMemo(() => {
+    const q = classSearch.trim();
+    const grouped = new Map<string, { programmeName: string; items: ClassSummary[]; color: string; issueCount: number; moduleCount: number }>();
+    const completed: ClassSummary[] = [];
+
+    filteredClassSummaries.forEach(item => {
+      const activeModules = item.moduleBreakdown.filter(moduleItem => !moduleItem.isFinished || moduleItem.clashCount > 0 || q);
+      const isCompletedClass = item.moduleBreakdown.length > 0 && item.moduleBreakdown.every(moduleItem => moduleItem.isFinished) && item.clashCount === 0;
+      if (isCompletedClass && !q) {
+        completed.push(item);
+        return;
+      }
+      const entry = grouped.get(item.programmeName) || {
+        programmeName: item.programmeName,
+        items: [],
+        color: item.color,
+        issueCount: 0,
+        moduleCount: 0,
+      };
+      entry.items.push({ ...item, moduleBreakdown: activeModules });
+      entry.issueCount += item.clashCount;
+      entry.moduleCount += activeModules.length;
+      grouped.set(item.programmeName, entry);
+    });
+
+    return {
+      active: Array.from(grouped.values()).sort((a, b) => b.issueCount - a.issueCount || a.programmeName.localeCompare(b.programmeName)),
+      completed,
+    };
+  }, [classSearch, filteredClassSummaries]);
+
+  const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
+    setLastClassSelection({ classKey: item.key, moduleKey });
     setClassesOpen(false);
     setCollapsedGroups(prev => {
       const next = new Set(prev);
@@ -1009,10 +1229,9 @@ export default function GanttTimeline({
       return next;
     });
     const rowKey = `${item.groupIdx}-${item.rowIdx}`;
-    setFocusedRowKey(rowKey);
+    setFocusedTimelineTarget({ rowKey, blockId });
 
-    const targetDate = item.firstClashDate || item.targetDate;
-    let scrollColumns = cols;
+    const targetDate = targetDateOverride || item.firstClashDate || item.targetDate;
     if (targetDate) {
       const [year, month, day] = targetDate.split('-').map(Number);
       const target = new Date(year || 1970, (month || 1) - 1, day || 1);
@@ -1030,22 +1249,54 @@ export default function GanttTimeline({
         nextWindow = { start: new Date(target.getFullYear(), 0, 1), end: new Date(target.getFullYear(), 11, 31) };
       }
       setViewWindow(nextWindow);
-      scrollColumns = generateColumns(zoom, nextWindow.start, nextWindow.end);
     }
+    setPendingTimelineNavigation({ rowKey, targetDate: targetDate || item.targetDate || '' });
 
-    window.setTimeout(() => {
-      const rowEl = document.querySelector(`[data-row-target="${rowKey}"]`);
-      rowEl?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-      window.setTimeout(() => {
-        const pos = targetDate ? getBlockPosition(targetDate, targetDate, scrollColumns) : null;
-        if (pos && scrollRef.current) {
-          scrollRef.current.scrollTo({ left: Math.max(0, pos.left - 160), behavior: 'smooth' });
-        }
-      }, 80);
-    }, 50);
+    window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === blockId ? null : prev), 2200);
+  }, [groups, zoom]);
 
-    window.setTimeout(() => setFocusedRowKey(prev => prev === rowKey ? null : prev), 2200);
-  }, [cols, groups, zoom]);
+  const navigateToProgramme = useCallback((items: ClassSummary[]) => {
+    const target = [...items].sort((a, b) => b.clashCount - a.clashCount || a.targetDate.localeCompare(b.targetDate))[0];
+    if (!target) return;
+    setClassesOpen(false);
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      const groupId = groups[target.groupIdx]?.id;
+      if (groupId) next.delete(groupId);
+      return next;
+    });
+    setFocusedTimelineTarget({ groupIdx: target.groupIdx });
+    const targetDate = target.firstClashDate || target.targetDate || '';
+    if (targetDate) {
+      const [year, month, day] = targetDate.split('-').map(Number);
+      const targetDay = new Date(year || 1970, (month || 1) - 1, day || 1);
+      let nextWindow: { start: Date; end: Date };
+      if (zoom === 'week') {
+        nextWindow = getNormalizedWeekWindow(targetDay);
+      } else if (zoom === 'day') {
+        nextWindow = { start: shiftDateByDays(targetDay, -14), end: shiftDateByDays(targetDay, 28) };
+      } else if (zoom === 'month') {
+        nextWindow = { start: new Date(targetDay.getFullYear(), 0, 1), end: new Date(targetDay.getFullYear(), 11, 31) };
+      } else if (zoom === 'intake') {
+        const intakeStartMonth = Math.floor(targetDay.getMonth() / 4) * 4;
+        nextWindow = { start: new Date(targetDay.getFullYear(), intakeStartMonth, 1), end: new Date(targetDay.getFullYear(), intakeStartMonth + 4, 0) };
+      } else {
+        nextWindow = { start: new Date(targetDay.getFullYear(), 0, 1), end: new Date(targetDay.getFullYear(), 11, 31) };
+      }
+      setViewWindow(nextWindow);
+    }
+    setPendingTimelineNavigation({ groupIdx: target.groupIdx, targetDate });
+    window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.groupIdx === target.groupIdx && !prev.rowKey ? null : prev), 2200);
+  }, [groups, zoom]);
+
+  const toggleClassProgramme = useCallback((programmeName: string) => {
+    setCollapsedClassProgrammes(prev => {
+      const next = new Set(prev);
+      if (next.has(programmeName)) next.delete(programmeName);
+      else next.add(programmeName);
+      return next;
+    });
+  }, []);
 
   const renderHeaders = () => {
     if (zoom === 'month') {
@@ -1288,33 +1539,46 @@ export default function GanttTimeline({
     topPx: number,
     heightPx: number,
   ) => {
+    const rowTargetKey = `${groupIdx}-${rowIdx}`;
+    const isFocusedModule = focusedTimelineTarget?.rowKey === rowTargetKey && focusedTimelineTarget.blockId === blk.id;
     const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
     const displayEndDate = sessionSummary.effectiveEndDate || blk.endDate;
     const pos = getBlockPosition(blk.startDate, displayEndDate, cols);
     if (!pos) return null;
+    const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
+      ? nextIsoDate(sessionSummary.baselineEndDate)
+      : '';
+    const extensionPos = extensionStartDate && extensionStartDate <= displayEndDate
+      ? getBlockPosition(extensionStartDate, displayEndDate, cols)
+      : null;
+    const extensionStyle = extensionPos
+      ? {
+          left: Math.max(0, extensionPos.left - pos.left),
+          width: Math.max(0, Math.min(extensionPos.width, pos.left + pos.width - extensionPos.left)),
+        }
+      : null;
     const mod = resolveBlockMeta(blk, customModules);
+    const extensionPlan = extensionStyle ? buildHolidayAdjustedSessionPlan(blk, activeHolidays) : null;
+    const extensionWeeks = Math.max(1, Math.round((sessionSummary.extensionDays || 0) / 7));
+    const extensionReasons = extensionPlan
+      ? Array.from(new Set(extensionPlan.skippedSessions.flatMap(session =>
+          session.holidays.map(holiday =>
+            `${holiday.label}: Session ${session.originalNumber} shifted from ${formatDateShort(session.date)}`
+          )
+        )))
+      : [];
     const overlaps = activeHolidays.filter(holiday => rangesOverlap(blk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
-    const hasOverlap = overlaps.length > 0 || sessionSummary.extensionDays > 0;
-    const hasHolidayClash = !sessionSummary.isFinished && sessionSummary.allAffected > 0;
     const tutorConflictMarkers = (rowClashMarkers[groupIdx]?.[rowIdx] || []).filter(marker => (
       marker.type === 'Tutor conflict'
       && marker.modules.includes(mod.lbl)
       && marker.groups.includes(blk.groupName || cohortLabel)
     ));
     const hasTutorConflict = !sessionSummary.isFinished && tutorConflictMarkers.length > 0;
-    const holidayPlan = hasHolidayClash ? buildHolidayAdjustedSessionPlan(blk, activeHolidays) : null;
-    const shiftedToByDate = new Map<string, string>();
-    holidayPlan?.sessions.forEach(session => {
-      if (session.shiftedFrom) shiftedToByDate.set(session.shiftedFrom.date, session.date);
-    });
-    const holidayClashRows = holidayPlan?.skippedSessions.map(session => {
-      const holidaysLabel = session.holidays.map(holiday => holiday.label).join(', ') || 'linked holiday';
-      const shiftedTo = shiftedToByDate.get(session.date);
-      return `${formatDateShort(session.date)} clashed with ${holidaysLabel}${shiftedTo ? `, shifted to ${formatDateShort(shiftedTo)}` : ''}`;
-    }) || [];
-    const tutorLabel = blk.tutor.trim();
-    const showTutor = pos.width > 72 && Boolean(tutorLabel);
     const coachLabel = (blk.coachName || '').trim();
+    const tutorLabel = (blk.tutor || '').trim();
+    const personLabel = tutorLabel || coachLabel;
+    const personRole = tutorLabel ? 'Tutor' : coachLabel ? 'Coach' : '';
+    const showPerson = pos.width > 78 && Boolean(personLabel);
     const sessionLabel = sessionSummary.isFinished
       ? 'Finished'
       : sessionSummary.total === 0
@@ -1345,6 +1609,23 @@ export default function GanttTimeline({
       setClashTip(null);
       onEditRow(groupIdx, rowIdx, blk.id, true);
     };
+    const showExtensionTip = (event: ReactMouseEvent) => {
+      event.stopPropagation();
+      if (!extensionStyle) return;
+      setTooltip(null);
+      setClashTip(null);
+      setBadgeTip(null);
+      setExtensionTip({
+        moduleName: mod.lbl,
+        expectedEndDate: sessionSummary.baselineEndDate,
+        actualEndDate: displayEndDate,
+        extensionWeeks,
+        affectedSessions: sessionSummary.allAffected,
+        reasons: extensionReasons,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    };
 
     return (
       <div
@@ -1357,13 +1638,15 @@ export default function GanttTimeline({
           height: heightPx,
           background: mod.bg,
           borderRadius: 3,
-          outline: hasTutorConflict ? '2px solid #F7A800' : hasHolidayClash ? '2px solid #DC2626' : 'none',
-          outlineOffset: hasTutorConflict || hasHolidayClash ? '1px' : '0',
+          outline: isFocusedModule ? '3px solid #DC2626' : hasTutorConflict ? '2px solid #F7A800' : 'none',
+          outlineOffset: isFocusedModule ? '2px' : hasTutorConflict ? '1px' : '0',
+          boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : undefined,
           display: 'flex',
           alignItems: 'center',
         }}
         onMouseEnter={e => {
           setClashTip(null);
+          setExtensionTip(null);
           setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules });
         }}
         onMouseLeave={() => setTooltip(null)}
@@ -1388,22 +1671,44 @@ export default function GanttTimeline({
           onEditRow(groupIdx, rowIdx, blk.id);
         }}
       >
+        {extensionStyle && extensionStyle.width > 3 && (
+          <div
+            className="absolute inset-y-0"
+            title={`Extension: ${formatDateShort(extensionStartDate)} to ${formatDateShort(displayEndDate)}`}
+            onMouseEnter={showExtensionTip}
+            onMouseMove={showExtensionTip}
+            onMouseLeave={() => setExtensionTip(null)}
+            onClick={event => event.stopPropagation()}
+            style={{
+              left: extensionStyle.left,
+              width: extensionStyle.width,
+              background:
+                'repeating-linear-gradient(135deg, rgba(255,255,255,0.24) 0 6px, rgba(255,255,255,0.08) 6px 12px)',
+              borderLeft: '2px solid rgba(255,255,255,0.55)',
+              boxShadow: 'inset 0 0 0 9999px rgba(15,23,42,0.08)',
+              zIndex: 2,
+            }}
+          />
+        )}
         {pos.width > 30 && (
           <div
-            className="min-w-0 w-full select-none"
-            style={{ padding: '0 8px', display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
+            className="relative z-[1] min-w-0 w-full select-none"
+            style={{ padding: hasTutorConflict ? '0 18px 0 8px' : '0 8px', display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
           >
             <div className="min-w-0 flex-1" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
             {/* Module name */}
-            <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
               {mod.lbl}
             </span>
 
-            {/* Tutor */}
-            {showTutor && (
-              <span style={{ color: mod.tx, fontSize: '9px', fontWeight: 600, opacity: 0.75, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                · {tutorLabel}
+            {/* Tutor/coach */}
+            {showPerson && (
+              <span
+                title={`${personRole}: ${personLabel}`}
+                style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 28, maxWidth: '46%', flexShrink: 1 }}
+              >
+                - {personLabel}
               </span>
             )}
 
@@ -1444,13 +1749,29 @@ export default function GanttTimeline({
                   marginLeft: 2,
                 }}
               >
-                {formatDateShort(blk.startDate)} → {formatDateShort(blk.endDate)}
+                {formatDateShort(blk.startDate)} → {formatDateShort(displayEndDate)}
               </span>
             )}
 
           </div>
         )}
-        {(hasTutorConflict || hasHolidayClash) && (
+        {sessionSummary.isFinished && pos.width > 112 && (
+          <span
+            className="absolute bottom-1 right-1 rounded px-1.5 py-px"
+            title="Finished module"
+            style={{
+              background: 'rgba(255,255,255,0.92)',
+              color: '#14532D',
+              fontSize: '8px',
+              fontWeight: 900,
+              lineHeight: 1.15,
+              boxShadow: '0 1px 2px rgba(15,23,42,0.18)',
+            }}
+          >
+            Finished
+          </span>
+        )}
+        {hasTutorConflict && (
           <span className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
             {hasTutorConflict && (
               <span
@@ -1473,38 +1794,6 @@ export default function GanttTimeline({
                     tone: { header: '#F7A800', border: '#F7A800', text: '#92400E' },
                     summary: `${tutorLabel || 'This tutor'} has another session at the same time.`,
                     rows: tutorConflictMarkers.map(marker => `${formatDateShort(marker.date)} - ${marker.modules.join(', ')} - ${marker.groups.join(', ')}`),
-                  });
-                }}
-                onMouseMove={event => {
-                  event.stopPropagation();
-                  moveBadgeTip(event);
-                }}
-                onMouseLeave={() => setBadgeTip(null)}
-              >
-                <i className="ri-alert-line" style={{ fontSize: '9px', lineHeight: 1 }} />
-              </span>
-            )}
-            {hasHolidayClash && (
-              <span
-                role="button"
-                tabIndex={0}
-                title="Fix holiday clash"
-                className="flex h-3 w-3 items-center justify-center rounded-sm shadow-sm"
-                style={{ background: '#DC2626', color: '#FFFFFF' }}
-                onClick={openConflictFix}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    openConflictFix(event);
-                  }
-                }}
-                onMouseEnter={event => {
-                  event.stopPropagation();
-                  showBadgeTip(event, {
-                    type: 'holiday',
-                    title: 'Holiday clash',
-                    tone: { header: '#DC2626', border: '#FCA5A5', text: '#B91C1C' },
-                    summary: `${sessionSummary.allAffected} session${sessionSummary.allAffected !== 1 ? 's' : ''} will not be delivered on the holiday week and will shift to the next available training week.`,
-                    rows: holidayClashRows,
                   });
                 }}
                 onMouseMove={event => {
@@ -1577,50 +1866,163 @@ export default function GanttTimeline({
                 <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-extrabold text-slate-500">{classSummaries.length}</span>
               </button>
               {classesOpen && (
-                <div className="absolute left-0 top-9 z-50 w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+                <div className="absolute left-0 top-9 z-50 w-[360px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
                   <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2">
                     <div>
                       <p className="text-xs font-extrabold text-kbc-navy">Classes</p>
-                      <p className="text-[11px] font-semibold text-gray-400">{classSummaries.length} class{classSummaries.length === 1 ? '' : 'es'} found</p>
+                      <p className="text-[11px] font-semibold text-gray-400">
+                        {filteredClassSummaries.length} of {classSummaries.length} class{classSummaries.length === 1 ? '' : 'es'}
+                      </p>
                     </div>
                     <button type="button" onClick={() => setClassesOpen(false)} className="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700">
                       <i className="ri-close-line" />
                     </button>
                   </div>
-                  <div className="max-h-80 overflow-y-auto p-2">
-                    {classSummaries.length ? classSummaries.map(item => (
-                      <button key={item.key} type="button" onClick={() => navigateToClass(item)} className="mb-1 w-full rounded-lg border border-gray-100 bg-white px-3 py-2 text-left transition-all hover:border-kbc-navy hover:bg-slate-50">
-                        <div className="flex items-start gap-2">
-                          <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.color }} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-extrabold text-gray-800">{item.className}</p>
-                            <p className="mt-0.5 truncate text-[11px] font-semibold text-gray-400">{item.programmeName} - {item.cohortName}</p>
-                            {item.dateRange && <p className="mt-0.5 text-[11px] font-semibold text-gray-400">{item.dateRange}</p>}
+                  <div className="border-b border-gray-100 px-3 py-2">
+                    <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 focus-within:border-kbc-navy">
+                      <i className="ri-search-line text-sm text-gray-400" />
+                      <input
+                        value={classSearch}
+                        onChange={event => setClassSearch(event.target.value)}
+                        placeholder="Search class, cohort, programme, module..."
+                        className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-gray-700 outline-none placeholder:text-gray-400"
+                      />
+                      {classSearch && (
+                        <button type="button" onClick={() => setClassSearch('')} className="flex h-5 w-5 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                          <i className="ri-close-line text-xs" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="max-h-[440px] overflow-y-auto px-2 py-1.5">
+                    {classNavigationGroups.active.length ? classNavigationGroups.active.map(programme => {
+                      const isProgrammeCollapsed = collapsedClassProgrammes.has(programme.programmeName);
+                      return (
+                      <div key={programme.programmeName} className="border-b border-gray-100 py-1 last:border-b-0">
+                        <div className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-slate-50">
+                          <button
+                            type="button"
+                            onClick={() => navigateToProgramme(programme.items)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: programme.color }} />
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-extrabold text-kbc-navy">{programme.programmeName}</p>
+                              <p className="text-[10px] font-bold text-gray-400">{programme.items.length} cohort{programme.items.length === 1 ? '' : 's'} · {programme.moduleCount} active module{programme.moduleCount === 1 ? '' : 's'}</p>
+                            </div>
                           </div>
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            {item.holidayClashCount > 0 && (
-                              <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-extrabold text-red-700">
-                                {item.holidayClashCount} class holiday
-                              </span>
-                            )}
-                            {item.tutorConflictCount > 0 && (
-                              <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-extrabold text-violet-700">
-                                {item.tutorConflictCount} tutor conflict{item.tutorConflictCount === 1 ? '' : 's'}
-                              </span>
-                            )}
-                            {item.replacementClashCount > 0 && (
-                              <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-extrabold text-orange-700">
-                                {item.replacementClashCount} class replacement
-                              </span>
-                            )}
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-600">
-                              {item.moduleCount} module{item.moduleCount === 1 ? '' : 's'}
-                            </span>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            {programme.issueCount > 0 && <span className="rounded-full bg-amber-50 px-1.5 py-px text-[9px] font-extrabold text-amber-700">{programme.issueCount}</span>}
+                            <button
+                              type="button"
+                              onClick={() => toggleClassProgramme(programme.programmeName)}
+                              title={isProgrammeCollapsed ? 'Show programme cohorts' : 'Hide programme cohorts'}
+                              className="flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:bg-white hover:text-kbc-navy"
+                            >
+                              <i className={isProgrammeCollapsed ? 'ri-arrow-down-s-line text-sm' : 'ri-arrow-up-s-line text-sm'} />
+                            </button>
                           </div>
                         </div>
-                      </button>
-                    )) : (
-                      <p className="px-3 py-6 text-center text-xs font-semibold text-gray-400">No classes yet.</p>
+                        {!isProgrammeCollapsed && (
+                        <div className="ml-3 space-y-1 border-l border-slate-200 py-1 pl-3">
+                          {programme.items.map(item => {
+                            const sortedModules = [...item.moduleBreakdown].sort((a, b) => b.clashCount - a.clashCount || Number(a.isFinished) - Number(b.isFinished) || a.label.localeCompare(b.label));
+                            const visibleModules = sortedModules.slice(0, 4);
+                            const isSelectedClass = lastClassSelection?.classKey === item.key && !lastClassSelection.moduleKey;
+                            return (
+                              <div
+                                key={item.key}
+                                data-class-selection-active={isSelectedClass ? 'true' : undefined}
+                                className={`rounded-lg px-2 py-1.5 transition-all ${isSelectedClass ? 'bg-blue-50 ring-1 ring-kbc-navy/20' : 'hover:bg-slate-50'}`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <button type="button" onClick={() => navigateToClass(item)} className="min-w-0 flex-1 text-left">
+                                    <p className="truncate text-xs font-extrabold text-gray-800 hover:text-kbc-navy">{item.className}</p>
+                                    <p className="mt-0.5 truncate text-[11px] font-semibold text-gray-400">{item.cohortName}</p>
+                                    {item.dateRange && <p className="mt-0.5 text-[10px] font-semibold text-gray-400">{item.dateRange}</p>}
+                                    {isSelectedClass && <p className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-kbc-navy">Last selected</p>}
+                                  </button>
+                                  <div className="flex shrink-0 flex-wrap justify-end gap-0.5">
+                                    {item.holidayClashCount > 0 && <span title="Holiday clashes: sessions blocked by holiday weeks" className="rounded-full bg-red-50 px-1.5 py-px text-[9px] font-extrabold text-red-700">{item.holidayClashCount} H</span>}
+                                    {item.replacementClashCount > 0 && <span title="Replacement clashes: replacement sessions also hit a holiday week" className="rounded-full bg-orange-50 px-1.5 py-px text-[9px] font-extrabold text-orange-700">{item.replacementClashCount} R</span>}
+                                    {item.tutorConflictCount > 0 && <span title="Tutor conflicts: same tutor booked at the same time" className="rounded-full bg-violet-50 px-1.5 py-px text-[9px] font-extrabold text-violet-700">{item.tutorConflictCount} T</span>}
+                                    <span title="Modules in this class" className="rounded-full bg-slate-100 px-1.5 py-px text-[9px] font-extrabold text-slate-600">{item.moduleCount} M</span>
+                                  </div>
+                                </div>
+                                {visibleModules.length > 0 && (
+                                  <div className="ml-2 mt-1 space-y-0.5 border-l border-dashed border-slate-200 pl-2">
+                                    {visibleModules.map((moduleItem, index) => {
+                                      const moduleKey = `${moduleItem.label}|${moduleItem.targetDate}|${index}`;
+                                      const isSelectedModule = lastClassSelection?.classKey === item.key && lastClassSelection.moduleKey === moduleKey;
+                                      return (
+                                        <button
+                                          key={`${item.key}-${moduleItem.label}-${index}`}
+                                          data-class-selection-active={isSelectedModule ? 'true' : undefined}
+                                          type="button"
+                                          onClick={() => navigateToClass(item, moduleItem.targetDate, moduleKey, moduleItem.blockId)}
+                                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left transition-all hover:bg-slate-50 ${isSelectedModule ? 'bg-kbc-navy/10 ring-1 ring-kbc-navy/20' : ''}`}
+                                        >
+                                          <div className="min-w-0">
+                                            <p className="truncate text-[11px] font-extrabold text-gray-700">{moduleItem.label}</p>
+                                            {moduleItem.dateRange && <p className="truncate text-[10px] font-semibold text-gray-400">{moduleItem.dateRange}</p>}
+                                            {isSelectedModule && <p className="text-[9px] font-extrabold uppercase tracking-wide text-kbc-navy">Last selected</p>}
+                                          </div>
+                                          <div className="flex shrink-0 items-center gap-1">
+                                            {moduleItem.holidayClashCount > 0 && <span title="Holiday clashes: sessions blocked by holiday weeks" className="rounded-full bg-red-100 px-1.5 py-px text-[9px] font-extrabold text-red-700">{moduleItem.holidayClashCount}H</span>}
+                                            {moduleItem.replacementClashCount > 0 && <span title="Replacement clashes: replacement sessions also hit a holiday week" className="rounded-full bg-orange-100 px-1.5 py-px text-[9px] font-extrabold text-orange-700">{moduleItem.replacementClashCount}R</span>}
+                                            {moduleItem.tutorConflictCount > 0 && <span title="Tutor conflicts: same tutor booked at the same time" className="rounded-full bg-violet-100 px-1.5 py-px text-[9px] font-extrabold text-violet-700">{moduleItem.tutorConflictCount}T</span>}
+                                            {moduleItem.isFinished && <span title="Finished module: all planned sessions have been delivered" className="rounded-full bg-emerald-50 px-1.5 py-px text-[9px] font-extrabold text-emerald-700">Finished</span>}
+                                            <i className="ri-arrow-right-s-line text-sm text-gray-400" />
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        )}
+                      </div>
+                    );}) : (
+                      <p className="px-3 py-6 text-center text-xs font-semibold text-gray-400">No active matching classes.</p>
+                    )}
+
+                    {classNavigationGroups.completed.length > 0 && !classSearch && (
+                      <div className="mt-2 rounded-xl border border-gray-100 bg-gray-50">
+                        <button
+                          type="button"
+                          onClick={() => setShowCompletedClasses(prev => !prev)}
+                          className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-extrabold text-gray-500"
+                        >
+                          <span>Completed classes</span>
+                          <span className="flex items-center gap-1">
+                            {classNavigationGroups.completed.length}
+                            <i className={showCompletedClasses ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'} />
+                          </span>
+                        </button>
+                        {showCompletedClasses && (
+                          <div className="space-y-1 border-t border-gray-100 p-2">
+                            {classNavigationGroups.completed.map(item => (
+                              <button
+                                key={`completed-${item.key}`}
+                                type="button"
+                                onClick={() => navigateToClass(item)}
+                                className="flex w-full items-center justify-between rounded-lg bg-white px-2.5 py-2 text-left hover:bg-slate-50"
+                              >
+                                <div className="min-w-0">
+                                  <p className="truncate text-[11px] font-extrabold text-gray-600">{item.className}</p>
+                                  <p className="truncate text-[10px] font-semibold text-gray-400">{item.programmeName} - {item.cohortName}</p>
+                                </div>
+                                <span title="Finished class: all modules are complete and no active issues remain" className="rounded-full bg-emerald-50 px-2 py-px text-[9px] font-extrabold text-emerald-700">Finished</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1729,18 +2131,33 @@ export default function GanttTimeline({
           {groups.map((grp, gi) => {
             const isCollapsed = collapsedGroups.has(grp.id);
             const isGroupDragOver = dragOver?.type === 'group' && dragOver.groupIdx === gi;
+            const isFocusedProgramme = focusedTimelineTarget?.groupIdx === gi && !focusedTimelineTarget.rowKey;
             return (
-            <div key={grp.id} className="relative"
+            <div
+              key={grp.id}
+              data-programme-target={gi}
+              className="relative"
               onDragOver={canManageCohorts ? (e) => { if (dragItem.current?.type === 'group') handleDragOver(e, { type: 'group', groupIdx: gi }); } : undefined}
               onDragLeave={canManageCohorts ? handleDragLeave : undefined}
               onDrop={canManageCohorts ? (e) => handleGroupDrop(e, gi) : undefined}
-              style={isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : undefined}
+              style={{
+                ...(isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : {}),
+                ...(isFocusedProgramme ? { boxShadow: 'inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)' } : {}),
+              }}
             >
               {/* ── Programme group header row ────────────────────────── */}
               <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
                 <div
                   className="shrink-0 px-3 py-2"
-                  style={{ width: LEFT_W, background: grp.color, position: 'sticky', left: 0, zIndex: 20, cursor: canManageCohorts ? 'grab' : undefined }}
+                  style={{
+                    width: LEFT_W,
+                    background: grp.color,
+                    position: 'sticky',
+                    left: 0,
+                    zIndex: 20,
+                    cursor: canManageCohorts ? 'grab' : undefined,
+                    boxShadow: isFocusedProgramme ? 'inset 0 0 0 2px #fff, inset 0 0 0 4px #DC2626' : undefined,
+                  }}
                   draggable={canManageCohorts}
                   onDragStart={canManageCohorts ? (e) => handleGroupDragStart(e, gi) : undefined}
                   onDragEnd={handleDragEnd}
@@ -1814,8 +2231,64 @@ export default function GanttTimeline({
                 const ganttRows = buildGanttRows(row.blks, rowHolidays);
                 const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
                 const rowTargetKey = `${gi}-${ri}`;
+                const barPad = 5;
+                const moduleLayouts = (() => {
+                  const layouts: { blk: ModuleBlock; top: number; height: number; centerY: number }[] = [];
+                  let offsetY = 0;
+                  for (const ganttRow of ganttRows) {
+                    const h = rowHeight(ganttRow);
+                    for (const { blk, lane } of ganttRow.lanes) {
+                      const laneH = ganttRow.laneCount === 2 ? LANE_H : MODULE_H;
+                      const laneTop = offsetY + lane * LANE_H;
+                      const top = laneTop + barPad;
+                      const height = laneH - barPad * 2;
+                      layouts.push({ blk, top, height, centerY: top + height / 2 });
+                    }
+                    offsetY += h;
+                  }
+                  return layouts;
+                })();
+                const moduleLayoutById = new Map(moduleLayouts.map(layout => [layout.blk.id, layout]));
+                const tutorConflictConnectors = (() => {
+                  const sessionIndex = new Map<string, { blk: ModuleBlock; date: string }[]>();
+                  row.blks.forEach(blk => {
+                    const tutor = (blk.tutor || '').trim().toLowerCase();
+                    if (!tutor) return;
+                    const plan = buildHolidayAdjustedSessionPlan(blk, rowHolidays);
+                    plan.sessions.forEach(session => {
+                      if (hasSessionEnded(session.date, blk.sessionEndTime || '11:00', new Date())) return;
+                      const key = `${session.date}|${blk.sessionStartTime || ''}|${blk.sessionEndTime || ''}|${tutor}`;
+                      const entries = sessionIndex.get(key) || [];
+                      entries.push({ blk, date: session.date });
+                      sessionIndex.set(key, entries);
+                    });
+                  });
+
+                  return Array.from(sessionIndex.entries()).flatMap(([key, entries], index) => {
+                    if (entries.length < 2) return [];
+                    const date = entries[0].date;
+                    const datePos = getBlockPosition(date, date, cols);
+                    if (!datePos) return [];
+                    const points = entries
+                      .map(entry => {
+                        const layout = moduleLayoutById.get(entry.blk.id);
+                        return layout ? { y: layout.centerY, label: getBlockDisplayName(entry.blk, customModules) } : null;
+                      })
+                      .filter((point): point is { y: number; label: string } => Boolean(point));
+                    if (points.length < 2) return [];
+                    const ys = points.map(point => point.y);
+                    return [{
+                      key: `${rowTargetKey}-tutor-conflict-${key}-${index}`,
+                      x: datePos.left + Math.max(2, datePos.width) / 2,
+                      top: Math.min(...ys),
+                      bottom: Math.max(...ys),
+                      points,
+                    }];
+                  });
+                })();
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
+                const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
 
                 return (
                   <div
@@ -1824,7 +2297,6 @@ export default function GanttTimeline({
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
                       ...(isCohortDragOver ? { boxShadow: `inset 0 2px 0 ${rowColor}` } : {}),
-                      ...(focusedRowKey === rowTargetKey ? { boxShadow: `inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)` } : {}),
                     }}
                     onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri }) : undefined}
                     onDragLeave={canManageCohorts ? handleDragLeave : undefined}
@@ -1832,7 +2304,17 @@ export default function GanttTimeline({
                   >
                     {/* Cohort header strip */}
                     <div className="flex relative" style={{ height: COHORT_H, background: 'transparent' }}>
-                      <div className="shrink-0 flex items-center px-3 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
+                      <div
+                        className="shrink-0 flex items-center px-3 border-r bg-white relative"
+                        style={{
+                          width: LEFT_W,
+                          borderColor: isFocusedCohort ? '#DC2626' : '#E5E7EB',
+                          position: 'sticky',
+                          left: 0,
+                          zIndex: 20,
+                          boxShadow: isFocusedCohort ? 'inset 0 0 0 2px #DC2626, 0 0 0 2px rgba(220,38,38,0.10)' : undefined,
+                        }}
+                      >
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
                         {/* Drag handle */}
@@ -1936,21 +2418,59 @@ export default function GanttTimeline({
                         )}
 
                         {/* Module bars */}
-                        {(() => {
-                          const bars: React.ReactNode[] = [];
-                          let offsetY = 0;
-                          const barPad = 5;
-                          for (const ganttRow of ganttRows) {
-                            const h = rowHeight(ganttRow);
-                            for (const { blk, lane } of ganttRow.lanes) {
-                              const laneH = ganttRow.laneCount === 2 ? LANE_H : MODULE_H;
-                              const laneTop = offsetY + lane * LANE_H;
-                              bars.push(renderBar(blk, row.label, rowColor, grp, gi, ri, rowHolidays, laneTop + barPad, laneH - barPad * 2));
-                            }
-                            offsetY += h;
-                          }
-                          return bars;
-                        })()}
+                        {moduleLayouts.map(layout => renderBar(
+                          layout.blk,
+                          row.label,
+                          rowColor,
+                          grp,
+                          gi,
+                          ri,
+                          rowHolidays,
+                          layout.top,
+                          layout.height,
+                        ))}
+
+                        {/* Tutor conflict connectors */}
+                        {tutorConflictConnectors.map(connector => (
+                          <div
+                            key={connector.key}
+                            className="absolute pointer-events-none"
+                            style={{
+                              left: connector.x,
+                              top: connector.top,
+                              height: Math.max(1, connector.bottom - connector.top),
+                              transform: 'translateX(-50%)',
+                              zIndex: 18,
+                            }}
+                            title={`Tutor conflict: ${connector.points.map(point => point.label).join(' + ')}`}
+                          >
+                            <div
+                              className="h-full"
+                              style={{
+                                borderLeft: '2px dashed #06B6D4',
+                                filter: 'drop-shadow(0 0 3px rgba(6,182,212,0.55))',
+                              }}
+                            />
+                            {connector.points.map((point, pointIndex) => (
+                              <span
+                                key={`${connector.key}-${point.label}-${pointIndex}`}
+                                className="absolute left-1/2 flex h-3 w-3 items-center justify-center rounded-full border-2 border-white shadow"
+                                style={{
+                                  top: point.y - connector.top,
+                                  transform: 'translate(-50%, -50%)',
+                                  background: '#06B6D4',
+                                  boxShadow: '0 0 0 2px rgba(6,182,212,0.20)',
+                                }}
+                              />
+                            ))}
+                            <span
+                              className="absolute left-1/2 rounded-full border border-cyan-200 bg-white px-1.5 py-px text-[9px] font-extrabold uppercase tracking-wide text-cyan-700 shadow-sm"
+                              style={{ top: -18, transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
+                            >
+                              Tutor conflict
+                            </span>
+                          </div>
+                        ))}
 
                         {/* Now line — rendered last so it appears above module bars */}
                         {nowPos && (
@@ -1999,6 +2519,7 @@ export default function GanttTimeline({
       {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
       {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
       {badgeTip && <BadgeTooltip data={badgeTip} />}
+      {extensionTip && <ExtensionTooltip data={extensionTip} />}
 
       {editChoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
