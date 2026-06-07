@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { CatalogModule, ModuleBlock, ProgrammeGroup, WeekDayKey } from '../types';
+import type { CatalogModule, Holiday, ModuleBlock, ProgrammeGroup, WeekDayKey } from '../types';
 import { getModuleMeta } from '../data';
+import { buildHolidayAdjustedSessionPlan } from '../utils';
 
 interface Props {
   groups: ProgrammeGroup[];
   catalogModules?: CatalogModule[];
+  holidays?: Holiday[];
   canEdit?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
 }
@@ -33,6 +35,8 @@ interface TutorSession {
   time: string;
   sessionNumber: number;
   sessionTitle: string;
+  completedSessions: number;
+  isFinished: boolean;
 }
 
 interface TutorConflict {
@@ -65,13 +69,6 @@ const JS_DAY_TO_KEY: Record<number, WeekDayKey> = {
 function parseLocalIsoDate(isoDate: string): Date {
   const [year, month, day] = isoDate.split('-').map(Number);
   return new Date(year || 1970, (month || 1) - 1, day || 1);
-}
-
-function toIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function formatDate(isoDate: string): string {
@@ -138,29 +135,6 @@ function programmeLabelFromGroupName(groupName: string): string {
   return `${code} ${level}`.trim();
 }
 
-function getSessionDates(blk: ModuleBlock): string[] {
-  const total = Math.max(1, blk.sessions || 1);
-  const start = parseLocalIsoDate(blk.startDate);
-  const end = parseLocalIsoDate(blk.endDate || blk.startDate);
-  const weekdays = blk.days?.length ? blk.days : [JS_DAY_TO_KEY[start.getDay()] || 'monday'];
-  const dates: string[] = [];
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return [blk.startDate].filter(Boolean);
-  }
-
-  const cursor = new Date(start);
-  while (cursor <= end && dates.length < total) {
-    const dayKey = JS_DAY_TO_KEY[cursor.getDay()];
-    if (weekdays.includes(dayKey)) {
-      dates.push(toIsoDate(cursor));
-    }
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return dates.length ? dates : [blk.startDate];
-}
-
 function resolveCatalogModule(moduleName: string, moduleValue: unknown, catalogModules: CatalogModule[]): CatalogModule | undefined {
   const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
   const normalizedName = normalize(moduleName);
@@ -171,7 +145,7 @@ function resolveCatalogModule(moduleName: string, moduleValue: unknown, catalogM
   });
 }
 
-function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogModule[]): TutorSession[] {
+function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogModule[], holidays: Holiday[], now: Date): TutorSession[] {
   return groups.flatMap((programme, groupIdx) =>
     programme.rows.flatMap((row, rowIdx) =>
       row.blks.flatMap(block => {
@@ -181,13 +155,22 @@ function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogM
         const moduleMeta = getModuleMeta(block.mod);
         const module = moduleMeta.lbl;
         const catalogModule = resolveCatalogModule(module, block.mod, catalogModules);
-        const dates = getSessionDates(block);
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+        const sessionPlan = buildHolidayAdjustedSessionPlan(block, activeHolidays);
+        const dates = sessionPlan.sessions.map(session => session.date);
         const startTime = block.sessionStartTime || '09:00';
         const endTime = block.sessionEndTime || '11:00';
         const time = formatTimeRange(startTime, endTime);
         const coach = block.coachName?.trim() || 'TBD';
         const groupName = (block.groupName || row.label || '').trim();
         const programmeLabel = programmeLabelFromGroupName(programme.name);
+        const totalSessions = Math.max(1, Number(block.sessions) || dates.length || 1);
+        const completedSessions = Math.min(
+          totalSessions,
+          dates.filter(date => parseLocalDateTime(date, endTime) <= now).length,
+        );
+        const isFinished = completedSessions >= totalSessions;
 
         return tutorNames.flatMap(tutor =>
           dates.map((date, index): TutorSession => {
@@ -217,6 +200,8 @@ function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogM
               time,
               sessionNumber,
               sessionTitle: catalogModule?.sessionNames?.[index]?.trim() || `Session ${sessionNumber}`,
+              completedSessions,
+              isFinished,
             };
           }),
         );
@@ -232,6 +217,7 @@ function findTutorConflicts(sessions: TutorSession[]): TutorConflict[] {
       const a = sessions[i];
       const b = sessions[j];
       if (a.blockId === b.blockId) continue;
+      if (a.isFinished || b.isFinished) continue;
       if (a.date !== b.date) continue;
       if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
       conflicts.push({ date: a.date, time: a.time, session: a, conflictWith: b });
@@ -267,6 +253,9 @@ function groupTutorConflicts(conflicts: TutorConflict[]): TutorConflictGroup[] {
 }
 
 function getModuleStatus(module: TutorSession, now: Date): 'in-progress' | 'assigned' | 'completed' {
+  if (module.isFinished) {
+    return 'completed';
+  }
   const start = parseLocalDateTime(module.startDate, module.startTime);
   const end = parseLocalDateTime(module.endDate, module.endTime);
   if (start <= now && end > now) {
@@ -354,8 +343,9 @@ function ModuleList({
   );
 }
 
-export default function TutorProfiles({ groups, catalogModules = [], canEdit = false, onEditTrainingPlan }: Props) {
-  const sessions = useMemo(() => collectTutorSessions(groups, catalogModules), [groups, catalogModules]);
+export default function TutorProfiles({ groups, catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan }: Props) {
+  const now = useMemo(() => new Date(), []);
+  const sessions = useMemo(() => collectTutorSessions(groups, catalogModules, holidays, now), [groups, catalogModules, holidays, now]);
   const tutorNames = useMemo(() => Array.from(new Set(sessions.map(item => item.tutor))).sort((a, b) => a.localeCompare(b)), [sessions]);
   const [selectedTutor, setSelectedTutor] = useState('');
   const [selectedCoach, setSelectedCoach] = useState('');
@@ -365,7 +355,6 @@ export default function TutorProfiles({ groups, catalogModules = [], canEdit = f
     () => sessions.filter(item => normalizeName(item.tutor) === normalizeName(activeTutor)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
     [sessions, activeTutor],
   );
-  const now = useMemo(() => new Date(), []);
   const conflicts = useMemo(() => findTutorConflicts(tutorSessions), [tutorSessions]);
   const activeConflicts = useMemo(
     () => conflicts.filter(conflict => parseLocalDateTime(conflict.date, conflict.session.endTime) > now),

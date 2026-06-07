@@ -2871,6 +2871,7 @@ export default function ApprenticeshipTimeline() {
             <TutorProfiles
               groups={groups}
               catalogModules={catalogModules}
+              holidays={holidays}
               canEdit={canManageCohorts}
               onEditTrainingPlan={handleEditScheduleRow}
             />

@@ -52,6 +52,9 @@ interface NextModuleInfo {
   isScheduledBlock: boolean;
   tutor: string;
   coach: string;
+  programme: string;
+  cohort: string;
+  groupName?: string;
   startDate: string;
   endDate: string;
   sessions: number;
@@ -462,12 +465,16 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
           const nextBlock = row.blks[idx + 1];
           const nextModule = nextBlock ? getModuleMeta(nextBlock.mod).lbl : '';
           const nextTutor = nextBlock?.tutor?.trim() || '';
+          const nextGroupName = nextBlock ? (nextBlock.groupName || row.label || '').trim() : '';
           const nextModuleInfo: NextModuleInfo = nextBlock
             ? {
               name: nextModule,
               isScheduledBlock: true,
               tutor: nextTutor,
               coach: nextBlock.coachName?.trim() || 'TBD',
+              programme: programmeLabelFromGroupName(group.name),
+              cohort: row.label,
+              groupName: nextGroupName || undefined,
               startDate: nextBlock.startDate,
               endDate: nextBlock.endDate,
               sessions: nextBlock.sessions,
@@ -483,6 +490,9 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               isScheduledBlock: false,
               tutor: '',
               coach: '',
+              programme: '',
+              cohort: '',
+              groupName: undefined,
               startDate: '',
               endDate: '',
               sessions: 0,
@@ -621,7 +631,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
       void kbcSwal.fire({
         title: info.isScheduledBlock ? 'No tutor set' : 'No scheduled next module',
         html: info.isScheduledBlock
-          ? `<strong>${escapeHtml(info.name)}</strong> is a saved next module, but it does not have a tutor assigned yet.`
+          ? `<strong>${escapeHtml(info.name)}</strong>${info.groupName ? ` in <strong>${escapeHtml(info.groupName)}</strong>` : ''} is a saved next module, but it does not have a tutor assigned yet.`
           : 'No scheduled next module block yet',
         icon: 'info',
         confirmButtonText: 'OK',
@@ -632,7 +642,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
     if (info.otherTutorSessions.length === 0) {
       void kbcSwal.fire({
         title: 'No time conflicts found',
-        html: `<strong>${escapeHtml(info.tutor)}</strong> has no saved sessions at the same time as <strong>${escapeHtml(info.name)}</strong> sessions (${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}).`,
+        html: `<strong>${escapeHtml(info.tutor)}</strong> has no saved sessions at the same time as <strong>${escapeHtml(info.name)}</strong>${info.groupName ? ` in <strong>${escapeHtml(info.groupName)}</strong>` : ''} sessions (${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}).`,
         icon: 'success',
         confirmButtonText: 'OK',
       });
@@ -640,10 +650,12 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
     }
 
     const visible = info.otherTutorSessions.slice(0, 40);
+    const nextGroupLabel = info.groupName || info.cohort || '';
     const rowsHtml = visible.map(item => `
       <tr>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;font-weight:700;color:#1B2A4A;">${escapeHtml(formatDisplayDate(item.date))}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.conflictTime || '')}</td>
+        <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(nextGroupLabel)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.time)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.module)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.programme)}</td>
@@ -686,19 +698,27 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
       html: `
         <div style="text-align:left">
           <p style="margin:0 0 14px;color:#374151;font-size:14px;line-height:1.5;">
-            <strong>${escapeHtml(info.tutor)}</strong> has <strong>${info.otherTutorSessions.length}</strong> saved session${info.otherTutorSessions.length === 1 ? '' : 's'} at the same time as the next module <strong>${escapeHtml(info.name)}</strong>.
+            <strong>${escapeHtml(info.tutor)}</strong> has <strong>${info.otherTutorSessions.length}</strong> saved session${info.otherTutorSessions.length === 1 ? '' : 's'} at the same time as the next module <strong>${escapeHtml(info.name)}</strong>${nextGroupLabel ? ` in <strong>${escapeHtml(nextGroupLabel)}</strong>` : ''}.
           </p>
+          <div style="margin:0 0 14px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;padding:12px;">
+            <div style="font-size:11px;font-weight:800;color:#94A3B8;text-transform:uppercase;letter-spacing:.04em;">Next module being checked</div>
+            <div style="margin-top:4px;font-weight:800;color:#1F2937;font-size:14px;">${escapeHtml(info.name || 'Next module')}</div>
+            <div style="margin-top:4px;color:#64748B;font-size:12px;">${escapeHtml(info.programme || '')}${nextGroupLabel ? ` - ${escapeHtml(nextGroupLabel)}` : ''}</div>
+            <div style="margin-top:4px;color:#334155;font-size:12px;">${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}</div>
+            <div style="margin-top:4px;color:#64748B;font-size:12px;">Tutor: ${escapeHtml(info.tutor)} - Coach: ${escapeHtml(info.coach)}</div>
+          </div>
           ${currentModulesHtml}
           <div style="max-height:58vh;overflow:auto;border:1px solid #E5E7EB;border-radius:12px;">
-            <table style="width:100%;min-width:940px;border-collapse:collapse;font-size:13px;">
+            <table style="width:100%;min-width:1080px;border-collapse:collapse;font-size:13px;">
               <thead>
                 <tr style="background:#F9FAFB;color:#4B5563;">
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Date</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Next module time</th>
+                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Next group</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Conflicting time</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Module</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Programme</th>
-                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Group</th>
+                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Conflicting group</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Coach</th>
                 </tr>
               </thead>
@@ -939,17 +959,6 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                             <span className="block text-[11px] font-semibold text-gray-400">No scheduled next module block yet</span>
                           )}
                         </div>
-                        {row.nextModuleInfo?.isScheduledBlock && row.nextModuleInfo.otherTutorSessions.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={event => showNextModuleTutorWarning(row, event)}
-                            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-200"
-                            title={`${row.nextModuleInfo.tutor} has ${row.nextModuleInfo.otherTutorSessions.length} time conflict${row.nextModuleInfo.otherTutorSessions.length === 1 ? '' : 's'} during this next module`}
-                          >
-                            <i className="ri-alert-line" />
-                            {row.nextModuleInfo.otherTutorSessions.length}
-                          </button>
-                        )}
                       </div>
                     </td>
                   </tr>
@@ -1041,16 +1050,6 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                         {selectedRow.nextModuleInfo.isScheduledBlock ? selectedRow.nextModuleInfo.name : 'No scheduled next module block yet'}
                       </p>
                     </div>
-                    {selectedRow.nextModuleInfo.isScheduledBlock && selectedRow.nextModuleInfo.otherTutorSessions.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={event => showNextModuleTutorWarning(selectedRow, event)}
-                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-extrabold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-200"
-                      >
-                        <i className="ri-alert-line" />
-                        {selectedRow.nextModuleInfo.otherTutorSessions.length} time conflict{selectedRow.nextModuleInfo.otherTutorSessions.length === 1 ? '' : 's'}
-                      </button>
-                    )}
                   </div>
 
                   {selectedRow.nextModuleInfo.isScheduledBlock ? (

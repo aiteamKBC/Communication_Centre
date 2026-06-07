@@ -14,6 +14,12 @@ const ZOOM_BAR_H = 46;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
+const NOW_LINE_Z_INDEX = 16;
+const NOW_LINE_STYLE = {
+  width: 4,
+  backgroundImage: 'repeating-linear-gradient(to bottom, #F7A800 0 18px, transparent 18px 27px)',
+  borderRadius: 999,
+} as const;
 
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface LanedBlock {
@@ -106,6 +112,40 @@ function parseLocalDateTime(isoDate: string, time24: string): Date {
 
 function hasSessionEnded(date: string, endTime: string, now: Date): boolean {
   return parseLocalDateTime(date, endTime) <= now;
+}
+
+function timeToMinutes(time24: string): number | null {
+  const [hRaw, mRaw] = time24.split(':');
+  const h = Number(hRaw);
+  const m = Number(mRaw);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function timeRangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  const as = timeToMinutes(aStart);
+  const ae = timeToMinutes(aEnd);
+  const bs = timeToMinutes(bStart);
+  const be = timeToMinutes(bEnd);
+  if (as === null || ae === null || bs === null || be === null) return false;
+  return as < be && ae > bs;
+}
+
+function splitPeople(value: string): string[] {
+  return value
+    .split(/\s*(?:\+|&|,|;)\s*/g)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+const TUTOR_CONFLICT_COLORS = ['#00A6D6', '#D81B60', '#2E7D32', '#3949AB', '#B00020', '#6A1B9A'];
+
+function tutorConflictColor(key: string): string {
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
+  }
+  return TUTOR_CONFLICT_COLORS[hash % TUTOR_CONFLICT_COLORS.length];
 }
 
 function normalizeModuleLookup(value: string): string {
@@ -245,6 +285,26 @@ interface ClashMarker {
   endDate?: string;
 }
 
+interface TimelineTutorConflictPair {
+  key: string;
+  date: string;
+  tutor: string;
+  blockIds: [string, string];
+  labels: [string, string];
+}
+
+interface TimelineTutorConnector {
+  key: string;
+  x: number;
+  top: number;
+  bottom: number;
+  labels: string[];
+  date: string;
+  tutor: string;
+  color: string;
+  points: { y: number; label: string }[];
+}
+
 type BadgeTooltipData = {
   type: 'tutor' | 'holiday';
   title: string;
@@ -266,6 +326,15 @@ type ExtensionTooltipData = {
   extensionWeeks: number;
   affectedSessions: number;
   reasons: string[];
+  x: number;
+  y: number;
+};
+
+type TutorConflictTooltipData = {
+  labels: string[];
+  tutor: string;
+  date: string;
+  color: string;
   x: number;
   y: number;
 };
@@ -721,6 +790,42 @@ function ExtensionTooltip({ data }: { data: ExtensionTooltipData }) {
   );
 }
 
+function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
+  return (
+    <div
+      className="fixed pointer-events-none z-50"
+      style={{ left: Math.min(data.x + 12, window.innerWidth - 330), top: Math.max(data.y - 8, 8) }}
+    >
+      <div className="w-[310px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: data.color }}>
+        <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: data.color }}>
+          <div className="flex min-w-0 items-center gap-2">
+            <i className="ri-user-shared-line text-sm" />
+            <span className="truncate text-sm font-extrabold">Tutor conflict</span>
+          </div>
+        </div>
+        <div className="space-y-2 px-3 py-2 text-xs">
+          <div className="grid grid-cols-2 gap-2">
+            <p className="rounded-md bg-slate-50 px-2 py-1 font-semibold text-gray-600">
+              Tutor: <span className="font-extrabold text-gray-900">{data.tutor || 'Unassigned'}</span>
+            </p>
+            <p className="rounded-md bg-slate-50 px-2 py-1 font-semibold text-gray-600">
+              Date: <span className="font-extrabold text-gray-900">{formatDateShort(data.date)}</span>
+            </p>
+          </div>
+          <div className="space-y-1">
+            {data.labels.map((label, index) => (
+              <p key={`${label}-${index}`} className="flex items-center gap-2 rounded-md px-2 py-1 font-extrabold text-gray-800" style={{ background: `${data.color}14` }}>
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: data.color }} />
+                <span className="truncate">{label}</span>
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
@@ -731,6 +836,7 @@ export default function GanttTimeline({
   const [clashTip, setClashTip] = useState<{ marker: ClashMarker; x: number; y: number } | null>(null);
   const [badgeTip, setBadgeTip] = useState<BadgeTooltipData | null>(null);
   const [extensionTip, setExtensionTip] = useState<ExtensionTooltipData | null>(null);
+  const [tutorConflictTip, setTutorConflictTip] = useState<TutorConflictTooltipData | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
   const [classSearch, setClassSearch] = useState('');
   const [showCompletedClasses, setShowCompletedClasses] = useState(false);
@@ -750,7 +856,9 @@ export default function GanttTimeline({
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
+  const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineSurfaceRef = useRef<HTMLDivElement>(null);
   const classesPopupRef = useRef<HTMLDivElement>(null);
 
   // Drag-and-drop state
@@ -1066,31 +1174,217 @@ export default function GanttTimeline({
         });
       });
 
-      const sessionIndex = new Map<string, { blk: ModuleBlock; date: string }[]>();
+      const tutorSessions: { blk: ModuleBlock; date: string; startTime: string; endTime: string; tutor: string }[] = [];
       row.blks.forEach(blk => {
+        const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+        if (sessionSummary.isFinished) return;
+        const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
+        if (!tutors.length) return;
         const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
         plan.sessions.filter(session => !session.isClash).forEach(session => {
-          if (hasSessionEnded(session.date, blk.sessionEndTime || '11:00', new Date())) return;
-          const key = `${session.date}|${blk.sessionStartTime || ''}|${blk.sessionEndTime || ''}|${(blk.tutor || '').trim().toLowerCase()}`;
-          const entries = sessionIndex.get(key) || [];
-          entries.push({ blk, date: session.date });
-          sessionIndex.set(key, entries);
+          const startTime = blk.sessionStartTime || '09:00';
+          const endTime = blk.sessionEndTime || '11:00';
+          if (hasSessionEnded(session.date, endTime, new Date())) return;
+          tutors.forEach(tutor => {
+            tutorSessions.push({ blk, date: session.date, startTime, endTime, tutor });
+          });
         });
       });
-      sessionIndex.forEach(entries => {
-        if (entries.length < 2) return;
-        addMarker(entries[0].date, {
-          type: 'Tutor conflict',
-          modules: entries.map(entry => moduleName(entry.blk)),
-          cohorts: [row.label],
-          groups: entries.map(entry => entry.blk.groupName || row.label),
-          explanation: 'The same tutor is scheduled for multiple sessions at the same time.',
-        });
-      });
+      for (let i = 0; i < tutorSessions.length; i += 1) {
+        for (let j = i + 1; j < tutorSessions.length; j += 1) {
+          const a = tutorSessions[i];
+          const b = tutorSessions[j];
+          if (a.blk.id === b.blk.id) continue;
+          if (a.date !== b.date || a.tutor !== b.tutor) continue;
+          if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
+          addMarker(a.date, {
+            type: 'Tutor conflict',
+            modules: [moduleName(a.blk), moduleName(b.blk)],
+            cohorts: [row.label],
+            groups: [a.blk.groupName || row.label, b.blk.groupName || row.label],
+            explanation: 'The same tutor is scheduled for overlapping sessions.',
+          });
+        }
+      }
 
       return Array.from(markers.values()).sort((a, b) => a.date.localeCompare(b.date));
     }));
-  }, [customModules, groups, holidays]);
+  }, [catalogModules, customModules, groups, holidays]);
+
+  const crossRowTutorConflictPairs = useMemo<TimelineTutorConflictPair[]>(() => {
+    const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
+    const tutorSessions: {
+      blockId: string;
+      rowKey: string;
+      date: string;
+      startTime: string;
+      endTime: string;
+      tutor: string;
+      label: string;
+    }[] = [];
+
+    groups.forEach((grp, groupIdx) => {
+      if (collapsedGroups.has(grp.id)) return;
+      grp.rows.forEach((row, rowIdx) => {
+        const rowKey = `${groupIdx}-${rowIdx}`;
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+        row.blks.forEach(blk => {
+          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+          if (sessionSummary.isFinished) return;
+          const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
+          if (!tutors.length) return;
+          const startTime = blk.sessionStartTime || '09:00';
+          const endTime = blk.sessionEndTime || '11:00';
+          const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+          plan.sessions.filter(session => !session.isClash).forEach(session => {
+            if (hasSessionEnded(session.date, endTime, new Date())) return;
+            tutors.forEach(tutor => {
+              tutorSessions.push({
+                blockId: blk.id,
+                rowKey,
+                date: session.date,
+                startTime,
+                endTime,
+                tutor,
+                label: moduleName(blk),
+              });
+            });
+          });
+        });
+      });
+    });
+
+    const pairs: TimelineTutorConflictPair[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < tutorSessions.length; i += 1) {
+      for (let j = i + 1; j < tutorSessions.length; j += 1) {
+        const a = tutorSessions[i];
+        const b = tutorSessions[j];
+        if (a.blockId === b.blockId) continue;
+        if (a.rowKey === b.rowKey) continue;
+        if (a.date !== b.date || a.tutor !== b.tutor) continue;
+        if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
+        const [firstId, secondId] = [a.blockId, b.blockId].sort();
+        const key = `${a.tutor}|${firstId}|${secondId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({
+          key,
+          date: a.date,
+          tutor: a.tutor,
+          blockIds: [a.blockId, b.blockId],
+          labels: [a.label, b.label],
+        });
+      }
+    }
+    return pairs;
+  }, [catalogModules, collapsedGroups, customModules, groups, holidays]);
+
+  const tutorConflictColorMap = useMemo(() => {
+    const keys = new Set<string>();
+    crossRowTutorConflictPairs.forEach(pair => keys.add(pair.key));
+
+    groups.forEach((grp, groupIdx) => {
+      if (collapsedGroups.has(grp.id)) return;
+      grp.rows.forEach((row, rowIdx) => {
+        void groupIdx;
+        void rowIdx;
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+        const tutorSessions: { blockId: string; date: string; startTime: string; endTime: string; tutor: string }[] = [];
+        row.blks.forEach(blk => {
+          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+          if (sessionSummary.isFinished) return;
+          const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
+          if (!tutors.length) return;
+          const startTime = blk.sessionStartTime || '09:00';
+          const endTime = blk.sessionEndTime || '11:00';
+          const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+          plan.sessions.filter(session => !session.isClash).forEach(session => {
+            if (hasSessionEnded(session.date, endTime, new Date())) return;
+            tutors.forEach(tutor => {
+              tutorSessions.push({ blockId: blk.id, date: session.date, startTime, endTime, tutor });
+            });
+          });
+        });
+
+        for (let i = 0; i < tutorSessions.length; i += 1) {
+          for (let j = i + 1; j < tutorSessions.length; j += 1) {
+            const a = tutorSessions[i];
+            const b = tutorSessions[j];
+            if (a.blockId === b.blockId) continue;
+            if (a.date !== b.date || a.tutor !== b.tutor) continue;
+            if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
+            const [firstId, secondId] = [a.blockId, b.blockId].sort();
+            keys.add(`${a.tutor}|${firstId}|${secondId}`);
+          }
+        }
+      });
+    });
+
+    const colorMap = new Map<string, string>();
+    Array.from(keys).sort().forEach((key, index) => {
+      colorMap.set(key, TUTOR_CONFLICT_COLORS[index % TUTOR_CONFLICT_COLORS.length]);
+    });
+    return colorMap;
+  }, [catalogModules, collapsedGroups, crossRowTutorConflictPairs, customModules, groups, holidays]);
+
+  useEffect(() => {
+    const measureConnectors = () => {
+      const surface = timelineSurfaceRef.current;
+      if (!surface || crossRowTutorConflictPairs.length === 0) {
+        setCrossRowTutorConnectors([]);
+        return;
+      }
+
+      const surfaceRect = surface.getBoundingClientRect();
+      const blockElements = new Map<string, HTMLElement>();
+      surface.querySelectorAll<HTMLElement>('[data-timeline-block-id]').forEach(element => {
+        if (element.dataset.timelineBlockId) {
+          blockElements.set(element.dataset.timelineBlockId, element);
+        }
+      });
+
+      const nextConnectors = crossRowTutorConflictPairs.flatMap((pair, index) => {
+        const first = blockElements.get(pair.blockIds[0]);
+        const second = blockElements.get(pair.blockIds[1]);
+        const datePos = getBlockPosition(pair.date, pair.date, cols);
+        if (!first || !second || !datePos) return [];
+
+        const firstRect = first.getBoundingClientRect();
+        const secondRect = second.getBoundingClientRect();
+        const firstY = firstRect.top - surfaceRect.top + firstRect.height / 2;
+        const secondY = secondRect.top - surfaceRect.top + secondRect.height / 2;
+        const x = LEFT_W + datePos.left + Math.max(2, datePos.width) / 2;
+        const points = [
+          { y: firstY, label: pair.labels[0] },
+          { y: secondY, label: pair.labels[1] },
+        ];
+
+        return [{
+          key: pair.key,
+          x,
+          top: Math.min(firstY, secondY),
+          bottom: Math.max(firstY, secondY),
+          labels: pair.labels,
+          date: pair.date,
+          tutor: pair.tutor,
+          color: tutorConflictColorMap.get(pair.key) || tutorConflictColor(pair.key),
+          points,
+        }];
+      });
+
+      setCrossRowTutorConnectors(nextConnectors);
+    };
+
+    const frame = window.requestAnimationFrame(measureConnectors);
+    window.addEventListener('resize', measureConnectors);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', measureConnectors);
+    };
+  }, [cols, crossRowTutorConflictPairs, tutorConflictColorMap]);
 
   // ── Header rows ───────────────────────────────────────────────────────
   const classSummaries = useMemo<ClassSummary[]>(() => {
@@ -1630,7 +1924,8 @@ export default function GanttTimeline({
     return (
       <div
         key={blk.id}
-        className="absolute overflow-hidden z-10 cursor-pointer transition-all hover:brightness-110"
+        data-timeline-block-id={blk.id}
+        className="absolute overflow-hidden z-10 cursor-pointer transition-all"
         style={{
           left: pos.left,
           width: pos.width,
@@ -1649,7 +1944,9 @@ export default function GanttTimeline({
           setExtensionTip(null);
           setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules });
         }}
-        onMouseLeave={() => setTooltip(null)}
+        onMouseLeave={() => {
+          setTooltip(null);
+        }}
         onMouseMove={e => { if (tooltip) setTooltip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null); }}
         onClick={() => {
           if (!canManageCohorts) {
@@ -1674,7 +1971,6 @@ export default function GanttTimeline({
         {extensionStyle && extensionStyle.width > 3 && (
           <div
             className="absolute inset-y-0"
-            title={`Extension: ${formatDateShort(extensionStartDate)} to ${formatDateShort(displayEndDate)}`}
             onMouseEnter={showExtensionTip}
             onMouseMove={showExtensionTip}
             onMouseLeave={() => setExtensionTip(null)}
@@ -2064,7 +2360,7 @@ export default function GanttTimeline({
         </div>
 
         <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
-          <span className="flex items-center gap-1"><span className="inline-block shrink-0" style={{ width: 14, borderTop: '2px dashed #F7A800' }} />Now</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-5 shrink-0 rounded-full" style={{ width: 5, backgroundImage: 'repeating-linear-gradient(to bottom, #F7A800 0 8px, transparent 8px 12px)', boxShadow: '0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(247,168,0,0.35)' }} />Now</span>
           <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
         </div>
       </div>
@@ -2095,7 +2391,7 @@ export default function GanttTimeline({
         style={{ scrollbarGutter: 'stable' }}
         onScroll={handleTimelineScroll}
       >
-        <div className="relative" style={{ width: totalWidth + LEFT_W }}>
+        <div ref={timelineSurfaceRef} className="relative" style={{ width: totalWidth + LEFT_W }}>
           {/* Full-height holiday bands — start below headers, span all rows */}
           {holidayPositions.map(({ h, pos }) => pos && (
             <div
@@ -2127,6 +2423,60 @@ export default function GanttTimeline({
               }}
             />
           )}
+
+          {crossRowTutorConnectors.map(connector => (
+            <div
+              key={connector.key}
+              className="absolute pointer-events-none"
+              style={{
+                left: connector.x,
+                top: connector.top,
+                height: Math.max(1, connector.bottom - connector.top),
+                transform: 'translateX(-50%)',
+                zIndex: 19,
+              }}
+              title={`Tutor conflict: ${connector.labels.join(' + ')}`}
+            >
+              <div
+                className="h-full"
+                style={{
+                  borderLeft: `1.5px dashed ${connector.color}`,
+                  opacity: 0.5,
+                  mixBlendMode: 'multiply',
+                }}
+              />
+              {connector.points.map((point, pointIndex) => (
+                <span
+                  key={`${connector.key}-${point.label}-${pointIndex}`}
+                  className="pointer-events-auto absolute left-1/2 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border-[3px] border-white shadow"
+                  style={{
+                    top: point.y - connector.top,
+                    transform: 'translate(-50%, -50%)',
+                    background: connector.color,
+                    boxShadow: `0 0 0 1px rgba(15,23,42,0.45), 0 0 0 4px ${connector.color}33`,
+                  }}
+                  onMouseEnter={event => {
+                    setTooltip(null);
+                    setClashTip(null);
+                    setBadgeTip(null);
+                    setExtensionTip(null);
+                    setTutorConflictTip({
+                      labels: connector.labels,
+                      tutor: connector.tutor,
+                      date: connector.date,
+                      color: connector.color,
+                      x: event.clientX,
+                      y: event.clientY,
+                    });
+                  }}
+                  onMouseMove={event => {
+                    setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+                  }}
+                  onMouseLeave={() => setTutorConflictTip(null)}
+                />
+              ))}
+            </div>
+          ))}
 
           {groups.map((grp, gi) => {
             const isCollapsed = collapsedGroups.has(grp.id);
@@ -2216,7 +2566,7 @@ export default function GanttTimeline({
                 <div className="flex-1 relative" style={{ background: 'transparent' }}>
                   {nowPos && (
                     <div className="absolute inset-y-0 pointer-events-none"
-                      style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
+                      style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }} />
                   )}
                 </div>
               </div>
@@ -2250,41 +2600,72 @@ export default function GanttTimeline({
                 })();
                 const moduleLayoutById = new Map(moduleLayouts.map(layout => [layout.blk.id, layout]));
                 const tutorConflictConnectors = (() => {
-                  const sessionIndex = new Map<string, { blk: ModuleBlock; date: string }[]>();
+                  const tutorSessions: { blk: ModuleBlock; date: string; startTime: string; endTime: string; tutor: string }[] = [];
                   row.blks.forEach(blk => {
-                    const tutor = (blk.tutor || '').trim().toLowerCase();
-                    if (!tutor) return;
+                    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays);
+                    if (sessionSummary.isFinished) return;
+                    const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
+                    if (!tutors.length) return;
                     const plan = buildHolidayAdjustedSessionPlan(blk, rowHolidays);
-                    plan.sessions.forEach(session => {
-                      if (hasSessionEnded(session.date, blk.sessionEndTime || '11:00', new Date())) return;
-                      const key = `${session.date}|${blk.sessionStartTime || ''}|${blk.sessionEndTime || ''}|${tutor}`;
-                      const entries = sessionIndex.get(key) || [];
-                      entries.push({ blk, date: session.date });
-                      sessionIndex.set(key, entries);
+                    plan.sessions.filter(session => !session.isClash).forEach(session => {
+                      const startTime = blk.sessionStartTime || '09:00';
+                      const endTime = blk.sessionEndTime || '11:00';
+                      if (hasSessionEnded(session.date, endTime, new Date())) return;
+                      tutors.forEach(tutor => {
+                        tutorSessions.push({ blk, date: session.date, startTime, endTime, tutor });
+                      });
                     });
                   });
 
-                  return Array.from(sessionIndex.entries()).flatMap(([key, entries], index) => {
-                    if (entries.length < 2) return [];
-                    const date = entries[0].date;
-                    const datePos = getBlockPosition(date, date, cols);
-                    if (!datePos) return [];
-                    const points = entries
-                      .map(entry => {
-                        const layout = moduleLayoutById.get(entry.blk.id);
-                        return layout ? { y: layout.centerY, label: getBlockDisplayName(entry.blk, customModules) } : null;
-                      })
-                      .filter((point): point is { y: number; label: string } => Boolean(point));
-                    if (points.length < 2) return [];
-                    const ys = points.map(point => point.y);
-                    return [{
-                      key: `${rowTargetKey}-tutor-conflict-${key}-${index}`,
-                      x: datePos.left + Math.max(2, datePos.width) / 2,
-                      top: Math.min(...ys),
-                      bottom: Math.max(...ys),
-                      points,
-                    }];
-                  });
+                  const connectors: {
+                    key: string;
+                    x: number;
+                    top: number;
+                    bottom: number;
+                    labels: string[];
+                    date: string;
+                    tutor: string;
+                    color: string;
+                    points: { y: number; label: string }[];
+                  }[] = [];
+                  const seenConnectors = new Set<string>();
+
+                  for (let i = 0; i < tutorSessions.length; i += 1) {
+                    for (let j = i + 1; j < tutorSessions.length; j += 1) {
+                      const a = tutorSessions[i];
+                      const b = tutorSessions[j];
+                      if (a.blk.id === b.blk.id) continue;
+                      if (a.date !== b.date || a.tutor !== b.tutor) continue;
+                      if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
+                      const [firstId, secondId] = [a.blk.id, b.blk.id].sort();
+                      const connectorKey = `${a.tutor}|${firstId}|${secondId}`;
+                      if (seenConnectors.has(connectorKey)) continue;
+                      seenConnectors.add(connectorKey);
+                      const datePos = getBlockPosition(a.date, a.date, cols);
+                      if (!datePos) continue;
+                      const points = [a, b]
+                        .map(entry => {
+                          const layout = moduleLayoutById.get(entry.blk.id);
+                          return layout ? { y: layout.centerY, label: getBlockDisplayName(entry.blk, customModules) } : null;
+                        })
+                        .filter((point): point is { y: number; label: string } => Boolean(point));
+                      if (points.length < 2) continue;
+                      const ys = points.map(point => point.y);
+                      connectors.push({
+                        key: `${rowTargetKey}-tutor-conflict-${connectorKey}`,
+                        x: datePos.left + Math.max(2, datePos.width) / 2,
+                        top: Math.min(...ys),
+                        bottom: Math.max(...ys),
+                        labels: points.map(point => point.label),
+                        date: a.date,
+                        tutor: a.tutor,
+                        color: tutorConflictColorMap.get(connectorKey) || tutorConflictColor(connectorKey),
+                        points,
+                      });
+                    }
+                  }
+
+                  return connectors;
                 })();
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
@@ -2363,7 +2744,7 @@ export default function GanttTimeline({
                         {/* Now line */}
                         {nowPos && (
                           <div className="absolute inset-y-0 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }} />
+                            style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }} />
                         )}
                       </div>
                     </div>
@@ -2447,39 +2828,52 @@ export default function GanttTimeline({
                             <div
                               className="h-full"
                               style={{
-                                borderLeft: '2px dashed #06B6D4',
-                                filter: 'drop-shadow(0 0 3px rgba(6,182,212,0.55))',
+                                borderLeft: `1.5px dashed ${connector.color}`,
+                                opacity: 0.5,
+                                mixBlendMode: 'multiply',
                               }}
                             />
                             {connector.points.map((point, pointIndex) => (
                               <span
                                 key={`${connector.key}-${point.label}-${pointIndex}`}
-                                className="absolute left-1/2 flex h-3 w-3 items-center justify-center rounded-full border-2 border-white shadow"
+                                className="pointer-events-auto absolute left-1/2 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border-[3px] border-white shadow"
                                 style={{
                                   top: point.y - connector.top,
                                   transform: 'translate(-50%, -50%)',
-                                  background: '#06B6D4',
-                                  boxShadow: '0 0 0 2px rgba(6,182,212,0.20)',
+                                  background: connector.color,
+                                  boxShadow: `0 0 0 1px rgba(15,23,42,0.45), 0 0 0 4px ${connector.color}33`,
                                 }}
+                                onMouseEnter={event => {
+                                  setTooltip(null);
+                                  setClashTip(null);
+                                  setBadgeTip(null);
+                                  setExtensionTip(null);
+                                  setTutorConflictTip({
+                                    labels: connector.labels,
+                                    tutor: connector.tutor,
+                                    date: connector.date,
+                                    color: connector.color,
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                  });
+                                }}
+                                onMouseMove={event => {
+                                  setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+                                }}
+                                onMouseLeave={() => setTutorConflictTip(null)}
                               />
                             ))}
-                            <span
-                              className="absolute left-1/2 rounded-full border border-cyan-200 bg-white px-1.5 py-px text-[9px] font-extrabold uppercase tracking-wide text-cyan-700 shadow-sm"
-                              style={{ top: -18, transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}
-                            >
-                              Tutor conflict
-                            </span>
                           </div>
                         ))}
 
                         {/* Now line — rendered last so it appears above module bars */}
                         {nowPos && (
                           <div className="absolute top-0 bottom-0 pointer-events-none"
-                            style={{ left: nowPos.left, borderLeft: '2px dashed #F7A800', zIndex: 10 }}>
+                            style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }}>
                             {gi === 0 && ri === 0 && (
                               <div className="absolute -top-px left-0" style={{ transform: 'translateX(-50%)' }}>
-                                <span className="font-bold px-1.5 py-px rounded whitespace-nowrap"
-                                  style={{ fontSize: '7px', background: '#F7A800', color: '#1B2A4A', display: 'block' }}>Now</span>
+                                <span className="font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap shadow-sm ring-2 ring-white"
+                                  style={{ fontSize: '8px', background: '#F7A800', color: '#1B2A4A', display: 'block' }}>NOW</span>
                               </div>
                             )}
                           </div>
@@ -2520,6 +2914,7 @@ export default function GanttTimeline({
       {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
       {badgeTip && <BadgeTooltip data={badgeTip} />}
       {extensionTip && <ExtensionTooltip data={extensionTip} />}
+      {tutorConflictTip && <TutorConflictTooltip data={tutorConflictTip} />}
 
       {editChoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

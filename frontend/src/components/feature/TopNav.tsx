@@ -20,6 +20,8 @@ const navLinks = [
   { label: 'Policies', path: '/documents' },
   { label: 'Events', path: '/events' },
   { label: 'Training Plan', path: '/training-plan' },
+  { label: 'LMS', href: 'https://kentbusinesscollege.org/' },
+  { label: 'APTEM', href: 'https://kentbusinesscollege.aptem.co.uk/pwa/auth/login?returnUrl=%2Fcaseload-dashboard' },
 ];
 
 export default function TopNav() {
@@ -91,8 +93,10 @@ export default function TopNav() {
     ? [...navLinks, { label: 'User Activity', path: '/user-activity' }]
     : navLinks;
 
-  const isActive = (path: string) =>
-    path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
+  const isActive = (path?: string) => {
+    if (!path) return false;
+    return path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
+  };
 
   const handleLogout = async () => {
     let trackingSessionId = '';
@@ -171,22 +175,42 @@ export default function TopNav() {
           </Link>
 
           <div className="hidden lg:flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.45)] flex-1 justify-center max-w-max mx-auto">
-            {visibleNavLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                data-nav-reveal
-                className={`relative overflow-hidden rounded-full px-4 py-2 text-xs font-medium tracking-wide transition-all duration-300 cursor-pointer whitespace-nowrap ${isActive(link.path)
-                  ? 'text-kbc-navy font-semibold'
-                  : 'text-gray-500 hover:text-kbc-navy hover:-translate-y-0.5'
-                  }`}
-              >
-                {isActive(link.path) && (
-                  <span className="absolute inset-0 rounded-full bg-[linear-gradient(135deg,rgba(15,56,110,0.08),rgba(255,193,7,0.16))] ring-1 ring-kbc-navy/10" />
-                )}
-                <span className="relative z-10">{link.label}</span>
-              </Link>
-            ))}
+            {visibleNavLinks.map((link) => {
+              const active = isActive(link.path);
+              const className = `relative overflow-hidden rounded-full px-3 py-2 text-xs font-medium tracking-wide transition-all duration-300 cursor-pointer whitespace-nowrap ${active
+                ? 'text-kbc-navy font-semibold'
+                : 'text-gray-500 hover:text-kbc-navy hover:-translate-y-0.5'
+                }`;
+
+              if ('href' in link) {
+                return (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-nav-reveal
+                    className={className}
+                  >
+                    <span className="relative z-10">{link.label}</span>
+                  </a>
+                );
+              }
+
+              return (
+                <Link
+                  key={link.path}
+                  to={link.path}
+                  data-nav-reveal
+                  className={className}
+                >
+                  {active && (
+                    <span className="absolute inset-0 rounded-full bg-[linear-gradient(135deg,rgba(15,56,110,0.08),rgba(255,193,7,0.16))] ring-1 ring-kbc-navy/10" />
+                  )}
+                  <span className="relative z-10">{link.label}</span>
+                </Link>
+              );
+            })}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
@@ -234,18 +258,37 @@ export default function TopNav() {
             className="nav-sheet bg-white/95 border-b border-gray-200 py-2 shadow-2xl backdrop-blur-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {visibleNavLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                className={`block px-5 py-3 text-sm font-medium cursor-pointer border-l-4 transition-all duration-300 ${isActive(link.path)
-                  ? 'text-kbc-navy border-kbc-navy bg-[linear-gradient(90deg,rgba(15,56,110,0.06),rgba(15,56,110,0))] font-semibold'
-                  : 'text-gray-600 border-transparent hover:text-kbc-navy hover:bg-gray-50'
-                  }`}
-              >
-                {link.label}
-              </Link>
-            ))}
+            {visibleNavLinks.map((link) => {
+              const active = isActive(link.path);
+              const className = `block px-5 py-3 text-sm font-medium cursor-pointer border-l-4 transition-all duration-300 ${active
+                ? 'text-kbc-navy border-kbc-navy bg-[linear-gradient(90deg,rgba(15,56,110,0.06),rgba(15,56,110,0))] font-semibold'
+                : 'text-gray-600 border-transparent hover:text-kbc-navy hover:bg-gray-50'
+                }`;
+
+              if ('href' in link) {
+                return (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={className}
+                  >
+                    {link.label}
+                  </a>
+                );
+              }
+
+              return (
+                <Link
+                  key={link.path}
+                  to={link.path}
+                  className={className}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
 
             <div className="border-t border-gray-100 mt-2 pt-2 px-5 py-3">
               {isAuthenticated ? (

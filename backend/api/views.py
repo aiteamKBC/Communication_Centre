@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.db import models, transaction
@@ -1313,6 +1314,13 @@ def training_plan_holidays(request):
 				invalid_count += 1
 				continue
 
+			row_id_raw = str(row.get('id', '')).strip()
+			row_id = None
+			if row_id_raw:
+				try:
+					row_id = int(row_id_raw)
+				except (TypeError, ValueError):
+					row_id = None
 			label = str(row.get('label', '')).strip()
 			start_date = parse_date(str(row.get('startDate', '')).strip())
 			end_date = parse_date(str(row.get('endDate', '')).strip())
@@ -1328,6 +1336,7 @@ def training_plan_holidays(request):
 				continue
 
 			validated_items.append({
+				'id': row_id,
 				'label': label,
 				'start_date': start_date,
 				'end_date': end_date,
@@ -1368,22 +1377,45 @@ def training_plan_holidays(request):
 
 		before = current_items
 		with transaction.atomic():
-			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
-			created = [
-				TrainingPlanHoliday.objects.create(
-					label=item['label'],
-					start_date=item['start_date'],
-					end_date=item['end_date'],
-					type=item['type'],
-					color=item['color'],
-				)
-				for item in validated_items
-			]
+			existing_records = {
+				record.id: record
+				for record in TrainingPlanHoliday.objects.select_for_update().exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
+			}
+			kept_ids = set()
+			for item in validated_items:
+				record = existing_records.get(item['id']) if item['id'] else None
+				if record is None:
+					record = TrainingPlanHoliday.objects.create(
+						label=item['label'],
+						start_date=item['start_date'],
+						end_date=item['end_date'],
+						type=item['type'],
+						color=item['color'],
+					)
+				else:
+					changed = (
+						record.label != item['label'] or
+						record.start_date != item['start_date'] or
+						record.end_date != item['end_date'] or
+						record.type != item['type'] or
+						record.color != item['color']
+					)
+					if changed:
+						record.label = item['label']
+						record.start_date = item['start_date']
+						record.end_date = item['end_date']
+						record.type = item['type']
+						record.color = item['color']
+						record.save(update_fields=['label', 'start_date', 'end_date', 'type', 'color', 'updated_at'])
+				kept_ids.add(record.id)
 
-		after = [serialize_training_plan_holiday(item) for item in created]
-		_audit_log(request, action='replace', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
+			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).exclude(pk__in=kept_ids).delete()
+
+		after_records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+		after = [serialize_training_plan_holiday(item) for item in after_records]
+		_audit_log(request, action='upsert', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
 		return JsonResponse({
-			'saved': len(created),
+			'saved': len(after),
 			'items': after,
 			'version': training_plan_holidays_version(),
 		})
@@ -1914,83 +1946,200 @@ def _resolve_sharepoint_site(host: str, site_path: str, token: str) -> dict:
 	raise RuntimeError(f'Could not resolve SharePoint site: {site_path}.')
 
 
-def documents_live(request):
-	if request.method != 'GET':
-		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+DOCUMENTS_LIVE_CACHE_SECONDS = 120
+DOCUMENTS_SUMMARY_CACHE_SECONDS = 300
 
+
+def _documents_cache_key(kind: str, policies_url: str) -> str:
+	digest = hashlib.sha256(policies_url.encode('utf-8')).hexdigest()[:16]
+	return f'policies:v2:{kind}:{digest}'
+
+
+def _get_policies_context() -> tuple[str, str, str, str, str, str, str]:
 	client_id = _get_env_first('MS_Policies_client_id', 'MS_Policies_clint_id', 'MS_POLICIES_CLIENT_ID')
 	client_secret = _get_env_first('MS_Policies_client_secret', 'MS_POLICIES_CLIENT_SECRET')
 	tenant_id = _get_env_first('MS_Policies_tenant_id', 'MS_POLICIES_TENANT_ID')
 	policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
 
 	if not client_id or not client_secret or not tenant_id or not policies_url:
-		return JsonResponse(
-			{'detail': 'Missing Microsoft Policies configuration in environment variables.'},
-			status=500,
+		raise RuntimeError('Missing Microsoft Policies configuration in environment variables.')
+
+	host, site_path, drive_path = _parse_policies_folder_url(policies_url)
+	return client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path
+
+
+def _get_policies_access_token(client_id: str, client_secret: str, tenant_id: str) -> str:
+	token_payload = urlencode({
+		'client_id': client_id,
+		'client_secret': client_secret,
+		'grant_type': 'client_credentials',
+		'scope': 'https://graph.microsoft.com/.default',
+	}).encode('utf-8')
+
+	token_data = _graph_json(
+		'POST',
+		f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token',
+		payload=token_payload,
+		headers={'Content-Type': 'application/x-www-form-urlencoded'},
+	)
+	access_token = str(token_data.get('access_token', '')).strip()
+	if not access_token:
+		raise RuntimeError('Microsoft token response did not include an access token.')
+
+	claims = _decode_jwt_payload(access_token)
+	roles = claims.get('roles') if isinstance(claims.get('roles'), list) else []
+	if not roles:
+		raise RuntimeError(
+			'Microsoft Graph token has no application roles. Adding permission IDs in .env does not grant access. '
+			'In Entra App Registration > API permissions, add Graph Application permissions '
+			'(e.g. Sites.Read.All / Files.Read.All) and click Admin consent.'
 		)
+
+	return access_token
+
+
+def _get_policies_root(host: str, site_path: str, drive_path: str, access_token: str) -> tuple[dict, str, dict]:
+	site_data = _resolve_sharepoint_site(host, site_path, access_token)
+	site_id = str(site_data.get('id', '')).strip()
+	if not site_id:
+		raise RuntimeError('Could not resolve the SharePoint site ID from MS_Policies_FILE.')
+
+	root_lookup_url = (
+		f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{quote(drive_path, safe="/")}:'
+		'?$select=id,name,webUrl,lastModifiedDateTime,size,folder,file'
+	)
+	root_item = _graph_json('GET', root_lookup_url, token=access_token)
+	if not isinstance(root_item, dict) or not root_item.get('id'):
+		raise RuntimeError('Could not locate the configured policies folder in SharePoint.')
+
+	return site_data, site_id, root_item
+
+
+def _documents_source_payload(host: str, site_path: str, drive_path: str, site_data: dict, root_item: dict) -> dict:
+	return {
+		'host': host,
+		'sitePath': site_path,
+		'drivePath': drive_path,
+		'siteName': site_data.get('displayName', ''),
+		'siteWebUrl': site_data.get('webUrl', ''),
+		'folderWebUrl': root_item.get('webUrl', ''),
+	}
+
+
+def _build_documents_live_payload() -> tuple[dict, str]:
+	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
+	access_token = _get_policies_access_token(client_id, client_secret, tenant_id)
+	site_data, site_id, root_item = _get_policies_root(host, site_path, drive_path, access_token)
+	tree = _build_drive_tree(site_id, root_item, access_token)
+
+	return {
+		'fetchedAt': datetime.utcnow().isoformat() + 'Z',
+		'source': _documents_source_payload(host, site_path, drive_path, site_data, root_item),
+		'root': tree,
+	}, policies_url
+
+
+def _count_tree_files(node: dict) -> int:
+	if node.get('type') == 'file':
+		return 1
+	return sum(_count_tree_files(child) for child in node.get('children', []) if isinstance(child, dict))
+
+
+def _build_documents_summary_payload() -> tuple[dict, str]:
+	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
+	live_cache_key = _documents_cache_key('live', policies_url)
+	live_payload = cache.get(live_cache_key)
+	if isinstance(live_payload, dict) and isinstance(live_payload.get('root'), dict):
+		root = live_payload['root']
+		categories = [
+			{'name': child.get('name', ''), 'count': _count_tree_files(child)}
+			for child in root.get('children', [])
+			if isinstance(child, dict) and child.get('type') == 'folder'
+		]
+		uncategorized_count = sum(
+			1 for child in root.get('children', [])
+			if isinstance(child, dict) and child.get('type') == 'file'
+		)
+		if uncategorized_count > 0:
+			categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
+		return {
+			'fetchedAt': live_payload.get('fetchedAt') or datetime.utcnow().isoformat() + 'Z',
+			'source': live_payload.get('source', {}),
+			'total': _count_tree_files(root),
+			'categories': categories,
+		}, policies_url
+
+	access_token = _get_policies_access_token(client_id, client_secret, tenant_id)
+	site_data, site_id, root_item = _get_policies_root(host, site_path, drive_path, access_token)
+	children = _list_drive_children(site_id, str(root_item.get('id', '')), access_token)
+	categories = []
+	uncategorized_count = 0
+	for child in children:
+		if not child.get('folder'):
+			uncategorized_count += 1
+			continue
+		folder_info = child.get('folder') if isinstance(child.get('folder'), dict) else {}
+		categories.append({
+			'name': str(child.get('name', '')).strip(),
+			'count': int(folder_info.get('childCount') or 0),
+		})
+	if uncategorized_count > 0:
+		categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
+
+	return {
+		'fetchedAt': datetime.utcnow().isoformat() + 'Z',
+		'source': _documents_source_payload(host, site_path, drive_path, site_data, root_item),
+		'total': sum(item['count'] for item in categories),
+		'categories': categories,
+	}, policies_url
+
+
+def documents_summary(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 	try:
-		host, site_path, drive_path = _parse_policies_folder_url(policies_url)
+		policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
+		cache_key = _documents_cache_key('summary', policies_url)
+		if request.GET.get('refresh') != '1':
+			cached = cache.get(cache_key)
+			if isinstance(cached, dict):
+				return JsonResponse(cached)
 
-		token_payload = urlencode({
-			'client_id': client_id,
-			'client_secret': client_secret,
-			'grant_type': 'client_credentials',
-			'scope': 'https://graph.microsoft.com/.default',
-		}).encode('utf-8')
-
-		token_data = _graph_json(
-			'POST',
-			f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token',
-			payload=token_payload,
-			headers={'Content-Type': 'application/x-www-form-urlencoded'},
-		)
-		access_token = str(token_data.get('access_token', '')).strip()
-		if not access_token:
-			raise RuntimeError('Microsoft token response did not include an access token.')
-
-		claims = _decode_jwt_payload(access_token)
-		roles = claims.get('roles') if isinstance(claims.get('roles'), list) else []
-		if not roles:
-			raise RuntimeError(
-				'Microsoft Graph token has no application roles. Adding permission IDs in .env does not grant access. '
-				'In Entra App Registration > API permissions, add Graph Application permissions '
-				'(e.g. Sites.Read.All / Files.Read.All) and click Admin consent.'
-			)
-
-		site_data = _resolve_sharepoint_site(host, site_path, access_token)
-		site_id = str(site_data.get('id', '')).strip()
-		if not site_id:
-			raise RuntimeError('Could not resolve the SharePoint site ID from MS_Policies_FILE.')
-
-		root_lookup_url = (
-			f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{quote(drive_path, safe="/")}:'
-			'?$select=id,name,webUrl,lastModifiedDateTime,size,folder,file'
-		)
-		root_item = _graph_json('GET', root_lookup_url, token=access_token)
-		if not isinstance(root_item, dict) or not root_item.get('id'):
-			raise RuntimeError('Could not locate the configured policies folder in SharePoint.')
-
-		tree = _build_drive_tree(site_id, root_item, access_token)
-
-		return JsonResponse(
-			{
-				'fetchedAt': datetime.utcnow().isoformat() + 'Z',
-				'source': {
-					'host': host,
-					'sitePath': site_path,
-					'drivePath': drive_path,
-					'siteName': site_data.get('displayName', ''),
-					'siteWebUrl': site_data.get('webUrl', ''),
-					'folderWebUrl': root_item.get('webUrl', ''),
-				},
-				'root': tree,
-			}
-		)
+		payload, policies_url = _build_documents_summary_payload()
+		cache.set(_documents_cache_key('summary', policies_url), payload, DOCUMENTS_SUMMARY_CACHE_SECONDS)
+		return JsonResponse(payload)
 	except ValueError as error:
 		return JsonResponse({'detail': str(error)}, status=400)
 	except RuntimeError as error:
-		return JsonResponse({'detail': str(error)}, status=502)
+		status = 500 if 'Missing Microsoft Policies configuration' in str(error) else 502
+		return JsonResponse({'detail': str(error)}, status=status)
+	except Exception as error:
+		return JsonResponse({'detail': f'Unexpected server error: {error.__class__.__name__}'}, status=500)
+
+
+def documents_live(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
+
+	try:
+		cache_key = _documents_cache_key('live', policies_url)
+		if request.GET.get('refresh') != '1':
+			cached = cache.get(cache_key)
+			if isinstance(cached, dict):
+				return JsonResponse(cached)
+
+		payload, policies_url = _build_documents_live_payload()
+		cache.set(_documents_cache_key('live', policies_url), payload, DOCUMENTS_LIVE_CACHE_SECONDS)
+		cache.delete(_documents_cache_key('summary', policies_url))
+		return JsonResponse(payload)
+	except ValueError as error:
+		return JsonResponse({'detail': str(error)}, status=400)
+	except RuntimeError as error:
+		status = 500 if 'Missing Microsoft Policies configuration' in str(error) else 502
+		return JsonResponse({'detail': str(error)}, status=status)
 	except Exception as error:
 		return JsonResponse({'detail': f'Unexpected server error: {error.__class__.__name__}'}, status=500)
 
@@ -2086,7 +2235,20 @@ def employee_detail(request, employee_id: int):
 
 # ── Safeguarding urgent tickets ───────────────────────────────────────────────
 
+def _support_ticket_notes_payload(raw_notes) -> list:
+	if isinstance(raw_notes, list):
+		return raw_notes
+	if isinstance(raw_notes, str):
+		try:
+			parsed = json.loads(raw_notes)
+		except json.JSONDecodeError:
+			return []
+		return parsed if isinstance(parsed, list) else []
+	return []
+
+
 def serialize_support_ticket(t: SupportTicket) -> dict:
+	notes = _support_ticket_notes_payload(t.notes)
 	return {
 		'id': t.id,
 		'ticketType': t.ticket_type,
@@ -2100,22 +2262,55 @@ def serialize_support_ticket(t: SupportTicket) -> dict:
 		'createdAt': t.created_at.isoformat() if t.created_at else '',
 		'submittedBy': t.submitted_by,
 		'createdBy': t.created_by,
+		'isArchived': t.is_archived,
+		'assignedOwner': t.assigned_owner,
+		'updatedAt': t.updated_at.isoformat() if t.updated_at else '',
+		'notes': notes,
+		'notesCount': len([note for note in notes if isinstance(note, dict) and str(note.get('note', '')).strip()]),
+		'evidence': t.evidence or [],
+		'daysToClose': t.days_to_close,
 	}
+
+
+def _is_local_request(request) -> bool:
+	host = request.get_host().split(':', 1)[0].lower()
+	return host in {'localhost', '127.0.0.1', '0.0.0.0'} or os.getenv('USE_LOCAL_RISK_DATA', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def urgent_tickets(request):
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request) and 'safeguarding_db' not in settings.DATABASES:
+		return JsonResponse([], safe=False)
 	try:
-		records = SupportTicket.objects.using('safeguarding_db').filter(
-			urgency__iexact='urgent'
-		).order_by('-created_at')
+		records = (
+			SupportTicket.objects.using('safeguarding_db')
+			.filter(urgency__iregex=r'^(urgent|high)$')
+			.exclude(status__iregex=r'^(closed|outcome recorded)$')
+			.filter(models.Q(is_archived=False) | models.Q(is_archived__isnull=True))
+			.order_by('-created_at')
+		)
 		return JsonResponse([serialize_support_ticket(t) for t in records], safe=False)
 	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
 # ── Risk register ─────────────────────────────────────────────────────────────
+def support_tickets(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request) and 'safeguarding_db' not in settings.DATABASES:
+		return JsonResponse([], safe=False)
+	try:
+		records = SupportTicket.objects.using('safeguarding_db').all().order_by('-created_at')
+		return JsonResponse([serialize_support_ticket(t) for t in records], safe=False)
+	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
+		return JsonResponse({'detail': str(exc)}, status=502)
+
 
 def serialize_risk(r: RiskRegisterItem) -> dict:
 	return {
@@ -2133,10 +2328,14 @@ def serialize_risk(r: RiskRegisterItem) -> dict:
 def risk_register(request):
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request):
+		return JsonResponse([], safe=False)
 	try:
 		records = RiskRegisterItem.objects.using('ofsted_db').order_by('id')
 		return JsonResponse([serialize_risk(r) for r in records], safe=False)
 	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
