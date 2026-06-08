@@ -328,8 +328,8 @@ export default function Home() {
                 </div>
 
                 <div className="lg:col-span-6 flex flex-col gap-4">
-                  <PrioritySnapshot />
                   <RiskSummary />
+                  <PrioritySnapshot />
                 </div>
 
                 <div className="lg:col-span-3">
