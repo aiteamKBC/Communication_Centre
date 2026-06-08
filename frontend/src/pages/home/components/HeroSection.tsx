@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
 import SafeImage from '../../../components/feature/SafeImage';
@@ -163,6 +163,15 @@ export default function HeroSection({
   const isTransitioning = useRef(false);
   const [noTransition, setNoTransition] = useState(false);
 
+  const normalizeTrackPosition = useCallback((current: number) => {
+    if (total <= 3) {
+      return Math.min(current, Math.max(0, total - 1));
+    }
+
+    const normalized = ((current % total) + total) % total;
+    return total + normalized;
+  }, [total]);
+
   useEffect(() => {
     const el = containerDivRef.current;
     if (!el) return;
@@ -174,6 +183,7 @@ export default function HeroSection({
 
   useEffect(() => {
     if (paused || total <= 3) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     autoPlayRef.current = setInterval(() => {
       setSlideIdx(prev => prev + 1);
     }, 4000);
@@ -184,18 +194,58 @@ export default function HeroSection({
     if (total <= 3) return;
     const track = trackRef.current;
     if (!track) return;
-    const onEnd = () => {
+
+    const settleTrackPosition = () => {
       isTransitioning.current = false;
       setSlideIdx(prev => {
-        const needsJump = prev >= total * 2 || prev < total;
-        if (!needsJump) return prev;
+        const next = normalizeTrackPosition(prev);
+        if (next === prev) return prev;
         setNoTransition(true);
-        return prev >= total * 2 ? prev - total : prev + total;
+        return next;
       });
     };
+
+    const onEnd = () => {
+      window.clearTimeout(fallbackTimer);
+      settleTrackPosition();
+    };
+
+    const fallbackTimer = window.setTimeout(settleTrackPosition, 700);
     track.addEventListener('transitionend', onEnd, { once: true });
-    return () => track.removeEventListener('transitionend', onEnd);
-  }, [slideIdx, total]);
+    return () => {
+      window.clearTimeout(fallbackTimer);
+      track.removeEventListener('transitionend', onEnd);
+    };
+  }, [slideIdx, total, normalizeTrackPosition]);
+
+  useEffect(() => {
+    if (total <= 3) return;
+
+    const recoverHeroTrack = () => {
+      if (document.visibilityState === 'hidden') {
+        if (autoPlayRef.current) {
+          clearInterval(autoPlayRef.current);
+          autoPlayRef.current = null;
+        }
+        return;
+      }
+
+      isTransitioning.current = false;
+      const el = containerDivRef.current;
+      if (el) {
+        setContainerW(el.offsetWidth);
+      }
+      setNoTransition(true);
+      setSlideIdx(prev => normalizeTrackPosition(prev));
+    };
+
+    document.addEventListener('visibilitychange', recoverHeroTrack);
+    window.addEventListener('focus', recoverHeroTrack);
+    return () => {
+      document.removeEventListener('visibilitychange', recoverHeroTrack);
+      window.removeEventListener('focus', recoverHeroTrack);
+    };
+  }, [total, normalizeTrackPosition]);
 
   useEffect(() => {
     if (!noTransition) return;
@@ -207,6 +257,7 @@ export default function HeroSection({
   }, [noTransition]);
 
   const goTo = (delta: number) => {
+    if (delta === 0) return;
     if (isTransitioning.current) return;
     isTransitioning.current = true;
     setSlideIdx(prev => prev + delta);
