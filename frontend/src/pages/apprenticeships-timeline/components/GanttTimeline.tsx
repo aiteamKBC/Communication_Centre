@@ -385,6 +385,8 @@ interface Props {
   onDeleteProgram?: (groupId: string) => void;
   onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => void;
   onReorderGroup?: (fromGroupIdx: number, toGroupIdx: number) => void;
+  onExportExcel?: () => void;
+  exportExcelDisabled?: boolean;
   canManageCohorts?: boolean;
 }
 
@@ -829,7 +831,7 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
-  onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, canManageCohorts = true,
+  onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -2324,6 +2326,18 @@ export default function GanttTimeline({
                 </div>
               )}
             </div>
+          {onExportExcel && (
+            <button
+              type="button"
+              onClick={onExportExcel}
+              disabled={exportExcelDisabled}
+              className="px-2.5 h-7 flex items-center gap-1.5 justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 transition-all text-xs font-semibold"
+              title="Export the full training plan table as Excel"
+            >
+              <i className="ri-file-excel-2-line text-sm" />
+              Export
+            </button>
+          )}
           {(zoom === 'week' || zoom === 'day') && (
             <>
             <button
@@ -2435,7 +2449,6 @@ export default function GanttTimeline({
                 transform: 'translateX(-50%)',
                 zIndex: 19,
               }}
-              title={`Tutor conflict: ${connector.labels.join(' + ')}`}
             >
               <div
                 className="h-full"
@@ -2456,6 +2469,7 @@ export default function GanttTimeline({
                     boxShadow: `0 0 0 1px rgba(15,23,42,0.45), 0 0 0 4px ${connector.color}33`,
                   }}
                   onMouseEnter={event => {
+                    event.stopPropagation();
                     setTooltip(null);
                     setClashTip(null);
                     setBadgeTip(null);
@@ -2470,9 +2484,13 @@ export default function GanttTimeline({
                     });
                   }}
                   onMouseMove={event => {
+                    event.stopPropagation();
                     setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
                   }}
-                  onMouseLeave={() => setTutorConflictTip(null)}
+                  onMouseLeave={event => {
+                    event.stopPropagation();
+                    setTutorConflictTip(null);
+                  }}
                 />
               ))}
             </div>
@@ -2823,7 +2841,6 @@ export default function GanttTimeline({
                               transform: 'translateX(-50%)',
                               zIndex: 18,
                             }}
-                            title={`Tutor conflict: ${connector.points.map(point => point.label).join(' + ')}`}
                           >
                             <div
                               className="h-full"
@@ -2844,6 +2861,7 @@ export default function GanttTimeline({
                                   boxShadow: `0 0 0 1px rgba(15,23,42,0.45), 0 0 0 4px ${connector.color}33`,
                                 }}
                                 onMouseEnter={event => {
+                                  event.stopPropagation();
                                   setTooltip(null);
                                   setClashTip(null);
                                   setBadgeTip(null);
@@ -2858,9 +2876,13 @@ export default function GanttTimeline({
                                   });
                                 }}
                                 onMouseMove={event => {
+                                  event.stopPropagation();
                                   setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
                                 }}
-                                onMouseLeave={() => setTutorConflictTip(null)}
+                                onMouseLeave={event => {
+                                  event.stopPropagation();
+                                  setTutorConflictTip(null);
+                                }}
                               />
                             ))}
                           </div>

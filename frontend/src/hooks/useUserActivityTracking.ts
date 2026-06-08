@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 const ACTIVITY_ENDPOINT = '/api/auth/activity/';
-const HEARTBEAT_MS = 30000;
+const HEARTBEAT_MS = 15000;
 
 type ActivityTrackingOptions = {
   enabled?: boolean;
@@ -160,7 +160,7 @@ export function useUserActivityTracking({ enabled = true }: ActivityTrackingOpti
 
     const now = Date.now();
     const durationSeconds = Math.max(0, Math.round((now - enteredAtRef.current) / 1000));
-    if (durationSeconds === 0 && action !== 'logout') return;
+    if (durationSeconds === 0 && action !== 'logout' && !force) return;
 
     const sent = await postActivity(
       {
@@ -236,6 +236,7 @@ export function useUserActivityTracking({ enabled = true }: ActivityTrackingOpti
     const resumeTracking = () => {
       if (document.visibilityState !== 'visible') return;
       activeRef.current = true;
+      void flushCurrentPath('heartbeat', false, true);
       enteredAtRef.current = Date.now();
     };
 

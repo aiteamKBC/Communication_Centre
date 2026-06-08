@@ -77,6 +77,13 @@ def _create_activity_session(request, user, auth_provider: str = 'password') -> 
 	)
 
 
+def _safe_create_activity_session(request, user, auth_provider: str = 'password') -> UserActivitySession | None:
+	try:
+		return _create_activity_session(request, user, auth_provider)
+	except Exception:
+		return None
+
+
 def _activity_session_payload(session: UserActivitySession) -> dict:
 	return {
 		'trackingSessionId': str(session.tracking_session_id),
@@ -133,8 +140,8 @@ def _sync_session_totals(session: UserActivitySession, now=None) -> None:
 	session.save(update_fields=update_fields)
 
 
-def _user_payload(user, auth_provider: str, activity_session: UserActivitySession) -> dict:
-	return {
+def _user_payload(user, auth_provider: str, activity_session: UserActivitySession | None) -> dict:
+	payload = {
 		'id': user.id,
 		'username': user.username,
 		'email': user.email,
@@ -144,8 +151,10 @@ def _user_payload(user, auth_provider: str, activity_session: UserActivitySessio
 		'isSuperuser': bool(user.is_superuser),
 		'authProvider': auth_provider,
 		'access': get_user_access_payload(user),
-		**_activity_session_payload(activity_session),
 	}
+	if activity_session:
+		payload.update(_activity_session_payload(activity_session))
+	return payload
 
 
 def _decode_json_response(error: HTTPError) -> dict:
@@ -250,7 +259,7 @@ def login_view(request):
 	if not user or not check_password(password, user.password) or not user.is_active:
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)
 
-	activity_session = _create_activity_session(request, user, 'password')
+	activity_session = _safe_create_activity_session(request, user, 'password')
 	return JsonResponse(_user_payload(user, 'password', activity_session))
 
 
@@ -549,7 +558,7 @@ def microsoft_callback(request):
 	if not db_user:
 		return _redirect_to_url(result_target, {'ms_auth': 'error', 'ms_error': "This email isn't in the database."})
 
-	activity_session = _create_activity_session(request, db_user, 'microsoft')
+	activity_session = _safe_create_activity_session(request, db_user, 'microsoft')
 	user_payload = _user_payload(db_user, 'microsoft', activity_session)
 	user_payload['firstName'] = db_user.first_name or first_name
 	user_payload['lastName'] = db_user.last_name or last_name

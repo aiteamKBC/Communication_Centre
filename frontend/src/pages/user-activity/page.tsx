@@ -88,7 +88,7 @@ type AuditPayload = {
   logs: AuditLog[];
 };
 
-const ACTIVITY_REFRESH_MS = 30000;
+const ACTIVITY_REFRESH_MS = 5000;
 const AUDIT_LOG_REFRESH_MS = 60000;
 
 const emptyPayload: ActivityPayload = {
@@ -1232,7 +1232,7 @@ export default function UserActivityPage() {
       if (showSpinner) setLoading(true);
       setError('');
 
-      fetch(`/api/user-activity/?${sessionQuery}`, { signal: controller.signal })
+      fetch(`/api/user-activity/?${sessionQuery}`, { cache: 'no-store', signal: controller.signal })
         .then(async response => {
           if (!response.ok) throw new Error('Unable to load user activity.');
           return response.json() as Promise<ActivityPayload>;
@@ -1254,10 +1254,18 @@ export default function UserActivityPage() {
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible') loadActivity();
     }, ACTIVITY_REFRESH_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') loadActivity();
+    };
+    const handleFocus = () => loadActivity();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
       controller?.abort();
     };
   }, [canView, sessionQuery]);

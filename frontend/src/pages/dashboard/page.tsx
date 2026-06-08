@@ -1,5 +1,6 @@
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
+import useAccessControl from '../../hooks/useAccessControl';
 
 type DashboardLink = {
   title: string;
@@ -13,6 +14,7 @@ type DashboardLink = {
   comingSoon?: boolean;
   expireSoon?: boolean;
   expireMessage?: string;
+  adminOnly?: boolean;
 };
 
 const dashboardLinks: DashboardLink[] = [
@@ -89,6 +91,7 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#059669] to-[#047857]',
     soft: 'bg-[#ecfdf5]',
     text: 'text-[#047857]',
+    adminOnly: true,
   },
   {
     title: 'Engagement Dashboard',
@@ -153,6 +156,9 @@ const dashboardLinks: DashboardLink[] = [
 ];
 
 export default function DashboardPage() {
+  const { adminAccess } = useAccessControl();
+  const visibleDashboardLinks = dashboardLinks.filter(link => !link.adminOnly || adminAccess);
+
   return (
     <div className="min-h-screen bg-gray-50 font-sans flex flex-col">
       <TopNav />
@@ -189,8 +195,8 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {dashboardLinks.map(link => {
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {visibleDashboardLinks.map(link => {
               const isComingSoon = Boolean(link.comingSoon);
               const isExpiringSoon = Boolean(link.expireSoon);
               const cardClassName = `group relative block overflow-hidden rounded-[1.5rem] border border-[#e6e0f5] bg-[linear-gradient(180deg,#ffffff_0%,#fcfbff_100%)] p-5 shadow-sm transition duration-300 ${

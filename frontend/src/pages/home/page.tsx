@@ -234,7 +234,7 @@ export default function Home() {
       const [urgentResult, leadershipResult, newsResult, trainingResult] = await Promise.allSettled([
         fetch('/api/urgent-notice/'),
         fetch('/api/leadership-message/'),
-        fetch('/api/news/'),
+        fetch('/api/news/', { cache: 'no-store' }),
         fetch('/api/training-plan/'),
       ]);
 

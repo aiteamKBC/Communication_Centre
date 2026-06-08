@@ -1952,7 +1952,7 @@ DOCUMENTS_SUMMARY_CACHE_SECONDS = 300
 
 def _documents_cache_key(kind: str, policies_url: str) -> str:
 	digest = hashlib.sha256(policies_url.encode('utf-8')).hexdigest()[:16]
-	return f'policies:v2:{kind}:{digest}'
+	return f'policies:v3:{kind}:{digest}'
 
 
 def _get_policies_context() -> tuple[str, str, str, str, str, str, str]:
@@ -2045,6 +2045,32 @@ def _count_tree_files(node: dict) -> int:
 	return sum(_count_tree_files(child) for child in node.get('children', []) if isinstance(child, dict))
 
 
+def _count_drive_files_recursive(site_id: str, item_id: str, token: str, *, depth: int = 0, max_depth: int = 6, node_count: dict | None = None, max_nodes: int = 1000) -> int:
+	counter = node_count or {'value': 0}
+	if counter['value'] >= max_nodes or depth >= max_depth:
+		return 0
+
+	total = 0
+	children = _list_drive_children(site_id, item_id, token)
+	for child in children:
+		counter['value'] += 1
+		if counter['value'] > max_nodes:
+			break
+		if child.get('folder'):
+			total += _count_drive_files_recursive(
+				site_id,
+				str(child.get('id', '')),
+				token,
+				depth=depth + 1,
+				max_depth=max_depth,
+				node_count=counter,
+				max_nodes=max_nodes,
+			)
+		else:
+			total += 1
+	return total
+
+
 def _build_documents_summary_payload() -> tuple[dict, str]:
 	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
 	live_cache_key = _documents_cache_key('live', policies_url)
@@ -2074,14 +2100,14 @@ def _build_documents_summary_payload() -> tuple[dict, str]:
 	children = _list_drive_children(site_id, str(root_item.get('id', '')), access_token)
 	categories = []
 	uncategorized_count = 0
+	counter = {'value': 0}
 	for child in children:
 		if not child.get('folder'):
 			uncategorized_count += 1
 			continue
-		folder_info = child.get('folder') if isinstance(child.get('folder'), dict) else {}
 		categories.append({
 			'name': str(child.get('name', '')).strip(),
-			'count': int(folder_info.get('childCount') or 0),
+			'count': _count_drive_files_recursive(site_id, str(child.get('id', '')), access_token, node_count=counter),
 		})
 	if uncategorized_count > 0:
 		categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
@@ -2285,7 +2311,6 @@ def urgent_tickets(request):
 	try:
 		records = (
 			SupportTicket.objects.using('safeguarding_db')
-			.filter(urgency__iregex=r'^(urgent|high)$')
 			.exclude(status__iregex=r'^(closed|outcome recorded)$')
 			.filter(models.Q(is_archived=False) | models.Q(is_archived__isnull=True))
 			.order_by('-created_at')
@@ -2339,7 +2364,7 @@ def risk_register(request):
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
-ACTIVITY_ACTIVE_WINDOW_SECONDS = 7
+ACTIVITY_ACTIVE_WINDOW_SECONDS = 60
 
 
 def _pagination_params(request, *, default_size: int = 50, max_size: int = 200) -> tuple[int, int]:

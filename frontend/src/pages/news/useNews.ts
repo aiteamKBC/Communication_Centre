@@ -23,7 +23,7 @@ export function useNews(initialItems?: NewsItem[]) {
   const fetchNews = useCallback(async (showLoading = true) => {
     try {
       if (showLoading) setLoading(true);
-      const response = await fetch('/api/news/');
+      const response = await fetch('/api/news/', { cache: 'no-store' });
       if (!response.ok) throw new Error('Failed to load news.');
       const payload = (await response.json()) as NewsItem[];
       setItems(payload);
@@ -40,6 +40,7 @@ export function useNews(initialItems?: NewsItem[]) {
       setItems(initialItems);
       setLoading(false);
       setError(null);
+      void fetchNews(false);
       return;
     }
 

@@ -1,5 +1,6 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionKsbMapping, KsbProfile, KsbProfileItem } from './types';
@@ -463,6 +464,72 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
       })),
     ),
   );
+}
+
+function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]): Array<Record<string, string | number>> {
+  const profileNameById = new Map(ksbProfiles.map(profile => [profile.id, profile.name]));
+  return groups.flatMap(group =>
+    group.rows.flatMap(row =>
+      row.blks.map(block => {
+        const ksbMappings = normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions);
+        const knowledgeCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.knowledgeCodes))).join(' | ');
+        const skillCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.skillCodes))).join(' | ');
+        const behaviourCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.behaviourCodes))).join(' | ');
+
+        return {
+          Programme: toProgrammeLabel(group),
+          Cohort: row.label,
+          'Cohort Start': row.dateLbl,
+          'Cohort End': row.endDateLbl || '',
+          Group: block.groupName || '',
+          Coach: block.coachName || '',
+          Module: getTrainingModuleLabel(block, customModules),
+          Tutor: block.tutor,
+          'Module Start': block.startDate,
+          'Module End': block.endDate,
+          Sessions: block.sessions,
+          'Session Days': (block.days || []).join(', '),
+          'Session Start Time': block.sessionStartTime || '',
+          'Session End Time': block.sessionEndTime || '',
+          'KSB Profile': row.ksbProfileId ? profileNameById.get(row.ksbProfileId) || row.ksbProfileId : '',
+          'Knowledge Codes': knowledgeCodes,
+          'Skill Codes': skillCodes,
+          'Behaviour Codes': behaviourCodes,
+          Notes: block.notes || '',
+        };
+      }),
+    ),
+  );
+}
+
+function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+  const rows = buildTrainingPlanExportRows(groups, customModules, ksbProfiles);
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  worksheet['!cols'] = [
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 36 },
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Training Plan');
+  XLSX.writeFile(workbook, filename, { compression: true });
 }
 
 function parseLocalDate(value: string): Date {
@@ -2413,6 +2480,82 @@ export default function ApprenticeshipTimeline() {
   const totalSessions = groups.reduce((s, g) =>
     s + g.rows.reduce((rs, r) => rs + r.blks.reduce((bs, b) => bs + b.sessions, 0), 0), 0);
   const holidayCount  = holidays.length;
+  const exportRowCount = groups.reduce((sum, group) => (
+    sum + group.rows.reduce((rowSum, row) => rowSum + row.blks.length, 0)
+  ), 0);
+  const exportTrainingPlanExcel = async () => {
+    if (!exportRowCount) {
+      void kbcSwal.fire({
+        title: 'No Training Plan Data',
+        text: 'There are no module rows to export yet.',
+        icon: 'info',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+
+    let exportGroups = groups;
+    let exportCustomModules = customModules;
+    let exportKsbProfiles = ksbProfiles;
+
+    try {
+      const [planResult, programConfigsResult, moduleDefinitionsResult, ksbProfilesResult] = await Promise.allSettled([
+        fetch('/api/training-plan/', { cache: 'no-store' }),
+        fetch('/api/training-plan-program-configs/', { cache: 'no-store' }),
+        fetch('/api/training-plan-modules/', { cache: 'no-store' }),
+        fetch('/api/ksb-profiles/?includeInactive=1', { cache: 'no-store' }),
+      ]);
+
+      let latestPrograms = customPrograms;
+      if (programConfigsResult.status === 'fulfilled' && programConfigsResult.value.ok) {
+        const items = (await programConfigsResult.value.json()) as TrainingPlanProgramConfigPayload[];
+        if (Array.isArray(items)) {
+          latestPrograms = items;
+          setCustomPrograms(items);
+        }
+      }
+
+      if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
+        const items = (await moduleDefinitionsResult.value.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
+        if (Array.isArray(items)) {
+          exportCustomModules = items.map(item => ({
+            id: item.id,
+            name: item.name,
+            defaultSessions: item.defaultSessions,
+            bg: item.bg,
+            tx: item.tx,
+          }));
+          setCustomModules(exportCustomModules);
+        }
+      }
+
+      if (ksbProfilesResult.status === 'fulfilled' && ksbProfilesResult.value.ok) {
+        const items = (await ksbProfilesResult.value.json()) as KsbProfile[];
+        if (Array.isArray(items)) {
+          exportKsbProfiles = items.map(profile => ({ ...profile, ksbItems: normalizeKsbProfileItems(profile) }));
+          setKsbProfiles(exportKsbProfiles);
+        }
+      }
+
+      if (planResult.status === 'fulfilled' && planResult.value.ok) {
+        const payload = parseTrainingPlanPayload(await planResult.value.json());
+        if (payload && Array.isArray(payload.items)) {
+          exportGroups = payload.items.length
+            ? buildGroupsFromTrainingRows(payload.items, latestPrograms)
+            : buildAllGroups(latestPrograms);
+          setTrainingPlanItems(payload.items);
+          setTrainingPlanVersion(payload.version);
+          setHasLoadedTrainingPlan(true);
+        }
+      }
+    } catch {
+      // Fall back to the currently rendered timeline data.
+    }
+
+    const today = new Date();
+    const stamp = `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, '0')}-${`${today.getDate()}`.padStart(2, '0')}`;
+    downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
+  };
   const selectedProgram = programModal.open && programModal.mode === 'edit'
     ? (() => {
       const customProgram = customPrograms.find(program => program.id === programModal.programId);
@@ -2819,6 +2962,8 @@ export default function ApprenticeshipTimeline() {
                   onDeleteProgram={handleDeleteProgram}
                   onReorderRow={handleReorderRow}
                   onReorderGroup={handleReorderGroup}
+                  onExportExcel={exportTrainingPlanExcel}
+                  exportExcelDisabled={isInitialProgrammesLoading || exportRowCount === 0}
                   canManageCohorts={canManageCohorts}
                 />
               </div>
