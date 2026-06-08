@@ -4,7 +4,7 @@ import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
-  formatDate, formatDateShort, durationWeeksByDay, startOfWeek,
+  formatDate, formatDateShort, startOfWeek,
   buildHolidayAdjustedSessionPlan, rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
@@ -515,7 +515,6 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
   const hasHolidays = data.holidays.length > 0;
   const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays);
   const displayEndDate = sessionSummary.effectiveEndDate || data.blk.endDate;
-  const weeks = durationWeeksByDay(data.blk.startDate, displayEndDate, data.blk.days);
   const hasHolidayClashes = sessionSummary.allAffected > 0;
   const holidayWeeksLabel = `${sessionSummary.allAffected} week${sessionSummary.allAffected !== 1 ? 's' : ''}`;
   const scheduleDayLabel = data.blk.days?.length ? data.blk.days.join('/') : 'scheduled';
@@ -523,6 +522,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
     ? `${Math.max(1, Math.round(sessionSummary.extensionDays / 7))} week${Math.max(1, Math.round(sessionSummary.extensionDays / 7)) !== 1 ? 's' : ''}`
     : '';
   const holidayPlan = buildHolidayAdjustedSessionPlan(data.blk, data.holidays);
+  const deliveryWeeks = holidayPlan.sessions.length + holidayPlan.skippedSessions.length;
   const shiftedToByDate = new Map<string, string>();
   holidayPlan.sessions.forEach(session => {
     if (session.shiftedFrom) shiftedToByDate.set(session.shiftedFrom.date, session.date);
@@ -580,7 +580,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
                 {formatDate(data.blk.startDate)} &rarr; {formatDate(displayEndDate)}
               </p>
               <p className="text-xs text-gray-400">
-                {weeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}
+                {deliveryWeeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}
               </p>
             </div>
           </div>

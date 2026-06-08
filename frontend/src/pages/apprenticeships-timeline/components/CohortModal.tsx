@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { CatalogModule, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionKsbMapping, WeekDayKey } from '../types';
+import type { CatalogModule, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
 import ModernTimeField from './ModernTimeField';
 import SelectField from './SelectField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
+import { normalizeTutorName, profileIdForTutorName } from '../tutorProfiles';
 
 interface Props {
   mode: 'add' | 'edit';
@@ -15,12 +16,16 @@ interface Props {
   customModules?: CustomModule[];
   catalogModules?: CatalogModule[];
   ksbProfiles?: KsbProfile[];
+  tutorProfiles?: TutorProfile[];
   initialGroupIdx?: number;
   initialRow?: CohortRow;
   initialExpandedBlockId?: string;
+  prefillTutorProfileId?: string;
+  prefillModule?: ModuleValue;
   lockGroupSelection?: boolean;
   onSave: (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => boolean | Promise<boolean>;
   onManageHolidays?: () => void;
+  onCreateTutorProfile?: (payload: { name: string; email?: string; notes?: string; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
   onBackToPreviousStep?: () => void;
   onClose: () => void;
 }
@@ -33,8 +38,10 @@ interface FormModule {
   endDate: string;
   sessions: number;
   sessionKsbMappings: SessionKsbMapping[];
+  sessionCoverage: SessionCoverage[];
   notes: string;
   tutor: string;
+  tutorProfileId: string;
 }
 
 interface FormGroup {
@@ -352,8 +359,10 @@ function newFormModule(): FormModule {
     endDate: '',
     sessions: 1,
     sessionKsbMappings: [emptySessionKsbMapping()],
+    sessionCoverage: [],
     notes: '',
     tutor: '',
+    tutorProfileId: '',
   };
 }
 
@@ -441,16 +450,19 @@ const resolveModuleVisualMeta = (moduleItem: FormModule, customModules: CustomMo
 };
 
 function KsbSummaryBadges({ mappings }: { mappings: SessionKsbMapping[] }) {
-  const codes = mappings.flatMap(mapping => [
+  const codes = Array.from(new Set(mappings.flatMap(mapping => [
     ...mapping.knowledgeCodes,
     ...mapping.skillCodes,
     ...mapping.behaviourCodes,
-  ]);
+  ])));
   if (!codes.length) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-1">
+    <div className="mt-2 flex flex-wrap items-center gap-1" title="Planned KSB mapping for this module. This does not mean the KSBs have been achieved yet.">
+      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-amber-700">
+        Planned KSBs
+      </span>
       {codes.slice(0, 8).map((code, index) => (
-        <span key={`${code}-${index}`} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-extrabold text-slate-600">
+        <span key={`${code}-${index}`} className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-extrabold text-slate-600">
           {code}
         </span>
       ))}
@@ -910,7 +922,7 @@ function buildGroupSignature(block: ModuleBlock): string {
   ].join('::');
 }
 
-function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule[] = []) {
+function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule[] = [], tutorProfiles: TutorProfile[] = []) {
   const grouped = new Map<string, FormGroup>();
   const order: string[] = [];
 
@@ -932,8 +944,6 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
     }
 
     const blockMappings = normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions);
-    const catalogModule = resolveCatalogModuleForValue(block.mod, catalogModules);
-    const catalogMappings = normalizeSessionKsbMappings(catalogModule?.sessionKsbMappings, block.sessions);
 
     grouped.get(key)!.modules.push({
       id: block.id,
@@ -942,9 +952,11 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
       startDate: block.startDate,
       endDate: block.endDate,
       sessions: block.sessions,
-      sessionKsbMappings: hasKsbCodes(blockMappings) ? blockMappings : catalogMappings,
+      sessionKsbMappings: hasKsbCodes(blockMappings) ? blockMappings : normalizeSessionKsbMappings([], block.sessions),
+      sessionCoverage: block.sessionCoverage || [],
       notes: block.notes || '',
       tutor: block.tutor || '',
+      tutorProfileId: block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles),
     });
   });
 
@@ -958,15 +970,56 @@ export default function CohortModal({
   customModules = [],
   catalogModules = [],
   ksbProfiles = [],
+  tutorProfiles = [],
   initialGroupIdx = 0,
   initialRow,
   initialExpandedBlockId,
+  prefillTutorProfileId,
+  prefillModule,
   lockGroupSelection = false,
   onSave,
   onManageHolidays,
+  onCreateTutorProfile,
   onBackToPreviousStep,
   onClose,
 }: Props) {
+  const prefillTutorProfile = prefillTutorProfileId ? tutorProfiles.find(profile => profile.id === prefillTutorProfileId) : undefined;
+  const prefillCatalogModule = prefillModule ? resolveCatalogModuleForValue(prefillModule, catalogModules) : undefined;
+  const prefillModuleMeta = prefillModule ? resolveModuleMeta(prefillModule, customModules, catalogModules) : undefined;
+  const createPrefilledModule = (): FormModule => {
+    const sessionCount = Math.max(1, parseInt(prefillCatalogModule?.sessions || '1', 10) || 1);
+    return {
+      ...newFormModule(),
+      mod: prefillModule || '',
+      color: prefillCatalogModule?.colour || prefillModuleMeta?.bg || '',
+      sessions: sessionCount,
+      sessionKsbMappings: normalizeSessionKsbMappings([], sessionCount),
+      tutor: prefillTutorProfile?.name || '',
+      tutorProfileId: prefillTutorProfile?.id || '',
+    };
+  };
+  const addPrefilledModuleToGroups = (sourceGroups: FormGroup[]): FormGroup[] => {
+    if (!prefillTutorProfile && !prefillModule) return sourceGroups;
+    const moduleItem = createPrefilledModule();
+    if (!sourceGroups.length) {
+      const group = newFormGroup();
+      return [{
+        ...group,
+        color: prefillModuleMeta?.bg || group.color,
+        tutor: prefillTutorProfile?.name || '',
+        modules: [moduleItem],
+      }];
+    }
+    return sourceGroups.map((group, index) => index === 0 ? {
+      ...group,
+      tutor: group.tutor || prefillTutorProfile?.name || '',
+      modules: [...group.modules, moduleItem],
+    } : group);
+  };
+  const prefilledAddGroups: FormGroup[] = mode === 'add'
+    ? addPrefilledModuleToGroups([])
+    : [];
+
   const initialFormData: FormData = mode === 'edit' && initialRow ? {
     groupIdx: initialGroupIdx,
     label: initialRow.label,
@@ -978,7 +1031,7 @@ export default function CohortModal({
     color: initialRow.color || groups[initialGroupIdx]?.color || '#1B2A4A',
     holidayIds: initialRow.holidayIds || [],
     ksbProfileId: initialRow.ksbProfileId || '',
-    groups: groupBlocksForForm(initialRow.blks, catalogModules),
+    groups: addPrefilledModuleToGroups(groupBlocksForForm(initialRow.blks, catalogModules, tutorProfiles)),
   } : {
     groupIdx: initialGroupIdx,
     label: '',
@@ -990,7 +1043,7 @@ export default function CohortModal({
     color: groups[initialGroupIdx]?.color || '#1B2A4A',
     holidayIds: [],
     ksbProfileId: '',
-    groups: [],
+    groups: prefilledAddGroups,
   };
 
   const [data, setData] = useState<FormData>(initialFormData);
@@ -1002,6 +1055,11 @@ export default function CohortModal({
   const [ksbSummaryOpen, setKsbSummaryOpen] = useState(false);
   const [groupDraftDirty, setGroupDraftDirty] = useState(false);
   const [moduleDraftDirty, setModuleDraftDirty] = useState(false);
+  const [tutorCreateOpen, setTutorCreateOpen] = useState(false);
+  const [tutorCreateDraft, setTutorCreateDraft] = useState({ name: '', email: '', notes: '' });
+  const [tutorCreateError, setTutorCreateError] = useState('');
+  const [tutorCreateWarning, setTutorCreateWarning] = useState<{ profile: TutorProfile; detail: string; score?: number } | null>(null);
+  const [tutorCreateSaving, setTutorCreateSaving] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [userHasEdited, setUserHasEdited] = useState(false);
   const initialSnapshotRef = useRef(serializeDraftState(initialFormData, null, null));
@@ -1014,6 +1072,7 @@ export default function CohortModal({
   const programmeDates = parseProgrammeDates(selectedProgramme?.sub || '');
   const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
   const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
+  const activeTutorProfiles = useMemo(() => tutorProfiles.filter(profile => profile.isActive), [tutorProfiles]);
 
   const allModules = useMemo(() => data.groups.flatMap(group => group.modules), [data.groups]);
   const rangedModules = allModules.filter(item => isIsoDate(item.startDate) && isIsoDate(item.endDate) && item.startDate <= item.endDate);
@@ -1317,6 +1376,70 @@ export default function CohortModal({
     });
   };
 
+  const selectTutorProfileForModule = (profileId: string, createdProfile?: TutorProfile) => {
+    const profile = createdProfile || activeTutorProfiles.find(item => item.id === profileId);
+    markUserEdited();
+    setModuleDraftDirty(true);
+    setModuleDraft(prev => prev ? {
+      ...prev,
+      module: {
+        ...prev.module,
+        tutorProfileId: profile?.id || '',
+        tutor: profile?.name || '',
+      },
+    } : prev);
+  };
+
+  const openTutorCreateModal = () => {
+    const currentTutor = moduleDraft?.module.tutor || '';
+    setTutorCreateDraft({ name: currentTutor, email: '', notes: '' });
+    setTutorCreateError('');
+    setTutorCreateWarning(null);
+    setTutorCreateOpen(true);
+  };
+
+  const saveTutorProfileDraft = async (confirmCreateNew = false) => {
+    if (!onCreateTutorProfile) {
+      setTutorCreateError('Tutor profile creation is not available right now.');
+      return;
+    }
+    const name = tutorCreateDraft.name.trim();
+    if (!name) {
+      setTutorCreateError('Tutor name is required.');
+      return;
+    }
+    setTutorCreateSaving(true);
+    setTutorCreateError('');
+    try {
+      const result = await onCreateTutorProfile({
+        name,
+        email: tutorCreateDraft.email.trim(),
+        notes: tutorCreateDraft.notes.trim(),
+        confirmCreateNew,
+      });
+      if ('id' in result) {
+        selectTutorProfileForModule(result.id, result);
+        setTutorCreateOpen(false);
+        setTutorCreateWarning(null);
+        return;
+      }
+      const possible = result.possibleExistingProfile || result.existingProfile;
+      if (possible) {
+        setTutorCreateWarning({
+          profile: possible,
+          detail: result.detail || `Possible existing tutor found: ${possible.name}. Use existing profile instead?`,
+          score: result.score,
+        });
+        return;
+      }
+      setTutorCreateError(result.detail || 'Tutor profile could not be created.');
+    } catch (error) {
+      setTutorCreateError(error instanceof Error ? error.message : 'Tutor profile could not be created.');
+    } finally {
+      setTutorCreateSaving(false);
+    }
+  };
+
   const updateModuleDraftKsb = (sessionIndex: number, field: keyof SessionKsbMapping, value: string[]) => {
     markUserEdited();
     setModuleDraftDirty(true);
@@ -1339,6 +1462,15 @@ export default function CohortModal({
     if (!moduleDraft) {
       return;
     }
+    if (!moduleDraft.module.tutorProfileId) {
+      void kbcSwal.fire({
+        title: 'Select a Tutor Profile',
+        html: 'Choose an existing Tutor Profile or create a new one before saving this module.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
     markUserEdited();
 
     setData(prev => ({
@@ -1349,6 +1481,7 @@ export default function CohortModal({
         }
         const normalizedModule = {
           ...moduleDraft.module,
+          tutor: activeTutorProfiles.find(profile => profile.id === moduleDraft.module.tutorProfileId)?.name || moduleDraft.module.tutor,
           sessionKsbMappings: normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, moduleDraft.module.sessions),
           endDate: calculateModuleEndDate(moduleDraft.module.startDate, moduleDraft.module.sessions, selectedHolidays, group.days) || moduleDraft.module.endDate,
         };
@@ -1555,10 +1688,12 @@ export default function CohortModal({
           coachName: group.coachName.trim() || undefined,
           color: moduleItem.color || group.color,
           tutor: moduleItem.tutor.trim(),
+          tutorProfileId: moduleItem.tutorProfileId || undefined,
           startDate: moduleItem.startDate,
           endDate: moduleItem.endDate,
           sessions: moduleItem.sessions,
           sessionKsbMappings: normalizeSessionKsbMappings(moduleItem.sessionKsbMappings, moduleItem.sessions),
+          sessionCoverage: moduleItem.sessionCoverage || [],
           days: group.days,
           sessionStartTime: group.sessionStartTime,
           sessionEndTime: group.sessionEndTime,
@@ -2130,6 +2265,29 @@ export default function CohortModal({
                   ];
                   const sessionCount = Math.max(1, Number(moduleDraft.module.sessions) || 1);
                   const ksbMappings = normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, sessionCount);
+                  const selectedTutorProfile = activeTutorProfiles.find(profile => profile.id === moduleDraft.module.tutorProfileId);
+                  const legacyTutorName = moduleDraft.module.tutor.trim();
+                  const legacyTutorId = legacyTutorName ? profileIdForTutorName(legacyTutorName, activeTutorProfiles) : '';
+                  const tutorSelectValue = selectedTutorProfile?.id || legacyTutorId || '';
+                  const tutorOptions = [
+                    ...(!tutorSelectValue && legacyTutorName
+                      ? [{
+                          value: `legacy:${normalizeTutorName(legacyTutorName)}`,
+                          label: legacyTutorName,
+                          description: 'Legacy tutor name - create or select a profile',
+                          color: '#F59E0B',
+                        }]
+                      : []),
+                    ...activeTutorProfiles.map(profile => ({
+                      value: profile.id,
+                      label: profile.name,
+                      description: [
+                        profile.email,
+                        `${profile.sessionCount || 0} session${profile.sessionCount === 1 ? '' : 's'}`,
+                      ].filter(Boolean).join(' - '),
+                      color: '#1B2A4A',
+                    })),
+                  ];
                   const mappedKsbCount = ksbMappings.reduce(
                     (total, mapping) => total + mapping.knowledgeCodes.length + mapping.skillCodes.length + mapping.behaviourCodes.length,
                     0,
@@ -2176,7 +2334,7 @@ export default function CohortModal({
                                   ...prev,
                                   module: {
                                     ...prev.module,
-                                    sessionKsbMappings: normalizeSessionKsbMappings(selected.sessionKsbMappings, sessions),
+                                    sessionKsbMappings: normalizeSessionKsbMappings([], sessions),
                                   },
                                 } : prev);
                               } else {
@@ -2230,7 +2388,36 @@ export default function CohortModal({
 
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tutor / Lecturer</label>
-                        <input type="text" placeholder="e.g. Dr. Andrew Marsh" value={moduleDraft.module.tutor} onChange={e => updateModuleDraft('tutor', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" />
+                        <SelectField
+                          value={tutorSelectValue}
+                          options={tutorOptions}
+                          placeholder={activeTutorProfiles.length ? 'Select a Tutor Profile' : 'Create the first Tutor Profile'}
+                          accentColor="#1B2A4A"
+                          label="Tutor Profiles"
+                          searchPlaceholder="Search tutors..."
+                          emptyTitle="No matching tutors"
+                          emptyText="Create a Tutor Profile to use this tutor."
+                          error={!moduleDraft.module.tutorProfileId && moduleDraftDirty ? 'Select a valid Tutor Profile.' : undefined}
+                          onChange={value => {
+                            if (value.startsWith('legacy:')) return;
+                            selectTutorProfileForModule(value);
+                          }}
+                          footer={(
+                            <button
+                              type="button"
+                              onClick={openTutorCreateModal}
+                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-bold text-kbc-navy transition-colors hover:bg-white"
+                            >
+                              <i className="ri-user-add-line" />
+                              Create New Tutor Profile
+                            </button>
+                          )}
+                        />
+                        {legacyTutorName && !tutorSelectValue && (
+                          <p className="mt-2 text-xs font-semibold text-amber-700">
+                            Legacy tutor name found: {legacyTutorName}. Select or create a Tutor Profile before saving.
+                          </p>
+                        )}
                       </div>
 
                       <div>
@@ -2270,6 +2457,107 @@ export default function CohortModal({
               <div className="flex shrink-0 items-center justify-end gap-3 px-5 py-3 border-t border-gray-200 bg-white">
                 <button onClick={() => void closeModuleDraft()} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100 cursor-pointer transition-colors">Cancel</button>
                 <button onClick={saveModuleDraft} className="px-4 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all" style={{ background: '#1B2A4A' }}>Save Module</button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+        {tutorCreateOpen && createPortal(
+          <div className="fixed inset-0 z-[145] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[3px]">
+            <button type="button" aria-label="Close tutor profile form" className="absolute inset-0 cursor-default" onClick={() => setTutorCreateOpen(false)} />
+            <div className="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-4 border-b px-5 py-4" style={{ background: '#1B2A4A' }}>
+                <div>
+                  <h3 className="text-sm font-extrabold tracking-wide text-white">Create Tutor Profile</h3>
+                  <p className="mt-1 text-xs text-white/65">Profiles are reused by modules and tutor reporting.</p>
+                </div>
+                <button type="button" onClick={() => setTutorCreateOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/15 hover:text-white">
+                  <i className="ri-close-line text-lg" />
+                </button>
+              </div>
+              <div className="space-y-4 bg-gray-50 p-5">
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Tutor Name</label>
+                  <input
+                    value={tutorCreateDraft.name}
+                    onChange={event => {
+                      setTutorCreateDraft(prev => ({ ...prev, name: event.target.value }));
+                      setTutorCreateWarning(null);
+                      setTutorCreateError('');
+                    }}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void saveTutorProfileDraft(false);
+                      }
+                    }}
+                    placeholder="e.g. Steven Gener"
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 focus:outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Email (optional)</label>
+                  <input
+                    type="email"
+                    value={tutorCreateDraft.email}
+                    onChange={event => setTutorCreateDraft(prev => ({ ...prev, email: event.target.value }))}
+                    placeholder="name@example.com"
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Notes (optional)</label>
+                  <textarea
+                    value={tutorCreateDraft.notes}
+                    onChange={event => setTutorCreateDraft(prev => ({ ...prev, notes: event.target.value }))}
+                    rows={3}
+                    className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                  />
+                </div>
+                {tutorCreateWarning && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                    <p className="font-extrabold">{tutorCreateWarning.detail}</p>
+                    <p className="mt-1 text-xs font-semibold text-amber-700">
+                      {tutorCreateWarning.profile.name}{tutorCreateWarning.profile.email ? ` - ${tutorCreateWarning.profile.email}` : ''}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectTutorProfileForModule(tutorCreateWarning.profile.id, tutorCreateWarning.profile);
+                          setTutorCreateOpen(false);
+                        }}
+                        className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-bold text-white"
+                      >
+                        Use Existing Profile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void saveTutorProfileDraft(true)}
+                        className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800"
+                      >
+                        Confirm Create New
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {tutorCreateError && <p className="text-xs font-semibold text-red-600">{tutorCreateError}</p>}
+              </div>
+              <div className="flex items-center justify-end gap-3 border-t border-gray-200 bg-white px-5 py-4">
+                <button type="button" onClick={() => setTutorCreateOpen(false)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={tutorCreateSaving}
+                  onClick={() => void saveTutorProfileDraft(false)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+                >
+                  {tutorCreateSaving && <i className="ri-loader-4-line animate-spin" />}
+                  Create Profile
+                </button>
               </div>
             </div>
           </div>,

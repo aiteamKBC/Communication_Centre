@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { ReactNode } from 'react';
 
 interface SelectOption {
   value: string;
@@ -15,6 +16,11 @@ interface Props {
   placeholder?: string;
   accentColor?: string;
   error?: string;
+  label?: string;
+  searchPlaceholder?: string;
+  emptyTitle?: string;
+  emptyText?: string;
+  footer?: ReactNode;
 }
 
 export default function SelectField({
@@ -24,6 +30,11 @@ export default function SelectField({
   placeholder = 'Select an option',
   accentColor = '#1B2A4A',
   error,
+  label = 'Options',
+  searchPlaceholder = 'Search...',
+  emptyTitle = 'No matching options',
+  emptyText = 'Try another search term.',
+  footer,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -37,6 +48,7 @@ export default function SelectField({
     left: 0,
     width: 320,
   });
+  const [positionReady, setPositionReady] = useState(false);
 
   const selectedOption = useMemo(
     () => options.find(option => option.value === value) ?? null,
@@ -55,7 +67,10 @@ export default function SelectField({
   const toggleOpen = () => {
     setOpen(current => {
       const next = !current;
-      if (next) setQuery('');
+      if (next) {
+        setQuery('');
+        setPositionReady(false);
+      }
       return next;
     });
   };
@@ -71,8 +86,9 @@ export default function SelectField({
     }
   }, [query]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) {
+      setPositionReady(false);
       return;
     }
 
@@ -124,6 +140,7 @@ export default function SelectField({
         : Math.min(viewportHeight - popoverHeight - 12, rect.bottom + 8);
 
       setPopoverStyle({ top, left, width });
+      setPositionReady(true);
     };
 
     updatePosition();
@@ -238,11 +255,12 @@ export default function SelectField({
             top: popoverStyle.top,
             left: popoverStyle.left,
             width: popoverStyle.width,
+            visibility: positionReady ? 'visible' : 'hidden',
           }}
         >
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-900/5">
             <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Modules</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
               <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200">
                 {query.trim() ? `${filteredOptions.length}/${options.length}` : `${options.length} options`}
               </span>
@@ -275,7 +293,7 @@ export default function SelectField({
                       }
                     }
                   }}
-                  placeholder="Search modules..."
+                  placeholder={searchPlaceholder}
                   className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-700 placeholder:text-slate-400 focus:outline-none"
                 />
                 {query && (
@@ -327,11 +345,12 @@ export default function SelectField({
               })}
               {filteredOptions.length === 0 && (
                 <div className="px-3 py-8 text-center">
-                  <p className="text-sm font-semibold text-slate-600">No matching modules</p>
-                  <p className="mt-1 text-xs text-slate-400">Try another module name.</p>
+                  <p className="text-sm font-semibold text-slate-600">{emptyTitle}</p>
+                  <p className="mt-1 text-xs text-slate-400">{emptyText}</p>
                 </div>
               )}
             </div>
+            {footer && <div className="border-t border-slate-100 bg-slate-50 p-2">{footer}</div>}
           </div>
         </div>,
         document.body,

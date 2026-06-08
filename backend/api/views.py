@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
@@ -19,7 +20,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
+from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
 
 
 REALTIME_RESOURCE_ENTITIES = {
@@ -34,6 +35,7 @@ REALTIME_RESOURCE_ENTITIES = {
 		'TrainingPlanModuleDefinition',
 		'TrainingPlanProgramConfig',
 		'Module',
+		'TutorProfile',
 		'KsbProfile',
 	},
 	'employees': {'Employee'},
@@ -709,6 +711,7 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'groupName': item.group_name,
 		'coachName': item.coach_name,
 		'tutorName': item.tutor_name,
+		'tutorProfileId': str(item.tutor_profile_id) if getattr(item, 'tutor_profile_id', None) else '',
 		'startDate': item.start_date,
 		'endDate': item.end_date,
 		'sessionsNumber': item.sessions_number,
@@ -716,9 +719,70 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'sessionStartTime': item.session_start_time,
 		'sessionEndTime': item.session_end_time,
 		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
+		'sessionCoverage': normalize_session_coverage(getattr(item, 'session_coverage_json', '')),
 		'ksbProfileId': str(item.ksb_profile_id) if getattr(item, 'ksb_profile_id', None) else '',
 		'notes': item.notes,
 	}
+
+
+def normalize_tutor_profile_name(value: str) -> str:
+	return re.sub(r'\s+', ' ', re.sub(r'[^\w\s@.-]+', ' ', str(value or '').lower())).strip()
+
+
+def tutor_similarity(a: str, b: str) -> float:
+	a_normalized = normalize_tutor_profile_name(a)
+	b_normalized = normalize_tutor_profile_name(b)
+	if not a_normalized or not b_normalized:
+		return 0.0
+	if a_normalized == b_normalized:
+		return 1.0
+	if a_normalized in b_normalized or b_normalized in a_normalized:
+		shorter = min(len(a_normalized), len(b_normalized))
+		longer = max(len(a_normalized), len(b_normalized))
+		return max(0.86, shorter / longer)
+	return SequenceMatcher(None, a_normalized, b_normalized).ratio()
+
+
+def serialize_tutor_profile(item: TutorProfile, session_counts: dict[int, int] | None = None) -> dict:
+	return {
+		'id': str(item.id),
+		'name': item.name,
+		'normalizedName': item.normalized_name,
+		'email': item.email,
+		'phone': item.phone,
+		'notes': item.notes,
+		'availabilityNotes': item.availability_notes,
+		'isActive': item.is_active,
+		'sessionCount': (session_counts or {}).get(int(item.id), 0),
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+		'updatedAt': item.updated_at.isoformat() if item.updated_at else '',
+	}
+
+
+def tutor_profile_session_counts() -> dict[int, int]:
+	counts: dict[int, int] = {}
+	for row in TrainingPlan.objects.exclude(tutor_profile_id__isnull=True).values('tutor_profile_id', 'sessions_number'):
+		try:
+			profile_id = int(row.get('tutor_profile_id'))
+		except (TypeError, ValueError):
+			continue
+		try:
+			sessions = max(1, int(row.get('sessions_number') or 1))
+		except (TypeError, ValueError):
+			sessions = 1
+		counts[profile_id] = counts.get(profile_id, 0) + sessions
+	return counts
+
+
+def possible_tutor_profile_matches(name: str, *, exclude_id: int | None = None, threshold: float = 0.72) -> list[dict]:
+	matches = []
+	for profile in TutorProfile.objects.filter(is_active=True).order_by('name', 'id'):
+		if exclude_id is not None and int(profile.id) == int(exclude_id):
+			continue
+		score = tutor_similarity(name, profile.name)
+		if score >= threshold:
+			matches.append({'profile': profile, 'score': round(score, 3), 'exact': normalize_tutor_profile_name(name) == profile.normalized_name})
+	return sorted(matches, key=lambda item: (-item['score'], item['profile'].name.lower()))
 
 
 TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT = 100
@@ -778,6 +842,7 @@ def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, 
 	start_date = str(row.get('startDate', '')).strip()
 	end_date = str(row.get('endDate', '')).strip()
 	sessions_number = str(row.get('sessionsNumber', '')).strip()
+	tutor_profile_id = normalize_nullable_int(row.get('tutorProfileId', None))
 
 	if not cohort_name:
 		return {}, f'Row {index + 1} is missing cohortName.'
@@ -794,6 +859,13 @@ def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, 
 			return {}, f'Row {index + 1} must have at least one session.'
 	except (TypeError, ValueError):
 		return {}, f'Row {index + 1} has an invalid sessionsNumber.'
+	tutor_name = str(row.get('tutorName', '')).strip()
+	if tutor_profile_id is not None:
+		try:
+			profile = TutorProfile.objects.get(pk=tutor_profile_id, is_active=True)
+		except TutorProfile.DoesNotExist:
+			return {}, f'Row {index + 1} references an unknown tutorProfileId.'
+		tutor_name = profile.name
 
 	return {
 		'cohort_name': cohort_name,
@@ -802,7 +874,8 @@ def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, 
 		'module_name': module_name,
 		'group_name': str(row.get('groupName', '')).strip(),
 		'coach_name': str(row.get('coachName', '')).strip(),
-		'tutor_name': str(row.get('tutorName', '')).strip(),
+		'tutor_name': tutor_name,
+		'tutor_profile_id': tutor_profile_id,
 		'start_date': start_date,
 		'end_date': end_date,
 		'sessions_number': sessions_number,
@@ -810,6 +883,7 @@ def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, 
 		'session_start_time': str(row.get('sessionStartTime', '')).strip(),
 		'session_end_time': str(row.get('sessionEndTime', '')).strip(),
 		'session_ksb_json': json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
+		'session_coverage_json': json.dumps(normalize_session_coverage(row.get('sessionCoverage', [])), ensure_ascii=False),
 		'ksb_profile_id': normalize_nullable_int(row.get('ksbProfileId', None)),
 		'notes': str(row.get('notes', '')).strip(),
 	}, ''
@@ -894,6 +968,107 @@ def normalize_session_ksb_mappings(value) -> list[dict]:
 	return normalized
 
 
+def normalize_session_coverage(value) -> list[dict]:
+	if isinstance(value, str):
+		try:
+			raw = json.loads(value or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw = []
+	else:
+		raw = value
+	if not isinstance(raw, list):
+		return []
+	normalized = []
+	for item in raw:
+		if not isinstance(item, dict):
+			continue
+		try:
+			session_number = int(item.get('sessionNumber') or 0)
+		except (TypeError, ValueError):
+			session_number = 0
+		if session_number < 1:
+			continue
+		assigned_id = normalize_nullable_int(item.get('assignedTutorProfileId'))
+		coverage_id = normalize_nullable_int(item.get('coverageTutorProfileId'))
+		tutor_unavailable = bool(item.get('tutorUnavailable'))
+		coverage_status = str(item.get('coverageStatus') or 'none').strip().lower()
+		if coverage_status not in {'none', 'required', 'covered'}:
+			coverage_status = 'none'
+		if tutor_unavailable and not coverage_id:
+			coverage_status = 'required'
+		if coverage_id:
+			if assigned_id and assigned_id == coverage_id:
+				continue
+			if not TutorProfile.objects.filter(pk=coverage_id, is_active=True).exists():
+				continue
+			coverage_status = 'covered'
+		coverage_reason = str(item.get('coverageReason', '')).strip()
+		if coverage_id and not coverage_reason:
+			continue
+		normalized.append({
+			'sessionNumber': session_number,
+			'assignedTutorProfileId': str(assigned_id) if assigned_id else '',
+			'coverageTutorProfileId': str(coverage_id) if coverage_id else '',
+			'coverageStatus': coverage_status,
+			'tutorUnavailable': tutor_unavailable,
+			'tutorUnavailableReason': str(item.get('tutorUnavailableReason', '')).strip(),
+			'tutorUnavailableNotes': str(item.get('tutorUnavailableNotes', '')).strip(),
+			'coverageReason': coverage_reason,
+			'coverageNotes': str(item.get('coverageNotes', '')).strip(),
+		})
+	return normalized
+
+
+def remove_tutor_profile_references(profile_id: int) -> int:
+	profile_id_text = str(profile_id)
+	changed_rows = 0
+	for row in TrainingPlan.objects.all():
+		update_fields = []
+		if row.tutor_profile_id == profile_id:
+			row.tutor_profile_id = None
+			row.tutor_name = ''
+			update_fields.extend(['tutor_profile_id', 'tutor_name'])
+
+		try:
+			raw_coverage = json.loads(row.session_coverage_json or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw_coverage = []
+		if not isinstance(raw_coverage, list):
+			raw_coverage = []
+
+		next_coverage = []
+		coverage_changed = False
+		for item in raw_coverage:
+			if not isinstance(item, dict):
+				continue
+			next_item = dict(item)
+			if str(next_item.get('assignedTutorProfileId') or '').strip() == profile_id_text:
+				next_item['assignedTutorProfileId'] = ''
+				coverage_changed = True
+			if str(next_item.get('coverageTutorProfileId') or '').strip() == profile_id_text:
+				next_item['coverageTutorProfileId'] = ''
+				next_item['coverageReason'] = ''
+				next_item['coverageNotes'] = ''
+				next_item['coverageStatus'] = 'required' if next_item.get('tutorUnavailable') else 'none'
+				coverage_changed = True
+			keep_item = (
+				bool(next_item.get('tutorUnavailable'))
+				or bool(str(next_item.get('coverageTutorProfileId') or '').strip())
+				or str(next_item.get('coverageStatus') or '').strip().lower() not in {'', 'none'}
+			)
+			if keep_item:
+				next_coverage.append(next_item)
+
+		if coverage_changed:
+			row.session_coverage_json = json.dumps(next_coverage, ensure_ascii=False)
+			update_fields.append('session_coverage_json')
+
+		if update_fields:
+			row.save(update_fields=sorted(set(update_fields)))
+			changed_rows += 1
+	return changed_rows
+
+
 def normalize_nullable_int(value) -> int | None:
 	if value in {None, ''}:
 		return None
@@ -940,6 +1115,24 @@ def ksb_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
 		'knowledge_codes': knowledge_codes,
 		'skill_codes': skill_codes,
 		'behaviour_codes': behaviour_codes,
+		'is_active': bool(payload.get('isActive', True)),
+	}, ''
+
+
+def tutor_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
+	name = str(payload.get('name', '')).strip()
+	if not name:
+		return {}, 'Tutor name is required.'
+	normalized_name = normalize_tutor_profile_name(name)
+	if not normalized_name:
+		return {}, 'Tutor name is required.'
+	return {
+		'name': name,
+		'normalized_name': normalized_name,
+		'email': str(payload.get('email', '')).strip(),
+		'phone': str(payload.get('phone', '')).strip(),
+		'notes': str(payload.get('notes', '')).strip(),
+		'availability_notes': str(payload.get('availabilityNotes', '')).strip(),
 		'is_active': bool(payload.get('isActive', True)),
 	}, ''
 
@@ -1220,6 +1413,146 @@ def training_plan(request):
 		return JsonResponse({'saved': len(created), 'items': after_items, 'version': next_version, 'count': len(after_items)})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def tutor_profiles(request):
+	if request.method == 'GET':
+		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
+		records = TutorProfile.objects.all() if include_inactive else TutorProfile.objects.filter(is_active=True)
+		counts = tutor_profile_session_counts()
+		return JsonResponse([serialize_tutor_profile(item, counts) for item in records.order_by('name', 'id')], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = tutor_profile_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+
+		exact = TutorProfile.objects.filter(normalized_name=values['normalized_name']).first()
+		if exact:
+			return JsonResponse({
+				'detail': 'A tutor profile with this name already exists.',
+				'existingProfile': serialize_tutor_profile(exact, tutor_profile_session_counts()),
+			}, status=409)
+
+		matches = possible_tutor_profile_matches(values['name'])
+		if matches and payload.get('confirmCreateNew') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing tutor found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_tutor_profile(best['profile'], tutor_profile_session_counts()),
+				'score': best['score'],
+				'matches': [
+					{
+						'profile': serialize_tutor_profile(match['profile'], tutor_profile_session_counts()),
+						'score': match['score'],
+					}
+					for match in matches[:5]
+				],
+			}, status=409)
+
+		record = TutorProfile.objects.create(**values)
+		serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+		_audit_log(request, action='create', entity='TutorProfile', object_id=record.id, object_label=record.name, after=serialized)
+		return JsonResponse(serialized, status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def tutor_profile_detail(request, profile_id: int):
+	try:
+		record = TutorProfile.objects.get(pk=profile_id)
+	except TutorProfile.DoesNotExist:
+		return JsonResponse({'detail': 'Tutor profile not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_tutor_profile(record, tutor_profile_session_counts()))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		before = serialize_tutor_profile(record, tutor_profile_session_counts())
+		values, error = tutor_profile_values_from_payload({**before, **payload})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		exact = TutorProfile.objects.filter(normalized_name=values['normalized_name']).exclude(pk=record.id).first()
+		if exact:
+			return JsonResponse({
+				'detail': 'A tutor profile with this name already exists.',
+				'existingProfile': serialize_tutor_profile(exact, tutor_profile_session_counts()),
+			}, status=409)
+		matches = possible_tutor_profile_matches(values['name'], exclude_id=record.id)
+		if matches and payload.get('confirmSave') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing tutor found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_tutor_profile(best['profile'], tutor_profile_session_counts()),
+				'score': best['score'],
+			}, status=409)
+		for field, value in values.items():
+			setattr(record, field, value)
+		record.save()
+		serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+		_audit_log(request, action='update', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+		return JsonResponse(serialized)
+
+	if request.method == 'DELETE':
+		before = serialize_tutor_profile(record, tutor_profile_session_counts())
+		force_delete = str(request.GET.get('force', '')).strip().lower() in {'1', 'true', 'yes'}
+		if force_delete:
+			with transaction.atomic():
+				unlinked_rows = remove_tutor_profile_references(record.id)
+				record.delete()
+			_audit_log(
+				request,
+				action='delete',
+				entity='TutorProfile',
+				object_id=profile_id,
+				object_label=before.get('name', ''),
+				before=before,
+				metadata={'force': True, 'unlinkedRows': unlinked_rows},
+			)
+			return JsonResponse({'deleted': True, 'force': True, 'unlinkedRows': unlinked_rows})
+		in_use = TrainingPlan.objects.filter(tutor_profile_id=record.id).exists()
+		if in_use:
+			record.is_active = False
+			record.save(update_fields=['is_active', 'updated_at'])
+			serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+			_audit_log(request, action='deactivate', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+			return JsonResponse(serialized)
+		record.delete()
+		_audit_log(request, action='delete', entity='TutorProfile', object_id=profile_id, object_label=before.get('name', ''), before=before)
+		return JsonResponse({'deleted': True})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+def tutor_profile_duplicates(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	profiles = list(TutorProfile.objects.filter(is_active=True).order_by('name', 'id'))
+	pairs = []
+	for index, left in enumerate(profiles):
+		for right in profiles[index + 1:]:
+			score = tutor_similarity(left.name, right.name)
+			if score >= 0.72:
+				pairs.append({
+					'left': serialize_tutor_profile(left),
+					'right': serialize_tutor_profile(right),
+					'score': round(score, 3),
+					'exact': left.normalized_name == right.normalized_name,
+				})
+	return JsonResponse({'items': sorted(pairs, key=lambda item: -item['score'])})
 
 
 @csrf_exempt

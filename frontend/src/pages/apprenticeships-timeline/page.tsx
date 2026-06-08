@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionKsbMapping, KsbProfile, KsbProfileItem } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
@@ -18,14 +18,16 @@ import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleT
 import TutorProfiles from './components/TutorProfiles';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
-import { buildHolidayAdjustedSessionPlan } from './utils';
+import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
 import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
+import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 
 type ModalState =
   | { open: false }
   | { open: true; mode: 'add'; defaultGroupIdx: number }
   | { open: true; mode: 'add'; defaultGroupIdx: number; lockGroupSelection: true }
-  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string };
+  | { open: true; mode: 'add'; defaultGroupIdx: number; prefillTutorProfileId: string; prefillModule: ModuleValue; lockGroupSelection?: true }
+  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string; prefillTutorProfileId?: string; prefillModule?: ModuleValue };
 
 type ProgramModalState =
   | { open: false }
@@ -38,6 +40,11 @@ interface EditChoiceState {
   blockId: string;
 }
 
+interface TutorModuleAddChoice {
+  tutorProfileId: string;
+  moduleValue: ModuleValue;
+}
+
 interface TrainingPlanItem {
   cohortName: string;
   program: string;
@@ -46,6 +53,7 @@ interface TrainingPlanItem {
   groupName?: string;
   coachName?: string;
   tutorName: string;
+  tutorProfileId?: string;
   startDate: string;
   endDate: string;
   sessionsNumber: string;
@@ -53,6 +61,7 @@ interface TrainingPlanItem {
   sessionStartTime: string;
   sessionEndTime: string;
   sessionKsbMappings?: SessionKsbMapping[];
+  sessionCoverage?: SessionCoverage[];
   ksbProfileId?: string;
   notes: string;
 }
@@ -159,6 +168,32 @@ function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMappi
       behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
     };
   });
+}
+
+function normalizeSessionCoverage(value: unknown, count = 0, assignedTutorProfileId = ''): SessionCoverage[] {
+  const raw = Array.isArray(value) ? value : [];
+  return raw.reduce<SessionCoverage[]>((items, item) => {
+    const record = item && typeof item === 'object' ? item as Partial<SessionCoverage> : {};
+    const sessionNumber = Math.max(0, Number(record.sessionNumber) || 0);
+    if (!sessionNumber || (count > 0 && sessionNumber > count)) return items;
+    const coverageTutorProfileId = String(record.coverageTutorProfileId || '').trim();
+    const tutorUnavailable = Boolean(record.tutorUnavailable);
+    const coverageReason = String(record.coverageReason || '').trim();
+    const coverageStatus = coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none';
+    if (coverageTutorProfileId && (!coverageReason || coverageTutorProfileId === assignedTutorProfileId)) return items;
+    items.push({
+      sessionNumber,
+      assignedTutorProfileId: String(record.assignedTutorProfileId || assignedTutorProfileId || '').trim(),
+      coverageTutorProfileId,
+      coverageStatus,
+      tutorUnavailable,
+      tutorUnavailableReason: String(record.tutorUnavailableReason || '').trim(),
+      tutorUnavailableNotes: String(record.tutorUnavailableNotes || '').trim(),
+      coverageReason,
+      coverageNotes: String(record.coverageNotes || '').trim(),
+    });
+    return items;
+  }, []);
 }
 
 function normalizeKsbProfileItems(profile: KsbProfile): KsbProfileItem[] {
@@ -373,6 +408,7 @@ function buildAllGroups(
 function buildGroupsFromTrainingRows(
   items: TrainingPlanItem[],
   customPrograms: CustomProgram[] = [],
+  tutorProfiles: TutorProfile[] = [],
 ): ProgrammeGroup[] {
   const allGroups = buildAllGroups(customPrograms);
   const templatesById = new Map(allGroups.map(group => [group.id, group]));
@@ -427,6 +463,7 @@ function buildGroupsFromTrainingRows(
       coachName: item.coachName || parsedNotes.coachName,
       color: parsedNotes.moduleColor,
       tutor: item.tutorName || '',
+      tutorProfileId: item.tutorProfileId || profileIdForTutorName(item.tutorName || '', tutorProfiles),
       startDate: item.startDate || '2026-01-01',
       endDate: item.endDate || item.startDate || '2026-01-01',
       sessions,
@@ -434,6 +471,7 @@ function buildGroupsFromTrainingRows(
       sessionStartTime: item.sessionStartTime || '09:00',
       sessionEndTime: item.sessionEndTime || '11:00',
       sessionKsbMappings: normalizeSessionKsbMappings(item.sessionKsbMappings, sessions),
+      sessionCoverage: normalizeSessionCoverage(item.sessionCoverage, sessions, item.tutorProfileId || profileIdForTutorName(item.tutorName || '', tutorProfiles)),
       notes: parsedNotes.notes || '',
     });
   });
@@ -441,7 +479,7 @@ function buildGroupsFromTrainingRows(
   return allGroups.map(group => templatesById.get(group.id) || { ...group, rows: [] });
 }
 
-function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
+function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfile[] = []): TrainingPlanItem[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
       row.blks.map(block => ({
@@ -451,7 +489,8 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         moduleName: getModuleMeta(block.mod).lbl,
         groupName: block.groupName,
         coachName: block.coachName,
-        tutorName: block.tutor,
+        tutorName: tutorDisplayName(block, tutorProfiles) || block.tutor,
+        tutorProfileId: block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles),
         startDate: block.startDate,
         endDate: block.endDate,
         sessionsNumber: String(block.sessions),
@@ -459,6 +498,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[]): TrainingPlanItem[] {
         sessionStartTime: block.sessionStartTime || '09:00',
         sessionEndTime: block.sessionEndTime || '11:00',
         sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
+        sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
         ksbProfileId: row.ksbProfileId || '',
         notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id),
       })),
@@ -1659,6 +1699,7 @@ export default function ApprenticeshipTimeline() {
   const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
   const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
   const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
+  const [tutorProfiles, setTutorProfiles] = useState<TutorProfile[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [trainingPlanVersion, setTrainingPlanVersion] = useState<string | undefined>(undefined);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
@@ -1673,6 +1714,8 @@ export default function ApprenticeshipTimeline() {
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
   const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
+  const [pendingTutorModuleAdd, setPendingTutorModuleAdd] = useState<TutorModuleAddChoice | null>(null);
+  const [cohortChoiceSearch, setCohortChoiceSearch] = useState('');
   const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<ModuleMonthlySummary | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
@@ -1734,12 +1777,14 @@ export default function ApprenticeshipTimeline() {
       holidaysResult,
       catalogModulesResult,
       ksbProfilesResult,
+      tutorProfilesResult,
     ] = await Promise.allSettled([
       fetch('/api/training-plan-modules/'),
       fetch('/api/training-plan-program-configs/'),
       reloadTrainingPlanHolidays(),
       fetch('/api/modules/'),
       fetch('/api/ksb-profiles/?includeInactive=1'),
+      fetch('/api/tutor-profiles/?includeInactive=1'),
     ]);
 
     if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
@@ -1780,6 +1825,13 @@ export default function ApprenticeshipTimeline() {
         setKsbProfiles(items.map(profile => ({ ...profile, ksbItems: normalizeKsbProfileItems(profile) })));
       }
     }
+
+    if (tutorProfilesResult.status === 'fulfilled' && tutorProfilesResult.value.ok) {
+      const items = (await tutorProfilesResult.value.json()) as TutorProfile[];
+      if (Array.isArray(items)) {
+        setTutorProfiles(items);
+      }
+    }
   }, [reloadTrainingPlanHolidays]);
 
   useEffect(() => {
@@ -1789,10 +1841,10 @@ export default function ApprenticeshipTimeline() {
   useEffect(() => {
     setGroups(
       trainingPlanItems.length
-        ? buildGroupsFromTrainingRows(trainingPlanItems, customPrograms)
+        ? buildGroupsFromTrainingRows(trainingPlanItems, customPrograms, tutorProfiles)
         : buildAllGroups(customPrograms),
     );
-  }, [trainingPlanItems, customPrograms]);
+  }, [trainingPlanItems, customPrograms, tutorProfiles]);
 
   useEffect(() => {
     void reloadTrainingPlanSupportData();
@@ -1807,7 +1859,7 @@ export default function ApprenticeshipTimeline() {
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
 
   const persistTrainingPlan = async (nextGroups: ProgrammeGroup[], silent = false) => {
-    const items = flattenGroupsForApi(nextGroups);
+    const items = flattenGroupsForApi(nextGroups, tutorProfiles);
 
     if (!hasLoadedTrainingPlan || !trainingPlanVersion) {
       setTrainingPlanSaveState('error');
@@ -2121,6 +2173,72 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const createTutorProfile = async (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }): Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }> => {
+    const response = await fetch('/api/tutor-profiles/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    if (response.status === 409) {
+      return await response.json() as { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number };
+    }
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const saved = await response.json() as TutorProfile;
+    setTutorProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+    return saved;
+  };
+
+  const updateTutorProfile = async (id: string, profile: Partial<TutorProfile> & { confirmSave?: boolean }): Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }> => {
+    const response = await fetch(`/api/tutor-profiles/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    if (response.status === 409) {
+      return await response.json() as { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number };
+    }
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const saved = await response.json() as TutorProfile;
+    setTutorProfiles(prev => prev.map(item => item.id === saved.id ? saved : item).sort((a, b) => a.name.localeCompare(b.name)));
+    return saved;
+  };
+
+  const deleteTutorProfile = async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/tutor-profiles/${id}/?force=1`, { method: 'DELETE' });
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
+      const result = await response.json() as { deleted?: boolean; unlinkedRows?: number };
+      setTutorProfiles(prev => prev.filter(item => item.id !== id));
+      await reloadTrainingPlan();
+      await kbcSwal.fire({
+        title: 'Tutor Deleted',
+        html: result.unlinkedRows
+          ? `The tutor profile was deleted and unlinked from ${result.unlinkedRows} Training Plan record${result.unlinkedRows === 1 ? '' : 's'}.`
+          : 'The tutor profile was deleted.',
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Tutor Not Deleted',
+        html: error instanceof Error ? error.message : 'Unknown delete error',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
   const updateKsbProfile = async (id: string, profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
     try {
       const response = await fetch(`/api/ksb-profiles/${id}/`, {
@@ -2182,10 +2300,33 @@ export default function ApprenticeshipTimeline() {
       return false;
     }
 
-    setTrainingPlanItems(flattenGroupsForApi(next));
+    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
     setGroups(next);
     setModal({ open: false });
 
+    return true;
+  };
+
+  const updateSessionCoverage = async (groupIdx: number, rowIdx: number, blockId: string, coverage: SessionCoverage): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+      ...group,
+      rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
+        ...row,
+        blks: row.blks.map(block => {
+          if (block.id !== blockId) return block;
+          const nextCoverage = [
+            ...(block.sessionCoverage || []).filter(item => item.sessionNumber !== coverage.sessionNumber),
+            coverage,
+          ].filter(item => item.coverageStatus !== 'none' || item.tutorUnavailable || item.coverageTutorProfileId);
+          return { ...block, sessionCoverage: nextCoverage };
+        }),
+      }),
+    });
+    const saved = await persistTrainingPlan(next);
+    if (!saved) return false;
+    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
+    setGroups(next);
     return true;
   };
 
@@ -2208,7 +2349,7 @@ export default function ApprenticeshipTimeline() {
       throw new Error('The training plan save was not completed.');
     }
 
-    setTrainingPlanItems(flattenGroupsForApi(next));
+    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
     setGroups(next);
   };
 
@@ -2247,6 +2388,42 @@ export default function ApprenticeshipTimeline() {
       return;
     }
     handleEditRow(groupIdx, rowIdx, blockId);
+  };
+
+  const handleAddModuleForTutor = (tutorProfileId: string, moduleValue: ModuleValue) => {
+    if (!canManageCohorts) {
+      return;
+    }
+    setPendingTutorModuleAdd({ tutorProfileId, moduleValue });
+    setCohortChoiceSearch('');
+  };
+
+  const handleAddTutorModuleToNewCohort = () => {
+    if (!pendingTutorModuleAdd) return;
+    setModal({
+      open: true,
+      mode: 'add',
+      defaultGroupIdx: 0,
+      prefillTutorProfileId: pendingTutorModuleAdd.tutorProfileId,
+      prefillModule: pendingTutorModuleAdd.moduleValue,
+    });
+    setPendingTutorModuleAdd(null);
+  };
+
+  const handleAddTutorModuleToExistingCohort = (groupIdx: number, rowIdx: number) => {
+    if (!pendingTutorModuleAdd) return;
+    const row = groups[groupIdx]?.rows[rowIdx];
+    if (!row) return;
+    setModal({
+      open: true,
+      mode: 'edit',
+      groupIdx,
+      rowIdx,
+      row,
+      prefillTutorProfileId: pendingTutorModuleAdd.tutorProfileId,
+      prefillModule: pendingTutorModuleAdd.moduleValue,
+    });
+    setPendingTutorModuleAdd(null);
   };
 
   const handleAddModule = async (mod: CustomModule) => {
@@ -2346,7 +2523,7 @@ export default function ApprenticeshipTimeline() {
         if (!saved) {
           throw new Error('The linked Training Plan rows were not re-saved safely.');
         }
-        setTrainingPlanItems(flattenGroupsForApi(nextGroups));
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
         setGroups(nextGroups);
       }
     }
@@ -2370,7 +2547,7 @@ export default function ApprenticeshipTimeline() {
       }
       setCustomPrograms(persistedItems);
       if (shouldPersistTimeline) {
-        setTrainingPlanItems(flattenGroupsForApi(nextGroups));
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
         setGroups(nextGroups);
       }
       setProgramModal({ open: false });
@@ -2997,9 +3174,12 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <ScheduleTable
               groups={groups}
+              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
               catalogModules={catalogModules}
               canEdit={canManageCohorts}
               onEditTrainingPlan={handleEditScheduleRow}
+              onUpdateSessionCoverage={updateSessionCoverage}
+              onCreateTutorProfile={createTutorProfile}
             />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
@@ -3015,10 +3195,15 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <TutorProfiles
               groups={groups}
+              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
               catalogModules={catalogModules}
               holidays={holidays}
               canEdit={canManageCohorts}
               onEditTrainingPlan={handleEditScheduleRow}
+              onAddModuleForTutor={handleAddModuleForTutor}
+              onCreateTutorProfile={createTutorProfile}
+              onUpdateTutorProfile={updateTutorProfile}
+              onDeleteTutorProfile={deleteTutorProfile}
             />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
@@ -3123,6 +3308,107 @@ export default function ApprenticeshipTimeline() {
         <MonthlyModuleSummaryModal summary={selectedMonthlySummary} onClose={() => setSelectedMonthlySummary(null)} />
       )}
 
+      {canManageCohorts && pendingTutorModuleAdd && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[4px]" onClick={() => setPendingTutorModuleAdd(null)} />
+          <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="bg-kbc-navy px-5 py-4 text-white">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-extrabold">Add Module To Tutor</h3>
+                  <p className="mt-1 text-xs font-semibold text-white/70">
+                    Choose an existing cohort or create a new cohort for this module.
+                  </p>
+                </div>
+                <button type="button" onClick={() => setPendingTutorModuleAdd(null)} className="rounded-lg p-1 text-white/70 hover:bg-white/10 hover:text-white">
+                  <i className="ri-close-line text-lg" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {(() => {
+                const moduleName = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue)?.name
+                  || (pendingTutorModuleAdd.moduleValue in MS ? getModuleMeta(pendingTutorModuleAdd.moduleValue as MKey).lbl : String(pendingTutorModuleAdd.moduleValue));
+                const tutorName = tutorProfiles.find(profile => profile.id === pendingTutorModuleAdd.tutorProfileId)?.name || 'Selected tutor';
+                const cohortRows = groups.flatMap((group, groupIdx) => group.rows.map((row, rowIdx) => ({
+                  group,
+                  groupIdx,
+                  row,
+                  rowIdx,
+                  label: `${group.name} - ${row.label || 'Untitled cohort'}`,
+                  meta: [
+                    row.dateLbl ? formatDate(row.dateLbl) : '',
+                    row.endDateLbl ? formatDate(row.endDateLbl) : '',
+                    `${row.blks.length} module${row.blks.length === 1 ? '' : 's'}`,
+                  ].filter(Boolean).join(' - '),
+                  groupsText: Array.from(new Set(row.blks.map(block => block.groupName).filter(Boolean))).join(', '),
+                })));
+                const query = cohortChoiceSearch.trim().toLowerCase();
+                const filteredRows = cohortRows.filter(item => !query || `${item.label} ${item.meta} ${item.groupsText}`.toLowerCase().includes(query));
+                return (
+                  <>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Selected</p>
+                      <p className="mt-1 text-sm font-extrabold text-kbc-navy">{moduleName}</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-500">{tutorName}</p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleAddTutorModuleToNewCohort}
+                      className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-kbc-navy bg-kbc-navy px-4 py-3 text-left text-white"
+                    >
+                      <span>
+                        <span className="block text-sm font-extrabold">Create New Cohort</span>
+                        <span className="mt-0.5 block text-xs font-semibold text-white/70">Start a new cohort with this module and tutor already selected.</span>
+                      </span>
+                      <i className="ri-add-line text-lg" />
+                    </button>
+
+                    <div className="mt-5">
+                      <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 focus-within:border-kbc-navy focus-within:ring-2 focus-within:ring-kbc-navy/10">
+                        <i className="ri-search-line text-sm text-gray-400" />
+                        <input
+                          type="search"
+                          value={cohortChoiceSearch}
+                          onChange={event => setCohortChoiceSearch(event.target.value)}
+                          placeholder="Search existing cohorts..."
+                          className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {filteredRows.map(item => (
+                        <button
+                          key={`${item.group.id}-${item.row.id}-${item.rowIdx}`}
+                          type="button"
+                          onClick={() => handleAddTutorModuleToExistingCohort(item.groupIdx, item.rowIdx)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-left transition-colors hover:border-kbc-navy/30 hover:bg-slate-50"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-extrabold text-kbc-navy">{item.label}</span>
+                            <span className="mt-1 block text-xs font-semibold text-slate-500">{item.meta || 'No dates yet'}</span>
+                            {item.groupsText && <span className="mt-1 block truncate text-xs text-slate-400">Groups: {item.groupsText}</span>}
+                          </span>
+                          <i className="ri-arrow-right-s-line text-lg text-slate-400" />
+                        </button>
+                      ))}
+                      {!filteredRows.length && (
+                        <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center">
+                          <p className="text-sm font-bold text-kbc-navy">No matching cohorts</p>
+                          <p className="mt-1 text-xs text-gray-500">Create a new cohort instead.</p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
       {canManageCohorts && modal.open && (
         <CohortModal
           mode={modal.mode}
@@ -3131,11 +3417,15 @@ export default function ApprenticeshipTimeline() {
           customModules={customModules}
           catalogModules={catalogModules}
           ksbProfiles={ksbProfiles}
+          tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
+          prefillTutorProfileId={'prefillTutorProfileId' in modal ? modal.prefillTutorProfileId : undefined}
+          prefillModule={'prefillModule' in modal ? modal.prefillModule : undefined}
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
+          onCreateTutorProfile={createTutorProfile}
           onManageHolidays={() => setShowHolidayMgr(true)}
           onBackToPreviousStep={() => {
             setModal({ open: false });

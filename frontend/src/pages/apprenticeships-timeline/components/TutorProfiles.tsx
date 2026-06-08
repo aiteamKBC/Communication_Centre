@@ -1,17 +1,30 @@
 import { useMemo, useState } from 'react';
-import type { CatalogModule, Holiday, ModuleBlock, ProgrammeGroup, WeekDayKey } from '../types';
-import { getModuleMeta } from '../data';
+import type { CatalogModule, Holiday, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, TutorProfile, WeekDayKey } from '../types';
+import { MS, getModuleMeta } from '../data';
 import { buildHolidayAdjustedSessionPlan } from '../utils';
+import { buildTutorProfilesFromGroups, normalizeTutorName, resolveTutorProfile } from '../tutorProfiles';
+import { kbcSwal } from '@/components/feature/sweetAlert';
+import SelectField from './SelectField';
 
 interface Props {
   groups: ProgrammeGroup[];
+  tutorProfiles?: TutorProfile[];
   catalogModules?: CatalogModule[];
   holidays?: Holiday[];
   canEdit?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
+  onAddModuleForTutor?: (tutorProfileId: string, moduleValue: ModuleValue) => void;
+  onCreateTutorProfile?: (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
+  onUpdateTutorProfile?: (id: string, profile: Partial<TutorProfile> & { confirmSave?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
+  onDeleteTutorProfile?: (id: string) => Promise<boolean>;
 }
 
 interface TutorSession {
+  tutorProfileId: string;
+  assignedTutorProfileId: string;
+  coverageTutorProfileId: string;
+  coverage?: SessionCoverage;
+  coverageTutorName: string;
   tutor: string;
   rawTutor: string;
   blockId: string;
@@ -116,10 +129,6 @@ function parseLocalDateTime(isoDate: string, time24: string): Date {
   return new Date(year || 1970, (month || 1) - 1, day || 1, Number.isNaN(hour) ? 0 : hour, Number.isNaN(minute) ? 0 : minute, 0, 0);
 }
 
-function normalizeName(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
 function splitPeople(value: string): string[] {
   return value
     .split(/\s*(?:\+|&|,|;)\s*/g)
@@ -145,12 +154,15 @@ function resolveCatalogModule(moduleName: string, moduleValue: unknown, catalogM
   });
 }
 
-function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogModule[], holidays: Holiday[], now: Date): TutorSession[] {
+function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogModule[], holidays: Holiday[], now: Date, tutorProfiles: TutorProfile[]): TutorSession[] {
   return groups.flatMap((programme, groupIdx) =>
     programme.rows.flatMap((row, rowIdx) =>
       row.blks.flatMap(block => {
-        const tutorNames = splitPeople(block.tutor || '');
-        if (!tutorNames.length) return [];
+        const linkedProfile = resolveTutorProfile(block, tutorProfiles);
+        const tutorEntries = linkedProfile
+          ? [{ name: linkedProfile.name, profileId: linkedProfile.id }]
+          : splitPeople(block.tutor || '').map(tutor => ({ name: tutor, profileId: `legacy:${normalizeTutorName(tutor)}` }));
+        if (!tutorEntries.length) return [];
 
         const moduleMeta = getModuleMeta(block.mod);
         const module = moduleMeta.lbl;
@@ -172,11 +184,20 @@ function collectTutorSessions(groups: ProgrammeGroup[], catalogModules: CatalogM
         );
         const isFinished = completedSessions >= totalSessions;
 
-        return tutorNames.flatMap(tutor =>
+        return tutorEntries.flatMap(({ name: tutor, profileId }) =>
           dates.map((date, index): TutorSession => {
             const dateObj = parseLocalIsoDate(date);
             const sessionNumber = index + 1;
+            const coverage = (block.sessionCoverage || []).find(item => item.sessionNumber === sessionNumber);
+            const coverageTutor = coverage?.coverageTutorProfileId
+              ? tutorProfiles.find(profile => profile.id === coverage.coverageTutorProfileId)
+              : undefined;
             return {
+              tutorProfileId: profileId,
+              assignedTutorProfileId: profileId,
+              coverageTutorProfileId: coverage?.coverageTutorProfileId || '',
+              coverage,
+              coverageTutorName: coverageTutor?.name || '',
               tutor,
               rawTutor: block.tutor || tutor,
               blockId: block.id,
@@ -274,6 +295,9 @@ function ModuleList({
   emptyText,
   canEdit,
   onEditTrainingPlan,
+  onAddModuleForTutor,
+  activeTutorProfileId,
+  moduleOptions,
   now,
 }: {
   title: string;
@@ -282,6 +306,9 @@ function ModuleList({
   emptyText: string;
   canEdit: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
+  onAddModuleForTutor?: (tutorProfileId: string, moduleValue: ModuleValue) => void;
+  activeTutorProfileId: string;
+  moduleOptions: Array<{ value: string; label: string; description?: string; color?: string }>;
   now: Date;
 }) {
   const shouldScroll = modules.length > 4;
@@ -289,7 +316,26 @@ function ModuleList({
     <div className="self-start rounded-xl border border-gray-200 bg-white">
       <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-extrabold text-kbc-navy">{title}</p>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{modules.length}</span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {canEdit && onAddModuleForTutor && activeTutorProfileId && !activeTutorProfileId.startsWith('legacy:') && moduleOptions.length > 0 && (
+            <div className="w-64 max-w-full">
+              <SelectField
+                value=""
+                options={moduleOptions}
+                placeholder="Add module"
+                label="Modules"
+                searchPlaceholder="Search modules..."
+                accentColor="#1B2A4A"
+                onChange={value => {
+                  if (value) {
+                    onAddModuleForTutor(activeTutorProfileId, value);
+                  }
+                }}
+              />
+            </div>
+          )}
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{modules.length}</span>
+        </div>
       </div>
       <div className={`${shouldScroll ? 'max-h-[52vh] overflow-y-auto' : ''} p-3 ${modules.length ? 'grid gap-2 md:grid-cols-2' : ''}`}>
         {modules.map(module => {
@@ -334,8 +380,8 @@ function ModuleList({
           );
         })}
         {modules.length === 0 && (
-          <div className="rounded-lg border border-dashed border-gray-200 px-4 py-4 text-center text-sm text-gray-400">
-            {emptyText}
+          <div className="rounded-lg border border-dashed border-gray-200 px-4 py-4 text-center">
+            <p className="text-sm text-gray-400">{emptyText}</p>
           </div>
         )}
       </div>
@@ -343,17 +389,131 @@ function ModuleList({
   );
 }
 
-export default function TutorProfiles({ groups, catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan }: Props) {
+export default function TutorProfiles({ groups, tutorProfiles = [], catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan, onAddModuleForTutor, onCreateTutorProfile, onUpdateTutorProfile, onDeleteTutorProfile }: Props) {
   const now = useMemo(() => new Date(), []);
-  const sessions = useMemo(() => collectTutorSessions(groups, catalogModules, holidays, now), [groups, catalogModules, holidays, now]);
-  const tutorNames = useMemo(() => Array.from(new Set(sessions.map(item => item.tutor))).sort((a, b) => a.localeCompare(b)), [sessions]);
+  const profileList = useMemo(() => buildTutorProfilesFromGroups(groups, tutorProfiles), [groups, tutorProfiles]);
+  const sessions = useMemo(() => collectTutorSessions(groups, catalogModules, holidays, now, profileList), [groups, catalogModules, holidays, now, profileList]);
+  const tutorProfileIds = useMemo(() => profileList.map(profile => profile.id).sort((a, b) => {
+    const left = profileList.find(profile => profile.id === a)?.name || a;
+    const right = profileList.find(profile => profile.id === b)?.name || b;
+    return left.localeCompare(right);
+  }), [profileList]);
   const [selectedTutor, setSelectedTutor] = useState('');
   const [selectedCoach, setSelectedCoach] = useState('');
-  const activeTutor = selectedTutor || tutorNames[0] || '';
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [editProfileDraft, setEditProfileDraft] = useState<Partial<TutorProfile>>({});
+  const [editProfileWarning, setEditProfileWarning] = useState<{ profile: TutorProfile; detail: string } | null>(null);
+  const [editProfileError, setEditProfileError] = useState('');
+  const [editProfileSaving, setEditProfileSaving] = useState(false);
+  const [profileFormMode, setProfileFormMode] = useState<'add' | 'edit'>('edit');
+  const [tutorSearch, setTutorSearch] = useState('');
+  const filteredTutorProfileIds = useMemo(() => {
+    const query = normalizeTutorName(tutorSearch);
+    if (!query) return tutorProfileIds;
+    return tutorProfileIds.filter(profileId => {
+      const profile = profileList.find(item => item.id === profileId);
+      const name = profile?.name || profileId.replace(/^legacy:/, '');
+      const email = profile?.email || '';
+      return normalizeTutorName(`${name} ${email}`).includes(query);
+    });
+  }, [profileList, tutorProfileIds, tutorSearch]);
+  const activeTutorId = selectedTutor || tutorProfileIds[0] || '';
+  const activeTutorProfile = profileList.find(profile => profile.id === activeTutorId);
+  const activeTutor = activeTutorProfile?.name || '';
+  const moduleOptions = useMemo(() => {
+    const catalogOptions = catalogModules.map(module => ({
+      value: module.name,
+      label: module.name,
+      description: `${module.sessions || 0} session${module.sessions === '1' ? '' : 's'}`,
+      color: module.colour || '#4A6DB0',
+    }));
+    if (catalogOptions.length) return catalogOptions;
+    return Object.entries(MS).map(([value, meta]) => ({
+      value,
+      label: meta.lbl,
+      description: 'Standard module',
+      color: meta.bg,
+    }));
+  }, [catalogModules]);
+
+  const openEditProfile = () => {
+    if (!activeTutorProfile || activeTutorProfile.id.startsWith('legacy:')) return;
+    setProfileFormMode('edit');
+    setEditProfileDraft({ ...activeTutorProfile });
+    setEditProfileWarning(null);
+    setEditProfileError('');
+    setEditProfileOpen(true);
+  };
+
+  const openAddProfile = () => {
+    setProfileFormMode('add');
+    setEditProfileDraft({ name: '', email: '', phone: '', notes: '', availabilityNotes: '', isActive: true });
+    setEditProfileWarning(null);
+    setEditProfileError('');
+    setEditProfileOpen(true);
+  };
+
+  const saveEditProfile = async (confirmSave = false) => {
+    if (!String(editProfileDraft.name || '').trim()) {
+      setEditProfileError('Tutor name is required.');
+      return;
+    }
+    if (profileFormMode === 'edit' && (!activeTutorProfile || !onUpdateTutorProfile || activeTutorProfile.id.startsWith('legacy:'))) return;
+    if (profileFormMode === 'add' && !onCreateTutorProfile) return;
+    setEditProfileSaving(true);
+    setEditProfileError('');
+    try {
+      const result = profileFormMode === 'add'
+        ? await onCreateTutorProfile!({ ...editProfileDraft, confirmCreateNew: confirmSave } as { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean })
+        : await onUpdateTutorProfile!(activeTutorProfile!.id, { ...editProfileDraft, confirmSave });
+      if ('id' in result) {
+        setTutorSearch('');
+        setSelectedTutor(result.id);
+        setEditProfileOpen(false);
+        return;
+      }
+      const possible = result.possibleExistingProfile || result.existingProfile;
+      if (possible) {
+        setEditProfileWarning({ profile: possible, detail: result.detail || `Possible existing tutor found: ${possible.name}. Use existing profile instead?` });
+        return;
+      }
+      setEditProfileError(result.detail || 'Tutor profile could not be updated.');
+    } catch (error) {
+      setEditProfileError(error instanceof Error ? error.message : 'Tutor profile could not be updated.');
+    } finally {
+      setEditProfileSaving(false);
+    }
+  };
+
+  const deleteActiveProfile = async () => {
+    if (!activeTutorProfile || activeTutorProfile.id.startsWith('legacy:') || !onDeleteTutorProfile) return;
+    const result = await kbcSwal.fire({
+      title: 'Delete Tutor Permanently?',
+      html: `
+        <div style="text-align:left;line-height:1.55">
+          <p>You are about to permanently delete <strong>${activeTutorProfile.name}</strong>.</p>
+          <p style="margin-top:8px;color:#64748b">Linked modules and sessions will stay in the Training Plan, but their tutor assignment/coverage reference to this profile will be cleared.</p>
+        </div>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete Permanently',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+      confirmButtonColor: '#DC2626',
+      cancelButtonColor: '#1B2A4A',
+    });
+    if (!result.isConfirmed) return;
+    const deleted = await onDeleteTutorProfile(activeTutorProfile.id);
+    if (deleted) {
+      setSelectedTutor('');
+    }
+  };
 
   const tutorSessions = useMemo(
-    () => sessions.filter(item => normalizeName(item.tutor) === normalizeName(activeTutor)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
-    [sessions, activeTutor],
+    () => sessions.filter(item => item.tutorProfileId === activeTutorId).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
+    [sessions, activeTutorId],
   );
   const conflicts = useMemo(() => findTutorConflicts(tutorSessions), [tutorSessions]);
   const activeConflicts = useMemo(
@@ -384,7 +544,7 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
     return Array.from(map.values()).sort((a, b) => a.coach.localeCompare(b.coach));
   }, [tutorSessions]);
   const selectedCoachSessions = useMemo(
-    () => tutorSessions.filter(session => normalizeName(session.coach || 'TBD') === normalizeName(selectedCoach)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
+    () => tutorSessions.filter(session => normalizeTutorName(session.coach || 'TBD') === normalizeTutorName(selectedCoach)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
     [tutorSessions, selectedCoach],
   );
 
@@ -392,8 +552,12 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
   const assignedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'assigned');
   const completedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'completed');
   const upcomingSessions = tutorSessions.filter(item => parseLocalDateTime(item.date, item.endTime) > now).slice(0, 12);
+  const coverageRequiredSessions = tutorSessions.filter(item => item.coverage?.tutorUnavailable && !item.coverageTutorProfileId);
+  const coveringSessions = sessions
+    .filter(item => item.coverageTutorProfileId === activeTutorId)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
 
-  if (!sessions.length) {
+  if (!profileList.length) {
     return (
       <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center">
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-kbc-navy/5 text-kbc-navy">
@@ -409,18 +573,44 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
     <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="rounded-xl border border-gray-200 bg-white">
         <div className="border-b border-gray-100 px-4 py-3">
-          <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Tutors</p>
-          <p className="mt-1 text-sm font-extrabold text-kbc-navy">{tutorNames.length} profile{tutorNames.length === 1 ? '' : 's'}</p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Tutors</p>
+              <p className="mt-1 text-sm font-extrabold text-kbc-navy">{tutorProfileIds.length} profile{tutorProfileIds.length === 1 ? '' : 's'}</p>
+            </div>
+            {canEdit && onCreateTutorProfile && (
+              <button type="button" onClick={openAddProfile} className="rounded-lg bg-kbc-navy px-2.5 py-1.5 text-xs font-extrabold text-white">
+                Add
+              </button>
+            )}
+          </div>
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 focus-within:border-kbc-navy focus-within:ring-2 focus-within:ring-kbc-navy/10">
+            <i className="ri-search-line text-sm text-gray-400" />
+            <input
+              type="search"
+              value={tutorSearch}
+              onChange={event => setTutorSearch(event.target.value)}
+              placeholder="Search tutor..."
+              className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400"
+            />
+            {tutorSearch && (
+              <button type="button" onClick={() => setTutorSearch('')} className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-kbc-navy" aria-label="Clear tutor search">
+                <i className="ri-close-line text-sm" />
+              </button>
+            )}
+          </div>
         </div>
         <div className="p-2">
-          {tutorNames.map(name => {
-            const count = sessions.filter(item => normalizeName(item.tutor) === normalizeName(name)).length;
-            const selected = normalizeName(name) === normalizeName(activeTutor);
+          {filteredTutorProfileIds.map(profileId => {
+            const profile = profileList.find(item => item.id === profileId);
+            const name = profile?.name || profileId.replace(/^legacy:/, '');
+            const count = sessions.filter(item => item.tutorProfileId === profileId).length;
+            const selected = profileId === activeTutorId;
             return (
               <button
-                key={name}
+                key={profileId}
                 type="button"
-                onClick={() => setSelectedTutor(name)}
+                onClick={() => setSelectedTutor(profileId)}
                 className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-all"
                 style={{ background: selected ? '#1B2A4A' : '#FFFFFF', color: selected ? '#FFFFFF' : '#1F2937' }}
               >
@@ -429,11 +619,18 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-bold">{name}</span>
+                  {profile?.email && <span className={`block truncate text-xs ${selected ? 'text-white/70' : 'text-gray-500'}`}>{profile.email}</span>}
                   <span className={`block text-xs ${selected ? 'text-white/60' : 'text-gray-400'}`}>{count} sessions</span>
                 </span>
               </button>
             );
           })}
+          {!filteredTutorProfileIds.length && (
+            <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center">
+              <p className="text-sm font-bold text-kbc-navy">No tutors found</p>
+              <p className="mt-1 text-xs text-gray-500">Try another name or email.</p>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -443,8 +640,23 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
             <div>
               <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Tutor Profile</p>
               <h2 className="mt-1 text-xl font-extrabold text-kbc-navy">{activeTutor}</h2>
-              <p className="mt-1 text-sm text-gray-500">{inProgressModules.length} in progress, {assignedModules.length} assigned, {completedModules.length} completed</p>
+              {activeTutorProfile?.email && <p className="mt-1 text-xs font-semibold text-gray-400">{activeTutorProfile.email}</p>}
+              <p className="mt-1 text-sm text-gray-500">{tutorSessions.length} assigned sessions, {coverageRequiredSessions.length} coverage required, {coveringSessions.length} covering sessions</p>
             </div>
+            {canEdit && activeTutorProfile && !activeTutorProfile.id.startsWith('legacy:') && (
+              <div className="flex flex-wrap items-center gap-2">
+                {onUpdateTutorProfile && (
+                  <button type="button" onClick={openEditProfile} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">
+                    Edit Profile
+                  </button>
+                )}
+                {onDeleteTutorProfile && (
+                  <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">
+                    Delete
+                  </button>
+                )}
+              </div>
+            )}
             {activeConflicts.length > 0 && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-extrabold text-amber-800 ring-1 ring-amber-200">
                 <i className="ri-alert-line" />
@@ -463,7 +675,7 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
               <p className="mt-1 text-xl font-extrabold text-gray-800">{assignedModules.length}</p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Total Sessions</p>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Assigned Sessions</p>
               <p className="mt-1 text-xl font-extrabold text-gray-800">{tutorSessions.length}</p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
@@ -471,8 +683,8 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
               <p className="mt-1 text-xl font-extrabold text-gray-800">{new Set(tutorSessions.map(item => item.programme)).size}</p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Coaches</p>
-              <p className="mt-1 text-xl font-extrabold text-gray-800">{coachRows.length}</p>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Covering</p>
+              <p className="mt-1 text-xl font-extrabold text-gray-800">{coveringSessions.length}</p>
             </div>
           </div>
         </div>
@@ -525,6 +737,9 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
             emptyText="No modules currently in progress for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
+            onAddModuleForTutor={onAddModuleForTutor}
+            activeTutorProfileId={activeTutorId}
+            moduleOptions={moduleOptions}
             now={now}
           />
 
@@ -535,6 +750,9 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
             emptyText="No future assigned modules for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
+            onAddModuleForTutor={onAddModuleForTutor}
+            activeTutorProfileId={activeTutorId}
+            moduleOptions={moduleOptions}
             now={now}
           />
 
@@ -545,8 +763,54 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
             emptyText="No completed modules for this tutor."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
+            onAddModuleForTutor={onAddModuleForTutor}
+            activeTutorProfileId={activeTutorId}
+            moduleOptions={moduleOptions}
             now={now}
           />
+
+          <div className="self-start rounded-xl border border-amber-200 bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-amber-100 px-4 py-3">
+              <p className="text-sm font-extrabold text-amber-900">Coverage Required</p>
+              <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800">{coverageRequiredSessions.length}</span>
+            </div>
+            <div className="divide-y divide-gray-100">
+              {coverageRequiredSessions.map(session => (
+                <div key={`required-${session.blockId}-${session.sessionNumber}`} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-extrabold text-blue-700">Assigned</span>
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-extrabold text-red-700">Unavailable</span>
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800">Coverage Required</span>
+                  </div>
+                  <p className="mt-2 font-extrabold text-gray-800">{formatDate(session.date)} - #{session.sessionNumber} {session.sessionTitle}</p>
+                  <p className="mt-1 text-xs text-gray-500">{session.module} - {session.programme} - {session.groupName}</p>
+                  {session.coverage?.tutorUnavailableReason && <p className="mt-1 text-xs font-semibold text-amber-700">{session.coverage.tutorUnavailableReason}</p>}
+                </div>
+              ))}
+              {coverageRequiredSessions.length === 0 && <p className="px-4 py-6 text-center text-sm text-gray-400">No sessions currently require coverage for this tutor.</p>}
+            </div>
+          </div>
+
+          <div className="self-start rounded-xl border border-emerald-200 bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-emerald-100 px-4 py-3">
+              <p className="text-sm font-extrabold text-emerald-900">Sessions Covered By This Tutor</p>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800">{coveringSessions.length}</span>
+            </div>
+            <div className="divide-y divide-gray-100">
+              {coveringSessions.map(session => (
+                <div key={`covering-${session.blockId}-${session.sessionNumber}`} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-emerald-700">Covering For {session.tutor}</span>
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-extrabold text-blue-700">Assigned</span>
+                  </div>
+                  <p className="mt-2 font-extrabold text-gray-800">{formatDate(session.date)} - #{session.sessionNumber} {session.sessionTitle}</p>
+                  <p className="mt-1 text-xs text-gray-500">{session.module} - {session.programme} - {session.groupName}</p>
+                  {session.coverage?.coverageReason && <p className="mt-1 text-xs font-semibold text-emerald-700">{session.coverage.coverageReason}</p>}
+                </div>
+              ))}
+              {coveringSessions.length === 0 && <p className="px-4 py-6 text-center text-sm text-gray-400">No coverage sessions assigned to this tutor.</p>}
+            </div>
+          </div>
 
           <div className="self-start rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-4 py-3">
@@ -596,7 +860,15 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
                     <td className="px-4 py-3 font-bold text-gray-800">{formatDate(session.date)}</td>
                     <td className="px-4 py-3 text-gray-600">{session.time}</td>
                     <td className="px-4 py-3 text-gray-700">#{session.sessionNumber} {session.sessionTitle}</td>
-                    <td className="px-4 py-3 text-gray-700">{session.module}</td>
+                    <td className="px-4 py-3 text-gray-700">
+                      <p>{session.module}</p>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">Assigned</span>
+                        {session.coverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
+                        {session.coverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
+                        {session.coverageTutorName && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {session.coverageTutorName}</span>}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-gray-500">{session.programme} - {session.groupName}</td>
                     <td className="px-4 py-3 text-gray-500">{session.coach}</td>
                   </tr>
@@ -611,6 +883,77 @@ export default function TutorProfiles({ groups, catalogModules = [], holidays = 
           </div>
         </div>
       </section>
+
+      {editProfileOpen && (profileFormMode === 'add' || activeTutorProfile) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/35 backdrop-blur-[4px]" onClick={() => setEditProfileOpen(false)} />
+          <div className="relative w-full max-w-lg overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div>
+                <p className="text-xs font-semibold text-white/60">Tutor Profile</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">{profileFormMode === 'add' ? 'Add Tutor' : 'Edit Profile'}</h3>
+              </div>
+              <button onClick={() => setEditProfileOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="space-y-4 bg-gray-50 p-5">
+              {[
+                ['name', 'Full name'],
+                ['email', 'Email'],
+                ['phone', 'Phone'],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">{label}</label>
+                  <input
+                    value={String(editProfileDraft[key as keyof TutorProfile] || '')}
+                    onChange={event => {
+                      setEditProfileDraft(prev => ({ ...prev, [key]: event.target.value }));
+                      setEditProfileWarning(null);
+                    }}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                  />
+                </div>
+              ))}
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Status</label>
+                <select
+                  value={editProfileDraft.isActive === false ? 'inactive' : 'active'}
+                  onChange={event => setEditProfileDraft(prev => ({ ...prev, isActive: event.target.value === 'active' }))}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold focus:outline-none"
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Availability Notes</label>
+                <textarea rows={2} value={editProfileDraft.availabilityNotes || ''} onChange={event => setEditProfileDraft(prev => ({ ...prev, availabilityNotes: event.target.value }))} className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Notes</label>
+                <textarea rows={3} value={editProfileDraft.notes || ''} onChange={event => setEditProfileDraft(prev => ({ ...prev, notes: event.target.value }))} className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none" />
+              </div>
+              {editProfileWarning && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-extrabold">{editProfileWarning.detail}</p>
+                  <p className="mt-1 text-xs font-semibold">{editProfileWarning.profile.name}</p>
+                  <button type="button" onClick={() => void saveEditProfile(true)} className="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800">
+                    Confirm Save Anyway
+                  </button>
+                </div>
+              )}
+              {editProfileError && <p className="text-xs font-bold text-red-600">{editProfileError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <button onClick={() => setEditProfileOpen(false)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button disabled={editProfileSaving} onClick={() => void saveEditProfile(false)} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
+                {profileFormMode === 'add' ? 'Add Tutor' : 'Save Profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedCoach && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
