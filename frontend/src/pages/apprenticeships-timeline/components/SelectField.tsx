@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { ReactNode } from 'react';
 
 interface SelectOption {
   value: string;
@@ -15,6 +16,11 @@ interface Props {
   placeholder?: string;
   accentColor?: string;
   error?: string;
+  label?: string;
+  searchPlaceholder?: string;
+  emptyTitle?: string;
+  emptyText?: string;
+  footer?: ReactNode;
 }
 
 export default function SelectField({
@@ -24,24 +30,50 @@ export default function SelectField({
   placeholder = 'Select an option',
   accentColor = '#1B2A4A',
   error,
+  label = 'Options',
+  searchPlaceholder = 'Search...',
+  emptyTitle = 'No matching options',
+  emptyText = 'Try another search term.',
+  footer,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(option => option.value === value)));
   const [popoverStyle, setPopoverStyle] = useState<{ top: number; left: number; width: number }>({
     top: 0,
     left: 0,
     width: 320,
   });
+  const [positionReady, setPositionReady] = useState(false);
 
   const selectedOption = useMemo(
     () => options.find(option => option.value === value) ?? null,
     [options, value],
   );
-  const filteredOptions = options;
+  const filteredOptions = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    if (!term) return options;
+    return options.filter(option => (
+      option.label.toLowerCase().includes(term) ||
+      option.value.toLowerCase().includes(term) ||
+      (option.description || '').toLowerCase().includes(term)
+    ));
+  }, [options, query]);
+
+  const toggleOpen = () => {
+    setOpen(current => {
+      const next = !current;
+      if (next) {
+        setQuery('');
+        setPositionReady(false);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     const nextIndex = filteredOptions.findIndex(option => option.value === value);
@@ -49,7 +81,14 @@ export default function SelectField({
   }, [filteredOptions, value]);
 
   useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = 0;
+    }
+  }, [query]);
+
+  useLayoutEffect(() => {
     if (!open) {
+      setPositionReady(false);
       return;
     }
 
@@ -101,6 +140,7 @@ export default function SelectField({
         : Math.min(viewportHeight - popoverHeight - 12, rect.bottom + 8);
 
       setPopoverStyle({ top, left, width });
+      setPositionReady(true);
     };
 
     updatePosition();
@@ -175,7 +215,7 @@ export default function SelectField({
         <button
           ref={triggerRef}
           type="button"
-          onClick={() => setOpen(current => !current)}
+          onClick={toggleOpen}
           onKeyDown={handleKeyDown}
           className="flex min-h-10 w-full items-center justify-between gap-3 bg-transparent pl-4 pr-12 text-left outline-none"
           aria-haspopup="listbox"
@@ -199,7 +239,7 @@ export default function SelectField({
         </button>
         <button
           type="button"
-          onClick={() => setOpen(current => !current)}
+          onClick={toggleOpen}
           className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-all hover:bg-slate-200 hover:text-slate-700"
           aria-label="Toggle options"
         >
@@ -215,14 +255,58 @@ export default function SelectField({
             top: popoverStyle.top,
             left: popoverStyle.left,
             width: popoverStyle.width,
+            visibility: positionReady ? 'visible' : 'hidden',
           }}
         >
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl ring-1 ring-slate-900/5">
             <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Modules</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
               <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200">
-                {options.length} options
+                {query.trim() ? `${filteredOptions.length}/${options.length}` : `${options.length} options`}
               </span>
+            </div>
+
+            <div className="border-b border-slate-100 bg-white p-2">
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 focus-within:border-slate-300 focus-within:bg-white">
+                <i className="ri-search-line text-sm text-slate-400" />
+                <input
+                  autoFocus
+                  type="search"
+                  value={query}
+                  onChange={event => setQuery(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      setActiveIndex(current => {
+                        if (!filteredOptions.length) return 0;
+                        return event.key === 'ArrowDown'
+                          ? Math.min(filteredOptions.length - 1, current + 1)
+                          : Math.max(0, current - 1);
+                      });
+                    }
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      const option = filteredOptions[activeIndex];
+                      if (option) {
+                        onChange(option.value);
+                        setOpen(false);
+                      }
+                    }
+                  }}
+                  placeholder={searchPlaceholder}
+                  className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-700 placeholder:text-slate-400 focus:outline-none"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    aria-label="Clear search"
+                  >
+                    <i className="ri-close-line text-sm" />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div ref={listRef} className="max-h-64 overflow-y-auto p-2" role="listbox">
@@ -231,7 +315,7 @@ export default function SelectField({
                 const isActive = index === activeIndex;
                 return (
                   <button
-                    key={option.value}
+                    key={`${option.value}-${option.description || ''}-${index}`}
                     type="button"
                     data-option-index={index}
                     onMouseEnter={() => setActiveIndex(index)}
@@ -261,11 +345,12 @@ export default function SelectField({
               })}
               {filteredOptions.length === 0 && (
                 <div className="px-3 py-8 text-center">
-                  <p className="text-sm font-semibold text-slate-600">No matching modules</p>
-                  <p className="mt-1 text-xs text-slate-400">Try another module name.</p>
+                  <p className="text-sm font-semibold text-slate-600">{emptyTitle}</p>
+                  <p className="mt-1 text-xs text-slate-400">{emptyText}</p>
                 </div>
               )}
             </div>
+            {footer && <div className="border-t border-slate-100 bg-slate-50 p-2">{footer}</div>}
           </div>
         </div>,
         document.body,

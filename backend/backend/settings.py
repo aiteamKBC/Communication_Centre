@@ -139,7 +139,7 @@ login_database_url = os.getenv('login_DATABASE_URL')
 if login_database_url:
     DATABASES['login_db'] = parse_database_url(login_database_url)
 
-safeguarding_database_url = os.getenv('safe_gaurding_database_url')
+safeguarding_database_url = os.getenv('safe_gaurding_database_url') or os.getenv('SUPPORT_TICKETS_DATABASE_URL')
 if safeguarding_database_url:
     DATABASES['safeguarding_db'] = parse_database_url(safeguarding_database_url)
 

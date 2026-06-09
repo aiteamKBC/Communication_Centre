@@ -44,6 +44,14 @@ function parseDays(value?: string): string[] {
     .filter(Boolean);
 }
 
+function parseTrainingItemsPayload(payload: unknown): TrainingItem[] {
+  if (Array.isArray(payload)) return payload as TrainingItem[];
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)) {
+    return (payload as { items: TrainingItem[] }).items;
+  }
+  return [];
+}
+
 function formatMeridiemTime(time24?: string): string {
   if (!time24) return '';
   const parts = time24.split(':');
@@ -73,9 +81,9 @@ export default function TodaysSessions({ initialItems }: { initialItems?: Traini
     let mounted = true;
     void fetch('/api/training-plan/')
       .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
-      .then((data: TrainingItem[]) => {
+      .then((data: unknown) => {
         if (!mounted) return;
-        setItems(Array.isArray(data) ? data : []);
+        setItems(parseTrainingItemsPayload(data));
       })
       .catch(() => {
         if (!mounted) return;

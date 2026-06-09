@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import ModernSelect from '../../components/feature/ModernSelect';
@@ -32,6 +32,7 @@ type DocumentsApiResponse = {
 };
 
 type DocCategory = 'Public' | 'Internal' | 'Confidential';
+const UNCATEGORIZED_FOLDER = 'Uncategorized';
 
 type PolicyDocument = {
   id: string;
@@ -371,13 +372,22 @@ function PoliciesGridSkeleton() {
   );
 }
 export default function DocumentsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<DocumentsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [activeFolder, setActiveFolder] = useState<string>('All');
+  const [activeFolder, setActiveFolderState] = useState<string>(() => searchParams.get('folder') || 'All');
   const [activeCategory, setActiveCategory] = useState<DocCategory | 'All'>('All');
+
+  const setActiveFolder = useCallback((folder: string) => {
+    setActiveFolderState(folder);
+    const nextParams = new URLSearchParams(searchParams);
+    if (folder === 'All') nextParams.delete('folder');
+    else nextParams.set('folder', folder);
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const loadDocuments = useCallback(async (showLoading: boolean) => {
     if (showLoading) setLoading(true);
@@ -416,34 +426,47 @@ export default function DocumentsPage() {
     return flattenTree(data.root);
   }, [data]);
 
+  const hasUncategorizedDocs = useMemo(
+    () => allDocs.some(doc => doc.topFolder === 'â€”'),
+    [allDocs],
+  );
+
   // Per-folder counts
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = { All: allDocs.length };
     for (const doc of allDocs) {
-      counts[doc.topFolder] = (counts[doc.topFolder] ?? 0) + 1;
+      const folderKey = doc.topFolder === 'â€”' ? UNCATEGORIZED_FOLDER : doc.topFolder;
+      counts[folderKey] = (counts[folderKey] ?? 0) + 1;
     }
     return counts;
   }, [allDocs]);
 
   // Reset activeFolder if it no longer exists after a refresh
   useEffect(() => {
-    if (activeFolder !== 'All' && topFolders.length > 0 && !topFolders.includes(activeFolder)) {
+    const knownFolders = new Set(['All', ...topFolders, ...(hasUncategorizedDocs ? [UNCATEGORIZED_FOLDER] : [])]);
+    if (activeFolder !== 'All' && knownFolders.size > 1 && !knownFolders.has(activeFolder)) {
       setActiveFolder('All');
     }
-  }, [topFolders, activeFolder]);
+  }, [topFolders, hasUncategorizedDocs, activeFolder, setActiveFolder]);
+
+  useEffect(() => {
+    const folderParam = searchParams.get('folder') || 'All';
+    if (folderParam !== activeFolder) setActiveFolderState(folderParam);
+  }, [activeFolder, searchParams]);
 
   // Filtered docs
   const filteredDocs = useMemo(() => {
     const q = search.trim().toLowerCase();
     return allDocs.filter(doc => {
-      if (activeFolder !== 'All' && doc.topFolder !== activeFolder) return false;
+      if (activeFolder === UNCATEGORIZED_FOLDER && doc.topFolder !== 'â€”') return false;
+      if (activeFolder !== 'All' && activeFolder !== UNCATEGORIZED_FOLDER && doc.topFolder !== activeFolder) return false;
       if (activeCategory !== 'All' && doc.category !== activeCategory) return false;
       if (q && !doc.title.toLowerCase().includes(q) && !doc.department.toLowerCase().includes(q)) return false;
       return true;
     });
   }, [allDocs, activeFolder, activeCategory, search]);
 
-  const tabs: string[] = ['All', ...topFolders];
+  const tabs: string[] = ['All', ...topFolders, ...(hasUncategorizedDocs ? [UNCATEGORIZED_FOLDER] : [])];
   const folderThemes = useMemo<Record<string, FolderTheme>>(
     () =>
       Object.fromEntries(

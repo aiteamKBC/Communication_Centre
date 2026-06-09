@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
 import SafeImage from '../../../components/feature/SafeImage';
@@ -137,7 +137,6 @@ export default function HeroSection({
 
   const total = allCards.length;
 
-  // Initialize to middle copy so left-arrow works from the very start
   const initializedRef = useRef(false);
   useEffect(() => {
     if (initializedRef.current || total <= 3) return;
@@ -145,16 +144,33 @@ export default function HeroSection({
     setSlideIdx(total);
   }, [total]);
 
-  // virtualIdx is unbounded — freely increments/decrements forever.
-  // Track renders 3 copies of allCards side-by-side (total*3 cards).
-  // We start at offset=total (the middle copy) and silently shift ±total
-  // when virtualIdx drifts out of the middle copy range, so animation always
-  // has room to slide in either direction without hitting an edge.
+  useEffect(() => {
+    if (total <= 0) return;
+    setSlideIdx(current => {
+      if (total <= 3) {
+        return Math.min(current, Math.max(0, total - 1));
+      }
+      const normalized = ((current % total) + total) % total;
+      const next = total + normalized;
+      return current === next ? current : next;
+    });
+  }, [total]);
+
+  const activeIndex = total > 0 ? ((slideIdx % total) + total) % total : 0;
   const trackRef = useRef<HTMLDivElement>(null);
   const containerDivRef = useRef<HTMLDivElement | null>(null);
   const [containerW, setContainerW] = useState(0);
   const isTransitioning = useRef(false);
   const [noTransition, setNoTransition] = useState(false);
+
+  const normalizeTrackPosition = useCallback((current: number) => {
+    if (total <= 3) {
+      return Math.min(current, Math.max(0, total - 1));
+    }
+
+    const normalized = ((current % total) + total) % total;
+    return total + normalized;
+  }, [total]);
 
   useEffect(() => {
     const el = containerDivRef.current;
@@ -167,32 +183,70 @@ export default function HeroSection({
 
   useEffect(() => {
     if (paused || total <= 3) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     autoPlayRef.current = setInterval(() => {
       setSlideIdx(prev => prev + 1);
     }, 4000);
     return () => { if (autoPlayRef.current) clearInterval(autoPlayRef.current); };
   }, [paused, total]);
 
-  // After each animated slide, silently reset slideIdx into the middle copy range
-  // so there's always room to slide in either direction.
   useEffect(() => {
     if (total <= 3) return;
     const track = trackRef.current;
     if (!track) return;
-    const onEnd = () => {
+
+    const settleTrackPosition = () => {
       isTransitioning.current = false;
       setSlideIdx(prev => {
-        const needsJump = prev >= total * 2 || prev < total;
-        if (!needsJump) return prev;
+        const next = normalizeTrackPosition(prev);
+        if (next === prev) return prev;
         setNoTransition(true);
-        return prev >= total * 2 ? prev - total : prev + total;
+        return next;
       });
     };
-    track.addEventListener('transitionend', onEnd, { once: true });
-    return () => track.removeEventListener('transitionend', onEnd);
-  }, [slideIdx, total]);
 
-  // Re-enable transition after the silent jump has fully painted (two rAFs = 1 frame)
+    const onEnd = () => {
+      window.clearTimeout(fallbackTimer);
+      settleTrackPosition();
+    };
+
+    const fallbackTimer = window.setTimeout(settleTrackPosition, 700);
+    track.addEventListener('transitionend', onEnd, { once: true });
+    return () => {
+      window.clearTimeout(fallbackTimer);
+      track.removeEventListener('transitionend', onEnd);
+    };
+  }, [slideIdx, total, normalizeTrackPosition]);
+
+  useEffect(() => {
+    if (total <= 3) return;
+
+    const recoverHeroTrack = () => {
+      if (document.visibilityState === 'hidden') {
+        if (autoPlayRef.current) {
+          clearInterval(autoPlayRef.current);
+          autoPlayRef.current = null;
+        }
+        return;
+      }
+
+      isTransitioning.current = false;
+      const el = containerDivRef.current;
+      if (el) {
+        setContainerW(el.offsetWidth);
+      }
+      setNoTransition(true);
+      setSlideIdx(prev => normalizeTrackPosition(prev));
+    };
+
+    document.addEventListener('visibilitychange', recoverHeroTrack);
+    window.addEventListener('focus', recoverHeroTrack);
+    return () => {
+      document.removeEventListener('visibilitychange', recoverHeroTrack);
+      window.removeEventListener('focus', recoverHeroTrack);
+    };
+  }, [total, normalizeTrackPosition]);
+
   useEffect(() => {
     if (!noTransition) return;
     let raf1: number, raf2: number;
@@ -203,6 +257,7 @@ export default function HeroSection({
   }, [noTransition]);
 
   const goTo = (delta: number) => {
+    if (delta === 0) return;
     if (isTransitioning.current) return;
     isTransitioning.current = true;
     setSlideIdx(prev => prev + delta);
@@ -246,10 +301,6 @@ export default function HeroSection({
             </button>
           )}
 
-          {/* Sliding track — overflow hidden, 3-card window */}
-          {/* Track renders 3 copies of allCards. Each card is 1/3 of the container.
-              We use a CSS variable --cw (container width) set via inline style on the
-              overflow-hidden div, updated by a ResizeObserver. */}
           <div
             ref={(el) => {
               containerDivRef.current = el;
@@ -265,7 +316,6 @@ export default function HeroSection({
                 transition: noTransition ? 'none' : 'transform 500ms ease-in-out',
               }}
             >
-              {/* 3 copies of all cards — track is 3x wide, slideIdx roams freely */}
               {[0, 1, 2].flatMap(copy => allCards.map((card) => {
                 const key = `${copy}-${card.kind === 'event' ? card.event.id : card.kind}`;
                 const cardW = containerW ? Math.floor((containerW - 24) / 3) : 0;
@@ -355,10 +405,11 @@ export default function HeroSection({
 
                 if (card.kind === 'campaign') return (
                   <div key={key} style={cardStyle} className={`${cardClass} relative rounded-lg overflow-hidden`}>
-                    <img
+                    <SafeImage
                       src="https://readdy.ai/api/search-image?query=spring%20learning%20campaign%20education%20college%20background%2C%20light%20blue%20and%20white%20tones%2C%20graduation%20mortarboard%20cap%20and%20flowers%20on%20clean%20minimal%20desk%2C%20academic%20achievement%20symbols%2C%20fresh%20bright%20professional%20educational%20setting&width=600&height=340&seq=hero-campaign-panel&orientation=landscape"
                       alt="Spring Learning Campaign"
                       className="absolute inset-0 w-full h-full object-cover object-top"
+                      fallback={<div className="absolute inset-0 bg-[linear-gradient(135deg,#e0f2fe_0%,#ffffff_45%,#dbeafe_100%)]" aria-hidden="true" />}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/80 via-transparent to-transparent" />
                     <div className="absolute inset-0 bg-kbc-navy/25" />
@@ -384,7 +435,14 @@ export default function HeroSection({
                   return (
                     <div key={key} style={cardStyle} className={`${cardClass} relative rounded-lg overflow-hidden`}>
                       {coverUrl
-                        ? <img src={coverUrl} alt={ev.title} className="absolute inset-0 w-full h-full object-cover object-top" />
+                        ? (
+                          <SafeImage
+                            src={coverUrl}
+                            alt={ev.title}
+                            className="absolute inset-0 w-full h-full object-cover object-top"
+                            fallback={<div className="absolute inset-0 bg-gradient-to-br from-kbc-navy to-kbc-navy/80" aria-hidden="true" />}
+                          />
+                        )
                         : <div className="absolute inset-0 bg-gradient-to-br from-kbc-navy to-kbc-navy/80" />
                       }
                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
@@ -413,19 +471,16 @@ export default function HeroSection({
             </div>
           </div>
 
-          {/* Dot indicators — show position within the real card set */}
+          {/* Dot indicators - show position within the real card set */}
           {total > 3 && (
             <div className="flex items-center justify-center gap-1.5 mt-3">
-              {allCards.map((_, i) => {
-                const activeDot = ((slideIdx % total) + total) % total;
-                return (
-                  <button
-                    key={i}
-                    onClick={() => { const delta = i - activeDot; goTo(delta === 0 ? 0 : delta); }}
-                    className={`rounded-full transition-all ${i === activeDot ? 'w-5 h-2 bg-kbc-navy' : 'w-2 h-2 bg-gray-300 hover:bg-gray-400'}`}
-                  />
-                );
-              })}
+              {allCards.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => { const delta = i - activeIndex; goTo(delta === 0 ? 0 : delta); }}
+                  className={`rounded-full transition-all ${i === activeIndex ? 'w-5 h-2 bg-kbc-navy' : 'w-2 h-2 bg-gray-300 hover:bg-gray-400'}`}
+                />
+              ))}
             </div>
           )}
         </div>

@@ -89,6 +89,152 @@ export function getHolidayOverlaps(blk: ModuleBlock, holidays: Holiday[]): Holid
   return holidays.filter(h => rangesOverlap(blk.startDate, blk.endDate, h.startDate, h.endDate));
 }
 
+const SESSION_WEEKDAY_JS: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
+export interface HolidayAdjustedSession {
+  date: string;
+  holidays: Holiday[];
+  isClash: boolean;
+  isExtension: boolean;
+  countedNumber: number | null;
+  originalNumber: number;
+  shiftedFrom?: HolidaySkippedSession;
+}
+
+export interface HolidaySkippedSession {
+  date: string;
+  holidays: Holiday[];
+  isExtension: boolean;
+  originalNumber: number;
+}
+
+export interface HolidayAdjustedSessionPlan {
+  sessions: HolidayAdjustedSession[];
+  skippedSessions: HolidaySkippedSession[];
+  countedSessions: number;
+  clashedSessions: number;
+  originalClashedSessions: number;
+  extensionClashedSessions: number;
+  plannedSessions: number;
+  originalEndDate: string;
+  baselineEndDate: string;
+  effectiveEndDate: string;
+  extensionDays: number;
+}
+
+function parseIsoLocal(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year || 1970, (month || 1) - 1, day || 1);
+}
+
+export function buildHolidayAdjustedSessionPlan(
+  block: { startDate: string; endDate: string; sessions: number; days?: string[] },
+  holidays: Holiday[] = [],
+): HolidayAdjustedSessionPlan {
+  const plannedSessions = Math.max(0, block.sessions || 0);
+  const start = parseIsoLocal(block.startDate);
+
+  if (!plannedSessions || Number.isNaN(start.getTime())) {
+    const fallbackEnd = block.endDate || block.startDate;
+    return {
+      sessions: [],
+      skippedSessions: [],
+      countedSessions: 0,
+      clashedSessions: 0,
+      originalClashedSessions: 0,
+      extensionClashedSessions: 0,
+      plannedSessions,
+      originalEndDate: fallbackEnd,
+      baselineEndDate: fallbackEnd,
+      effectiveEndDate: fallbackEnd,
+      extensionDays: 0,
+    };
+  }
+
+  const targetWeekdays = block.days?.length
+    ? new Set(block.days.map(day => SESSION_WEEKDAY_JS[day.toLowerCase()]).filter(day => day !== undefined))
+    : new Set([start.getDay()]);
+  const maxIterations = Math.max(3660, plannedSessions * 60);
+  const baselineSessions: string[] = [];
+  let baselineCursor = new Date(start);
+  let baselineGuard = 0;
+  while (baselineSessions.length < plannedSessions && baselineGuard < maxIterations) {
+    if (targetWeekdays.has(baselineCursor.getDay())) {
+      baselineSessions.push(toLocalIsoDate(baselineCursor));
+    }
+    baselineCursor = addDays(baselineCursor, 1);
+    baselineGuard += 1;
+  }
+  const baselineEndDate = baselineSessions[baselineSessions.length - 1] || block.endDate || block.startDate;
+  const baselineEnd = parseIsoLocal(baselineEndDate);
+  const sessions: HolidayAdjustedSession[] = [];
+  const skippedSessions: HolidaySkippedSession[] = [];
+  let countedSessions = 0;
+  const pendingReplacements: HolidaySkippedSession[] = [];
+  let cursor = new Date(start);
+  let guard = 0;
+
+  while (countedSessions < plannedSessions && guard < maxIterations) {
+    const date = toLocalIsoDate(cursor);
+    if (targetWeekdays.has(cursor.getDay())) {
+      const sessionHolidays = holidays.filter(holiday => rangesOverlap(date, date, holiday.startDate, holiday.endDate));
+      const isClash = sessionHolidays.length > 0;
+      const isExtension = !Number.isNaN(baselineEnd.getTime()) && cursor > baselineEnd;
+      if (isClash) {
+        const skippedSession = {
+          date,
+          holidays: sessionHolidays,
+          isExtension,
+          originalNumber: isExtension && pendingReplacements.length
+            ? pendingReplacements[0].originalNumber
+            : Math.min(plannedSessions, countedSessions + pendingReplacements.length + 1),
+        };
+        if (!isExtension || pendingReplacements.length === 0) {
+          pendingReplacements.push(skippedSession);
+        }
+        skippedSessions.push(skippedSession);
+      } else {
+        countedSessions += 1;
+        const shiftedFrom = pendingReplacements.shift();
+        sessions.push({
+          date,
+          holidays: [],
+          isClash: false,
+          isExtension: Boolean(shiftedFrom),
+          countedNumber: countedSessions,
+          originalNumber: countedSessions,
+          shiftedFrom,
+        });
+      }
+    }
+    cursor = addDays(cursor, 1);
+    guard += 1;
+  }
+
+  const effectiveEndDate = sessions[sessions.length - 1]?.date || block.endDate || block.startDate;
+  const effectiveEnd = parseIsoLocal(effectiveEndDate);
+  const extensionDays = !Number.isNaN(baselineEnd.getTime()) && effectiveEnd > baselineEnd
+    ? Math.ceil((effectiveEnd.getTime() - baselineEnd.getTime()) / 86400000)
+    : 0;
+
+  return {
+    sessions,
+    skippedSessions,
+    countedSessions,
+    clashedSessions: skippedSessions.length,
+    originalClashedSessions: skippedSessions.filter(session => !session.isExtension).length,
+    extensionClashedSessions: skippedSessions.filter(session => session.isExtension).length,
+    plannedSessions,
+    originalEndDate: block.endDate || block.startDate,
+    baselineEndDate,
+    effectiveEndDate,
+    extensionDays,
+  };
+}
+
 // ── Zoom level helpers ────────────────────────────────────────────────────
 export function getZoomLabel(zoom: ZoomLevel): string {
   const map: Record<ZoomLevel, string> = {
@@ -169,7 +315,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
         const clampS = s < viewStart ? viewStart : s;
         const clampE = e > viewEnd   ? viewEnd   : e;
         const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-        cols.push({ key: `i${y}-${ii}`, label: `${y} ${intake.label}`, subLabel: `${MONTH_NAMES[intake.months[0]]}–${MONTH_NAMES[lastM]}`, startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: days * 1.2 });
+        cols.push({ key: `i${y}-${ii}`, label: `${y} ${intake.label}`, subLabel: `${MONTH_NAMES[intake.months[0]]}–${MONTH_NAMES[lastM]}`, startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 1.2 });
       });
     }
   } else if (zoom === 'month') {
@@ -180,7 +326,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
       const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
-      cols.push({ key: `m${cur.getFullYear()}-${cur.getMonth()}`, label: MONTH_NAMES[cur.getMonth()], subLabel: String(cur.getFullYear()), startDate: clampS.toISOString().slice(0,10), endDate: clampE.toISOString().slice(0,10), widthPx: Math.max(days * 2.8, 28) });
+      cols.push({ key: `m${cur.getFullYear()}-${cur.getMonth()}`, label: MONTH_NAMES[cur.getMonth()], subLabel: String(cur.getFullYear()), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: Math.max(days * 2.8, 28) });
       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
     }
   } else if (zoom === 'week') {
@@ -221,23 +367,39 @@ export function getBlockPosition(
   cols: TimelineColumn[],
 ): { left: number; width: number } | null {
   if (!cols.length) return null;
-  const totalWidth = cols.reduce((s, c) => s + c.widthPx, 0);
-  const viewStart  = new Date(cols[0].startDate);
-  const viewEnd    = new Date(cols[cols.length - 1].endDate);
-  const blockStart = new Date(startDate);
-  const blockEnd   = new Date(endDate);
+  const viewStart  = parseIsoLocal(cols[0].startDate);
+  const viewEnd    = parseIsoLocal(cols[cols.length - 1].endDate);
+  const blockStart = parseIsoLocal(startDate);
+  const blockEnd   = parseIsoLocal(endDate);
 
   if (blockEnd < viewStart || blockStart > viewEnd) return null;
 
   const clampStart = blockStart < viewStart ? viewStart : blockStart;
   const clampEnd   = blockEnd   > viewEnd   ? viewEnd   : blockEnd;
 
-  const viewDays  = Math.ceil((viewEnd.getTime()   - viewStart.getTime())  / 86400000) + 1;
-  const startOff  = Math.ceil((clampStart.getTime() - viewStart.getTime()) / 86400000);
-  const endOff    = Math.ceil((clampEnd.getTime()   - viewStart.getTime()) / 86400000);
+  const dayMs = 86400000;
+  const boundaryOffset = (date: Date): number => {
+    let offset = 0;
+    for (const col of cols) {
+      const colStart = parseIsoLocal(col.startDate);
+      const colEndExclusive = addDays(parseIsoLocal(col.endDate), 1);
+      const colDays = Math.max(1, Math.round((colEndExclusive.getTime() - colStart.getTime()) / dayMs));
+      if (date >= colEndExclusive) {
+        offset += col.widthPx;
+        continue;
+      }
+      if (date <= colStart) {
+        return offset;
+      }
+      const daysIntoColumn = (date.getTime() - colStart.getTime()) / dayMs;
+      return offset + (daysIntoColumn / colDays) * col.widthPx;
+    }
+    return offset;
+  };
 
-  const left  = (startOff / viewDays) * totalWidth;
-  const width = Math.max(((endOff - startOff + 1) / viewDays) * totalWidth, 4);
+  const left = boundaryOffset(clampStart);
+  const right = boundaryOffset(addDays(clampEnd, 1));
+  const width = Math.max(right - left, 4);
 
   return { left, width };
 }

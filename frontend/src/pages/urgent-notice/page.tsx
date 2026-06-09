@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
+import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
 
 type UrgentNotice = {
   id: string;
@@ -106,9 +107,9 @@ export default function UrgentNoticePage() {
     setDatePickerOpen(false);
   };
 
-  const loadNotices = async () => {
+  const loadNotices = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const response = await fetch('/api/urgent-notice/?list=1');
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
@@ -119,13 +120,14 @@ export default function UrgentNoticePage() {
     } catch {
       setNotices([]);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void loadNotices();
-  }, []);
+  }, [loadNotices]);
+  useRealtimeResource('urgentNotice', () => loadNotices(false));
 
   useEffect(() => {
     const editId = searchParams.get('edit');

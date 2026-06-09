@@ -1,9 +1,10 @@
 from django.urls import path
 
-from .views import audit_logs, documents_live, employee_detail, employees, event_detail, events, feedback, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, risk_register, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
+from .views import audit_logs, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
 urlpatterns = [
     path('employees/', employees, name='employees'),
+    path('realtime/', realtime, name='realtime'),
     path('employees/<int:employee_id>/', employee_detail, name='employee-detail'),
 	path('events/', events, name='events'),
 	path('events/<int:event_id>/', event_detail, name='event-detail'),
@@ -20,10 +21,17 @@ urlpatterns = [
     path('training-plan-holiday-types/', training_plan_holiday_types, name='training-plan-holiday-types'),
     path('training-plan-modules/', training_plan_modules, name='training-plan-modules'),
     path('training-plan-program-configs/', training_plan_program_configs, name='training-plan-program-configs'),
+    path('tutor-profiles/', tutor_profiles, name='tutor-profiles'),
+    path('tutor-profiles/duplicates/', tutor_profile_duplicates, name='tutor-profile-duplicates'),
+    path('tutor-profiles/<int:profile_id>/', tutor_profile_detail, name='tutor-profile-detail'),
+    path('ksb-profiles/', ksb_profiles, name='ksb-profiles'),
+    path('ksb-profiles/<int:profile_id>/', ksb_profile_detail, name='ksb-profile-detail'),
     path('documents-live/', documents_live, name='documents-live'),
+    path('documents-summary/', documents_summary, name='documents-summary'),
     path('modules/', modules, name='modules'),
     path('modules/<int:module_id>/', module_detail, name='module-detail'),
     path('urgent-tickets/', urgent_tickets, name='urgent-tickets'),
+    path('support-tickets/', support_tickets, name='support-tickets'),
     path('risk-register/', risk_register, name='risk-register'),
     path('user-activity/', user_activity, name='user-activity'),
     path('audit-logs/', audit_logs, name='audit-logs'),

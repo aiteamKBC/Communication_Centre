@@ -1,7 +1,9 @@
-import { Fragment, useCallback, useRef, useState } from 'react';
-import type { CatalogModule, ModuleBlock, ProgrammeGroup, WeekDayKey } from '../types';
+import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
+import type { CatalogModule, ModuleBlock, ProgrammeGroup, SessionCoverage, TutorProfile, WeekDayKey } from '../types';
 import { getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
+import SelectField from './SelectField';
+import { profileIdForTutorName, resolveTutorProfile, tutorDisplayName } from '../tutorProfiles';
 
 interface SessionCell {
   trainer: string;
@@ -16,6 +18,7 @@ interface SessionInstance {
   description?: string;
   hasRealName: boolean;
   status: 'completed' | 'current' | 'upcoming';
+  coverage?: SessionCoverage;
 }
 
 interface TutorSessionOccurrence {
@@ -52,6 +55,9 @@ interface NextModuleInfo {
   isScheduledBlock: boolean;
   tutor: string;
   coach: string;
+  programme: string;
+  cohort: string;
+  groupName?: string;
   startDate: string;
   endDate: string;
   sessions: number;
@@ -75,6 +81,9 @@ interface DerivedScheduleRow {
   missingSessionNameReason?: string;
   sessionDate: string;
   currentSessionNumber: number;
+  assignedTutorProfileId: string;
+  assignedTutorName: string;
+  currentCoverage?: SessionCoverage;
   completedSessions: number;
   totalSessions: number;
   sessionInstances: SessionInstance[];
@@ -89,6 +98,8 @@ interface DerivedScheduleRow {
   rowHighlight?: string;
   startDate: string;
   endDate: string;
+  sessionStartTime: string;
+  sessionEndTime: string;
   isCurrent?: boolean;
 }
 
@@ -100,9 +111,12 @@ interface ProgrammeSection {
 
 interface Props {
   groups: ProgrammeGroup[];
+  tutorProfiles?: TutorProfile[];
   catalogModules?: CatalogModule[];
   canEdit?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
+  onUpdateSessionCoverage?: (groupIdx: number, rowIdx: number, blockId: string, coverage: SessionCoverage) => Promise<boolean>;
+  onCreateTutorProfile?: (payload: { name: string; email?: string; notes?: string; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
 }
 
 type DayKey = WeekDayKey;
@@ -403,7 +417,18 @@ function resolveCatalogModule(moduleName: string, moduleValue: unknown, catalogM
   });
 }
 
-function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules: CatalogModule[]) {
+function getCoverageForSession(block: ModuleBlock, sessionNumber: number, assignedTutorProfileId = ''): SessionCoverage | undefined {
+  const existing = (block.sessionCoverage || []).find(item => item.sessionNumber === sessionNumber);
+  if (!existing) return undefined;
+  const coverageTutorProfileId = existing.coverageTutorProfileId || '';
+  return {
+    ...existing,
+    assignedTutorProfileId: existing.assignedTutorProfileId || assignedTutorProfileId,
+    coverageStatus: coverageTutorProfileId ? 'covered' : existing.tutorUnavailable ? 'required' : 'none',
+  };
+}
+
+function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules: CatalogModule[], assignedTutorProfileId = '') {
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
   const totalSessions = Math.max(1, blk.sessions || 1);
@@ -428,6 +453,7 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
       description: catalogModule?.sessionDescriptions?.[i]?.trim() || undefined,
       hasRealName: Boolean(catalogModule?.sessionNames?.[i]?.trim()),
       status: ended ? 'completed' : number === currentSessionNumber ? 'current' : 'upcoming',
+      coverage: getCoverageForSession(blk, number, assignedTutorProfileId),
     };
   });
 
@@ -442,13 +468,14 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
         : `No matching catalogue module found for "${moduleName}".`,
     sessionDate: sessionDates[sessionIndex] || blk.startDate,
     currentSessionNumber,
+    currentCoverage: getCoverageForSession(blk, currentSessionNumber, assignedTutorProfileId),
     completedSessions,
     totalSessions,
     sessionInstances,
   };
 }
 
-function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]): DerivedScheduleRow[] {
+function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[], tutorProfiles: TutorProfile[]): DerivedScheduleRow[] {
   const now = new Date();
   const tutorSessions = buildTutorSessionOccurrences(groups);
 
@@ -457,17 +484,24 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
       group.rows.flatMap((row, rowIdx) =>
         row.blks.map((blk, idx) => {
           const moduleName = getModuleMeta(blk.mod).lbl;
-          const sessionProgress = getSessionProgress(blk, moduleName, catalogModules);
+          const assignedTutorProfile = resolveTutorProfile(blk, tutorProfiles);
+          const assignedTutorProfileId = assignedTutorProfile?.id || blk.tutorProfileId || profileIdForTutorName(blk.tutor || '', tutorProfiles);
+          const assignedTutorName = assignedTutorProfile?.name || tutorDisplayName(blk, tutorProfiles) || blk.tutor?.trim() || 'TBD';
+          const sessionProgress = getSessionProgress(blk, moduleName, catalogModules, assignedTutorProfileId);
           const groupName = (blk.groupName || row.label || '').trim();
           const nextBlock = row.blks[idx + 1];
           const nextModule = nextBlock ? getModuleMeta(nextBlock.mod).lbl : '';
           const nextTutor = nextBlock?.tutor?.trim() || '';
+          const nextGroupName = nextBlock ? (nextBlock.groupName || row.label || '').trim() : '';
           const nextModuleInfo: NextModuleInfo = nextBlock
             ? {
               name: nextModule,
               isScheduledBlock: true,
               tutor: nextTutor,
               coach: nextBlock.coachName?.trim() || 'TBD',
+              programme: programmeLabelFromGroupName(group.name),
+              cohort: row.label,
+              groupName: nextGroupName || undefined,
               startDate: nextBlock.startDate,
               endDate: nextBlock.endDate,
               sessions: nextBlock.sessions,
@@ -483,6 +517,9 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               isScheduledBlock: false,
               tutor: '',
               coach: '',
+              programme: '',
+              cohort: '',
+              groupName: undefined,
               startDate: '',
               endDate: '',
               sessions: 0,
@@ -490,7 +527,7 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               otherTutorSessions: [],
             };
           const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
-          const trainer = blk.tutor?.trim() || 'TBD';
+          const trainer = assignedTutorName;
           const coach = blk.coachName?.trim() || 'TBD';
           const startTime = blk.sessionStartTime || '09:00';
           const endTime = blk.sessionEndTime || '11:00';
@@ -511,11 +548,15 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
             module: moduleName,
             groupName: groupName || undefined,
             ...sessionProgress,
+            assignedTutorProfileId,
+            assignedTutorName,
             nextModule,
             nextModuleInfo,
             rowHighlight: isCurrent ? '#FFFBEB' : `${(row.color || group.color)}0D`,
             startDate: blk.startDate,
             endDate: blk.endDate,
+            sessionStartTime: startTime,
+            sessionEndTime: endTime,
             isCurrent,
           };
 
@@ -556,12 +597,17 @@ function toProgrammeSections(rows: DerivedScheduleRow[]): ProgrammeSection[] {
   return sections.sort((a, b) => a.programme.localeCompare(b.programme));
 }
 
-export default function ScheduleTable({ groups, catalogModules = [], canEdit = false, onEditTrainingPlan }: Props) {
-  const rows = toDerivedRows(groups, catalogModules);
+export default function ScheduleTable({ groups, tutorProfiles = [], catalogModules = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onCreateTutorProfile }: Props) {
+  const rows = toDerivedRows(groups, catalogModules, tutorProfiles);
   const sections = toProgrammeSections(rows);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
   const [selectedRow, setSelectedRow] = useState<DerivedScheduleRow | null>(null);
+  const [coverageEditor, setCoverageEditor] = useState<{ row: DerivedScheduleRow; session: SessionInstance } | null>(null);
+  const [coverageDraft, setCoverageDraft] = useState<SessionCoverage | null>(null);
+  const [coverageError, setCoverageError] = useState('');
+  const [coverageSaving, setCoverageSaving] = useState(false);
+  const [createTutorName, setCreateTutorName] = useState('');
 
   // Today's sessions
   const todayIndex = new Date().getDay();
@@ -588,6 +634,121 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
   const thisWeekSessions = rows
     .filter(row => row.sessionDate >= weekStartIso && row.sessionDate <= weekEndIso)
     .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
+
+  const tutorOptions = useMemo(() => tutorProfiles.filter(profile => profile.isActive).map(profile => ({
+    value: profile.id,
+    label: profile.name,
+    description: [profile.email, `${profile.sessionCount || 0} sessions`].filter(Boolean).join(' - '),
+    color: '#1B2A4A',
+  })), [tutorProfiles]);
+
+  const openCoverageEditor = (row: DerivedScheduleRow, session: SessionInstance) => {
+    const existing = session.coverage || row.currentCoverage;
+    setCoverageDraft({
+      sessionNumber: session.number,
+      assignedTutorProfileId: row.assignedTutorProfileId,
+      coverageTutorProfileId: existing?.coverageTutorProfileId || '',
+      coverageStatus: existing?.coverageStatus || 'none',
+      tutorUnavailable: Boolean(existing?.tutorUnavailable),
+      tutorUnavailableReason: existing?.tutorUnavailableReason || '',
+      tutorUnavailableNotes: existing?.tutorUnavailableNotes || '',
+      coverageReason: existing?.coverageReason || '',
+      coverageNotes: existing?.coverageNotes || '',
+    });
+    setCoverageError('');
+    setCreateTutorName('');
+    setCoverageEditor({ row, session });
+  };
+
+  const coverageTutorName = (profileId?: string) => tutorProfiles.find(profile => profile.id === profileId)?.name || '';
+
+  const hasCoverageConflict = (profileId: string, row: DerivedScheduleRow, session: SessionInstance) => groups.some(group =>
+    group.rows.some(cohort =>
+      cohort.blks.some(block => {
+        if (block.id === row.blockId) return false;
+        const assignedProfile = resolveTutorProfile(block, tutorProfiles);
+        const assignedId = assignedProfile?.id || block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles);
+        if (assignedId !== profileId) return false;
+        if (!getSessionDates(block).includes(session.date)) return false;
+        return timeRangesOverlap(block.sessionStartTime || '09:00', block.sessionEndTime || '11:00', row.sessionStartTime, row.sessionEndTime);
+      }),
+    )
+  );
+
+  const getCoverageSuggestions = (row: DerivedScheduleRow, session: SessionInstance) => {
+    const activeProfiles = tutorProfiles.filter(profile => profile.isActive && profile.id !== row.assignedTutorProfileId);
+    return activeProfiles.map(profile => {
+      let sameModuleSessions = 0;
+      let sameProgrammeSessions = 0;
+      let totalAssignedSessions = 0;
+
+      groups.forEach(group => group.rows.forEach(cohort => cohort.blks.forEach(block => {
+        const assignedProfile = resolveTutorProfile(block, tutorProfiles);
+        const assignedId = assignedProfile?.id || block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles);
+        if (assignedId !== profile.id) return;
+        const sessions = Math.max(1, Number(block.sessions) || 1);
+        totalAssignedSessions += sessions;
+        if (getModuleMeta(block.mod).lbl === row.module) {
+          sameModuleSessions += sessions;
+        }
+        if (programmeLabelFromGroupName(group.name) === row.programme) {
+          sameProgrammeSessions += sessions;
+        }
+      })));
+
+      const hasConflict = hasCoverageConflict(profile.id, row, session);
+      const score = (hasConflict ? -1000 : 0) + (sameModuleSessions * 6) + (sameProgrammeSessions * 3) + Math.min(totalAssignedSessions, 80) / 10;
+      const reasons = [
+        sameModuleSessions ? `${sameModuleSessions} session${sameModuleSessions === 1 ? '' : 's'} in this module` : '',
+        sameProgrammeSessions ? `${sameProgrammeSessions} session${sameProgrammeSessions === 1 ? '' : 's'} in this programme` : '',
+        totalAssignedSessions ? `${totalAssignedSessions} total assigned sessions` : 'No assigned sessions yet',
+      ].filter(Boolean);
+
+      return { profile, hasConflict, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
+    }).sort((a, b) => b.score - a.score || a.profile.name.localeCompare(b.profile.name));
+  };
+
+  const coverageSuggestions = coverageEditor ? getCoverageSuggestions(coverageEditor.row, coverageEditor.session).slice(0, 8) : [];
+
+  const saveCoverageDraft = async () => {
+    if (!coverageEditor || !coverageDraft || !onUpdateSessionCoverage) return;
+    const coverageTutorProfileId = coverageDraft.coverageTutorProfileId || '';
+    if (coverageTutorProfileId && coverageTutorProfileId === coverageDraft.assignedTutorProfileId) {
+      setCoverageError('Coverage tutor cannot be the same as assigned tutor.');
+      return;
+    }
+    if (coverageTutorProfileId && !coverageDraft.coverageReason?.trim()) {
+      setCoverageError('Coverage reason is required when a coverage tutor is selected.');
+      return;
+    }
+    const normalized: SessionCoverage = {
+      ...coverageDraft,
+      coverageTutorProfileId,
+      coverageStatus: coverageTutorProfileId ? 'covered' : coverageDraft.tutorUnavailable ? 'required' : 'none',
+      coverageReason: coverageDraft.coverageReason?.trim() || '',
+      coverageNotes: coverageDraft.coverageNotes?.trim() || '',
+    };
+    setCoverageSaving(true);
+    try {
+      const saved = await onUpdateSessionCoverage(coverageEditor.row.groupIdx, coverageEditor.row.rowIdx, coverageEditor.row.blockId, normalized);
+      if (saved) {
+        setCoverageEditor(null);
+        setCoverageDraft(null);
+      }
+    } finally {
+      setCoverageSaving(false);
+    }
+  };
+
+  const createCoverageTutor = async () => {
+    if (!onCreateTutorProfile || !createTutorName.trim()) return;
+    const result = await onCreateTutorProfile({ name: createTutorName.trim() });
+    const profile = 'id' in result ? result : result.possibleExistingProfile || result.existingProfile;
+    if (profile) {
+      setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: profile.id } : prev);
+      setCreateTutorName('');
+    }
+  };
 
   const renderCell = (cell: SessionCell | undefined, bg: string) => {
     if (!cell) return <td className="border border-gray-200 px-2 py-1.5" />;
@@ -621,7 +782,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
       void kbcSwal.fire({
         title: info.isScheduledBlock ? 'No tutor set' : 'No scheduled next module',
         html: info.isScheduledBlock
-          ? `<strong>${escapeHtml(info.name)}</strong> is a saved next module, but it does not have a tutor assigned yet.`
+          ? `<strong>${escapeHtml(info.name)}</strong>${info.groupName ? ` in <strong>${escapeHtml(info.groupName)}</strong>` : ''} is a saved next module, but it does not have a tutor assigned yet.`
           : 'No scheduled next module block yet',
         icon: 'info',
         confirmButtonText: 'OK',
@@ -632,7 +793,7 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
     if (info.otherTutorSessions.length === 0) {
       void kbcSwal.fire({
         title: 'No time conflicts found',
-        html: `<strong>${escapeHtml(info.tutor)}</strong> has no saved sessions at the same time as <strong>${escapeHtml(info.name)}</strong> sessions (${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}).`,
+        html: `<strong>${escapeHtml(info.tutor)}</strong> has no saved sessions at the same time as <strong>${escapeHtml(info.name)}</strong>${info.groupName ? ` in <strong>${escapeHtml(info.groupName)}</strong>` : ''} sessions (${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}).`,
         icon: 'success',
         confirmButtonText: 'OK',
       });
@@ -640,10 +801,12 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
     }
 
     const visible = info.otherTutorSessions.slice(0, 40);
+    const nextGroupLabel = info.groupName || info.cohort || '';
     const rowsHtml = visible.map(item => `
       <tr>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;font-weight:700;color:#1B2A4A;">${escapeHtml(formatDisplayDate(item.date))}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.conflictTime || '')}</td>
+        <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(nextGroupLabel)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.time)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.module)}</td>
         <td style="padding:8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.programme)}</td>
@@ -686,19 +849,27 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
       html: `
         <div style="text-align:left">
           <p style="margin:0 0 14px;color:#374151;font-size:14px;line-height:1.5;">
-            <strong>${escapeHtml(info.tutor)}</strong> has <strong>${info.otherTutorSessions.length}</strong> saved session${info.otherTutorSessions.length === 1 ? '' : 's'} at the same time as the next module <strong>${escapeHtml(info.name)}</strong>.
+            <strong>${escapeHtml(info.tutor)}</strong> has <strong>${info.otherTutorSessions.length}</strong> saved session${info.otherTutorSessions.length === 1 ? '' : 's'} at the same time as the next module <strong>${escapeHtml(info.name)}</strong>${nextGroupLabel ? ` in <strong>${escapeHtml(nextGroupLabel)}</strong>` : ''}.
           </p>
+          <div style="margin:0 0 14px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;padding:12px;">
+            <div style="font-size:11px;font-weight:800;color:#94A3B8;text-transform:uppercase;letter-spacing:.04em;">Next module being checked</div>
+            <div style="margin-top:4px;font-weight:800;color:#1F2937;font-size:14px;">${escapeHtml(info.name || 'Next module')}</div>
+            <div style="margin-top:4px;color:#64748B;font-size:12px;">${escapeHtml(info.programme || '')}${nextGroupLabel ? ` - ${escapeHtml(nextGroupLabel)}` : ''}</div>
+            <div style="margin-top:4px;color:#334155;font-size:12px;">${escapeHtml(formatDisplayDate(info.startDate))} - ${escapeHtml(formatDisplayDate(info.endDate))}</div>
+            <div style="margin-top:4px;color:#64748B;font-size:12px;">Tutor: ${escapeHtml(info.tutor)} - Coach: ${escapeHtml(info.coach)}</div>
+          </div>
           ${currentModulesHtml}
           <div style="max-height:58vh;overflow:auto;border:1px solid #E5E7EB;border-radius:12px;">
-            <table style="width:100%;min-width:940px;border-collapse:collapse;font-size:13px;">
+            <table style="width:100%;min-width:1080px;border-collapse:collapse;font-size:13px;">
               <thead>
                 <tr style="background:#F9FAFB;color:#4B5563;">
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Date</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Next module time</th>
+                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Next group</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Conflicting time</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Module</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Programme</th>
-                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Group</th>
+                  <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Conflicting group</th>
                   <th style="padding:10px;text-align:left;position:sticky;top:0;background:#F9FAFB;">Coach</th>
                 </tr>
               </thead>
@@ -904,6 +1075,24 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                         <p className="text-[11px] text-gray-500 mt-0.5">{formatDisplayDate(row.sessionDate)}</p>
                         {!row.hasRealSessionName && <p className="text-[11px] text-amber-700 mt-0.5">{row.missingSessionNameReason}</p>}
                         {row.sessionDescription && <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{row.sessionDescription}</p>}
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">Assigned</span>
+                          {row.currentCoverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
+                          {row.currentCoverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
+                          {row.currentCoverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(row.currentCoverage.coverageTutorProfileId)}</span>}
+                        </div>
+                        {canEdit && onUpdateSessionCoverage && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openCoverageEditor(row, row.sessionInstances.find(session => session.number === row.currentSessionNumber) || row.sessionInstances[0]);
+                            }}
+                            className="mt-2 rounded-md bg-kbc-navy px-2.5 py-1 text-[11px] font-bold text-white"
+                          >
+                            Manage Coverage
+                          </button>
+                        )}
                       </div>
                     </td>
                     <td className="border border-gray-200 px-3 py-1.5 align-middle">
@@ -939,17 +1128,6 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                             <span className="block text-[11px] font-semibold text-gray-400">No scheduled next module block yet</span>
                           )}
                         </div>
-                        {row.nextModuleInfo?.isScheduledBlock && row.nextModuleInfo.otherTutorSessions.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={event => showNextModuleTutorWarning(row, event)}
-                            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-extrabold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-200"
-                            title={`${row.nextModuleInfo.tutor} has ${row.nextModuleInfo.otherTutorSessions.length} time conflict${row.nextModuleInfo.otherTutorSessions.length === 1 ? '' : 's'} during this next module`}
-                          >
-                            <i className="ri-alert-line" />
-                            {row.nextModuleInfo.otherTutorSessions.length}
-                          </button>
-                        )}
                       </div>
                     </td>
                   </tr>
@@ -1041,16 +1219,6 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                         {selectedRow.nextModuleInfo.isScheduledBlock ? selectedRow.nextModuleInfo.name : 'No scheduled next module block yet'}
                       </p>
                     </div>
-                    {selectedRow.nextModuleInfo.isScheduledBlock && selectedRow.nextModuleInfo.otherTutorSessions.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={event => showNextModuleTutorWarning(selectedRow, event)}
-                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-extrabold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-200"
-                      >
-                        <i className="ri-alert-line" />
-                        {selectedRow.nextModuleInfo.otherTutorSessions.length} time conflict{selectedRow.nextModuleInfo.otherTutorSessions.length === 1 ? '' : 's'}
-                      </button>
-                    )}
                   </div>
 
                   {selectedRow.nextModuleInfo.isScheduledBlock ? (
@@ -1114,10 +1282,27 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                               </p>
                               <p className="mt-0.5 text-xs opacity-80">{formatDisplayDate(session.date)}</p>
                               {session.description && <p className="mt-1 text-xs opacity-80">{session.description}</p>}
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-extrabold">Assigned</span>
+                                {session.coverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
+                                {session.coverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
+                                {session.coverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(session.coverage.coverageTutorProfileId)}</span>}
+                              </div>
                             </div>
-                            <span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-bold capitalize">
-                              {session.status}
-                            </span>
+                            <div className="flex shrink-0 flex-col items-end gap-2">
+                              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-bold capitalize">
+                                {session.status}
+                              </span>
+                              {canEdit && onUpdateSessionCoverage && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCoverageEditor(selectedRow, session)}
+                                  className="rounded-md bg-kbc-navy px-2.5 py-1 text-[11px] font-bold text-white"
+                                >
+                                  Coverage
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -1125,6 +1310,154 @@ export default function ScheduleTable({ groups, catalogModules = [], canEdit = f
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {coverageEditor && coverageDraft && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[4px]" onClick={() => setCoverageEditor(null)} />
+          <div className="relative w-full max-w-xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div>
+                <p className="text-xs font-semibold text-white/60">{coverageEditor.row.module} - Session {coverageEditor.session.number}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Tutor Coverage</h3>
+                <p className="mt-1 text-xs text-white/70">{formatDisplayDate(coverageEditor.session.date)} - Assigned to {coverageEditor.row.assignedTutorName}</p>
+              </div>
+              <button onClick={() => setCoverageEditor(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="space-y-4 bg-gray-50 p-5">
+              <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={coverageDraft.tutorUnavailable}
+                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, tutorUnavailable: event.target.checked } : prev)}
+                />
+                Assigned tutor unavailable
+              </label>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Unavailable Reason</label>
+                <input
+                  value={coverageDraft.tutorUnavailableReason || ''}
+                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, tutorUnavailableReason: event.target.value } : prev)}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                  placeholder="e.g. sickness, annual leave"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Tutor</label>
+                <div className="mb-3 rounded-xl border border-gray-200 bg-white">
+                  <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Doctors</p>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                      {coverageSuggestions.filter(item => !item.hasConflict).length} available
+                    </span>
+                  </div>
+                  <div className="grid gap-2 p-2">
+                    {coverageSuggestions.map(suggestion => {
+                      const selected = coverageDraft.coverageTutorProfileId === suggestion.profile.id;
+                      return (
+                        <button
+                          key={suggestion.profile.id}
+                          type="button"
+                          onClick={() => {
+                            setCoverageDraft(prev => prev ? {
+                              ...prev,
+                              coverageTutorProfileId: suggestion.profile.id,
+                              coverageReason: prev.coverageReason || `Suggested from Training Plan experience: ${suggestion.reasons.join(', ')}`,
+                            } : prev);
+                            setCoverageError(suggestion.hasConflict ? 'This tutor already has a session at this time.' : '');
+                          }}
+                          className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50"
+                          style={{
+                            borderColor: selected ? '#1B2A4A' : suggestion.hasConflict ? '#FCA5A5' : '#E5E7EB',
+                            background: selected ? '#F8FAFC' : '#FFFFFF',
+                          }}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-extrabold text-gray-800">{suggestion.profile.name}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${suggestion.hasConflict ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              {suggestion.hasConflict ? 'Conflict' : 'Available'}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {suggestion.sameModuleSessions > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">Same module</span>}
+                            {suggestion.sameProgrammeSessions > 0 && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Same programme</span>}
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{suggestion.totalAssignedSessions} sessions</span>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-500">{suggestion.reasons.join(' - ')}</p>
+                        </button>
+                      );
+                    })}
+                    {coverageSuggestions.length === 0 && (
+                      <div className="px-3 py-4 text-center text-xs font-semibold text-gray-400">
+                        No Tutor Profiles available for coverage suggestions.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <SelectField
+                  value={coverageDraft.coverageTutorProfileId || ''}
+                  options={tutorOptions.filter(option => option.value !== coverageEditor.row.assignedTutorProfileId)}
+                  onChange={value => {
+                    setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: value } : prev);
+                    if (hasCoverageConflict(value, coverageEditor.row, coverageEditor.session)) {
+                      setCoverageError('This tutor already has a session at this time.');
+                    } else {
+                      setCoverageError('');
+                    }
+                  }}
+                  placeholder="Select coverage tutor"
+                  label="Tutor Profiles"
+                  searchPlaceholder="Search tutors..."
+                  emptyTitle="No tutors found"
+                  emptyText="Create a Tutor Profile first."
+                />
+                {onCreateTutorProfile && (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={createTutorName}
+                      onChange={event => setCreateTutorName(event.target.value)}
+                      placeholder="New tutor name"
+                      className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                    />
+                    <button type="button" onClick={() => void createCoverageTutor()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
+                      Create
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Reason</label>
+                <input
+                  value={coverageDraft.coverageReason || ''}
+                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageReason: event.target.value } : prev)}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                  placeholder="Required when coverage tutor is selected"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Notes</label>
+                <textarea
+                  rows={3}
+                  value={coverageDraft.coverageNotes || ''}
+                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageNotes: event.target.value } : prev)}
+                  className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                />
+              </div>
+              {coverageDraft.tutorUnavailable && !coverageDraft.coverageTutorProfileId && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">Coverage Required</div>
+              )}
+              {coverageError && <p className="text-xs font-bold text-red-600">{coverageError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <button onClick={() => setCoverageEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button disabled={coverageSaving} onClick={() => void saveCoverageDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
+                Save Coverage
+              </button>
             </div>
           </div>
         </div>

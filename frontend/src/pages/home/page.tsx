@@ -31,6 +31,14 @@ type HomeBootstrapData = {
   trainingItems: TrainingItem[];
 };
 
+function parseTrainingItemsPayload(payload: unknown): TrainingItem[] {
+  if (Array.isArray(payload)) return payload as TrainingItem[];
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { items?: unknown }).items)) {
+    return (payload as { items: TrainingItem[] }).items;
+  }
+  return [];
+}
+
 function HomePageSkeleton() {
   return (
     <>
@@ -226,7 +234,7 @@ export default function Home() {
       const [urgentResult, leadershipResult, newsResult, trainingResult] = await Promise.allSettled([
         fetch('/api/urgent-notice/'),
         fetch('/api/leadership-message/'),
-        fetch('/api/news/'),
+        fetch('/api/news/', { cache: 'no-store' }),
         fetch('/api/training-plan/'),
       ]);
 
@@ -271,8 +279,7 @@ export default function Home() {
       }
 
       if (trainingResult.status === 'fulfilled' && trainingResult.value.ok) {
-        const payload = await trainingResult.value.json() as TrainingItem[];
-        nextData.trainingItems = Array.isArray(payload) ? payload : [];
+        nextData.trainingItems = parseTrainingItemsPayload(await trainingResult.value.json());
       }
 
       if (mounted) {
@@ -321,8 +328,8 @@ export default function Home() {
                 </div>
 
                 <div className="lg:col-span-6 flex flex-col gap-4">
-                  <PrioritySnapshot />
                   <RiskSummary />
+                  <PrioritySnapshot />
                 </div>
 
                 <div className="lg:col-span-3">

@@ -77,6 +77,13 @@ def _create_activity_session(request, user, auth_provider: str = 'password') -> 
 	)
 
 
+def _safe_create_activity_session(request, user, auth_provider: str = 'password') -> UserActivitySession | None:
+	try:
+		return _create_activity_session(request, user, auth_provider)
+	except Exception:
+		return None
+
+
 def _activity_session_payload(session: UserActivitySession) -> dict:
 	return {
 		'trackingSessionId': str(session.tracking_session_id),
@@ -126,11 +133,15 @@ def _sync_session_totals(session: UserActivitySession, now=None) -> None:
 	session.total_seconds = int(aggregate.get('total') or 0)
 	session.page_count = session.page_visits.count()
 	session.last_seen_at = now
-	session.save(update_fields=['total_seconds', 'page_count', 'last_seen_at', 'updated_at'])
+	update_fields = ['total_seconds', 'page_count', 'last_seen_at', 'updated_at']
+	if session.login_at and session.login_at > now:
+		session.login_at = now
+		update_fields.append('login_at')
+	session.save(update_fields=update_fields)
 
 
-def _user_payload(user, auth_provider: str, activity_session: UserActivitySession) -> dict:
-	return {
+def _user_payload(user, auth_provider: str, activity_session: UserActivitySession | None) -> dict:
+	payload = {
 		'id': user.id,
 		'username': user.username,
 		'email': user.email,
@@ -140,8 +151,10 @@ def _user_payload(user, auth_provider: str, activity_session: UserActivitySessio
 		'isSuperuser': bool(user.is_superuser),
 		'authProvider': auth_provider,
 		'access': get_user_access_payload(user),
-		**_activity_session_payload(activity_session),
 	}
+	if activity_session:
+		payload.update(_activity_session_payload(activity_session))
+	return payload
 
 
 def _decode_json_response(error: HTTPError) -> dict:
@@ -246,7 +259,7 @@ def login_view(request):
 	if not user or not check_password(password, user.password) or not user.is_active:
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)
 
-	activity_session = _create_activity_session(request, user, 'password')
+	activity_session = _safe_create_activity_session(request, user, 'password')
 	return JsonResponse(_user_payload(user, 'password', activity_session))
 
 
@@ -331,9 +344,13 @@ def activity_view(request):
 			},
 		)
 		if not created:
+			effective_duration_seconds = duration_seconds
+			if action != 'page_view' and page_visit.last_seen_at:
+				server_elapsed_seconds = max(0, min(int((now - page_visit.last_seen_at).total_seconds()), 3600))
+				effective_duration_seconds = max(duration_seconds, server_elapsed_seconds)
 			page_visit.title = title or page_visit.title
 			page_visit.last_seen_at = now
-			page_visit.duration_seconds = page_visit.duration_seconds + duration_seconds
+			page_visit.duration_seconds = page_visit.duration_seconds + effective_duration_seconds
 			if action == 'page_view':
 				page_visit.view_count = page_visit.view_count + 1
 			page_visit.save(update_fields=['title', 'last_seen_at', 'duration_seconds', 'view_count', 'updated_at'])
@@ -363,9 +380,28 @@ def access_view(request):
 	user_id = str(request.GET.get('userId', '')).strip()
 	email = str(request.GET.get('email', '')).strip()
 	username = str(request.GET.get('username', '')).strip()
+	tracking_session_id = str(request.GET.get('trackingSessionId', '') or request.headers.get('X-KBC-Tracking-Session-Id', '')).strip()
+
+	# The frontend still sends explicit identifiers today because login is
+	# payload/localStorage based, not Django-session based. Header and tracking
+	# fallbacks make GET /api/auth/access/ safer, but login_db remains the source
+	# of truth for permissions.
+	if not user_id:
+		user_id = str(request.headers.get('X-KBC-User-Id', '')).strip()
+	if not email:
+		email = str(request.headers.get('X-KBC-User-Email', '')).strip()
+	if not username:
+		username = str(request.headers.get('X-KBC-Username', '')).strip()
+
+	if not user_id and not email and not username and tracking_session_id:
+		activity_session = _get_activity_session(tracking_session_id)
+		if activity_session:
+			user_id = str(activity_session.user_id or '').strip()
+			email = activity_session.email or ''
+			username = activity_session.username or ''
 
 	if not user_id and not email and not username:
-		return HttpResponseBadRequest('Provide one of userId, email, or username.')
+		return HttpResponseBadRequest('Provide one of userId, email, username, or trackingSessionId.')
 
 	user_model = get_user_model()
 	queryset = user_model.objects.using('login_db')
@@ -522,7 +558,7 @@ def microsoft_callback(request):
 	if not db_user:
 		return _redirect_to_url(result_target, {'ms_auth': 'error', 'ms_error': "This email isn't in the database."})
 
-	activity_session = _create_activity_session(request, db_user, 'microsoft')
+	activity_session = _safe_create_activity_session(request, db_user, 'microsoft')
 	user_payload = _user_payload(db_user, 'microsoft', activity_session)
 	user_payload['firstName'] = db_user.first_name or first_name
 	user_payload['lastName'] = db_user.last_name or last_name

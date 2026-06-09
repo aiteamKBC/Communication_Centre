@@ -1,5 +1,6 @@
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
+import useAccessControl from '../../hooks/useAccessControl';
 
 type DashboardLink = {
   title: string;
@@ -11,36 +12,29 @@ type DashboardLink = {
   soft: string;
   text: string;
   comingSoon?: boolean;
+  expireSoon?: boolean;
+  expireMessage?: string;
+  adminOnly?: boolean;
 };
 
-const dashboardLinks = [
+const dashboardLinks: DashboardLink[] = [
   {
     title: 'Tutor Dashboard',
     url: 'https://tutordashboard.kentbusinesscollege.net/',
     description: 'Teaching delivery, attendance follow-up, and learner-facing academic actions.',
     label: 'Academic Delivery',
-    icon: 'ri-user-star-line',
-    accent: 'from-[#7c4dff] to-[#5b2dbf]',
+    icon: 'ri-graduation-cap-line',
+    accent: 'from-[#7c4dff] to-[#4f2fb8]',
     soft: 'bg-[#f1eaff]',
     text: 'text-[#6b3fd1]',
   },
   {
-    title: 'MCR Dashboard',
-    url: 'https://mcr.kentbusinesscollege.net/mcr/dashboard',
-    description: 'Module completion, reporting checkpoints, and curriculum review operations.',
-    label: 'Curriculum Review',
-    icon: 'ri-file-chart-line',
-    accent: 'from-[#8b5cf6] to-[#6d47ff]',
-    soft: 'bg-[#f3efff]',
-    text: 'text-[#6d47ff]',
-  },
-  {
-    title: 'Coaches Dashboard',
+    title: 'Safeguarding & Wellbeing Dashboard',
     url: 'https://admin.kentbusinesscollege.net/',
     description: 'Operational controls, system-wide administration, and service coordination.',
     label: 'Operations Control',
-    icon: 'ri-settings-3-line',
-    accent: 'from-[#39206d] to-[#24164f]',
+    icon: 'ri-heart-pulse-line',
+    accent: 'from-[#39206d] to-[#160f3f]',
     soft: 'bg-[#efe8ff]',
     text: 'text-[#39206d]',
   },
@@ -50,29 +44,74 @@ const dashboardLinks = [
     description: 'Employer partnerships, placement visibility, and apprenticeship engagement.',
     label: 'Partnerships',
     icon: 'ri-briefcase-4-line',
-    accent: 'from-[#10b981] to-[#22c1c3]',
+    accent: 'from-[#14b8a6] to-[#0f766e]',
     soft: 'bg-[#e9fbf7]',
     text: 'text-[#138f82]',
   },
   {
-    title: 'Engagement Dashboard',
-    url: 'https://superadmin.kentbusinesscollege.net/',
-    description: 'Platform governance, permissions, cross-system access, and elevated controls.',
-    label: 'Platform Governance',
-    icon: 'ri-shield-keyhole-line',
-    accent: 'from-[#5b1a8e] to-[#3b0b63]',
-    soft: 'bg-[#efe3ff]',
-    text: 'text-[#5b1a8e]',
+    title: 'MCR Dashboard',
+    url: 'https://mcr.kentbusinesscollege.net/mcr',
+    description: 'Module completion, reporting checkpoints, and curriculum review operations.',
+    label: 'Curriculum Review',
+    icon: 'ri-checkbox-multiple-line',
+    accent: 'from-[#8b5cf6] to-[#6d47ff]',
+    soft: 'bg-[#f3efff]',
+    text: 'text-[#6d47ff]',
+    expireSoon: true,
+    expireMessage: 'Coaching sessions will merge MCR and Progress Review once the data is ready.',
   },
   {
     title: 'Progress Review Dashboard',
     url: 'https://pr.kentbusinesscollege.net/',
     description: 'Communications planning, public relations activity, and campaign coordination.',
     label: 'Communications',
-    icon: 'ri-megaphone-line',
-    accent: 'from-[#17a2c6] to-[#0f7ea8]',
+    icon: 'ri-user-follow-line',
+    accent: 'from-[#06b6d4] to-[#0369a1]',
     soft: 'bg-[#ecfbff]',
     text: 'text-[#178aac]',
+    expireSoon: true,
+    expireMessage: 'Coaching sessions will merge MCR and Progress Review once the data is ready.',
+  },
+  {
+    title: 'Coaching sessions',
+    url: 'https://coachingsessions.kentbusinesscollege.net/',
+    description: 'New coaching workflow replacing MCR and Progress Review activity.',
+    label: 'Coaching Workflow',
+    icon: 'ri-discuss-line',
+    accent: 'from-[#0ea5e9] to-[#2563eb]',
+    soft: 'bg-[#eff6ff]',
+    text: 'text-[#2563eb]',
+  },
+  {
+    title: 'Bulk Attendance',
+    url: 'https://studentportal.kentbusinesscollege.net/',
+    description: 'Bulk learner attendance entry, updates, and attendance workflow access.',
+    label: 'Attendance',
+    icon: 'ri-calendar-check-line',
+    accent: 'from-[#059669] to-[#047857]',
+    soft: 'bg-[#ecfdf5]',
+    text: 'text-[#047857]',
+    adminOnly: true,
+  },
+  {
+    title: 'Engagement Dashboard',
+    url: 'https://superadmin.kentbusinesscollege.net/',
+    description: 'Platform governance, permissions, cross-system access, and elevated controls.',
+    label: 'Platform Governance',
+    icon: 'ri-team-line',
+    accent: 'from-[#7e22ce] to-[#581c87]',
+    soft: 'bg-[#efe3ff]',
+    text: 'text-[#5b1a8e]',
+  },
+  {
+    title: 'Technical support portal',
+    url: 'https://technicalsupport.kentbusinesscollege.net/',
+    description: 'IT support requests, technical issue reporting, and service desk follow-up.',
+    label: 'Technical Support',
+    icon: 'ri-customer-service-2-line',
+    accent: 'from-[#6366f1] to-[#4338ca]',
+    soft: 'bg-[#f1eaff]',
+    text: 'text-[#6b3fd1]',
   },
   {
     title: 'Performance Dashboard',
@@ -80,35 +119,46 @@ const dashboardLinks = [
     description: 'KPI monitoring, institutional progress tracking, and performance oversight.',
     label: 'Performance Insight',
     icon: 'ri-line-chart-line',
-    accent: 'from-[#6d36b3] to-[#8e5ed8]',
+    accent: 'from-[#8b5cf6] to-[#a855f7]',
     soft: 'bg-[#f1eaff]',
     text: 'text-[#6d36b3]',
   },
   {
-    title: 'Ofsted Command Centre',
-    url: '',
+    title: 'Quality Management System',
+    url: 'https://commandcentre.kentbusinesscollege.net/',
     description: 'Inspection readiness, evidence tracking, quality themes, and strategic oversight.',
     label: 'Inspection Readiness',
-    icon: 'ri-shield-star-line',
+    icon: 'ri-award-line',
     accent: 'from-[#d4a546] to-[#8b5e18]',
     soft: 'bg-[#fff6e3]',
     text: 'text-[#9a6a1d]',
-    comingSoon: true,
+  },
+  {
+    title: 'Library',
+    url: 'https://library.kentbusinesscollege.net/',
+    description: 'Central learning resources, reference material, and operational document access.',
+    label: 'Resource Library',
+    icon: 'ri-book-open-line',
+    accent: 'from-[#f43f5e] to-[#be123c]',
+    soft: 'bg-[#fff1f7]',
+    text: 'text-[#be185d]',
   },
   {
     title: 'HR Compliance System',
-    url: '',
+    url: 'https://hrcompliance.kentbusinesscollege.net/',
     description: 'Policy compliance, HR governance checkpoints, audit readiness, and people-process oversight.',
     label: 'HR Compliance',
     icon: 'ri-file-shield-line',
-    accent: 'from-[#ec4899] to-[#be185d]',
+    accent: 'from-[#db2777] to-[#9d174d]',
     soft: 'bg-[#fff1f7]',
     text: 'text-[#be185d]',
-    comingSoon: true,
   },
-] satisfies DashboardLink[];
+];
 
 export default function DashboardPage() {
+  const { adminAccess } = useAccessControl();
+  const visibleDashboardLinks = dashboardLinks.filter(link => !link.adminOnly || adminAccess);
+
   return (
     <div className="min-h-screen bg-gray-50 font-sans flex flex-col">
       <TopNav />
@@ -146,9 +196,10 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {dashboardLinks.map(link => {
+            {visibleDashboardLinks.map(link => {
               const isComingSoon = Boolean(link.comingSoon);
-              const cardClassName = `group relative block overflow-hidden rounded-[2rem] border border-[#e6e0f5] bg-[linear-gradient(180deg,#ffffff_0%,#fcfbff_100%)] p-6 shadow-sm transition duration-300 ${
+              const isExpiringSoon = Boolean(link.expireSoon);
+              const cardClassName = `group relative block overflow-hidden rounded-[1.5rem] border border-[#e6e0f5] bg-[linear-gradient(180deg,#ffffff_0%,#fcfbff_100%)] p-5 shadow-sm transition duration-300 ${
                 isComingSoon ? 'cursor-default opacity-95' : 'hover:-translate-y-1 hover:shadow-xl'
               }`;
 
@@ -156,24 +207,35 @@ export default function DashboardPage() {
                 <>
                 <div className={`absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r ${link.accent}`} />
 
-                <div className={`absolute right-[-38px] top-[-38px] h-28 w-28 rounded-full bg-gradient-to-br ${link.accent} opacity-[0.08] blur-sm transition-transform duration-300 ${isComingSoon ? '' : 'group-hover:scale-110'}`} />
+                <div className={`absolute right-[-34px] top-[-34px] h-24 w-24 rounded-full bg-gradient-to-br ${link.accent} opacity-[0.08] blur-sm transition-transform duration-300 ${isComingSoon ? '' : 'group-hover:scale-110'}`} />
 
-                <div className="mb-5 flex items-start justify-between gap-4">
+                <div className="mb-4 flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold text-kbc-navy">{link.title}</h2>
+                    <h2 className="text-lg font-bold leading-snug text-kbc-navy">{link.title}</h2>
+                    {isExpiringSoon && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
+                          <i className="ri-time-line" />
+                          Expire soon
+                        </span>
+                        <span className="text-xs font-semibold text-slate-500">
+                          {link.expireMessage}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${link.accent} text-white shadow-lg shadow-[#cfc3f5]/50`}>
-                    <i className={`${link.icon} text-xl`} />
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${link.accent} text-white shadow-lg shadow-[#cfc3f5]/50`}>
+                    <i className={`${link.icon} text-lg`} />
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 border-t border-[#efeaf8] pt-4">
+                <div className="flex items-center justify-between gap-3 border-t border-[#efeaf8] pt-3">
                   <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <span className={`inline-flex h-2 w-2 rounded-full ${isComingSoon ? 'bg-[#d4a546]' : 'bg-[#6d47ff]'}`} />
-                    {isComingSoon ? 'Coming soon' : 'Ready in new tab'}
+                    <span className={`inline-flex h-2 w-2 rounded-full ${isComingSoon || isExpiringSoon ? 'bg-[#d4a546]' : 'bg-[#6d47ff]'}`} />
+                    {isComingSoon ? 'Coming soon' : isExpiringSoon ? 'Expire soon' : 'Ready in new tab'}
                   </div>
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${isComingSoon ? 'bg-[#8b5e18]/10 text-[#8b5e18]' : 'bg-[#24164f] text-white transition-transform duration-300 group-hover:scale-105 group-hover:-rotate-3'}`}>
-                    <i className={`${isComingSoon ? 'ri-time-line' : 'ri-external-link-line'} text-lg`} />
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${isComingSoon ? 'bg-[#8b5e18]/10 text-[#8b5e18]' : 'bg-[#24164f] text-white transition-transform duration-300 group-hover:scale-105 group-hover:-rotate-3'}`}>
+                    <i className={`${isComingSoon ? 'ri-time-line' : 'ri-external-link-line'} text-base`} />
                   </div>
                 </div>
                 </>

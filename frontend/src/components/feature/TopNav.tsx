@@ -1,25 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import useAccessControl from '../../hooks/useAccessControl';
-
-const AUTH_STORAGE_KEY = 'kbc-auth-user';
+import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
 
 function hasAuthSession(): boolean {
   if (typeof window === 'undefined') {
     return false;
   }
 
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!raw) {
-    return false;
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    return !!parsed && typeof parsed === 'object';
-  } catch {
-    return true;
-  }
+  return Boolean(readStoredAuthUser());
 }
 
 const navLinks = [
@@ -31,6 +20,8 @@ const navLinks = [
   { label: 'Policies', path: '/documents' },
   { label: 'Events', path: '/events' },
   { label: 'Training Plan', path: '/training-plan' },
+  { label: 'LMS', href: 'https://kentbusinesscollege.org/' },
+  { label: 'APTEM', href: 'https://kentbusinesscollege.aptem.co.uk/pwa/auth/login?returnUrl=%2Fcaseload-dashboard' },
 ];
 
 export default function TopNav() {
@@ -52,19 +43,14 @@ export default function TopNav() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) {
+    const parsed = readStoredAuthUser();
+    if (!parsed) {
       setUserName(null);
       return;
     }
 
-    try {
-      const parsed = JSON.parse(raw);
-      const rawName = parsed?.displayName || parsed?.name || parsed?.username || parsed?.email || null;
-      setUserName(rawName ? formatDisplayName(rawName) : null);
-    } catch {
-      setUserName(null);
-    }
+    const rawName = parsed?.displayName || parsed?.name || parsed?.username || parsed?.email || null;
+    setUserName(rawName ? formatDisplayName(String(rawName)) : null);
   }, [location.pathname]);
 
   function formatDisplayName(raw: string): string {
@@ -78,13 +64,19 @@ export default function TopNav() {
 
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
-      if (event.key === AUTH_STORAGE_KEY) {
+      if (event.key?.startsWith('kbc-auth-')) {
         setIsAuthenticated(hasAuthSession());
       }
     }
 
+    const handleAuthChanged = () => setIsAuthenticated(hasAuthSession());
+
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener('kbc-auth-changed', handleAuthChanged);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('kbc-auth-changed', handleAuthChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -101,8 +93,10 @@ export default function TopNav() {
     ? [...navLinks, { label: 'User Activity', path: '/user-activity' }]
     : navLinks;
 
-  const isActive = (path: string) =>
-    path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
+  const isActive = (path?: string) => {
+    if (!path) return false;
+    return path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
+  };
 
   const handleLogout = async () => {
     let trackingSessionId = '';
@@ -111,16 +105,11 @@ export default function TopNav() {
     let username = '';
 
     if (typeof window !== 'undefined') {
-      try {
-        const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-        const user = raw ? JSON.parse(raw) : null;
-        trackingSessionId = user?.trackingSessionId || '';
-        userId = user?.id || '';
-        email = user?.email || '';
-        username = user?.username || '';
-      } catch {
-        trackingSessionId = '';
-      }
+      const user = readStoredAuthUser();
+      trackingSessionId = String(user?.trackingSessionId || '');
+      userId = String(user?.id || '');
+      email = String(user?.email || '');
+      username = String(user?.username || '');
     }
 
     try {
@@ -142,7 +131,7 @@ export default function TopNav() {
     }
 
     if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      clearAuthStorage();
     }
 
     setIsAuthenticated(false);
@@ -186,22 +175,42 @@ export default function TopNav() {
           </Link>
 
           <div className="hidden lg:flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.45)] flex-1 justify-center max-w-max mx-auto">
-            {visibleNavLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                data-nav-reveal
-                className={`relative overflow-hidden rounded-full px-4 py-2 text-xs font-medium tracking-wide transition-all duration-300 cursor-pointer whitespace-nowrap ${isActive(link.path)
-                  ? 'text-kbc-navy font-semibold'
-                  : 'text-gray-500 hover:text-kbc-navy hover:-translate-y-0.5'
-                  }`}
-              >
-                {isActive(link.path) && (
-                  <span className="absolute inset-0 rounded-full bg-[linear-gradient(135deg,rgba(15,56,110,0.08),rgba(255,193,7,0.16))] ring-1 ring-kbc-navy/10" />
-                )}
-                <span className="relative z-10">{link.label}</span>
-              </Link>
-            ))}
+            {visibleNavLinks.map((link) => {
+              const active = isActive(link.path);
+              const className = `relative overflow-hidden rounded-full px-3 py-2 text-xs font-medium tracking-wide transition-all duration-300 cursor-pointer whitespace-nowrap ${active
+                ? 'text-kbc-navy font-semibold'
+                : 'text-gray-500 hover:text-kbc-navy hover:-translate-y-0.5'
+                }`;
+
+              if ('href' in link) {
+                return (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-nav-reveal
+                    className={className}
+                  >
+                    <span className="relative z-10">{link.label}</span>
+                  </a>
+                );
+              }
+
+              return (
+                <Link
+                  key={link.path}
+                  to={link.path}
+                  data-nav-reveal
+                  className={className}
+                >
+                  {active && (
+                    <span className="absolute inset-0 rounded-full bg-[linear-gradient(135deg,rgba(15,56,110,0.08),rgba(255,193,7,0.16))] ring-1 ring-kbc-navy/10" />
+                  )}
+                  <span className="relative z-10">{link.label}</span>
+                </Link>
+              );
+            })}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
@@ -249,18 +258,37 @@ export default function TopNav() {
             className="nav-sheet bg-white/95 border-b border-gray-200 py-2 shadow-2xl backdrop-blur-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {visibleNavLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                className={`block px-5 py-3 text-sm font-medium cursor-pointer border-l-4 transition-all duration-300 ${isActive(link.path)
-                  ? 'text-kbc-navy border-kbc-navy bg-[linear-gradient(90deg,rgba(15,56,110,0.06),rgba(15,56,110,0))] font-semibold'
-                  : 'text-gray-600 border-transparent hover:text-kbc-navy hover:bg-gray-50'
-                  }`}
-              >
-                {link.label}
-              </Link>
-            ))}
+            {visibleNavLinks.map((link) => {
+              const active = isActive(link.path);
+              const className = `block px-5 py-3 text-sm font-medium cursor-pointer border-l-4 transition-all duration-300 ${active
+                ? 'text-kbc-navy border-kbc-navy bg-[linear-gradient(90deg,rgba(15,56,110,0.06),rgba(15,56,110,0))] font-semibold'
+                : 'text-gray-600 border-transparent hover:text-kbc-navy hover:bg-gray-50'
+                }`;
+
+              if ('href' in link) {
+                return (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={className}
+                  >
+                    {link.label}
+                  </a>
+                );
+              }
+
+              return (
+                <Link
+                  key={link.path}
+                  to={link.path}
+                  className={className}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
 
             <div className="border-t border-gray-100 mt-2 pt-2 px-5 py-3">
               {isAuthenticated ? (

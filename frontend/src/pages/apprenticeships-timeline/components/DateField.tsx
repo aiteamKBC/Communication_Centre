@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDate } from '../utils';
 
@@ -86,6 +86,17 @@ export default function DateField({
     left: 0,
     width: 272,
   });
+  const [positionReady, setPositionReady] = useState(false);
+
+  const toggleOpen = () => {
+    setOpen(current => {
+      const next = !current;
+      if (next) {
+        setPositionReady(false);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (selectedDate) {
@@ -99,8 +110,9 @@ export default function DateField({
     }
   }, [open]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) {
+      setPositionReady(false);
       return;
     }
 
@@ -159,6 +171,7 @@ export default function DateField({
         left,
         width,
       });
+      setPositionReady(true);
     };
 
     updatePosition();
@@ -225,7 +238,7 @@ export default function DateField({
         <button
           ref={triggerRef}
           type="button"
-          onClick={() => setOpen(current => !current)}
+          onClick={toggleOpen}
           className="flex h-11 w-full items-center justify-between bg-transparent pl-4 pr-12 text-left outline-none"
           aria-label="Open date picker"
           aria-expanded={open}
@@ -236,7 +249,7 @@ export default function DateField({
         </button>
         <button
           type="button"
-          onClick={() => setOpen(current => !current)}
+          onClick={toggleOpen}
           className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-all hover:bg-slate-200 hover:text-slate-700"
           aria-label="Open date picker"
         >
@@ -252,6 +265,7 @@ export default function DateField({
             top: popoverStyle.top,
             left: popoverStyle.left,
             width: popoverStyle.width,
+            visibility: positionReady ? 'visible' : 'hidden',
           }}
         >
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl ring-1 ring-slate-900/5">

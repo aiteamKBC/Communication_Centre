@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { NewsItem } from '../../../mocks/news';
 import { useNews } from '../../news/useNews';
@@ -29,9 +29,11 @@ function timeAgo(dateStr: string): string {
   const year = parseInt(parts[2], 10);
   if (isNaN(day) || month === undefined || isNaN(year)) return dateStr;
   const then = new Date(year, month, day);
-  const now = new Date(2026, 3, 1);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
   const diffDays = Math.floor((now.getTime() - then.getTime()) / 86400000);
   if (diffDays === 0) return 'Today';
+  if (diffDays < 0) return dateStr;
   if (diffDays === 1) return '1 day ago';
   if (diffDays < 7) return `${diffDays} days ago`;
   if (diffDays < 14) return '1 week ago';
@@ -49,14 +51,20 @@ export default function NewsFeed({ initialItems }: { initialItems?: NewsItem[] }
   const dragDeltaXRef = useRef(0);
   const suppressClickRef = useRef(false);
 
-  const filtered = newsItems;
+  const filtered = useMemo(() => (
+    [...newsItems].sort((left, right) => {
+      const leftTime = new Date(left.publicationDate || left.date || '').getTime();
+      const rightTime = new Date(right.publicationDate || right.date || '').getTime();
+      const dateDiff = (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+      if (dateDiff !== 0) return dateDiff;
+      return Number(right.id) - Number(left.id);
+    })
+  ), [newsItems]);
+  const slideSignature = filtered.map(item => item.id).join('|');
 
   useEffect(() => {
-    setActiveIndex((current) => {
-      if (filtered.length === 0) return 0;
-      return Math.min(current, filtered.length - 1);
-    });
-  }, [filtered.length]);
+    setActiveIndex(0);
+  }, [slideSignature]);
 
   const currentItem = filtered[activeIndex];
   const hasMultipleSlides = filtered.length > 1;

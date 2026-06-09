@@ -13,6 +13,26 @@ export interface ModuleMeta {
   tx: string;
 }
 
+export interface SessionKsbMapping {
+  knowledgeCodes: string[];
+  skillCodes: string[];
+  behaviourCodes: string[];
+}
+
+export type CoverageStatus = 'none' | 'required' | 'covered';
+
+export interface SessionCoverage {
+  sessionNumber: number;
+  assignedTutorProfileId?: string;
+  coverageTutorProfileId?: string;
+  coverageStatus: CoverageStatus;
+  tutorUnavailable: boolean;
+  tutorUnavailableReason?: string;
+  tutorUnavailableNotes?: string;
+  coverageReason?: string;
+  coverageNotes?: string;
+}
+
 export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday';
 
 export interface ModuleBlock {
@@ -22,12 +42,15 @@ export interface ModuleBlock {
   coachName?: string;
   color?: string;
   tutor: string;
+  tutorProfileId?: string;
   startDate: string;   // ISO: "2025-01-06"
   endDate: string;     // ISO: "2025-05-30"
   sessions: number;
   days?: WeekDayKey[];
   sessionStartTime?: string; // HH:mm, e.g. "13:00"
   sessionEndTime?: string;   // HH:mm, e.g. "15:00"
+  sessionKsbMappings?: SessionKsbMapping[];
+  sessionCoverage?: SessionCoverage[];
   notes?: string;
 }
 
@@ -40,6 +63,7 @@ export interface CohortRow {
   quarter: string;     // e.g. "Q1 2025"
   color?: string;
   holidayIds?: string[];
+  ksbProfileId?: string;
   blks: ModuleBlock[];
 }
 
@@ -92,4 +116,41 @@ export interface CatalogModule {
   notes: string;
   sessionNames: string[];
   sessionDescriptions: string[];
+  sessionKsbMappings?: SessionKsbMapping[];
+}
+
+export interface KsbProfile {
+  id: string;
+  name: string;
+  programmeName: string;
+  description: string;
+  ksbItems?: KsbProfileItem[];
+  knowledgeCodes: string[];
+  skillCodes: string[];
+  behaviourCodes: string[];
+  isActive: boolean;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TutorProfile {
+  id: string;
+  name: string;
+  normalizedName: string;
+  email?: string;
+  phone?: string;
+  notes?: string;
+  availabilityNotes?: string;
+  isActive: boolean;
+  sessionCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface KsbProfileItem {
+  type: 'K' | 'S' | 'B';
+  number: string;
+  code: string;
+  description: string;
 }

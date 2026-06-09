@@ -47,17 +47,62 @@ class TrainingPlan(models.Model):
 	group_name = models.TextField(blank=True, default='')
 	coach_name = models.TextField(blank=True, default='')
 	tutor_name = models.TextField(db_column='Tutor_name', blank=True, default='')
+	tutor_profile_id = models.BigIntegerField(null=True, blank=True)
 	start_date = models.TextField(blank=True, default='')
 	end_date = models.TextField(blank=True, default='')
 	sessions_number = models.TextField(blank=True, default='')
 	session_week_day = models.TextField(blank=True, default='')
 	session_start_time = models.TextField(blank=True, default='')
 	session_end_time = models.TextField(blank=True, default='')
+	session_ksb_json = models.TextField(blank=True, default='')
+	session_coverage_json = models.TextField(blank=True, default='')
+	ksb_profile_id = models.BigIntegerField(null=True, blank=True)
 	notes = models.TextField(blank=True, default='')
 
 	class Meta:
 		db_table = 'Training_plan'
 		managed = False
+
+
+class TutorProfile(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	name = models.CharField(max_length=255)
+	normalized_name = models.CharField(max_length=255, unique=True)
+	email = models.EmailField(blank=True, default='')
+	phone = models.CharField(max_length=80, blank=True, default='')
+	notes = models.TextField(blank=True, default='')
+	availability_notes = models.TextField(blank=True, default='')
+	is_active = models.BooleanField(default=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'tutor_profiles'
+		indexes = [
+			models.Index(fields=['is_active', 'name'], name='tutor_profi_is_acti_2d7e38_idx'),
+			models.Index(fields=['normalized_name'], name='tutor_profi_normali_34d7cb_idx'),
+		]
+
+
+class KsbProfile(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	name = models.CharField(max_length=255)
+	programme_name = models.CharField(max_length=255, blank=True, default='')
+	description = models.TextField(blank=True, default='')
+	ksb_items = models.JSONField(default=list, blank=True)
+	knowledge_codes = models.JSONField(default=list, blank=True)
+	skill_codes = models.JSONField(default=list, blank=True)
+	behaviour_codes = models.JSONField(default=list, blank=True)
+	is_active = models.BooleanField(default=True)
+	created_by = models.TextField(blank=True, default='')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'ksb_profiles'
+		indexes = [
+			models.Index(fields=['is_active', 'name']),
+		]
 
 
 class TrainingPlanHoliday(models.Model):
@@ -137,6 +182,7 @@ class Module(models.Model):
 	session_name_28 = models.TextField(db_column='session_name_28', blank=True, default='')
 	session_name_29 = models.TextField(db_column='session_name_29', blank=True, default='')
 	session_name_30 = models.TextField(db_column='session_name_30', blank=True, default='')
+	session_ksb_json = models.TextField(db_column='session_ksb_json', blank=True, default='')
 	session_description_1 = models.TextField(db_column='session_description_1', blank=True, default='')
 	session_description_2 = models.TextField(db_column='session_description_2', blank=True, default='')
 	session_description_3 = models.TextField(db_column='session_description_3', blank=True, default='')
@@ -237,6 +283,8 @@ class SupportTicket(models.Model):
 	created_by = models.TextField(blank=True, default='')
 	days_to_close = models.IntegerField(null=True, blank=True)
 	submitted_by = models.TextField(blank=True, default='')
+	is_archived = models.BooleanField(default=False)
+	assigned_owner = models.TextField(blank=True, default='')
 
 	class Meta:
 		db_table = 'support_tickets'

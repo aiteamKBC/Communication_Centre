@@ -1,8 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const AUTH_STORAGE_KEY = 'kbc-auth-user';
-const MS_AUTH_RESULT_KEY = 'kbc-ms-auth-result';
+import { MS_AUTH_RESULT_KEY, replaceStoredAuthUser } from '../../utils/authStorage';
 
 function isAllowedMsMessageOrigin(origin: string): boolean {
   if (origin === window.location.origin) {
@@ -34,13 +32,10 @@ export default function LoginPage() {
         const padded = data.ms_user + '='.repeat((4 - (data.ms_user.length % 4)) % 4);
         const decoded = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
         const user = JSON.parse(decoded);
-        window.localStorage.setItem(
-          AUTH_STORAGE_KEY,
-          JSON.stringify({
-            ...user,
-            loggedInAt: new Date().toISOString(),
-          }),
-        );
+        replaceStoredAuthUser({
+          ...user,
+          loggedInAt: new Date().toISOString(),
+        });
         navigate('/', { replace: true });
       } catch {
         setError('Microsoft sign-in response could not be processed.');
@@ -74,13 +69,10 @@ export default function LoginPage() {
         const decoded = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
         const user = JSON.parse(decoded);
 
-        window.localStorage.setItem(
-          AUTH_STORAGE_KEY,
-          JSON.stringify({
-            ...user,
-            loggedInAt: new Date().toISOString(),
-          }),
-        );
+        replaceStoredAuthUser({
+          ...user,
+          loggedInAt: new Date().toISOString(),
+        });
         navigate('/', { replace: true });
         return;
       } catch {
@@ -187,13 +179,10 @@ export default function LoginPage() {
       }
 
       const user = await response.json();
-      window.localStorage.setItem(
-        AUTH_STORAGE_KEY,
-        JSON.stringify({
-          ...user,
-          loggedInAt: new Date().toISOString(),
-        }),
-      );
+      replaceStoredAuthUser({
+        ...user,
+        loggedInAt: new Date().toISOString(),
+      });
 
       navigate('/', { replace: true });
     } catch {

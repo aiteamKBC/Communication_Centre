@@ -1,21 +1,46 @@
 import base64
+import hashlib
 import json
 import os
+import re
+import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.files.storage import default_storage
-from django.http import HttpResponseBadRequest, JsonResponse
+from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.db import models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import AuditLog, Employee, EventData, Feedback, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, UrgentNotice, UserActivitySession
+from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+
+
+REALTIME_RESOURCE_ENTITIES = {
+	'events': {'Event'},
+	'news': {'News'},
+	'urgentNotice': {'UrgentNotice'},
+	'leadershipMessage': {'LeadershipMessage', 'Image'},
+	'trainingPlan': {
+		'TrainingPlan',
+		'TrainingPlanHoliday',
+		'TrainingPlanHolidayType',
+		'TrainingPlanModuleDefinition',
+		'TrainingPlanProgramConfig',
+		'Module',
+		'TutorProfile',
+		'KsbProfile',
+	},
+	'employees': {'Employee'},
+	'feedback': {'Feedback'},
+}
 
 
 def _client_ip(request) -> str | None:
@@ -81,6 +106,56 @@ def _model_snapshot(record) -> dict:
 			value = value.isoformat()
 		data[field.name] = value
 	return data
+
+
+def _realtime_versions_payload() -> dict:
+	entity_versions = {
+		row['entity']: int(row['version'] or 0)
+		for row in AuditLog.objects.values('entity').annotate(version=models.Max('id'))
+	}
+	resources = {}
+	for resource, entities in REALTIME_RESOURCE_ENTITIES.items():
+		resources[resource] = max((entity_versions.get(entity, 0) for entity in entities), default=0)
+	return {
+		'version': max(entity_versions.values(), default=0),
+		'resources': resources,
+		'serverTime': timezone.now().isoformat(),
+	}
+
+
+def realtime(request):
+	if request.method != 'GET':
+		return HttpResponseBadRequest('Only GET is supported.')
+
+	if request.GET.get('stream') != '1':
+		return JsonResponse(_realtime_versions_payload())
+
+	if os.getenv('ENABLE_REALTIME_SSE', 'false').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+		return JsonResponse(
+			{
+				'detail': 'Realtime SSE streaming is disabled in this deployment. Use /api/realtime/ polling.',
+				'payload': _realtime_versions_payload(),
+			},
+			status=409,
+		)
+
+	def event_stream():
+		last_payload = _realtime_versions_payload()
+		yield f"event: snapshot\ndata: {json.dumps(last_payload)}\n\n"
+		deadline = time.monotonic() + 300
+		while time.monotonic() < deadline:
+			time.sleep(2)
+			payload = _realtime_versions_payload()
+			if payload['version'] != last_payload['version'] or payload['resources'] != last_payload['resources']:
+				last_payload = payload
+				yield f"event: update\ndata: {json.dumps(payload)}\n\n"
+			else:
+				yield f"event: ping\ndata: {json.dumps({'serverTime': payload['serverTime']})}\n\n"
+
+	response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+	response['Cache-Control'] = 'no-cache'
+	response['X-Accel-Buffering'] = 'no'
+	return response
 
 
 def _without_keys(item: dict, keys: set[str]) -> dict:
@@ -636,14 +711,430 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'groupName': item.group_name,
 		'coachName': item.coach_name,
 		'tutorName': item.tutor_name,
+		'tutorProfileId': str(item.tutor_profile_id) if getattr(item, 'tutor_profile_id', None) else '',
 		'startDate': item.start_date,
 		'endDate': item.end_date,
 		'sessionsNumber': item.sessions_number,
 		'sessionWeekDay': item.session_week_day,
 		'sessionStartTime': item.session_start_time,
 		'sessionEndTime': item.session_end_time,
+		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
+		'sessionCoverage': normalize_session_coverage(getattr(item, 'session_coverage_json', '')),
+		'ksbProfileId': str(item.ksb_profile_id) if getattr(item, 'ksb_profile_id', None) else '',
 		'notes': item.notes,
 	}
+
+
+def normalize_tutor_profile_name(value: str) -> str:
+	return re.sub(r'\s+', ' ', re.sub(r'[^\w\s@.-]+', ' ', str(value or '').lower())).strip()
+
+
+def tutor_similarity(a: str, b: str) -> float:
+	a_normalized = normalize_tutor_profile_name(a)
+	b_normalized = normalize_tutor_profile_name(b)
+	if not a_normalized or not b_normalized:
+		return 0.0
+	if a_normalized == b_normalized:
+		return 1.0
+	if a_normalized in b_normalized or b_normalized in a_normalized:
+		shorter = min(len(a_normalized), len(b_normalized))
+		longer = max(len(a_normalized), len(b_normalized))
+		return max(0.86, shorter / longer)
+	return SequenceMatcher(None, a_normalized, b_normalized).ratio()
+
+
+def serialize_tutor_profile(item: TutorProfile, session_counts: dict[int, int] | None = None) -> dict:
+	return {
+		'id': str(item.id),
+		'name': item.name,
+		'normalizedName': item.normalized_name,
+		'email': item.email,
+		'phone': item.phone,
+		'notes': item.notes,
+		'availabilityNotes': item.availability_notes,
+		'isActive': item.is_active,
+		'sessionCount': (session_counts or {}).get(int(item.id), 0),
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+		'updatedAt': item.updated_at.isoformat() if item.updated_at else '',
+	}
+
+
+def tutor_profile_session_counts() -> dict[int, int]:
+	counts: dict[int, int] = {}
+	for row in TrainingPlan.objects.exclude(tutor_profile_id__isnull=True).values('tutor_profile_id', 'sessions_number'):
+		try:
+			profile_id = int(row.get('tutor_profile_id'))
+		except (TypeError, ValueError):
+			continue
+		try:
+			sessions = max(1, int(row.get('sessions_number') or 1))
+		except (TypeError, ValueError):
+			sessions = 1
+		counts[profile_id] = counts.get(profile_id, 0) + sessions
+	return counts
+
+
+def possible_tutor_profile_matches(name: str, *, exclude_id: int | None = None, threshold: float = 0.72) -> list[dict]:
+	matches = []
+	for profile in TutorProfile.objects.filter(is_active=True).order_by('name', 'id'):
+		if exclude_id is not None and int(profile.id) == int(exclude_id):
+			continue
+		score = tutor_similarity(name, profile.name)
+		if score >= threshold:
+			matches.append({'profile': profile, 'score': round(score, 3), 'exact': normalize_tutor_profile_name(name) == profile.normalized_name})
+	return sorted(matches, key=lambda item: (-item['score'], item['profile'].name.lower()))
+
+
+TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT = 100
+TRAINING_PLAN_PARTIAL_SAVE_RATIO = 0.75
+
+
+def training_plan_queryset():
+	return TrainingPlan.objects.all().order_by('id')
+
+
+def training_plan_items_snapshot() -> list[dict]:
+	return [serialize_training_plan(item) for item in training_plan_queryset()]
+
+
+def training_plan_version(items: list[dict] | None = None) -> str:
+	records = items if items is not None else training_plan_items_snapshot()
+	version_payload = [
+		_without_keys(item, {'id'})
+		for item in records
+	]
+	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def training_plan_recovery_confirmed(request, payload: dict) -> bool:
+	if payload.get('confirmAdminRecovery') is not True:
+		return False
+	expected_token = os.getenv('TRAINING_PLAN_RECOVERY_TOKEN', '').strip()
+	submitted_token = _header_text(request, 'X-KBC-Admin-Recovery-Token')
+	return bool(expected_token and submitted_token and submitted_token == expected_token)
+
+
+def audit_training_plan_rejection(request, *, reason: str, status_code: int, current_items: list[dict], incoming_count: int | None, submitted_version: str = '', current_version: str = '') -> None:
+	_audit_log(
+		request,
+		action='reject',
+		entity='TrainingPlan',
+		object_label='Training Plan timeline',
+		before={'count': len(current_items), 'version': current_version or training_plan_version(current_items)},
+		after={'count': incoming_count if incoming_count is not None else None, 'version': submitted_version},
+		metadata={
+			'accepted': False,
+			'reason': reason,
+			'status': status_code,
+			'previousCount': len(current_items),
+			'incomingCount': incoming_count,
+			'submittedVersion': submitted_version,
+			'currentVersion': current_version or training_plan_version(current_items),
+			'timestamp': timezone.now().isoformat(),
+		},
+	)
+
+
+def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, str]:
+	cohort_name = str(row.get('cohortName', '')).strip()
+	program = str(row.get('program', '')).strip()
+	module_name = str(row.get('moduleName', '')).strip()
+	start_date = str(row.get('startDate', '')).strip()
+	end_date = str(row.get('endDate', '')).strip()
+	sessions_number = str(row.get('sessionsNumber', '')).strip()
+	tutor_profile_id = normalize_nullable_int(row.get('tutorProfileId', None))
+
+	if not cohort_name:
+		return {}, f'Row {index + 1} is missing cohortName.'
+	if not program:
+		return {}, f'Row {index + 1} is missing program.'
+	if not module_name:
+		return {}, f'Row {index + 1} is missing moduleName.'
+	if parse_date(start_date) is None:
+		return {}, f'Row {index + 1} has an invalid startDate.'
+	if parse_date(end_date) is None:
+		return {}, f'Row {index + 1} has an invalid endDate.'
+	try:
+		if int(sessions_number) < 1:
+			return {}, f'Row {index + 1} must have at least one session.'
+	except (TypeError, ValueError):
+		return {}, f'Row {index + 1} has an invalid sessionsNumber.'
+	tutor_name = str(row.get('tutorName', '')).strip()
+	if tutor_profile_id is not None:
+		try:
+			profile = TutorProfile.objects.get(pk=tutor_profile_id, is_active=True)
+		except TutorProfile.DoesNotExist:
+			return {}, f'Row {index + 1} references an unknown tutorProfileId.'
+		tutor_name = profile.name
+
+	return {
+		'cohort_name': cohort_name,
+		'program': program,
+		'starting_date_lable': str(row.get('startingDateLabel', '')).strip(),
+		'module_name': module_name,
+		'group_name': str(row.get('groupName', '')).strip(),
+		'coach_name': str(row.get('coachName', '')).strip(),
+		'tutor_name': tutor_name,
+		'tutor_profile_id': tutor_profile_id,
+		'start_date': start_date,
+		'end_date': end_date,
+		'sessions_number': sessions_number,
+		'session_week_day': str(row.get('sessionWeekDay', '')).strip(),
+		'session_start_time': str(row.get('sessionStartTime', '')).strip(),
+		'session_end_time': str(row.get('sessionEndTime', '')).strip(),
+		'session_ksb_json': json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
+		'session_coverage_json': json.dumps(normalize_session_coverage(row.get('sessionCoverage', [])), ensure_ascii=False),
+		'ksb_profile_id': normalize_nullable_int(row.get('ksbProfileId', None)),
+		'notes': str(row.get('notes', '')).strip(),
+	}, ''
+
+
+KSB_CODE_PATTERNS = {
+	'knowledgeCodes': re.compile(r'^K\d+$', re.IGNORECASE),
+	'skillCodes': re.compile(r'^S\d+$', re.IGNORECASE),
+	'behaviourCodes': re.compile(r'^B\d+$', re.IGNORECASE),
+}
+
+
+def normalize_ksb_codes(value, field_name: str) -> list[str]:
+	pattern = KSB_CODE_PATTERNS[field_name]
+	if not isinstance(value, list):
+		return []
+	seen = set()
+	codes = []
+	for item in value:
+		code = str(item or '').strip().upper()
+		if not code or code in seen or not pattern.match(code):
+			continue
+		seen.add(code)
+		codes.append(code)
+	return codes
+
+
+def normalize_ksb_profile_items(value) -> list[dict]:
+	if not isinstance(value, list):
+		return []
+	seen = set()
+	items = []
+	for item in value:
+		if not isinstance(item, dict):
+			continue
+		item_type = str(item.get('type', '')).strip().upper()
+		if item_type not in {'K', 'S', 'B'}:
+			continue
+		number = str(item.get('number', '')).strip()
+		if not number.isdigit():
+			code = str(item.get('code', '')).strip().upper()
+			match = re.match(rf'^{item_type}(\d+)$', code)
+			number = match.group(1) if match else ''
+		if not number:
+			continue
+		code = f'{item_type}{int(number)}'
+		if code in seen:
+			continue
+		seen.add(code)
+		items.append({
+			'type': item_type,
+			'number': str(int(number)),
+			'code': code,
+			'description': str(item.get('description', '')).strip(),
+		})
+	return items
+
+
+def ksb_codes_from_items(items: list[dict], item_type: str) -> list[str]:
+	return [item['code'] for item in items if item.get('type') == item_type]
+
+
+def normalize_session_ksb_mappings(value) -> list[dict]:
+	if isinstance(value, str):
+		try:
+			raw = json.loads(value or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw = []
+	else:
+		raw = value
+	if not isinstance(raw, list):
+		return []
+	normalized = []
+	for item in raw:
+		if not isinstance(item, dict):
+			item = {}
+		normalized.append({
+			'knowledgeCodes': normalize_ksb_codes(item.get('knowledgeCodes', []), 'knowledgeCodes'),
+			'skillCodes': normalize_ksb_codes(item.get('skillCodes', []), 'skillCodes'),
+			'behaviourCodes': normalize_ksb_codes(item.get('behaviourCodes', []), 'behaviourCodes'),
+		})
+	return normalized
+
+
+def normalize_session_coverage(value) -> list[dict]:
+	if isinstance(value, str):
+		try:
+			raw = json.loads(value or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw = []
+	else:
+		raw = value
+	if not isinstance(raw, list):
+		return []
+	normalized = []
+	for item in raw:
+		if not isinstance(item, dict):
+			continue
+		try:
+			session_number = int(item.get('sessionNumber') or 0)
+		except (TypeError, ValueError):
+			session_number = 0
+		if session_number < 1:
+			continue
+		assigned_id = normalize_nullable_int(item.get('assignedTutorProfileId'))
+		coverage_id = normalize_nullable_int(item.get('coverageTutorProfileId'))
+		tutor_unavailable = bool(item.get('tutorUnavailable'))
+		coverage_status = str(item.get('coverageStatus') or 'none').strip().lower()
+		if coverage_status not in {'none', 'required', 'covered'}:
+			coverage_status = 'none'
+		if tutor_unavailable and not coverage_id:
+			coverage_status = 'required'
+		if coverage_id:
+			if assigned_id and assigned_id == coverage_id:
+				continue
+			if not TutorProfile.objects.filter(pk=coverage_id, is_active=True).exists():
+				continue
+			coverage_status = 'covered'
+		coverage_reason = str(item.get('coverageReason', '')).strip()
+		if coverage_id and not coverage_reason:
+			continue
+		normalized.append({
+			'sessionNumber': session_number,
+			'assignedTutorProfileId': str(assigned_id) if assigned_id else '',
+			'coverageTutorProfileId': str(coverage_id) if coverage_id else '',
+			'coverageStatus': coverage_status,
+			'tutorUnavailable': tutor_unavailable,
+			'tutorUnavailableReason': str(item.get('tutorUnavailableReason', '')).strip(),
+			'tutorUnavailableNotes': str(item.get('tutorUnavailableNotes', '')).strip(),
+			'coverageReason': coverage_reason,
+			'coverageNotes': str(item.get('coverageNotes', '')).strip(),
+		})
+	return normalized
+
+
+def remove_tutor_profile_references(profile_id: int) -> int:
+	profile_id_text = str(profile_id)
+	changed_rows = 0
+	for row in TrainingPlan.objects.all():
+		update_fields = []
+		if row.tutor_profile_id == profile_id:
+			row.tutor_profile_id = None
+			row.tutor_name = ''
+			update_fields.extend(['tutor_profile_id', 'tutor_name'])
+
+		try:
+			raw_coverage = json.loads(row.session_coverage_json or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw_coverage = []
+		if not isinstance(raw_coverage, list):
+			raw_coverage = []
+
+		next_coverage = []
+		coverage_changed = False
+		for item in raw_coverage:
+			if not isinstance(item, dict):
+				continue
+			next_item = dict(item)
+			if str(next_item.get('assignedTutorProfileId') or '').strip() == profile_id_text:
+				next_item['assignedTutorProfileId'] = ''
+				coverage_changed = True
+			if str(next_item.get('coverageTutorProfileId') or '').strip() == profile_id_text:
+				next_item['coverageTutorProfileId'] = ''
+				next_item['coverageReason'] = ''
+				next_item['coverageNotes'] = ''
+				next_item['coverageStatus'] = 'required' if next_item.get('tutorUnavailable') else 'none'
+				coverage_changed = True
+			keep_item = (
+				bool(next_item.get('tutorUnavailable'))
+				or bool(str(next_item.get('coverageTutorProfileId') or '').strip())
+				or str(next_item.get('coverageStatus') or '').strip().lower() not in {'', 'none'}
+			)
+			if keep_item:
+				next_coverage.append(next_item)
+
+		if coverage_changed:
+			row.session_coverage_json = json.dumps(next_coverage, ensure_ascii=False)
+			update_fields.append('session_coverage_json')
+
+		if update_fields:
+			row.save(update_fields=sorted(set(update_fields)))
+			changed_rows += 1
+	return changed_rows
+
+
+def normalize_nullable_int(value) -> int | None:
+	if value in {None, ''}:
+		return None
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return None
+
+
+def serialize_ksb_profile(item: KsbProfile) -> dict:
+	ksb_items = normalize_ksb_profile_items(getattr(item, 'ksb_items', []))
+	knowledge_codes = ksb_codes_from_items(ksb_items, 'K') or normalize_ksb_codes(item.knowledge_codes, 'knowledgeCodes')
+	skill_codes = ksb_codes_from_items(ksb_items, 'S') or normalize_ksb_codes(item.skill_codes, 'skillCodes')
+	behaviour_codes = ksb_codes_from_items(ksb_items, 'B') or normalize_ksb_codes(item.behaviour_codes, 'behaviourCodes')
+	return {
+		'id': str(item.id),
+		'name': item.name,
+		'programmeName': item.programme_name or '',
+		'description': item.description or '',
+		'ksbItems': ksb_items,
+		'knowledgeCodes': knowledge_codes,
+		'skillCodes': skill_codes,
+		'behaviourCodes': behaviour_codes,
+		'isActive': bool(item.is_active),
+		'createdBy': item.created_by or '',
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+		'updatedAt': item.updated_at.isoformat() if item.updated_at else '',
+	}
+
+
+def ksb_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
+	name = str(payload.get('name', '')).strip()
+	if not name:
+		return {}, 'Profile name is required.'
+	ksb_items = normalize_ksb_profile_items(payload.get('ksbItems', []))
+	knowledge_codes = ksb_codes_from_items(ksb_items, 'K') or normalize_ksb_codes(payload.get('knowledgeCodes', []), 'knowledgeCodes')
+	skill_codes = ksb_codes_from_items(ksb_items, 'S') or normalize_ksb_codes(payload.get('skillCodes', []), 'skillCodes')
+	behaviour_codes = ksb_codes_from_items(ksb_items, 'B') or normalize_ksb_codes(payload.get('behaviourCodes', []), 'behaviourCodes')
+	return {
+		'name': name,
+		'programme_name': str(payload.get('programmeName', payload.get('programme_name', ''))).strip(),
+		'description': str(payload.get('description', '')).strip(),
+		'ksb_items': ksb_items,
+		'knowledge_codes': knowledge_codes,
+		'skill_codes': skill_codes,
+		'behaviour_codes': behaviour_codes,
+		'is_active': bool(payload.get('isActive', True)),
+	}, ''
+
+
+def tutor_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
+	name = str(payload.get('name', '')).strip()
+	if not name:
+		return {}, 'Tutor name is required.'
+	normalized_name = normalize_tutor_profile_name(name)
+	if not normalized_name:
+		return {}, 'Tutor name is required.'
+	return {
+		'name': name,
+		'normalized_name': normalized_name,
+		'email': str(payload.get('email', '')).strip(),
+		'phone': str(payload.get('phone', '')).strip(),
+		'notes': str(payload.get('notes', '')).strip(),
+		'availability_notes': str(payload.get('availabilityNotes', '')).strip(),
+		'is_active': bool(payload.get('isActive', True)),
+	}, ''
 
 
 TRAINING_PLAN_HOLIDAY_COLORS = {
@@ -666,6 +1157,27 @@ def serialize_training_plan_holiday(item: TrainingPlanHoliday) -> dict:
 		'type': item.type or 'holiday',
 		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
 	}
+
+
+def training_plan_holidays_queryset():
+	return TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
+
+
+def training_plan_holidays_version() -> str:
+	records = training_plan_holidays_queryset().order_by('id').values('id', 'label', 'start_date', 'end_date', 'type', 'color', 'updated_at')
+	payload = [
+		{
+			'id': str(record['id']),
+			'label': record['label'] or '',
+			'startDate': record['start_date'].isoformat() if record['start_date'] else '',
+			'endDate': record['end_date'].isoformat() if record['end_date'] else '',
+			'type': record['type'] or 'holiday',
+			'color': record['color'] or '',
+			'updatedAt': record['updated_at'].isoformat() if record['updated_at'] else '',
+		}
+		for record in records
+	]
+	return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
@@ -790,8 +1302,12 @@ def feedback(request):
 @csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
-		records = TrainingPlan.objects.all().order_by('id')
-		return JsonResponse([serialize_training_plan(item) for item in records], safe=False)
+		items = training_plan_items_snapshot()
+		return JsonResponse({
+			'items': items,
+			'version': training_plan_version(items),
+			'count': len(items),
+		})
 
 	if request.method == 'POST':
 		try:
@@ -800,53 +1316,306 @@ def training_plan(request):
 			return HttpResponseBadRequest('Invalid JSON payload.')
 
 		items = payload.get('items') if isinstance(payload, dict) else None
+		submitted_version = str(payload.get('version', '') or '').strip() if isinstance(payload, dict) else ''
+		current_items = training_plan_items_snapshot()
+		current_version = training_plan_version(current_items)
+		incoming_count = len(items) if isinstance(items, list) else None
 		if not isinstance(items, list):
+			audit_training_plan_rejection(request, reason='Payload must include an items array.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return HttpResponseBadRequest('Payload must include an items array.')
 
-		# If client posted an empty list, do not clear the table — ignore to avoid accidental wipe.
-		# Replace table content with the latest timeline state from the frontend.
-		before_items = [serialize_training_plan(item) for item in TrainingPlan.objects.all().order_by('id')]
-		TrainingPlan.objects.all().delete()
-		created = []
-		for row in items:
-			if not isinstance(row, dict):
-				continue
-			created.append(
-				TrainingPlan.objects.create(
-					cohort_name=str(row.get('cohortName', '')).strip(),
-					program=str(row.get('program', '')).strip(),
-					starting_date_lable=str(row.get('startingDateLabel', '')).strip(),
-					module_name=str(row.get('moduleName', '')).strip(),
-					group_name=str(row.get('groupName', '')).strip(),
-					coach_name=str(row.get('coachName', '')).strip(),
-					tutor_name=str(row.get('tutorName', '')).strip(),
-					start_date=str(row.get('startDate', '')).strip(),
-					end_date=str(row.get('endDate', '')).strip(),
-					sessions_number=str(row.get('sessionsNumber', '')).strip(),
-					session_week_day=str(row.get('sessionWeekDay', '')).strip(),
-					session_start_time=str(row.get('sessionStartTime', '')).strip(),
-					session_end_time=str(row.get('sessionEndTime', '')).strip(),
-					notes=str(row.get('notes', '')).strip(),
-				)
+		recovery_confirmed = training_plan_recovery_confirmed(request, payload if isinstance(payload, dict) else {})
+
+		if not submitted_version:
+			reason = 'Reload the latest Training Plan before saving. This prevents an older page from overwriting newer timeline data.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
+
+		if submitted_version != current_version:
+			reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
+
+		if not items and not recovery_confirmed:
+			audit_training_plan_rejection(request, reason='Empty Training Plan saves are not allowed.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': 'Empty Training Plan saves are not allowed.'}, status=400)
+
+		current_count = len(current_items)
+		if (
+			not recovery_confirmed
+			and current_count >= TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT
+			and incoming_count is not None
+			and incoming_count < int(current_count * TRAINING_PLAN_PARTIAL_SAVE_RATIO)
+		):
+			reason = 'Suspicious partial Training Plan save rejected.'
+			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse(
+				{
+					'detail': 'Suspicious partial Training Plan save rejected. Reload the latest Training Plan before saving.',
+					'currentVersion': current_version,
+					'items': current_items,
+					'previousCount': current_count,
+					'incomingCount': incoming_count,
+				},
+				status=409,
 			)
 
+		validated_items = []
+		for index, row in enumerate(items):
+			if not isinstance(row, dict):
+				reason = f'Row {index + 1} must be an object.'
+				audit_training_plan_rejection(request, reason=reason, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+				return JsonResponse({'detail': reason}, status=400)
+			values, error = training_plan_values_from_payload_row(row, index)
+			if error:
+				audit_training_plan_rejection(request, reason=error, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+				return JsonResponse({'detail': error}, status=400)
+			validated_items.append(values)
+
+		with transaction.atomic():
+			locked_items = [serialize_training_plan(item) for item in TrainingPlan.objects.select_for_update().order_by('id')]
+			locked_version = training_plan_version(locked_items)
+			if submitted_version != locked_version:
+				reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+				audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=locked_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=locked_version)
+				return JsonResponse({'detail': reason, 'currentVersion': locked_version, 'items': locked_items}, status=409)
+
+			TrainingPlan.objects.all().delete()
+			created = [
+				TrainingPlan.objects.create(**item)
+				for item in validated_items
+			]
+
 		after_items = [serialize_training_plan(item) for item in created]
-		diff = _bulk_diff(before_items, after_items, ignored_keys={'id'})
+		next_version = training_plan_version(after_items)
+		diff = _bulk_diff(current_items, after_items, ignored_keys={'id'})
 		_audit_log(
 			request,
 			action='replace',
 			entity='TrainingPlan',
 			object_label='Training Plan timeline',
-			before={'count': diff['beforeCount'], 'removed': diff['removed']},
-			after={'count': diff['afterCount'], 'added': diff['added']},
+			before={'count': diff['beforeCount'], 'version': current_version, 'removed': diff['removed']},
+			after={'count': diff['afterCount'], 'version': next_version, 'added': diff['added']},
 			metadata={
+				'accepted': True,
 				'received': len(items),
+				'previousCount': len(current_items),
+				'incomingCount': len(items),
 				'addedCount': diff['addedCount'],
 				'removedCount': diff['removedCount'],
 				'truncated': diff['truncated'],
+				'submittedVersion': submitted_version,
+				'currentVersion': current_version,
+				'nextVersion': next_version,
+				'timestamp': timezone.now().isoformat(),
 			},
 		)
-		return JsonResponse({'saved': len(created)})
+		return JsonResponse({'saved': len(created), 'items': after_items, 'version': next_version, 'count': len(after_items)})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def tutor_profiles(request):
+	if request.method == 'GET':
+		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
+		records = TutorProfile.objects.all() if include_inactive else TutorProfile.objects.filter(is_active=True)
+		counts = tutor_profile_session_counts()
+		return JsonResponse([serialize_tutor_profile(item, counts) for item in records.order_by('name', 'id')], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = tutor_profile_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+
+		exact = TutorProfile.objects.filter(normalized_name=values['normalized_name']).first()
+		if exact:
+			return JsonResponse({
+				'detail': 'A tutor profile with this name already exists.',
+				'existingProfile': serialize_tutor_profile(exact, tutor_profile_session_counts()),
+			}, status=409)
+
+		matches = possible_tutor_profile_matches(values['name'])
+		if matches and payload.get('confirmCreateNew') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing tutor found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_tutor_profile(best['profile'], tutor_profile_session_counts()),
+				'score': best['score'],
+				'matches': [
+					{
+						'profile': serialize_tutor_profile(match['profile'], tutor_profile_session_counts()),
+						'score': match['score'],
+					}
+					for match in matches[:5]
+				],
+			}, status=409)
+
+		record = TutorProfile.objects.create(**values)
+		serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+		_audit_log(request, action='create', entity='TutorProfile', object_id=record.id, object_label=record.name, after=serialized)
+		return JsonResponse(serialized, status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def tutor_profile_detail(request, profile_id: int):
+	try:
+		record = TutorProfile.objects.get(pk=profile_id)
+	except TutorProfile.DoesNotExist:
+		return JsonResponse({'detail': 'Tutor profile not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_tutor_profile(record, tutor_profile_session_counts()))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		before = serialize_tutor_profile(record, tutor_profile_session_counts())
+		values, error = tutor_profile_values_from_payload({**before, **payload})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		exact = TutorProfile.objects.filter(normalized_name=values['normalized_name']).exclude(pk=record.id).first()
+		if exact:
+			return JsonResponse({
+				'detail': 'A tutor profile with this name already exists.',
+				'existingProfile': serialize_tutor_profile(exact, tutor_profile_session_counts()),
+			}, status=409)
+		matches = possible_tutor_profile_matches(values['name'], exclude_id=record.id)
+		if matches and payload.get('confirmSave') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing tutor found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_tutor_profile(best['profile'], tutor_profile_session_counts()),
+				'score': best['score'],
+			}, status=409)
+		for field, value in values.items():
+			setattr(record, field, value)
+		record.save()
+		serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+		_audit_log(request, action='update', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+		return JsonResponse(serialized)
+
+	if request.method == 'DELETE':
+		before = serialize_tutor_profile(record, tutor_profile_session_counts())
+		force_delete = str(request.GET.get('force', '')).strip().lower() in {'1', 'true', 'yes'}
+		if force_delete:
+			with transaction.atomic():
+				unlinked_rows = remove_tutor_profile_references(record.id)
+				record.delete()
+			_audit_log(
+				request,
+				action='delete',
+				entity='TutorProfile',
+				object_id=profile_id,
+				object_label=before.get('name', ''),
+				before=before,
+				metadata={'force': True, 'unlinkedRows': unlinked_rows},
+			)
+			return JsonResponse({'deleted': True, 'force': True, 'unlinkedRows': unlinked_rows})
+		in_use = TrainingPlan.objects.filter(tutor_profile_id=record.id).exists()
+		if in_use:
+			record.is_active = False
+			record.save(update_fields=['is_active', 'updated_at'])
+			serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+			_audit_log(request, action='deactivate', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+			return JsonResponse(serialized)
+		record.delete()
+		_audit_log(request, action='delete', entity='TutorProfile', object_id=profile_id, object_label=before.get('name', ''), before=before)
+		return JsonResponse({'deleted': True})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+def tutor_profile_duplicates(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	profiles = list(TutorProfile.objects.filter(is_active=True).order_by('name', 'id'))
+	pairs = []
+	for index, left in enumerate(profiles):
+		for right in profiles[index + 1:]:
+			score = tutor_similarity(left.name, right.name)
+			if score >= 0.72:
+				pairs.append({
+					'left': serialize_tutor_profile(left),
+					'right': serialize_tutor_profile(right),
+					'score': round(score, 3),
+					'exact': left.normalized_name == right.normalized_name,
+				})
+	return JsonResponse({'items': sorted(pairs, key=lambda item: -item['score'])})
+
+
+@csrf_exempt
+def ksb_profiles(request):
+	if request.method == 'GET':
+		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
+		records = KsbProfile.objects.all() if include_inactive else KsbProfile.objects.filter(is_active=True)
+		return JsonResponse([serialize_ksb_profile(item) for item in records.order_by('name', 'id')], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = ksb_profile_values_from_payload(payload)
+		if error:
+			return HttpResponseBadRequest(error)
+		values['created_by'] = _header_text(request, 'X-KBC-Display-Name') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-User-Email')
+		record = KsbProfile.objects.create(**values)
+		serialized = serialize_ksb_profile(record)
+		_audit_log(request, action='create', entity='KsbProfile', object_id=record.id, object_label=record.name, after=serialized)
+		return JsonResponse(serialized, status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def ksb_profile_detail(request, profile_id: int):
+	try:
+		record = KsbProfile.objects.get(pk=profile_id)
+	except KsbProfile.DoesNotExist:
+		return JsonResponse({'detail': 'KSB profile not found.'}, status=404)
+
+	if request.method == 'PATCH':
+		before = serialize_ksb_profile(record)
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = ksb_profile_values_from_payload({**before, **payload})
+		if error:
+			return HttpResponseBadRequest(error)
+		for key, value in values.items():
+			setattr(record, key, value)
+		record.save()
+		serialized = serialize_ksb_profile(record)
+		_audit_log(request, action='update', entity='KsbProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+		return JsonResponse(serialized)
+
+	if request.method == 'DELETE':
+		before = serialize_ksb_profile(record)
+		in_use = TrainingPlan.objects.filter(ksb_profile_id=record.id).exists()
+		if in_use:
+			record.is_active = False
+			record.save(update_fields=['is_active', 'updated_at'])
+			serialized = serialize_ksb_profile(record)
+			_audit_log(request, action='deactivate', entity='KsbProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+			return JsonResponse({'deleted': False, 'deactivated': True, 'item': serialized})
+		record.delete()
+		_audit_log(request, action='delete', entity='KsbProfile', object_id=profile_id, object_label=before.get('name', ''), before=before)
+		return JsonResponse({'deleted': True, 'deactivated': False})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
@@ -854,8 +1623,11 @@ def training_plan(request):
 @csrf_exempt
 def training_plan_holidays(request):
 	if request.method == 'GET':
-		records = TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('start_date', 'end_date', 'id')
-		return JsonResponse([serialize_training_plan_holiday(item) for item in records], safe=False)
+		records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+		return JsonResponse({
+			'items': [serialize_training_plan_holiday(item) for item in records],
+			'version': training_plan_holidays_version(),
+		})
 
 	if request.method == 'POST':
 		try:
@@ -866,6 +1638,7 @@ def training_plan_holidays(request):
 		items = payload.get('items') if isinstance(payload, dict) else None
 		if not isinstance(items, list):
 			return HttpResponseBadRequest('Payload must include an items array.')
+		submitted_version = str(payload.get('version', '') or '').strip() if isinstance(payload, dict) else ''
 
 		validated_items = []
 		invalid_count = 0
@@ -874,6 +1647,13 @@ def training_plan_holidays(request):
 				invalid_count += 1
 				continue
 
+			row_id_raw = str(row.get('id', '')).strip()
+			row_id = None
+			if row_id_raw:
+				try:
+					row_id = int(row_id_raw)
+				except (TypeError, ValueError):
+					row_id = None
 			label = str(row.get('label', '')).strip()
 			start_date = parse_date(str(row.get('startDate', '')).strip())
 			end_date = parse_date(str(row.get('endDate', '')).strip())
@@ -889,6 +1669,7 @@ def training_plan_holidays(request):
 				continue
 
 			validated_items.append({
+				'id': row_id,
 				'label': label,
 				'start_date': start_date,
 				'end_date': end_date,
@@ -906,25 +1687,70 @@ def training_plan_holidays(request):
 				status=400,
 			)
 
-		before = [serialize_training_plan_holiday(item) for item in TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('id')]
-		with transaction.atomic():
-			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).delete()
-			created = [
-				TrainingPlanHoliday.objects.create(
-					label=item['label'],
-					start_date=item['start_date'],
-					end_date=item['end_date'],
-					type=item['type'],
-					color=item['color'],
-				)
-				for item in validated_items
-			]
+		current_version = training_plan_holidays_version()
+		current_items = [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('id')]
+		if not submitted_version:
+			return JsonResponse(
+				{
+					'detail': 'Reload the latest holiday list before saving. This prevents an older page from overwriting newer holiday periods.',
+					'currentVersion': current_version,
+					'items': current_items,
+				},
+				status=409,
+			)
+		if submitted_version != current_version:
+			return JsonResponse(
+				{
+					'detail': 'The holiday list was updated by another user. Reload the latest holidays before saving.',
+					'currentVersion': current_version,
+					'items': current_items,
+				},
+				status=409,
+			)
 
-		after = [serialize_training_plan_holiday(item) for item in created]
-		_audit_log(request, action='replace', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
+		before = current_items
+		with transaction.atomic():
+			existing_records = {
+				record.id: record
+				for record in TrainingPlanHoliday.objects.select_for_update().exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
+			}
+			kept_ids = set()
+			for item in validated_items:
+				record = existing_records.get(item['id']) if item['id'] else None
+				if record is None:
+					record = TrainingPlanHoliday.objects.create(
+						label=item['label'],
+						start_date=item['start_date'],
+						end_date=item['end_date'],
+						type=item['type'],
+						color=item['color'],
+					)
+				else:
+					changed = (
+						record.label != item['label'] or
+						record.start_date != item['start_date'] or
+						record.end_date != item['end_date'] or
+						record.type != item['type'] or
+						record.color != item['color']
+					)
+					if changed:
+						record.label = item['label']
+						record.start_date = item['start_date']
+						record.end_date = item['end_date']
+						record.type = item['type']
+						record.color = item['color']
+						record.save(update_fields=['label', 'start_date', 'end_date', 'type', 'color', 'updated_at'])
+				kept_ids.add(record.id)
+
+			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).exclude(pk__in=kept_ids).delete()
+
+		after_records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+		after = [serialize_training_plan_holiday(item) for item in after_records]
+		_audit_log(request, action='upsert', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
 		return JsonResponse({
-			'saved': len(created),
+			'saved': len(after),
 			'items': after,
+			'version': training_plan_holidays_version(),
 		})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1163,12 +1989,15 @@ def _serialize_module(item) -> dict:
 		'notes': item.notes,
 		'sessionNames': session_names,
 		'sessionDescriptions': session_descriptions,
+		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
 	}
 
 
-def _apply_session_data(record, session_names: list, session_descriptions: list):
+def _apply_session_data(record, session_names: list, session_descriptions: list, session_ksb_mappings: list | None = None):
 	record.session_names_json = json.dumps([str(s) for s in session_names], ensure_ascii=False)
 	record.session_descriptions_json = json.dumps([str(s) for s in session_descriptions], ensure_ascii=False)
+	if session_ksb_mappings is not None:
+		record.session_ksb_json = json.dumps(normalize_session_ksb_mappings(session_ksb_mappings), ensure_ascii=False)
 	for i, field in enumerate(_SESSION_NAME_FIELDS):
 		setattr(record, field, session_names[i] if i < len(session_names) else '')
 	for i, field in enumerate(_SESSION_DESC_FIELDS):
@@ -1193,6 +2022,7 @@ def modules(request):
 		notes = str(payload.get('notes', '')).strip()
 		session_names = [str(s) for s in payload.get('sessionNames', [])]
 		session_descriptions = [str(s) for s in payload.get('sessionDescriptions', [])]
+		session_ksb_mappings = payload.get('sessionKsbMappings', [])
 
 		if not name:
 			return HttpResponseBadRequest('Module name is required.')
@@ -1203,7 +2033,7 @@ def modules(request):
 			number_of_sessions=sessions,
 			notes=notes,
 		)
-		_apply_session_data(record, session_names, session_descriptions)
+		_apply_session_data(record, session_names, session_descriptions, session_ksb_mappings)
 		record.save()
 		_audit_log(request, action='create', entity='Module', object_id=record.module_id, object_label=record.module_name, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record), status=201)
@@ -1239,7 +2069,10 @@ def module_detail(request, module_id: int):
 		if 'sessionNames' in payload or 'sessionDescriptions' in payload:
 			names = [str(s) for s in payload.get('sessionNames', [getattr(record, f, '') or '' for f in _SESSION_NAME_FIELDS])]
 			descs = [str(s) for s in payload.get('sessionDescriptions', [getattr(record, f, '') or '' for f in _SESSION_DESC_FIELDS])]
-			_apply_session_data(record, names, descs)
+			mappings = payload.get('sessionKsbMappings') if 'sessionKsbMappings' in payload else None
+			_apply_session_data(record, names, descs, mappings)
+		elif 'sessionKsbMappings' in payload:
+			record.session_ksb_json = json.dumps(normalize_session_ksb_mappings(payload.get('sessionKsbMappings', [])), ensure_ascii=False)
 		record.save()
 		_audit_log(request, action='update', entity='Module', object_id=record.module_id, object_label=record.module_name, before=before, after=_serialize_module(record))
 		return JsonResponse(_serialize_module(record))
@@ -1446,83 +2279,226 @@ def _resolve_sharepoint_site(host: str, site_path: str, token: str) -> dict:
 	raise RuntimeError(f'Could not resolve SharePoint site: {site_path}.')
 
 
-def documents_live(request):
-	if request.method != 'GET':
-		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+DOCUMENTS_LIVE_CACHE_SECONDS = 120
+DOCUMENTS_SUMMARY_CACHE_SECONDS = 300
 
+
+def _documents_cache_key(kind: str, policies_url: str) -> str:
+	digest = hashlib.sha256(policies_url.encode('utf-8')).hexdigest()[:16]
+	return f'policies:v3:{kind}:{digest}'
+
+
+def _get_policies_context() -> tuple[str, str, str, str, str, str, str]:
 	client_id = _get_env_first('MS_Policies_client_id', 'MS_Policies_clint_id', 'MS_POLICIES_CLIENT_ID')
 	client_secret = _get_env_first('MS_Policies_client_secret', 'MS_POLICIES_CLIENT_SECRET')
 	tenant_id = _get_env_first('MS_Policies_tenant_id', 'MS_POLICIES_TENANT_ID')
 	policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
 
 	if not client_id or not client_secret or not tenant_id or not policies_url:
-		return JsonResponse(
-			{'detail': 'Missing Microsoft Policies configuration in environment variables.'},
-			status=500,
+		raise RuntimeError('Missing Microsoft Policies configuration in environment variables.')
+
+	host, site_path, drive_path = _parse_policies_folder_url(policies_url)
+	return client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path
+
+
+def _get_policies_access_token(client_id: str, client_secret: str, tenant_id: str) -> str:
+	token_payload = urlencode({
+		'client_id': client_id,
+		'client_secret': client_secret,
+		'grant_type': 'client_credentials',
+		'scope': 'https://graph.microsoft.com/.default',
+	}).encode('utf-8')
+
+	token_data = _graph_json(
+		'POST',
+		f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token',
+		payload=token_payload,
+		headers={'Content-Type': 'application/x-www-form-urlencoded'},
+	)
+	access_token = str(token_data.get('access_token', '')).strip()
+	if not access_token:
+		raise RuntimeError('Microsoft token response did not include an access token.')
+
+	claims = _decode_jwt_payload(access_token)
+	roles = claims.get('roles') if isinstance(claims.get('roles'), list) else []
+	if not roles:
+		raise RuntimeError(
+			'Microsoft Graph token has no application roles. Adding permission IDs in .env does not grant access. '
+			'In Entra App Registration > API permissions, add Graph Application permissions '
+			'(e.g. Sites.Read.All / Files.Read.All) and click Admin consent.'
 		)
+
+	return access_token
+
+
+def _get_policies_root(host: str, site_path: str, drive_path: str, access_token: str) -> tuple[dict, str, dict]:
+	site_data = _resolve_sharepoint_site(host, site_path, access_token)
+	site_id = str(site_data.get('id', '')).strip()
+	if not site_id:
+		raise RuntimeError('Could not resolve the SharePoint site ID from MS_Policies_FILE.')
+
+	root_lookup_url = (
+		f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{quote(drive_path, safe="/")}:'
+		'?$select=id,name,webUrl,lastModifiedDateTime,size,folder,file'
+	)
+	root_item = _graph_json('GET', root_lookup_url, token=access_token)
+	if not isinstance(root_item, dict) or not root_item.get('id'):
+		raise RuntimeError('Could not locate the configured policies folder in SharePoint.')
+
+	return site_data, site_id, root_item
+
+
+def _documents_source_payload(host: str, site_path: str, drive_path: str, site_data: dict, root_item: dict) -> dict:
+	return {
+		'host': host,
+		'sitePath': site_path,
+		'drivePath': drive_path,
+		'siteName': site_data.get('displayName', ''),
+		'siteWebUrl': site_data.get('webUrl', ''),
+		'folderWebUrl': root_item.get('webUrl', ''),
+	}
+
+
+def _build_documents_live_payload() -> tuple[dict, str]:
+	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
+	access_token = _get_policies_access_token(client_id, client_secret, tenant_id)
+	site_data, site_id, root_item = _get_policies_root(host, site_path, drive_path, access_token)
+	tree = _build_drive_tree(site_id, root_item, access_token)
+
+	return {
+		'fetchedAt': datetime.utcnow().isoformat() + 'Z',
+		'source': _documents_source_payload(host, site_path, drive_path, site_data, root_item),
+		'root': tree,
+	}, policies_url
+
+
+def _count_tree_files(node: dict) -> int:
+	if node.get('type') == 'file':
+		return 1
+	return sum(_count_tree_files(child) for child in node.get('children', []) if isinstance(child, dict))
+
+
+def _count_drive_files_recursive(site_id: str, item_id: str, token: str, *, depth: int = 0, max_depth: int = 6, node_count: dict | None = None, max_nodes: int = 1000) -> int:
+	counter = node_count or {'value': 0}
+	if counter['value'] >= max_nodes or depth >= max_depth:
+		return 0
+
+	total = 0
+	children = _list_drive_children(site_id, item_id, token)
+	for child in children:
+		counter['value'] += 1
+		if counter['value'] > max_nodes:
+			break
+		if child.get('folder'):
+			total += _count_drive_files_recursive(
+				site_id,
+				str(child.get('id', '')),
+				token,
+				depth=depth + 1,
+				max_depth=max_depth,
+				node_count=counter,
+				max_nodes=max_nodes,
+			)
+		else:
+			total += 1
+	return total
+
+
+def _build_documents_summary_payload() -> tuple[dict, str]:
+	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
+	live_cache_key = _documents_cache_key('live', policies_url)
+	live_payload = cache.get(live_cache_key)
+	if isinstance(live_payload, dict) and isinstance(live_payload.get('root'), dict):
+		root = live_payload['root']
+		categories = [
+			{'name': child.get('name', ''), 'count': _count_tree_files(child)}
+			for child in root.get('children', [])
+			if isinstance(child, dict) and child.get('type') == 'folder'
+		]
+		uncategorized_count = sum(
+			1 for child in root.get('children', [])
+			if isinstance(child, dict) and child.get('type') == 'file'
+		)
+		if uncategorized_count > 0:
+			categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
+		return {
+			'fetchedAt': live_payload.get('fetchedAt') or datetime.utcnow().isoformat() + 'Z',
+			'source': live_payload.get('source', {}),
+			'total': _count_tree_files(root),
+			'categories': categories,
+		}, policies_url
+
+	access_token = _get_policies_access_token(client_id, client_secret, tenant_id)
+	site_data, site_id, root_item = _get_policies_root(host, site_path, drive_path, access_token)
+	children = _list_drive_children(site_id, str(root_item.get('id', '')), access_token)
+	categories = []
+	uncategorized_count = 0
+	counter = {'value': 0}
+	for child in children:
+		if not child.get('folder'):
+			uncategorized_count += 1
+			continue
+		categories.append({
+			'name': str(child.get('name', '')).strip(),
+			'count': _count_drive_files_recursive(site_id, str(child.get('id', '')), access_token, node_count=counter),
+		})
+	if uncategorized_count > 0:
+		categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
+
+	return {
+		'fetchedAt': datetime.utcnow().isoformat() + 'Z',
+		'source': _documents_source_payload(host, site_path, drive_path, site_data, root_item),
+		'total': sum(item['count'] for item in categories),
+		'categories': categories,
+	}, policies_url
+
+
+def documents_summary(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 	try:
-		host, site_path, drive_path = _parse_policies_folder_url(policies_url)
+		policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
+		cache_key = _documents_cache_key('summary', policies_url)
+		if request.GET.get('refresh') != '1':
+			cached = cache.get(cache_key)
+			if isinstance(cached, dict):
+				return JsonResponse(cached)
 
-		token_payload = urlencode({
-			'client_id': client_id,
-			'client_secret': client_secret,
-			'grant_type': 'client_credentials',
-			'scope': 'https://graph.microsoft.com/.default',
-		}).encode('utf-8')
-
-		token_data = _graph_json(
-			'POST',
-			f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token',
-			payload=token_payload,
-			headers={'Content-Type': 'application/x-www-form-urlencoded'},
-		)
-		access_token = str(token_data.get('access_token', '')).strip()
-		if not access_token:
-			raise RuntimeError('Microsoft token response did not include an access token.')
-
-		claims = _decode_jwt_payload(access_token)
-		roles = claims.get('roles') if isinstance(claims.get('roles'), list) else []
-		if not roles:
-			raise RuntimeError(
-				'Microsoft Graph token has no application roles. Adding permission IDs in .env does not grant access. '
-				'In Entra App Registration > API permissions, add Graph Application permissions '
-				'(e.g. Sites.Read.All / Files.Read.All) and click Admin consent.'
-			)
-
-		site_data = _resolve_sharepoint_site(host, site_path, access_token)
-		site_id = str(site_data.get('id', '')).strip()
-		if not site_id:
-			raise RuntimeError('Could not resolve the SharePoint site ID from MS_Policies_FILE.')
-
-		root_lookup_url = (
-			f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{quote(drive_path, safe="/")}:'
-			'?$select=id,name,webUrl,lastModifiedDateTime,size,folder,file'
-		)
-		root_item = _graph_json('GET', root_lookup_url, token=access_token)
-		if not isinstance(root_item, dict) or not root_item.get('id'):
-			raise RuntimeError('Could not locate the configured policies folder in SharePoint.')
-
-		tree = _build_drive_tree(site_id, root_item, access_token)
-
-		return JsonResponse(
-			{
-				'fetchedAt': datetime.utcnow().isoformat() + 'Z',
-				'source': {
-					'host': host,
-					'sitePath': site_path,
-					'drivePath': drive_path,
-					'siteName': site_data.get('displayName', ''),
-					'siteWebUrl': site_data.get('webUrl', ''),
-					'folderWebUrl': root_item.get('webUrl', ''),
-				},
-				'root': tree,
-			}
-		)
+		payload, policies_url = _build_documents_summary_payload()
+		cache.set(_documents_cache_key('summary', policies_url), payload, DOCUMENTS_SUMMARY_CACHE_SECONDS)
+		return JsonResponse(payload)
 	except ValueError as error:
 		return JsonResponse({'detail': str(error)}, status=400)
 	except RuntimeError as error:
-		return JsonResponse({'detail': str(error)}, status=502)
+		status = 500 if 'Missing Microsoft Policies configuration' in str(error) else 502
+		return JsonResponse({'detail': str(error)}, status=status)
+	except Exception as error:
+		return JsonResponse({'detail': f'Unexpected server error: {error.__class__.__name__}'}, status=500)
+
+
+def documents_live(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	policies_url = _get_env_first('MS_Policies_FILE', 'MS_POLICIES_FILE')
+
+	try:
+		cache_key = _documents_cache_key('live', policies_url)
+		if request.GET.get('refresh') != '1':
+			cached = cache.get(cache_key)
+			if isinstance(cached, dict):
+				return JsonResponse(cached)
+
+		payload, policies_url = _build_documents_live_payload()
+		cache.set(_documents_cache_key('live', policies_url), payload, DOCUMENTS_LIVE_CACHE_SECONDS)
+		cache.delete(_documents_cache_key('summary', policies_url))
+		return JsonResponse(payload)
+	except ValueError as error:
+		return JsonResponse({'detail': str(error)}, status=400)
+	except RuntimeError as error:
+		status = 500 if 'Missing Microsoft Policies configuration' in str(error) else 502
+		return JsonResponse({'detail': str(error)}, status=status)
 	except Exception as error:
 		return JsonResponse({'detail': f'Unexpected server error: {error.__class__.__name__}'}, status=500)
 
@@ -1618,7 +2594,20 @@ def employee_detail(request, employee_id: int):
 
 # ── Safeguarding urgent tickets ───────────────────────────────────────────────
 
+def _support_ticket_notes_payload(raw_notes) -> list:
+	if isinstance(raw_notes, list):
+		return raw_notes
+	if isinstance(raw_notes, str):
+		try:
+			parsed = json.loads(raw_notes)
+		except json.JSONDecodeError:
+			return []
+		return parsed if isinstance(parsed, list) else []
+	return []
+
+
 def serialize_support_ticket(t: SupportTicket) -> dict:
+	notes = _support_ticket_notes_payload(t.notes)
 	return {
 		'id': t.id,
 		'ticketType': t.ticket_type,
@@ -1632,22 +2621,54 @@ def serialize_support_ticket(t: SupportTicket) -> dict:
 		'createdAt': t.created_at.isoformat() if t.created_at else '',
 		'submittedBy': t.submitted_by,
 		'createdBy': t.created_by,
+		'isArchived': t.is_archived,
+		'assignedOwner': t.assigned_owner,
+		'updatedAt': t.updated_at.isoformat() if t.updated_at else '',
+		'notes': notes,
+		'notesCount': len([note for note in notes if isinstance(note, dict) and str(note.get('note', '')).strip()]),
+		'evidence': t.evidence or [],
+		'daysToClose': t.days_to_close,
 	}
+
+
+def _is_local_request(request) -> bool:
+	host = request.get_host().split(':', 1)[0].lower()
+	return host in {'localhost', '127.0.0.1', '0.0.0.0'} or os.getenv('USE_LOCAL_RISK_DATA', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def urgent_tickets(request):
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request) and 'safeguarding_db' not in settings.DATABASES:
+		return JsonResponse([], safe=False)
 	try:
-		records = SupportTicket.objects.using('safeguarding_db').filter(
-			urgency__iexact='urgent'
-		).order_by('-created_at')
+		records = (
+			SupportTicket.objects.using('safeguarding_db')
+			.exclude(status__iregex=r'^(closed|outcome recorded)$')
+			.filter(models.Q(is_archived=False) | models.Q(is_archived__isnull=True))
+			.order_by('-created_at')
+		)
 		return JsonResponse([serialize_support_ticket(t) for t in records], safe=False)
 	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
 # ── Risk register ─────────────────────────────────────────────────────────────
+def support_tickets(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request) and 'safeguarding_db' not in settings.DATABASES:
+		return JsonResponse([], safe=False)
+	try:
+		records = SupportTicket.objects.using('safeguarding_db').all().order_by('-created_at')
+		return JsonResponse([serialize_support_ticket(t) for t in records], safe=False)
+	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
+		return JsonResponse({'detail': str(exc)}, status=502)
+
 
 def serialize_risk(r: RiskRegisterItem) -> dict:
 	return {
@@ -1665,14 +2686,68 @@ def serialize_risk(r: RiskRegisterItem) -> dict:
 def risk_register(request):
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if _is_local_request(request):
+		return JsonResponse([], safe=False)
 	try:
 		records = RiskRegisterItem.objects.using('ofsted_db').order_by('id')
 		return JsonResponse([serialize_risk(r) for r in records], safe=False)
 	except Exception as exc:
+		if settings.DEBUG:
+			return JsonResponse([], safe=False)
 		return JsonResponse({'detail': str(exc)}, status=502)
 
 
-def serialize_user_activity_session(session: UserActivitySession) -> dict:
+ACTIVITY_ACTIVE_WINDOW_SECONDS = 60
+
+
+def _pagination_params(request, *, default_size: int = 50, max_size: int = 200) -> tuple[int, int]:
+	try:
+		page = max(1, int(request.GET.get('page', '1')))
+	except ValueError:
+		page = 1
+	try:
+		page_size = max(1, min(int(request.GET.get('pageSize', str(default_size))), max_size))
+	except ValueError:
+		page_size = default_size
+	return page, page_size
+
+
+def _pagination_payload(*, page: int, page_size: int, total: int, returned: int) -> dict:
+	total_pages = max(1, (total + page_size - 1) // page_size)
+	return {
+		'page': page,
+		'pageSize': page_size,
+		'totalItems': total,
+		'totalPages': total_pages,
+		'returnedItems': returned,
+		'hasNext': page < total_pages,
+		'hasPrevious': page > 1,
+	}
+
+
+def _session_display_login_at(session: UserActivitySession, now):
+	login_at = session.login_at
+	if not login_at:
+		return None
+	latest_allowed = session.last_seen_at or session.logout_at or now
+	if latest_allowed and login_at > latest_allowed:
+		return latest_allowed
+	if login_at > now:
+		return now
+	return login_at
+
+
+def serialize_user_activity_session(session: UserActivitySession, now=None) -> dict:
+	now = now or timezone.now()
+	display_login_at = _session_display_login_at(session, now)
+	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
+	is_active = bool(session.logout_at is None and session.last_seen_at and session.last_seen_at >= active_cutoff)
+	visits = list(session.page_visits.all())
+	current_visit = max(
+		visits,
+		key=lambda visit: (visit.last_seen_at or visit.first_seen_at, visit.id),
+		default=None,
+	) if is_active else None
 	page_visits = [
 		{
 			'id': visit.id,
@@ -1683,7 +2758,7 @@ def serialize_user_activity_session(session: UserActivitySession) -> dict:
 			'durationSeconds': visit.duration_seconds,
 			'viewCount': visit.view_count,
 		}
-		for visit in session.page_visits.all().order_by('-duration_seconds', 'path')
+		for visit in sorted(visits, key=lambda visit: (-visit.duration_seconds, visit.path))
 	]
 
 	return {
@@ -1694,7 +2769,7 @@ def serialize_user_activity_session(session: UserActivitySession) -> dict:
 		'email': session.email,
 		'displayName': session.display_name,
 		'authProvider': session.auth_provider,
-		'loginAt': session.login_at.isoformat() if session.login_at else '',
+		'loginAt': display_login_at.isoformat() if display_login_at else '',
 		'logoutAt': session.logout_at.isoformat() if session.logout_at else '',
 		'lastSeenAt': session.last_seen_at.isoformat() if session.last_seen_at else '',
 		'totalSeconds': session.total_seconds,
@@ -1702,7 +2777,12 @@ def serialize_user_activity_session(session: UserActivitySession) -> dict:
 		'ipAddress': session.ip_address or '',
 		'userAgent': session.user_agent,
 		'logoutReason': session.logout_reason,
-		'isActive': session.logout_at is None,
+		'isActive': is_active,
+		'currentPage': {
+			'path': current_visit.path,
+			'title': current_visit.title,
+			'lastSeenAt': current_visit.last_seen_at.isoformat() if current_visit.last_seen_at else '',
+		} if current_visit else None,
 		'pageVisits': page_visits,
 	}
 
@@ -1714,26 +2794,39 @@ def user_activity(request):
 	search = str(request.GET.get('search', '')).strip()
 	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
 	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
-	try:
-		limit = max(1, min(int(request.GET.get('limit', '100')), 500))
-	except ValueError:
-		limit = 100
+	status = str(request.GET.get('status', 'all')).strip().lower()
+	page, page_size = _pagination_params(request, default_size=25, max_size=100)
 
-	records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-login_at')
+	base_records = UserActivitySession.objects.prefetch_related('page_visits').order_by('-last_seen_at', '-login_at')
 	if search:
-		records = records.filter(
+		base_records = base_records.filter(
 			models.Q(email__icontains=search)
 			| models.Q(username__icontains=search)
 			| models.Q(display_name__icontains=search)
 			| models.Q(page_visits__path__icontains=search)
 		).distinct()
 	if from_date:
-		records = records.filter(login_at__date__gte=from_date)
+		base_records = base_records.filter(last_seen_at__date__gte=from_date)
 	if to_date:
-		records = records.filter(login_at__date__lte=to_date)
+		base_records = base_records.filter(last_seen_at__date__lte=to_date)
 
-	sessions = list(records[:limit])
+	now = timezone.now()
+	active_cutoff = now - timedelta(seconds=ACTIVITY_ACTIVE_WINDOW_SECONDS)
+	active_query = models.Q(logout_at__isnull=True, last_seen_at__gte=active_cutoff)
+	active_count = base_records.filter(active_query).count()
+	total_matching_before_status = base_records.count()
+
+	records = base_records
+	if status == 'active':
+		records = records.filter(active_query)
+	elif status in {'completed', 'not_active', 'inactive'}:
+		records = records.filter(models.Q(logout_at__isnull=False) | models.Q(last_seen_at__lt=active_cutoff))
+
 	total_sessions = records.count()
+	total_pages = max(1, (total_sessions + page_size - 1) // page_size)
+	page = min(page, total_pages)
+	offset = (page - 1) * page_size
+	sessions = list(records[offset:offset + page_size])
 	total_seconds = sum(session.total_seconds for session in sessions)
 	unique_users = len({(session.email or session.username or str(session.user_id)).lower() for session in sessions})
 	total_page_views = sum(sum(visit.view_count for visit in session.page_visits.all()) for session in sessions)
@@ -1743,11 +2836,15 @@ def user_activity(request):
 			'summary': {
 				'totalSessions': total_sessions,
 				'returnedSessions': len(sessions),
+				'matchingSessions': total_matching_before_status,
+				'activeSessions': active_count,
+				'completedSessions': max(0, total_matching_before_status - active_count),
 				'uniqueUsers': unique_users,
 				'totalSeconds': total_seconds,
 				'totalPageViews': total_page_views,
 			},
-			'sessions': [serialize_user_activity_session(session) for session in sessions],
+			'pagination': _pagination_payload(page=page, page_size=page_size, total=total_sessions, returned=len(sessions)),
+			'sessions': [serialize_user_activity_session(session, now) for session in sessions],
 		}
 	)
 
@@ -1782,10 +2879,7 @@ def audit_logs(request):
 	action = str(request.GET.get('action', '')).strip()
 	from_date = parse_date(str(request.GET.get('from', '')).strip()) if request.GET.get('from') else None
 	to_date = parse_date(str(request.GET.get('to', '')).strip()) if request.GET.get('to') else None
-	try:
-		limit = max(1, min(int(request.GET.get('limit', '200')), 500))
-	except ValueError:
-		limit = 200
+	page, page_size = _pagination_params(request, default_size=25, max_size=100)
 
 	records = AuditLog.objects.order_by('-created_at')
 	if search:
@@ -1806,13 +2900,18 @@ def audit_logs(request):
 	if to_date:
 		records = records.filter(created_at__date__lte=to_date)
 
-	logs = list(records[:limit])
+	total_logs = records.count()
+	total_pages = max(1, (total_logs + page_size - 1) // page_size)
+	page = min(page, total_pages)
+	offset = (page - 1) * page_size
+	logs = list(records[offset:offset + page_size])
 	return JsonResponse(
 		{
 			'summary': {
-				'totalLogs': records.count(),
+				'totalLogs': total_logs,
 				'returnedLogs': len(logs),
 			},
+			'pagination': _pagination_payload(page=page, page_size=page_size, total=total_logs, returned=len(logs)),
 			'logs': [serialize_audit_log(item) for item in logs],
 		}
 	)
