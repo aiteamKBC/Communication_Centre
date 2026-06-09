@@ -9,6 +9,7 @@ ACCESS_GROUPS: dict[str, str] = {
     'access_it': 'IT Access',
     'access_marketing': 'Marketing Access',
     'access_support': 'Support Access',
+    'access_coach': 'Coach Access',
 }
 
 
@@ -42,6 +43,7 @@ def get_user_access_payload(user) -> dict:
     it_access = admin_access or ACCESS_GROUPS['access_it'] in group_names
     marketing_access = admin_access or ACCESS_GROUPS['access_marketing'] in group_names
     support_access = admin_access or ACCESS_GROUPS['access_support'] in group_names
+    coach_access = admin_access or ACCESS_GROUPS['access_coach'] in group_names
 
     return {
         'adminAccess': admin_access,
@@ -50,6 +52,7 @@ def get_user_access_payload(user) -> dict:
         'itAccess': it_access,
         'marketingAccess': marketing_access,
         'supportAccess': support_access,
+        'coachAccess': coach_access,
         'canManageEvents': event_manager_access,
         'canManageCohorts': operations_access,
         'canManageNews': admin_access or it_access or marketing_access,

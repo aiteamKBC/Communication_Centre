@@ -47,6 +47,7 @@ class AccessCheckboxForm(forms.ModelForm):
 	access_it = forms.BooleanField(required=False, label='IT access')
 	access_marketing = forms.BooleanField(required=False, label='Marketing access')
 	access_support = forms.BooleanField(required=False, label='Support access')
+	access_coach = forms.BooleanField(required=False, label='Coach access')
 
 	class Meta:
 		model = get_user_model()
@@ -98,6 +99,7 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 					'access_it',
 					'access_marketing',
 					'access_support',
+					'access_coach',
 					'groups',
 					'user_permissions',
 				)
