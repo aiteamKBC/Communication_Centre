@@ -611,7 +611,9 @@ function KsbProfilePicker({
                   ))}
                 </div>
               ) : (
-                <p className="text-[11px] font-semibold text-gray-300">All added</p>
+                <p className="text-[11px] font-semibold text-gray-300">
+                  {section.codes.length ? 'All profile codes added' : 'No profile codes'}
+                </p>
               )}
             </div>
           );
@@ -657,6 +659,11 @@ function KsbSessionMappingRows({
       {Array.from({ length: sessionCount }, (_, i) => {
         const mapping = normalizedMappings[i] || emptySessionKsbMapping();
         const sessionLabel = sessionNames?.[i]?.trim() || `Session ${i + 1}`;
+        const availableProfileCodeCount = (['K', 'S', 'B'] as const).reduce((total, prefix) => {
+          const field = prefix === 'K' ? 'knowledgeCodes' : prefix === 'S' ? 'skillCodes' : 'behaviourCodes';
+          return total + (profileCodes?.[prefix] || []).filter(option => !mapping[field].includes(option.code)).length;
+        }, 0);
+        const hasProfileCodes = (['K', 'S', 'B'] as const).some(prefix => (profileCodes?.[prefix] || []).length > 0);
 
         return (
           <div key={i} className="rounded-xl border border-gray-200 bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
@@ -672,14 +679,20 @@ function KsbSessionMappingRows({
                     Source: {sourceLabel}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
-                >
-                  <i className="ri-add-circle-line" />
-                  Add from profile
-                </button>
+                {availableProfileCodeCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
+                  >
+                    <i className="ri-add-circle-line" />
+                    Add from profile
+                  </button>
+                ) : (
+                  <span className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] font-extrabold text-gray-300">
+                    {hasProfileCodes ? 'Profile codes already added' : 'No profile codes'}
+                  </span>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -708,7 +721,7 @@ function KsbSessionMappingRows({
                 onChange={codes => onChange(i, 'behaviourCodes', codes)}
               />
             </div>
-            {openPickerIndex === i && (
+            {openPickerIndex === i && availableProfileCodeCount > 0 && (
               <KsbProfilePicker
                 mapping={mapping}
                 codeDescriptions={codeDescriptions}
@@ -912,6 +925,9 @@ function KsbCoverageSummaryModal({ profile, groups, onClose }: { profile: KsbPro
 }
 
 function buildGroupSignature(block: ModuleBlock): string {
+  if (block.groupId) {
+    return block.groupId;
+  }
   const days = (block.days?.length ? block.days : [inferWeekDayFromIsoDate(block.startDate)]).join('|');
   return [
     block.groupName || '',
@@ -930,7 +946,7 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
     const key = buildGroupSignature(block);
     if (!grouped.has(key)) {
       grouped.set(key, {
-        id: `grp-${Date.now()}-${Math.random()}`,
+        id: block.groupId || `grp-${Date.now()}-${Math.random()}`,
         groupName: block.groupName || '',
         coachName: block.coachName || '',
         tutor: block.tutor || '',
@@ -1073,6 +1089,25 @@ export default function CohortModal({
   const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
   const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
   const activeTutorProfiles = useMemo(() => tutorProfiles.filter(profile => profile.isActive), [tutorProfiles]);
+  const coachOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    groups.forEach(programme => programme.rows.forEach(row => row.blks.forEach(block => {
+      const name = String(block.coachName || '').trim();
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    })));
+    data.groups.forEach(group => {
+      const name = group.coachName.trim();
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, count]) => ({
+        value: name,
+        label: name,
+        description: `${count} Training Plan block${count === 1 ? '' : 's'}`,
+        color: '#1B2A4A',
+      }));
+  }, [data.groups, groups]);
 
   const allModules = useMemo(() => data.groups.flatMap(group => group.modules), [data.groups]);
   const rangedModules = allModules.filter(item => isIsoDate(item.startDate) && isIsoDate(item.endDate) && item.startDate <= item.endDate);
@@ -1573,11 +1608,29 @@ export default function CohortModal({
       return;
     }
 
+    void kbcSwal.fire({
+      title: 'Deleting group...',
+      html: `Removing <strong>${target.groupName || target.tutor || 'this group'}</strong> from this cohort.`,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
     markUserEdited();
     setData(prev => ({ ...prev, groups: prev.groups.filter(group => group.id !== groupId) }));
     if (expandedGroupId === groupId) {
       setExpandedGroupId(null);
     }
+    await kbcSwal.fire({
+      title: 'Group Removed',
+      html: 'The group was removed from this cohort. Click <strong>Save Changes</strong> to update the Training Plan.',
+      icon: 'success',
+      showConfirmButton: false,
+      timer: 1400,
+      timerProgressBar: true,
+    });
   };
 
   const duplicateGroup = (groupId: string) => {
@@ -1627,6 +1680,16 @@ export default function CohortModal({
       return;
     }
 
+    void kbcSwal.fire({
+      title: 'Deleting module...',
+      html: `Removing <strong>${getModuleInputValue(target.mod) || 'this module'}</strong> from this group.`,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
     markUserEdited();
     setData(prev => ({
       ...prev,
@@ -1636,6 +1699,14 @@ export default function CohortModal({
           : { ...group, modules: group.modules.filter(item => item.id !== moduleId) }
       )),
     }));
+    await kbcSwal.fire({
+      title: 'Module Removed',
+      html: 'The module was removed from this group. Click <strong>Save Changes</strong> to update the Training Plan.',
+      icon: 'success',
+      showConfirmButton: false,
+      timer: 1400,
+      timerProgressBar: true,
+    });
   };
 
   const validate = (): boolean => {
@@ -1683,6 +1754,7 @@ export default function CohortModal({
       blks: normalizedGroups.flatMap(group =>
         group.modules.map(moduleItem => ({
           id: moduleItem.id,
+          groupId: group.id,
           mod: moduleItem.mod,
           groupName: group.groupName.trim() || undefined,
           coachName: group.coachName.trim() || undefined,
@@ -1745,7 +1817,7 @@ export default function CohortModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="modal-backdrop" onClick={() => void handleRequestClose()} />
+      <div className="modal-backdrop" />
       <div className="relative bg-white rounded-xl w-full flex flex-col overflow-hidden shadow-2xl" style={{ maxWidth: 760, maxHeight: '92vh' }}>
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ background: '#1B2A4A' }}>
           <div>
@@ -1757,7 +1829,7 @@ export default function CohortModal({
           </button>
         </div>
 
-        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+        <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-5">
           <div>
             <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em] mb-1.5">Programme</label>
             {mode === 'edit' || lockGroupSelection ? (
@@ -1859,7 +1931,7 @@ export default function CohortModal({
             </div>
           </div>
 
-          <div className="rounded-xl border border-gray-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          <div className="order-2 rounded-xl border border-gray-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="border-b border-gray-100 px-4 py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -1993,7 +2065,7 @@ export default function CohortModal({
             </div>
           </div>
 
-          <div className="space-y-3">
+          <div className="order-3 space-y-3">
             <div>
               <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em] mb-1.5">KSB Profile</label>
               <select
@@ -2028,7 +2100,7 @@ export default function CohortModal({
             </div>
           </div>
 
-          <div>
+          <div className="order-1">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em]">Groups</label>
@@ -2051,6 +2123,8 @@ export default function CohortModal({
                 const groupEndDate = datedModules.length
                   ? datedModules.reduce((max, moduleItem) => (moduleItem.endDate > max ? moduleItem.endDate : max), datedModules[0].endDate)
                   : '';
+                const moduleTutorNames = Array.from(new Set(group.modules.map(moduleItem => moduleItem.tutor.trim()).filter(Boolean)));
+                const tutorDisplay = group.tutor.trim() || moduleTutorNames.join(', ');
 
                 return (
                   <div key={group.id} className="rounded-xl border overflow-hidden border-gray-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
@@ -2078,7 +2152,7 @@ export default function CohortModal({
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <p className="text-[11px] font-bold uppercase tracking-[0.14em]" style={{ color: groupAccent }}>Group Details</p>
-                              <p className="text-sm text-gray-400 mt-1">{group.tutor || 'Tutor not set'}</p>
+                              <p className="text-sm text-gray-400 mt-1">{tutorDisplay || 'Tutor not set'}</p>
                             </div>
                             <button type="button" onClick={() => openEditGroup(group.id)} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white cursor-pointer transition-all hover:opacity-90" style={{ background: groupAccent }}>
                               <i className="ri-edit-line" />
@@ -2093,7 +2167,7 @@ export default function CohortModal({
                             </div>
                             <div>
                               <p className="font-bold text-gray-500 uppercase tracking-[0.14em] text-[11px]">Tutor / Lecturer</p>
-                              <p className="text-gray-700 mt-1">{group.tutor || '—'}</p>
+                              <p className="text-gray-700 mt-1">{tutorDisplay || '—'}</p>
                             </div>
                             <div>
                               <p className="font-bold text-gray-500 uppercase tracking-[0.14em] text-[11px]">Session Time</p>
@@ -2196,7 +2270,41 @@ export default function CohortModal({
                 </div>
 
                 <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Group Name</label><input type="text" placeholder="e.g. G1" value={groupDraft.group.groupName} onChange={e => updateGroupDraft('groupName', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" /></div>
-                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Coach Name</label><input type="text" placeholder="e.g. Coach Ahmed" value={groupDraft.group.coachName} onChange={e => updateGroupDraft('coachName', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none bg-white" /></div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Coach Name</label>
+                  <SelectField
+                    value={groupDraft.group.coachName}
+                    options={[
+                      ...(groupDraft.group.coachName.trim() && !coachOptions.some(option => option.value === groupDraft.group.coachName.trim())
+                        ? [{
+                            value: groupDraft.group.coachName.trim(),
+                            label: groupDraft.group.coachName.trim(),
+                            description: 'New coach name',
+                            color: groupDraft.group.color || '#1B2A4A',
+                          }]
+                        : []),
+                      ...coachOptions,
+                    ]}
+                    placeholder={coachOptions.length ? 'Select a coach' : 'Type the first coach name'}
+                    accentColor={groupDraft.group.color || '#1B2A4A'}
+                    label="Coaches"
+                    searchPlaceholder="Search coaches..."
+                    emptyTitle="No matching coaches"
+                    emptyText="Type a new coach name below."
+                    onChange={value => updateGroupDraft('coachName', value)}
+                    footer={(
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={groupDraft.group.coachName}
+                          onChange={event => updateGroupDraft('coachName', event.target.value)}
+                          placeholder="Type new coach name"
+                          className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 outline-none focus:border-kbc-navy"
+                        />
+                      </div>
+                    )}
+                  />
+                </div>
 
                 <div>
                   <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Week Days</label>

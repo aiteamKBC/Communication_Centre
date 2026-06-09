@@ -6,7 +6,7 @@ from django.test import Client, SimpleTestCase, TestCase
 from django.utils import timezone
 
 from .models import TrainingPlanHoliday
-from .views import _session_display_login_at, training_plan_holidays_version
+from .views import _session_display_login_at, is_probable_tutor_profile_match, training_plan_holidays_version
 
 
 class UserActivitySessionDisplayTests(SimpleTestCase):
@@ -30,6 +30,17 @@ class UserActivitySessionDisplayTests(SimpleTestCase):
 		)
 
 		self.assertEqual(_session_display_login_at(session, now), now)
+
+
+class TutorProfileMatchingTests(SimpleTestCase):
+	def test_short_names_with_different_initials_are_not_duplicate_warnings(self):
+		self.assertFalse(is_probable_tutor_profile_match('Osama', 'Samar'))
+
+	def test_exact_tutor_name_is_duplicate_warning(self):
+		self.assertTrue(is_probable_tutor_profile_match(' Osama ', 'osama'))
+
+	def test_close_long_tutor_name_is_duplicate_warning(self):
+		self.assertTrue(is_probable_tutor_profile_match('Mohamed Ali', 'Mohammad Ali'))
 
 
 class TrainingPlanHolidaySaveTests(TestCase):

@@ -128,6 +128,91 @@
   .scrollbar-hidden::-webkit-scrollbar {
     display: none;
   }
+
+  .training-plan-action-row {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .training-plan-action-row > * {
+    flex: 0 0 auto;
+  }
+
+  .training-plan-gantt-shell {
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .training-plan-gantt-toolbar {
+    overflow-x: auto;
+    overflow-y: visible;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .training-plan-gantt-scroll {
+    overflow: auto;
+    max-height: min(74vh, 820px);
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    will-change: scroll-position;
+    cursor: grab;
+    touch-action: pan-x pan-y;
+  }
+
+  .training-plan-gantt-scroll.is-panning {
+    cursor: grabbing;
+  }
+
+  @media (max-width: 1023px) {
+    .training-plan-gantt-scroll {
+      max-height: calc(100vh - 184px);
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .training-plan-gantt-scroll {
+      max-height: none;
+      overflow-x: auto;
+      overflow-y: visible;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .training-plan-action-row {
+      margin-left: -0.25rem;
+      margin-right: -0.25rem;
+      padding-left: 0.25rem;
+      padding-right: 0.25rem;
+    }
+
+    .training-plan-gantt-shell {
+      margin-left: -0.75rem;
+      margin-right: -0.75rem;
+      border-left: 0;
+      border-right: 0;
+      border-radius: 0;
+    }
+
+    .training-plan-gantt-toolbar {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+
+    .training-plan-gantt-toolbar > * {
+      flex: 0 0 auto;
+    }
+
+    .training-plan-gantt-scroll {
+      max-height: calc(100vh - 152px);
+    }
+  }
 }
 
 @layer utilities {

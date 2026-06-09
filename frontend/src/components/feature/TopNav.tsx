@@ -154,13 +154,13 @@ export default function TopNav() {
           <Link
             to="/"
             data-nav-reveal
-            className="group flex items-center gap-2.5 shrink-0 cursor-default rounded-2xl px-2 py-1.5 transition-transform duration-300 hover:-translate-y-0.5"
+            className="group flex min-w-0 items-center gap-2 shrink-0 cursor-default rounded-2xl px-1.5 py-1.5 transition-transform duration-300 hover:-translate-y-0.5 sm:gap-2.5 sm:px-2"
           >
-            <div className="w-10 h-10 flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:rotate-3 group-hover:scale-105">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center transition-transform duration-500 group-hover:rotate-3 group-hover:scale-105 sm:h-10 sm:w-10">
               <img
                 src="https://public.readdy.ai/ai/img_res/01e44241-379a-48b6-aa59-f959ef3e728e.png"
                 alt="KBC Crest"
-                className="w-10 h-10 object-contain object-center"
+                className="h-full w-full object-contain object-center"
               />
             </div>
 

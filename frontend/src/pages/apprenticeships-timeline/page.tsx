@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, ModuleBlock } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import CohortModal from './components/CohortModal';
@@ -16,6 +16,8 @@ import ManageProgramModal from './components/ManageProgramModal';
 import KsbProfilesManager from './components/KsbProfilesManager';
 import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
 import TutorProfiles from './components/TutorProfiles';
+import DateField from './components/DateField';
+import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
@@ -43,6 +45,14 @@ interface EditChoiceState {
 interface TutorModuleAddChoice {
   tutorProfileId: string;
   moduleValue: ModuleValue;
+}
+
+interface TutorModuleGroupDraft {
+  name: string;
+  coach: string;
+  days: WeekDayKey[];
+  startTime: string;
+  endTime: string;
 }
 
 interface TrainingPlanItem {
@@ -137,7 +147,23 @@ const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
 const PROGRAM_ID_MARKER_PREFIX = '__program_id:';
+const COHORT_ID_MARKER_PREFIX = '__cohort_id:';
+const GROUP_ID_MARKER_PREFIX = '__group_id:';
+const BLOCK_ID_MARKER_PREFIX = '__block_id:';
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+function tutorModuleGroupKey(block: Pick<ModuleBlock, 'groupId' | 'groupName' | 'coachName' | 'days' | 'sessionStartTime' | 'sessionEndTime'>): string {
+  if (block.groupId) {
+    return block.groupId;
+  }
+  return [
+    block.groupName || '',
+    block.coachName || '',
+    (block.days || []).join(','),
+    block.sessionStartTime || '',
+    block.sessionEndTime || '',
+  ].join('|');
+}
 
 function emptySessionKsbMapping(): SessionKsbMapping {
   return { knowledgeCodes: [], skillCodes: [], behaviourCodes: [] };
@@ -177,7 +203,7 @@ function normalizeSessionCoverage(value: unknown, count = 0, assignedTutorProfil
     const sessionNumber = Math.max(0, Number(record.sessionNumber) || 0);
     if (!sessionNumber || (count > 0 && sessionNumber > count)) return items;
     const coverageTutorProfileId = String(record.coverageTutorProfileId || '').trim();
-    const tutorUnavailable = Boolean(record.tutorUnavailable);
+    const tutorUnavailable = Boolean(record.tutorUnavailable) || Boolean(coverageTutorProfileId);
     const coverageReason = String(record.coverageReason || '').trim();
     const coverageStatus = coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none';
     if (coverageTutorProfileId && (!coverageReason || coverageTutorProfileId === assignedTutorProfileId)) return items;
@@ -225,10 +251,10 @@ function filterSessionKsbMappingForProfile(mapping: SessionKsbMapping | undefine
   };
 }
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX)) {
-    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, notes: raw || '' };
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
+    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, cohortId: undefined, groupId: undefined, blockId: undefined, notes: raw || '' };
   }
 
   const lines = value.split('\n');
@@ -240,6 +266,9 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let groupName: string | undefined;
   let coachName: string | undefined;
   let programId: string | undefined;
+  let cohortId: string | undefined;
+  let groupId: string | undefined;
+  let blockId: string | undefined;
   let readingMarkers = true;
 
   lines.forEach(line => {
@@ -289,17 +318,44 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
       return;
     }
 
+    if (readingMarkers && line.startsWith(COHORT_ID_MARKER_PREFIX)) {
+      const nextCohortId = line.slice(COHORT_ID_MARKER_PREFIX.length).trim();
+      cohortId = nextCohortId || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(GROUP_ID_MARKER_PREFIX)) {
+      const nextGroupId = line.slice(GROUP_ID_MARKER_PREFIX.length).trim();
+      groupId = nextGroupId || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(BLOCK_ID_MARKER_PREFIX)) {
+      const nextBlockId = line.slice(BLOCK_ID_MARKER_PREFIX.length).trim();
+      blockId = nextBlockId || undefined;
+      return;
+    }
+
     readingMarkers = false;
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, programId, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string): string {
   const markers: string[] = [];
   if (programId) {
     markers.push(`${PROGRAM_ID_MARKER_PREFIX}${programId}`);
+  }
+  if (cohortId) {
+    markers.push(`${COHORT_ID_MARKER_PREFIX}${cohortId}`);
+  }
+  if (groupId) {
+    markers.push(`${GROUP_ID_MARKER_PREFIX}${groupId}`);
+  }
+  if (blockId) {
+    markers.push(`${BLOCK_ID_MARKER_PREFIX}${blockId}`);
   }
   if (holidayIds.length) {
     markers.push(`${HOLIDAY_MARKER_PREFIX}${holidayIds.join('|')}`);
@@ -424,11 +480,11 @@ function buildGroupsFromTrainingRows(
       return;
     }
 
-    const cohortKey = `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
+    const cohortKey = parsedNotes.cohortId || `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
     let cohort = cohortIndex.get(cohortKey);
     if (!cohort) {
       cohort = {
-        id: `db-row-${groupId}-${cohortIndex.size + 1}`,
+        id: parsedNotes.cohortId || `db-row-${groupId}-${cohortIndex.size + 1}`,
         label: item.cohortName || 'Cohort',
         dateLbl: item.startingDateLabel || '',
         endDateLbl: undefined,
@@ -457,7 +513,8 @@ function buildGroupsFromTrainingRows(
       cohort.ksbProfileId = item.ksbProfileId;
     }
     cohort.blks.push({
-      id: `db-blk-${index + 1}`,
+      id: parsedNotes.blockId || `db-blk-${index + 1}`,
+      groupId: parsedNotes.groupId,
       mod: modKey,
       groupName: item.groupName || parsedNotes.groupName,
       coachName: item.coachName || parsedNotes.coachName,
@@ -500,7 +557,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
         sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
         sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
         ksbProfileId: row.ksbProfileId || '',
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id),
       })),
     ),
   );
@@ -582,6 +639,61 @@ function toLocalDateKey(date: Date): string {
   const month = `${date.getMonth() + 1}`.padStart(2, '0');
   const day = `${date.getDate()}`.padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+const TUTOR_MODULE_WEEKDAY_TO_JS: Record<WeekDayKey, number> = {
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+function addDaysToLocalDate(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function dateHasHoliday(dateKey: string, holidays: Holiday[]): boolean {
+  return holidays.some(holiday => holiday.startDate <= dateKey && holiday.endDate >= dateKey);
+}
+
+function buildWeeklyTutorModulePlan(startDate: string, sessions: number, days: WeekDayKey[], holidays: Holiday[] = []): { actualStartDate: string; effectiveEndDate: string; shiftedSessions: number } {
+  if (!startDate || sessions <= 0 || days.length === 0) {
+    return { actualStartDate: startDate, effectiveEndDate: startDate, shiftedSessions: 0 };
+  }
+
+  const selectedDays = Array.from(new Set(days)).sort((a, b) => TUTOR_MODULE_WEEKDAY_TO_JS[a] - TUTOR_MODULE_WEEKDAY_TO_JS[b]);
+  let cursor = parseLocalDate(startDate);
+  let delivered = 0;
+  let shiftedSessions = 0;
+  let actualStartDate = '';
+  let effectiveEndDate = startDate;
+  let guard = 0;
+
+  while (delivered < sessions && guard < sessions * 21 + 365) {
+    const dateKey = toLocalDateKey(cursor);
+    const jsDay = cursor.getDay();
+    const isSelectedDay = selectedDays.some(day => TUTOR_MODULE_WEEKDAY_TO_JS[day] === jsDay);
+    if (isSelectedDay) {
+      if (dateHasHoliday(dateKey, holidays)) {
+        shiftedSessions += 1;
+      } else {
+        delivered += 1;
+        actualStartDate ||= dateKey;
+        effectiveEndDate = dateKey;
+        cursor = addDaysToLocalDate(cursor, 7);
+        guard += 7;
+        continue;
+      }
+    }
+    cursor = addDaysToLocalDate(cursor, 1);
+    guard += 1;
+  }
+
+  return { actualStartDate: actualStartDate || startDate, effectiveEndDate, shiftedSessions };
 }
 
 function formatPlanDate(value: string): string {
@@ -1435,14 +1547,14 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                     setProgrammeModalRiskFilter('all');
                     setSelectedProgrammeGroup(group);
                   }}
-                  className="grid w-full grid-cols-[42px_minmax(0,1fr)_88px_88px_32px] items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-100"
+                  className="grid w-full grid-cols-[22px_minmax(86px,1fr)_54px_54px_18px] items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-xs transition-colors last:border-b-0 hover:bg-slate-100 sm:grid-cols-[42px_minmax(0,1fr)_88px_88px_32px] sm:gap-3 sm:px-4"
                 >
                   <span className="flex items-center gap-2">
-                    <i className="ri-external-link-line text-sm text-gray-400" />
+                    <i className="hidden text-sm text-gray-400 sm:inline-block ri-external-link-line" />
                     <span className="h-3 w-3 rounded-sm" style={{ background: group.color }} />
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-extrabold text-kbc-navy">{group.programme}</span>
+                    <span className="block truncate text-xs font-extrabold text-kbc-navy sm:text-sm">{group.programme}</span>
                     <span className="mt-0.5 block text-gray-400">{group.summaries.length} module{group.summaries.length !== 1 ? 's' : ''}</span>
                   </span>
                   <span className="rounded-md bg-white px-2 py-1 text-center font-bold text-kbc-navy">
@@ -1715,7 +1827,19 @@ export default function ApprenticeshipTimeline() {
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
   const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
   const [pendingTutorModuleAdd, setPendingTutorModuleAdd] = useState<TutorModuleAddChoice | null>(null);
-  const [cohortChoiceSearch, setCohortChoiceSearch] = useState('');
+  const [pendingTutorModuleCohort, setPendingTutorModuleCohort] = useState('');
+  const [pendingTutorModuleGroup, setPendingTutorModuleGroup] = useState('');
+  const [pendingTutorModuleCreateGroup, setPendingTutorModuleCreateGroup] = useState(false);
+  const [pendingTutorModuleGroupDraft, setPendingTutorModuleGroupDraft] = useState<TutorModuleGroupDraft>({
+    name: '',
+    coach: '',
+    days: ['monday'],
+    startTime: '09:00',
+    endTime: '11:00',
+  });
+  const [pendingTutorModuleStartDate, setPendingTutorModuleStartDate] = useState('');
+  const [pendingTutorModuleSaving, setPendingTutorModuleSaving] = useState(false);
+  const [pendingTutorModuleError, setPendingTutorModuleError] = useState('');
   const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<ModuleMonthlySummary | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
@@ -1770,6 +1894,25 @@ export default function ApprenticeshipTimeline() {
     }
   }, []);
 
+  const reloadTutorProfiles = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/tutor-profiles/?includeInactive=1');
+      if (!response.ok) {
+        return false;
+      }
+
+      const items = (await response.json()) as TutorProfile[];
+      if (!Array.isArray(items)) {
+        return false;
+      }
+
+      setTutorProfiles(items);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const reloadTrainingPlanSupportData = useCallback(async (): Promise<void> => {
     const [
       moduleDefinitionsResult,
@@ -1784,7 +1927,7 @@ export default function ApprenticeshipTimeline() {
       reloadTrainingPlanHolidays(),
       fetch('/api/modules/'),
       fetch('/api/ksb-profiles/?includeInactive=1'),
-      fetch('/api/tutor-profiles/?includeInactive=1'),
+      reloadTutorProfiles(),
     ]);
 
     if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
@@ -1826,13 +1969,10 @@ export default function ApprenticeshipTimeline() {
       }
     }
 
-    if (tutorProfilesResult.status === 'fulfilled' && tutorProfilesResult.value.ok) {
-      const items = (await tutorProfilesResult.value.json()) as TutorProfile[];
-      if (Array.isArray(items)) {
-        setTutorProfiles(items);
-      }
+    if (tutorProfilesResult.status === 'rejected') {
+      // Keep current tutor profiles if the reload fails.
     }
-  }, [reloadTrainingPlanHolidays]);
+  }, [reloadTrainingPlanHolidays, reloadTutorProfiles]);
 
   useEffect(() => {
     void reloadTrainingPlan();
@@ -2188,6 +2328,7 @@ export default function ApprenticeshipTimeline() {
     }
     const saved = await response.json() as TutorProfile;
     setTutorProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+    void reloadTutorProfiles();
     return saved;
   };
 
@@ -2394,8 +2535,15 @@ export default function ApprenticeshipTimeline() {
     if (!canManageCohorts) {
       return;
     }
+    const firstGroupIdx = groups.findIndex(group => group.rows.length > 0);
     setPendingTutorModuleAdd({ tutorProfileId, moduleValue });
-    setCohortChoiceSearch('');
+    setPendingTutorModuleCohort(firstGroupIdx >= 0 ? `${firstGroupIdx}:0` : '');
+    setPendingTutorModuleGroup('');
+    setPendingTutorModuleCreateGroup(false);
+    setPendingTutorModuleGroupDraft({ name: '', coach: '', days: ['monday'], startTime: '09:00', endTime: '11:00' });
+    setPendingTutorModuleStartDate('');
+    setPendingTutorModuleError('');
+    setPendingTutorModuleSaving(false);
   };
 
   const handleAddTutorModuleToNewCohort = () => {
@@ -2410,20 +2558,106 @@ export default function ApprenticeshipTimeline() {
     setPendingTutorModuleAdd(null);
   };
 
-  const handleAddTutorModuleToExistingCohort = (groupIdx: number, rowIdx: number) => {
-    if (!pendingTutorModuleAdd) return;
-    const row = groups[groupIdx]?.rows[rowIdx];
-    if (!row) return;
-    setModal({
-      open: true,
-      mode: 'edit',
-      groupIdx,
-      rowIdx,
-      row,
-      prefillTutorProfileId: pendingTutorModuleAdd.tutorProfileId,
-      prefillModule: pendingTutorModuleAdd.moduleValue,
+  const savePendingTutorModule = async () => {
+    if (!pendingTutorModuleAdd || pendingTutorModuleSaving) return;
+    const [groupIdx, rowIdx] = pendingTutorModuleCohort.split(':').map(item => Number(item));
+    const targetGroup = groups[groupIdx];
+    const targetRow = targetGroup?.rows[rowIdx];
+    if (!targetGroup || !targetRow) {
+      setPendingTutorModuleError('Please select a cohort first.');
+      return;
+    }
+    const groupBlocks = targetRow.blks.reduce<ModuleBlock[]>((items, block) => {
+      const key = tutorModuleGroupKey(block);
+      if (!items.some(item => tutorModuleGroupKey(item) === key)) {
+        items.push(block);
+      }
+      return items;
+    }, []);
+    const selectedGroupBlock = groupBlocks.find(block => tutorModuleGroupKey(block) === pendingTutorModuleGroup);
+    const shouldCreateGroup = pendingTutorModuleCreateGroup || groupBlocks.length === 0;
+    if (!shouldCreateGroup && !selectedGroupBlock) {
+      setPendingTutorModuleError('Please select a group before adding the module.');
+      return;
+    }
+    if (shouldCreateGroup && !pendingTutorModuleGroupDraft.name.trim()) {
+      setPendingTutorModuleError('Please enter the group name before adding the module.');
+      return;
+    }
+    if (shouldCreateGroup && pendingTutorModuleGroupDraft.days.length === 0) {
+      setPendingTutorModuleError('Please choose at least one session day.');
+      return;
+    }
+    if (!pendingTutorModuleStartDate) {
+      setPendingTutorModuleError('Please choose the module start date.');
+      return;
+    }
+
+    const tutorProfile = tutorProfiles.find(profile => profile.id === pendingTutorModuleAdd.tutorProfileId);
+    if (!tutorProfile) {
+      setPendingTutorModuleError('The selected tutor profile could not be found.');
+      return;
+    }
+
+    const catalogModule = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue);
+    const customModule = customModules.find(item => item.name === pendingTutorModuleAdd.moduleValue || item.id === pendingTutorModuleAdd.moduleValue);
+    const moduleMeta = getModuleMeta(pendingTutorModuleAdd.moduleValue);
+    const sessionCount = Math.max(1, parseInt(catalogModule?.sessions || String(customModule?.defaultSessions || 1), 10) || 1);
+    const days = shouldCreateGroup
+      ? pendingTutorModuleGroupDraft.days
+      : selectedGroupBlock?.days?.length ? selectedGroupBlock.days : (['monday'] as WeekDayKey[]);
+    const activeHolidays = holidays.filter(holiday => (targetRow.holidayIds || []).includes(holiday.id));
+    const plan = buildWeeklyTutorModulePlan(pendingTutorModuleStartDate, sessionCount, days, activeHolidays);
+    const nextGroupId = shouldCreateGroup ? `grp-${Date.now()}-${Math.random()}` : selectedGroupBlock?.groupId;
+    const nextBlock: ModuleBlock = {
+      id: `blk-${Date.now()}`,
+      groupId: nextGroupId,
+      mod: pendingTutorModuleAdd.moduleValue,
+      groupName: shouldCreateGroup ? pendingTutorModuleGroupDraft.name.trim() : selectedGroupBlock?.groupName,
+      coachName: shouldCreateGroup ? pendingTutorModuleGroupDraft.coach.trim() || undefined : selectedGroupBlock?.coachName,
+      color: catalogModule?.colour || customModule?.bg || moduleMeta.bg,
+      tutor: tutorProfile.name,
+      tutorProfileId: tutorProfile.id,
+      startDate: plan.actualStartDate || pendingTutorModuleStartDate,
+      endDate: plan.effectiveEndDate || plan.actualStartDate || pendingTutorModuleStartDate,
+      sessions: sessionCount,
+      days,
+      sessionStartTime: shouldCreateGroup ? pendingTutorModuleGroupDraft.startTime : selectedGroupBlock?.sessionStartTime || '09:00',
+      sessionEndTime: shouldCreateGroup ? pendingTutorModuleGroupDraft.endTime : selectedGroupBlock?.sessionEndTime || '11:00',
+      sessionKsbMappings: normalizeSessionKsbMappings(catalogModule?.sessionKsbMappings || [], sessionCount),
+      sessionCoverage: [],
+      notes: catalogModule?.notes || undefined,
+    };
+    const nextGroups = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+      ...group,
+      rows: group.rows.map((row, ri) => {
+        if (ri !== rowIdx) return row;
+        const endDateLbl = !row.endDateLbl || row.endDateLbl < nextBlock.endDate ? nextBlock.endDate : row.endDateLbl;
+        return { ...row, endDateLbl, blks: [...row.blks, nextBlock] };
+      }),
     });
-    setPendingTutorModuleAdd(null);
+
+    setPendingTutorModuleSaving(true);
+    setPendingTutorModuleError('');
+    try {
+      const saved = await persistTrainingPlan(nextGroups, true);
+      if (!saved) return;
+      setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+      setGroups(nextGroups);
+      setPendingTutorModuleAdd(null);
+      setPendingTutorModuleCohort('');
+      setPendingTutorModuleGroup('');
+      setPendingTutorModuleCreateGroup(false);
+      setPendingTutorModuleStartDate('');
+      await kbcSuccessSwal.fire({
+        icon: 'success',
+        title: 'Module added',
+        html: `<strong>${catalogModule?.name || moduleMeta.lbl}</strong> was added to <strong>${targetRow.label || 'the selected cohort'}</strong>.`,
+        confirmButtonText: 'OK',
+      });
+    } finally {
+      setPendingTutorModuleSaving(false);
+    }
   };
 
   const handleAddModule = async (mod: CustomModule) => {
@@ -2481,6 +2715,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleUpdateCatalogModule = async (mod: CatalogModule) => {
+    const previousModule = catalogModules.find(item => item.id === mod.id);
     const response = await fetch(`/api/modules/${mod.id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -2491,6 +2726,36 @@ export default function ApprenticeshipTimeline() {
       throw new Error(text || `Request failed with status ${response.status}`);
     }
     const updated = (await response.json()) as CatalogModule;
+
+    const previousName = previousModule?.name?.trim();
+    const nextName = updated.name.trim();
+    if (previousName && nextName && previousName !== nextName) {
+      const nextGroups = groups.map(group => ({
+        ...group,
+        rows: group.rows.map(row => ({
+          ...row,
+          blks: row.blks.map(block => (
+            String(block.mod).trim() === previousName
+              ? { ...block, mod: nextName }
+              : block
+          )),
+        })),
+      }));
+      const hasLinkedBlocks = nextGroups.some((group, groupIndex) =>
+        group.rows.some((row, rowIndex) =>
+          row.blks.some((block, blockIndex) => block.mod !== groups[groupIndex]?.rows[rowIndex]?.blks[blockIndex]?.mod)
+        )
+      );
+      if (hasLinkedBlocks) {
+        const timelineSaved = await persistTrainingPlan(nextGroups, true);
+        if (!timelineSaved) {
+          throw new Error('Module name was updated, but linked timeline rows could not be re-saved safely.');
+        }
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+        setGroups(nextGroups);
+      }
+    }
+
     setCatalogModules(prev => prev.map(m => m.id === updated.id ? updated : m));
   };
 
@@ -2816,7 +3081,7 @@ export default function ApprenticeshipTimeline() {
 
       {/* ── PAGE HEADER ─────────────────────────────────────────────────── */}
       <div className="bg-white border-b border-gray-200">
-        <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-4">
+        <div className="max-w-screen-xl mx-auto px-3 sm:px-4 md:px-6 py-3 sm:py-4">
           {/* Breadcrumb */}
           <div className="flex items-center gap-1.5 mb-3 text-xs text-gray-400">
             <Link to="/" className="hover:text-kbc-navy transition-colors cursor-pointer">Home</Link>
@@ -2826,7 +3091,7 @@ export default function ApprenticeshipTimeline() {
             <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="flex items-start justify-between gap-4 flex-wrap xl:flex-nowrap">
+          <div className="flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
                 <i className="ri-time-line text-white text-base" />
@@ -2839,7 +3104,7 @@ export default function ApprenticeshipTimeline() {
               </div>
             </div>
 
-            <div className="hidden md:flex items-center gap-2 ml-3 flex-wrap">
+            <div className="training-plan-action-row w-full md:w-auto md:flex md:flex-wrap md:overflow-visible md:pb-0 md:ml-3">
               {[
                 { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
                 { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
@@ -2914,7 +3179,7 @@ export default function ApprenticeshipTimeline() {
           </div>
 
           {/* Action buttons */}
-          <div className="flex flex-wrap gap-2 items-center xl:hidden">
+          <div className="training-plan-action-row mt-3 xl:hidden">
             {canManageCohorts && (
               <button
                 onClick={() => setShowHolidayMgr(true)}
@@ -3001,9 +3266,9 @@ export default function ApprenticeshipTimeline() {
         </div>
       </div>
 
-      <main className="max-w-screen-2xl mx-auto px-4 md:px-6 py-5 space-y-4">
+      <main className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
         {/* Today's Sessions */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
           <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
           {isInitialProgrammesLoading ? (
             <div className="mt-3 space-y-3 animate-pulse">
@@ -3022,14 +3287,14 @@ export default function ApprenticeshipTimeline() {
           ) : (
             <ul className="mt-3 divide-y">
               {todaySessions.map((s, i) => (
-                <li key={i} className="flex items-center justify-between py-2">
-                  <div>
+                <li key={i} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <p className="text-sm font-semibold">{s.groupName}</p>
                     <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
                     <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
                     <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
                   </div>
-                  <div className="text-right">
+                  <div className="text-left sm:text-right">
                     <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
                   </div>
                 </li>
@@ -3039,8 +3304,8 @@ export default function ApprenticeshipTimeline() {
         </div>
 
         {/* Tab switcher */}
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-gray-200 rounded-lg p-1">
-          <div className="flex items-center gap-1 min-w-0">
+        <div className="flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
+          <div className="training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0">
             {([
               { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
               { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
@@ -3058,7 +3323,7 @@ export default function ApprenticeshipTimeline() {
             ))}
           </div>
           {canManageCohorts && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="training-plan-action-row lg:overflow-visible lg:pb-0">
               <button
                 onClick={() => setShowHolidayMgr(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
@@ -3108,12 +3373,13 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <>
               <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
-              <div className="bg-white rounded-xl overflow-visible border border-gray-200">
+              <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200">
                 <GanttTimeline
                   groups={groups}
                   holidays={holidays}
                   customModules={customModules}
                   catalogModules={catalogModules}
+                  tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
                   zoom={zoom}
                   onZoomChange={setZoom}
                   onManageHolidays={() => setShowHolidayMgr(true)}
@@ -3310,7 +3576,7 @@ export default function ApprenticeshipTimeline() {
 
       {canManageCohorts && pendingTutorModuleAdd && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[4px]" onClick={() => setPendingTutorModuleAdd(null)} />
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[4px]" />
           <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="bg-kbc-navy px-5 py-4 text-white">
               <div className="flex items-start justify-between gap-3">
@@ -3327,7 +3593,9 @@ export default function ApprenticeshipTimeline() {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               {(() => {
-                const moduleName = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue)?.name
+                const catalogModule = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue);
+                const customModule = customModules.find(item => item.name === pendingTutorModuleAdd.moduleValue || item.id === pendingTutorModuleAdd.moduleValue);
+                const moduleName = catalogModule?.name
                   || (pendingTutorModuleAdd.moduleValue in MS ? getModuleMeta(pendingTutorModuleAdd.moduleValue as MKey).lbl : String(pendingTutorModuleAdd.moduleValue));
                 const tutorName = tutorProfiles.find(profile => profile.id === pendingTutorModuleAdd.tutorProfileId)?.name || 'Selected tutor';
                 const cohortRows = groups.flatMap((group, groupIdx) => group.rows.map((row, rowIdx) => ({
@@ -3343,63 +3611,270 @@ export default function ApprenticeshipTimeline() {
                   ].filter(Boolean).join(' - '),
                   groupsText: Array.from(new Set(row.blks.map(block => block.groupName).filter(Boolean))).join(', '),
                 })));
-                const query = cohortChoiceSearch.trim().toLowerCase();
-                const filteredRows = cohortRows.filter(item => !query || `${item.label} ${item.meta} ${item.groupsText}`.toLowerCase().includes(query));
+                const cohortOptions = cohortRows.map(item => ({
+                  value: `${item.groupIdx}:${item.rowIdx}`,
+                  label: item.label,
+                  description: item.meta || 'No dates yet',
+                  color: item.row.color || item.group.color,
+                }));
+                const [selectedGroupIdx, selectedRowIdx] = pendingTutorModuleCohort.split(':').map(item => Number(item));
+                const selectedCohort = cohortRows.find(item => item.groupIdx === selectedGroupIdx && item.rowIdx === selectedRowIdx);
+                const selectedGroupBlocks = selectedCohort?.row.blks.reduce<ModuleBlock[]>((items, block) => {
+                  const key = tutorModuleGroupKey(block);
+                  if (!items.some(item => tutorModuleGroupKey(item) === key)) {
+                    items.push(block);
+                  }
+                  return items;
+                }, []) || [];
+                const groupOptions = selectedGroupBlocks.map(block => ({
+                  value: tutorModuleGroupKey(block),
+                  label: block.groupName || 'No group name',
+                  description: [
+                    block.coachName ? `Coach: ${block.coachName}` : 'Coach: TBD',
+                    block.days?.length ? block.days.join(', ') : 'monday',
+                    `${block.sessionStartTime || '09:00'} - ${block.sessionEndTime || '11:00'}`,
+                  ].join(' - '),
+                  color: block.color || selectedCohort?.row.color || selectedCohort?.group.color || '#1B2A4A',
+                }));
+                const selectedSourceBlock = selectedGroupBlocks.find(block => tutorModuleGroupKey(block) === pendingTutorModuleGroup);
+                const shouldCreateGroup = pendingTutorModuleCreateGroup || groupOptions.length === 0;
+                const selectedDays = shouldCreateGroup
+                  ? pendingTutorModuleGroupDraft.days
+                  : selectedSourceBlock?.days?.length ? selectedSourceBlock.days : (['monday'] as WeekDayKey[]);
+                const sessionCount = Math.max(1, parseInt(catalogModule?.sessions || String(customModule?.defaultSessions || 1), 10) || 1);
+                const activeHolidays = selectedCohort ? holidays.filter(holiday => (selectedCohort.row.holidayIds || []).includes(holiday.id)) : [];
+                const previewPlan = pendingTutorModuleStartDate
+                  ? buildWeeklyTutorModulePlan(pendingTutorModuleStartDate, sessionCount, selectedDays, activeHolidays)
+                  : null;
                 return (
                   <>
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                       <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Selected</p>
-                      <p className="mt-1 text-sm font-extrabold text-kbc-navy">{moduleName}</p>
-                      <p className="mt-1 text-xs font-semibold text-slate-500">{tutorName}</p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleAddTutorModuleToNewCohort}
-                      className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-kbc-navy bg-kbc-navy px-4 py-3 text-left text-white"
-                    >
-                      <span>
-                        <span className="block text-sm font-extrabold">Create New Cohort</span>
-                        <span className="mt-0.5 block text-xs font-semibold text-white/70">Start a new cohort with this module and tutor already selected.</span>
-                      </span>
-                      <i className="ri-add-line text-lg" />
-                    </button>
-
-                    <div className="mt-5">
-                      <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 focus-within:border-kbc-navy focus-within:ring-2 focus-within:ring-kbc-navy/10">
-                        <i className="ri-search-line text-sm text-gray-400" />
-                        <input
-                          type="search"
-                          value={cohortChoiceSearch}
-                          onChange={event => setCohortChoiceSearch(event.target.value)}
-                          placeholder="Search existing cohorts..."
-                          className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400"
-                        />
+                      <div className="mt-2 grid gap-3 md:grid-cols-2">
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Module</p>
+                          <p className="mt-1 text-sm font-extrabold text-kbc-navy">{moduleName}</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-500">{sessionCount} sessions</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Tutor</p>
+                          <p className="mt-1 text-sm font-extrabold text-kbc-navy">{tutorName}</p>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="mt-3 space-y-2">
-                      {filteredRows.map(item => (
-                        <button
-                          key={`${item.group.id}-${item.row.id}-${item.rowIdx}`}
-                          type="button"
-                          onClick={() => handleAddTutorModuleToExistingCohort(item.groupIdx, item.rowIdx)}
-                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-left transition-colors hover:border-kbc-navy/30 hover:bg-slate-50"
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-extrabold text-kbc-navy">{item.label}</span>
-                            <span className="mt-1 block text-xs font-semibold text-slate-500">{item.meta || 'No dates yet'}</span>
-                            {item.groupsText && <span className="mt-1 block truncate text-xs text-slate-400">Groups: {item.groupsText}</span>}
-                          </span>
-                          <i className="ri-arrow-right-s-line text-lg text-slate-400" />
-                        </button>
-                      ))}
-                      {!filteredRows.length && (
-                        <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center">
-                          <p className="text-sm font-bold text-kbc-navy">No matching cohorts</p>
-                          <p className="mt-1 text-xs text-gray-500">Create a new cohort instead.</p>
+                    {cohortOptions.length ? (
+                      <div className="mt-5 grid gap-4">
+                        <div>
+                          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.14em] text-gray-600">Cohort</label>
+                          <SelectField
+                            value={pendingTutorModuleCohort}
+                            options={cohortOptions}
+                            placeholder="Select cohort"
+                            label="Existing cohorts"
+                            searchPlaceholder="Search cohorts..."
+                            accentColor="#1B2A4A"
+                            onChange={value => {
+                              setPendingTutorModuleCohort(value);
+                              setPendingTutorModuleGroup('');
+                              setPendingTutorModuleCreateGroup(false);
+                              setPendingTutorModuleError('');
+                            }}
+                          />
                         </div>
-                      )}
+
+                        {selectedCohort && (
+                          <div>
+                            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.14em] text-gray-600">Group</label>
+                            <div className="mb-3 grid grid-cols-2 rounded-xl border border-gray-200 bg-gray-50 p-1">
+                              <button
+                                type="button"
+                                disabled={groupOptions.length === 0}
+                                onClick={() => {
+                                  setPendingTutorModuleCreateGroup(false);
+                                  setPendingTutorModuleGroup('');
+                                  setPendingTutorModuleError('');
+                                }}
+                                className={`rounded-lg px-3 py-2 text-xs font-extrabold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${!shouldCreateGroup ? 'bg-kbc-navy text-white shadow-sm' : 'text-gray-500 hover:bg-white'}`}
+                              >
+                                Use existing group
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingTutorModuleCreateGroup(true);
+                                  setPendingTutorModuleGroup('');
+                                  setPendingTutorModuleError('');
+                                }}
+                                className={`rounded-lg px-3 py-2 text-xs font-extrabold transition-colors ${shouldCreateGroup ? 'bg-kbc-navy text-white shadow-sm' : 'text-gray-500 hover:bg-white'}`}
+                              >
+                                Create new group
+                              </button>
+                            </div>
+                            {!shouldCreateGroup && groupOptions.length > 0 ? (
+                              <SelectField
+                                value={pendingTutorModuleGroup}
+                                options={groupOptions}
+                                placeholder="Select group first"
+                                label="Existing groups"
+                                searchPlaceholder="Search groups..."
+                                accentColor="#1B2A4A"
+                                onChange={value => {
+                                  setPendingTutorModuleGroup(value);
+                                  setPendingTutorModuleError('');
+                                }}
+                              />
+                            ) : (
+                              <div className="grid gap-3 rounded-xl border border-gray-200 bg-white p-3 md:grid-cols-2">
+                                <div>
+                                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-gray-500">Group Name</label>
+                                  <input
+                                    value={pendingTutorModuleGroupDraft.name}
+                                    onChange={event => {
+                                      setPendingTutorModuleGroupDraft(prev => ({ ...prev, name: event.target.value }));
+                                      setPendingTutorModuleError('');
+                                    }}
+                                    placeholder="e.g. G1 - Friday"
+                                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-kbc-navy outline-none focus:border-kbc-navy"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-gray-500">Coach</label>
+                                  <input
+                                    value={pendingTutorModuleGroupDraft.coach}
+                                    onChange={event => setPendingTutorModuleGroupDraft(prev => ({ ...prev, coach: event.target.value }))}
+                                    placeholder="Coach name"
+                                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-kbc-navy outline-none focus:border-kbc-navy"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-gray-500">Days</label>
+                                  <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                                    {(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as WeekDayKey[]).map(day => {
+                                      const checked = pendingTutorModuleGroupDraft.days.includes(day);
+                                      return (
+                                        <label key={day} className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs font-bold capitalize ${checked ? 'bg-kbc-navy text-white' : 'bg-white text-gray-600'}`}>
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => {
+                                              setPendingTutorModuleGroupDraft(prev => {
+                                                const nextDays = prev.days.includes(day)
+                                                  ? prev.days.filter(item => item !== day)
+                                                  : [...prev.days, day];
+                                                return { ...prev, days: nextDays };
+                                              });
+                                              setPendingTutorModuleError('');
+                                            }}
+                                            className="h-3.5 w-3.5 accent-kbc-navy"
+                                          />
+                                          {day}
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-gray-500">Start</label>
+                                    <input
+                                      type="time"
+                                      value={pendingTutorModuleGroupDraft.startTime}
+                                      onChange={event => setPendingTutorModuleGroupDraft(prev => ({ ...prev, startTime: event.target.value }))}
+                                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-kbc-navy outline-none focus:border-kbc-navy"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-gray-500">End</label>
+                                    <input
+                                      type="time"
+                                      value={pendingTutorModuleGroupDraft.endTime}
+                                      onChange={event => setPendingTutorModuleGroupDraft(prev => ({ ...prev, endTime: event.target.value }))}
+                                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-kbc-navy outline-none focus:border-kbc-navy"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.14em] text-gray-600">Module Start Date</label>
+                            <DateField
+                              value={pendingTutorModuleStartDate}
+                              onChange={value => {
+                                setPendingTutorModuleStartDate(value);
+                                setPendingTutorModuleError('');
+                              }}
+                              placeholder="Choose start date"
+                              error={pendingTutorModuleError && !pendingTutorModuleStartDate ? pendingTutorModuleError : undefined}
+                              accentColor="#1B2A4A"
+                            />
+                          </div>
+                          <div>
+                            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-gray-600">Module End Date</p>
+                            <div className="flex h-10 items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm font-bold text-kbc-navy">
+                              {previewPlan?.effectiveEndDate ? formatDate(previewPlan.effectiveEndDate) : 'Auto after start date'}
+                            </div>
+                            <p className="mt-1 text-xs font-semibold text-gray-400">
+                              {selectedDays.join(', ')} weekly schedule
+                              {previewPlan?.actualStartDate && previewPlan.actualStartDate !== pendingTutorModuleStartDate ? ` - first actual session ${formatDate(previewPlan.actualStartDate)}` : ''}
+                              {previewPlan?.shiftedSessions ? ` - ${previewPlan.shiftedSessions} holiday shift${previewPlan.shiftedSessions === 1 ? '' : 's'}` : ''}
+                            </p>
+                          </div>
+                        </div>
+
+                        {selectedCohort && (
+                          <div className="rounded-xl border border-gray-200 bg-white p-4">
+                            <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Will be added to</p>
+                            <p className="mt-1 text-sm font-extrabold text-kbc-navy">{selectedCohort.label}</p>
+                            <p className="mt-1 text-xs font-semibold text-gray-500">{selectedCohort.meta || 'No dates yet'}</p>
+                            {selectedCohort.groupsText && <p className="mt-1 text-xs text-gray-400">Groups: {selectedCohort.groupsText}</p>}
+                          </div>
+                        )}
+
+                        {pendingTutorModuleError && pendingTutorModuleStartDate && (
+                          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{pendingTutorModuleError}</p>
+                        )}
+                        {pendingTutorModuleError && !pendingTutorModuleStartDate && (
+                          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{pendingTutorModuleError}</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center">
+                        <p className="text-sm font-bold text-kbc-navy">No cohorts available yet</p>
+                        <p className="mt-1 text-xs text-gray-500">Create a cohort first, then add this module to the tutor.</p>
+                        <button
+                          type="button"
+                          onClick={handleAddTutorModuleToNewCohort}
+                          className="mt-4 inline-flex items-center gap-2 rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white"
+                        >
+                          <i className="ri-add-line" />
+                          Create New Cohort
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="mt-5 flex items-center justify-end gap-2 border-t border-gray-100 pt-4">
+                      <button
+                        type="button"
+                        onClick={() => setPendingTutorModuleAdd(null)}
+                        disabled={pendingTutorModuleSaving}
+                        className="rounded-lg px-4 py-2 text-sm font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void savePendingTutorModule()}
+                        disabled={pendingTutorModuleSaving || !cohortOptions.length}
+                        className="inline-flex items-center gap-2 rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+                      >
+                        {pendingTutorModuleSaving && <i className="ri-loader-4-line animate-spin" />}
+                        {pendingTutorModuleSaving ? 'Saving...' : 'Save Module'}
+                      </button>
                     </div>
                   </>
                 );
@@ -3452,6 +3927,7 @@ export default function ApprenticeshipTimeline() {
       {canManageCohorts && showKsbProfiles && (
         <KsbProfilesManager
           profiles={ksbProfiles}
+          programmeOptions={groups.map(group => group.name.replace(/\s+/g, ' ').trim()).filter(Boolean)}
           onCreate={createKsbProfile}
           onUpdate={updateKsbProfile}
           onDelete={deleteKsbProfile}

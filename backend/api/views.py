@@ -743,6 +743,26 @@ def tutor_similarity(a: str, b: str) -> float:
 	return SequenceMatcher(None, a_normalized, b_normalized).ratio()
 
 
+def is_probable_tutor_profile_match(name: str, profile_name: str, *, threshold: float = 0.86) -> bool:
+	name_normalized = normalize_tutor_profile_name(name)
+	profile_normalized = normalize_tutor_profile_name(profile_name)
+	if not name_normalized or not profile_normalized:
+		return False
+	if name_normalized == profile_normalized:
+		return True
+
+	score = tutor_similarity(name_normalized, profile_normalized)
+	shorter = min(len(name_normalized), len(profile_normalized))
+	first_token = name_normalized.split(' ', 1)[0]
+	profile_first_token = profile_normalized.split(' ', 1)[0]
+
+	if shorter <= 5:
+		if first_token[:1] != profile_first_token[:1]:
+			return score >= 0.95
+		return score >= 0.9
+	return score >= threshold
+
+
 def serialize_tutor_profile(item: TutorProfile, session_counts: dict[int, int] | None = None) -> dict:
 	return {
 		'id': str(item.id),
@@ -774,13 +794,13 @@ def tutor_profile_session_counts() -> dict[int, int]:
 	return counts
 
 
-def possible_tutor_profile_matches(name: str, *, exclude_id: int | None = None, threshold: float = 0.72) -> list[dict]:
+def possible_tutor_profile_matches(name: str, *, exclude_id: int | None = None, threshold: float = 0.86) -> list[dict]:
 	matches = []
 	for profile in TutorProfile.objects.filter(is_active=True).order_by('name', 'id'):
 		if exclude_id is not None and int(profile.id) == int(exclude_id):
 			continue
 		score = tutor_similarity(name, profile.name)
-		if score >= threshold:
+		if is_probable_tutor_profile_match(name, profile.name, threshold=threshold):
 			matches.append({'profile': profile, 'score': round(score, 3), 'exact': normalize_tutor_profile_name(name) == profile.normalized_name})
 	return sorted(matches, key=lambda item: (-item['score'], item['profile'].name.lower()))
 

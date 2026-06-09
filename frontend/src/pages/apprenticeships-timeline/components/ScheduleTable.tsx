@@ -36,6 +36,16 @@ interface TutorSessionOccurrence {
   conflictTime?: string;
 }
 
+interface CoverageConflict {
+  role: 'Assigned tutor' | 'Coverage tutor';
+  date: string;
+  time: string;
+  module: string;
+  programme: string;
+  cohort: string;
+  groupName?: string;
+}
+
 interface CurrentTutorModule {
   blockId: string;
   module: string;
@@ -421,10 +431,12 @@ function getCoverageForSession(block: ModuleBlock, sessionNumber: number, assign
   const existing = (block.sessionCoverage || []).find(item => item.sessionNumber === sessionNumber);
   if (!existing) return undefined;
   const coverageTutorProfileId = existing.coverageTutorProfileId || '';
+  const tutorUnavailable = Boolean(existing.tutorUnavailable) || Boolean(coverageTutorProfileId);
   return {
     ...existing,
     assignedTutorProfileId: existing.assignedTutorProfileId || assignedTutorProfileId,
-    coverageStatus: coverageTutorProfileId ? 'covered' : existing.tutorUnavailable ? 'required' : 'none',
+    tutorUnavailable,
+    coverageStatus: coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none',
   };
 }
 
@@ -644,16 +656,18 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
 
   const openCoverageEditor = (row: DerivedScheduleRow, session: SessionInstance) => {
     const existing = session.coverage || row.currentCoverage;
+    const hasCoverageTutor = Boolean(existing?.coverageTutorProfileId);
+    const tutorUnavailable = Boolean(existing?.tutorUnavailable) || hasCoverageTutor;
     setCoverageDraft({
       sessionNumber: session.number,
       assignedTutorProfileId: row.assignedTutorProfileId,
       coverageTutorProfileId: existing?.coverageTutorProfileId || '',
-      coverageStatus: existing?.coverageStatus || 'none',
-      tutorUnavailable: Boolean(existing?.tutorUnavailable),
-      tutorUnavailableReason: existing?.tutorUnavailableReason || '',
-      tutorUnavailableNotes: existing?.tutorUnavailableNotes || '',
-      coverageReason: existing?.coverageReason || '',
-      coverageNotes: existing?.coverageNotes || '',
+      coverageStatus: hasCoverageTutor ? 'covered' : tutorUnavailable ? 'required' : 'none',
+      tutorUnavailable,
+      tutorUnavailableReason: tutorUnavailable ? existing?.tutorUnavailableReason || '' : '',
+      tutorUnavailableNotes: tutorUnavailable ? existing?.tutorUnavailableNotes || '' : '',
+      coverageReason: hasCoverageTutor ? existing?.coverageReason || '' : '',
+      coverageNotes: hasCoverageTutor ? existing?.coverageNotes || '' : '',
     });
     setCoverageError('');
     setCreateTutorName('');
@@ -662,17 +676,59 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
 
   const coverageTutorName = (profileId?: string) => tutorProfiles.find(profile => profile.id === profileId)?.name || '';
 
-  const hasCoverageConflict = (profileId: string, row: DerivedScheduleRow, session: SessionInstance) => groups.some(group =>
-    group.rows.some(cohort =>
-      cohort.blks.some(block => {
-        if (block.id === row.blockId) return false;
-        const assignedProfile = resolveTutorProfile(block, tutorProfiles);
-        const assignedId = assignedProfile?.id || block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles);
-        if (assignedId !== profileId) return false;
-        if (!getSessionDates(block).includes(session.date)) return false;
-        return timeRangesOverlap(block.sessionStartTime || '09:00', block.sessionEndTime || '11:00', row.sessionStartTime, row.sessionEndTime);
-      }),
-    )
+  const getCoverageConflict = (profileId: string, row: DerivedScheduleRow, session: SessionInstance): CoverageConflict | null => {
+    if (!profileId) return null;
+
+    for (const group of groups) {
+      for (const cohort of group.rows) {
+        for (const block of cohort.blks) {
+          const sessionDates = getSessionDates(block);
+          const startTime = block.sessionStartTime || '09:00';
+          const endTime = block.sessionEndTime || '11:00';
+          if (!timeRangesOverlap(startTime, endTime, row.sessionStartTime, row.sessionEndTime)) {
+            continue;
+          }
+
+          const assignedProfile = resolveTutorProfile(block, tutorProfiles);
+          const assignedId = assignedProfile?.id || block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles);
+          if (block.id !== row.blockId && assignedId === profileId && sessionDates.includes(session.date)) {
+            return {
+              role: 'Assigned tutor',
+              date: session.date,
+              time: formatTimeRange(startTime, endTime),
+              module: getModuleMeta(block.mod).lbl,
+              programme: programmeLabelFromGroupName(group.name),
+              cohort: cohort.label,
+              groupName: (block.groupName || cohort.label || '').trim() || undefined,
+            };
+          }
+
+          const conflictingCoverage = (block.sessionCoverage || []).find(item => {
+            if (block.id === row.blockId && item.sessionNumber === session.number) return false;
+            const coverageDate = sessionDates[item.sessionNumber - 1];
+            return item.coverageTutorProfileId === profileId && coverageDate === session.date;
+          });
+
+          if (conflictingCoverage) {
+            return {
+              role: 'Coverage tutor',
+              date: session.date,
+              time: formatTimeRange(startTime, endTime),
+              module: getModuleMeta(block.mod).lbl,
+              programme: programmeLabelFromGroupName(group.name),
+              cohort: cohort.label,
+              groupName: (block.groupName || cohort.label || '').trim() || undefined,
+            };
+          }
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const coverageConflictMessage = (conflict: CoverageConflict) => (
+    `This tutor already has ${conflict.role.toLowerCase()} work on ${formatDisplayDate(conflict.date)} (${conflict.time}) for ${conflict.module} - ${conflict.programme}${conflict.groupName ? ` - ${conflict.groupName}` : ''}.`
   );
 
   const getCoverageSuggestions = (row: DerivedScheduleRow, session: SessionInstance) => {
@@ -696,7 +752,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
         }
       })));
 
-      const hasConflict = hasCoverageConflict(profile.id, row, session);
+      const conflict = getCoverageConflict(profile.id, row, session);
+      const hasConflict = Boolean(conflict);
       const score = (hasConflict ? -1000 : 0) + (sameModuleSessions * 6) + (sameProgrammeSessions * 3) + Math.min(totalAssignedSessions, 80) / 10;
       const reasons = [
         sameModuleSessions ? `${sameModuleSessions} session${sameModuleSessions === 1 ? '' : 's'} in this module` : '',
@@ -704,18 +761,38 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
         totalAssignedSessions ? `${totalAssignedSessions} total assigned sessions` : 'No assigned sessions yet',
       ].filter(Boolean);
 
-      return { profile, hasConflict, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
+      return { profile, hasConflict, conflict, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
     }).sort((a, b) => b.score - a.score || a.profile.name.localeCompare(b.profile.name));
   };
 
   const coverageSuggestions = coverageEditor ? getCoverageSuggestions(coverageEditor.row, coverageEditor.session).slice(0, 8) : [];
+  const coverageTutorOptions = coverageEditor
+    ? tutorOptions
+      .filter(option => option.value !== coverageEditor.row.assignedTutorProfileId)
+      .map(option => {
+        const conflict = getCoverageConflict(option.value, coverageEditor.row, coverageEditor.session);
+        return {
+          ...option,
+          description: conflict ? `Conflict: ${conflict.module} - ${conflict.time}` : option.description,
+          color: conflict ? '#DC2626' : option.color,
+        };
+      })
+    : [];
 
   const saveCoverageDraft = async () => {
     if (!coverageEditor || !coverageDraft || !onUpdateSessionCoverage) return;
-    const coverageTutorProfileId = coverageDraft.coverageTutorProfileId || '';
+    const tutorUnavailable = Boolean(coverageDraft.tutorUnavailable);
+    const coverageTutorProfileId = tutorUnavailable ? coverageDraft.coverageTutorProfileId || '' : '';
     if (coverageTutorProfileId && coverageTutorProfileId === coverageDraft.assignedTutorProfileId) {
       setCoverageError('Coverage tutor cannot be the same as assigned tutor.');
       return;
+    }
+    if (coverageTutorProfileId) {
+      const conflict = getCoverageConflict(coverageTutorProfileId, coverageEditor.row, coverageEditor.session);
+      if (conflict) {
+        setCoverageError(coverageConflictMessage(conflict));
+        return;
+      }
     }
     if (coverageTutorProfileId && !coverageDraft.coverageReason?.trim()) {
       setCoverageError('Coverage reason is required when a coverage tutor is selected.');
@@ -724,9 +801,12 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
     const normalized: SessionCoverage = {
       ...coverageDraft,
       coverageTutorProfileId,
-      coverageStatus: coverageTutorProfileId ? 'covered' : coverageDraft.tutorUnavailable ? 'required' : 'none',
-      coverageReason: coverageDraft.coverageReason?.trim() || '',
-      coverageNotes: coverageDraft.coverageNotes?.trim() || '',
+      coverageStatus: coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none',
+      tutorUnavailable,
+      tutorUnavailableReason: tutorUnavailable ? coverageDraft.tutorUnavailableReason?.trim() || '' : '',
+      tutorUnavailableNotes: tutorUnavailable ? coverageDraft.tutorUnavailableNotes?.trim() || '' : '',
+      coverageReason: coverageTutorProfileId ? coverageDraft.coverageReason?.trim() || '' : '',
+      coverageNotes: coverageTutorProfileId ? coverageDraft.coverageNotes?.trim() || '' : '',
     };
     setCoverageSaving(true);
     try {
@@ -742,9 +822,20 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
 
   const createCoverageTutor = async () => {
     if (!onCreateTutorProfile || !createTutorName.trim()) return;
+    if (!coverageDraft?.tutorUnavailable) {
+      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+      return;
+    }
     const result = await onCreateTutorProfile({ name: createTutorName.trim() });
     const profile = 'id' in result ? result : result.possibleExistingProfile || result.existingProfile;
     if (profile) {
+      if (coverageEditor) {
+        const conflict = getCoverageConflict(profile.id, coverageEditor.row, coverageEditor.session);
+        if (conflict) {
+          setCoverageError(coverageConflictMessage(conflict));
+          return;
+        }
+      }
       setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: profile.id } : prev);
       setCreateTutorName('');
     }
@@ -932,8 +1023,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
   );
 
   return (
-    <div className="bg-white rounded-xl overflow-visible border border-gray-300">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200" style={{ background: '#F9FAFB' }}>
+    <div className="bg-white rounded-xl overflow-hidden border border-gray-300">
+      <div className="flex items-center justify-between px-3 py-3 border-b border-gray-200 sm:px-5" style={{ background: '#F9FAFB' }}>
         <div>
           <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
           <p className="text-xs text-gray-400 mt-0.5">{rows.length} current module{rows.length !== 1 ? 's' : ''} running today</p>
@@ -941,7 +1032,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
       </div>
 
       {/* Today's sessions container */}
-      <div className="px-5 py-4 border-b bg-white">
+      <div className="px-3 py-4 border-b bg-white sm:px-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h4 className="text-sm font-bold text-kbc-navy">This Week / Session Status</h4>
@@ -956,9 +1047,9 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
               <li
                 key={`${s.cohort}-${s.module}-${i}`}
                 onClick={() => setSelectedRow(s)}
-                className={`flex items-center justify-between px-3 py-2 rounded cursor-pointer transition-colors ${isFinishedRow(s) ? 'bg-emerald-50 ring-1 ring-emerald-100 hover:bg-emerald-100' : 'bg-gray-50 hover:bg-amber-50'}`}
+                className={`flex flex-col gap-2 px-3 py-2 rounded cursor-pointer transition-colors sm:flex-row sm:items-center sm:justify-between ${isFinishedRow(s) ? 'bg-emerald-50 ring-1 ring-emerald-100 hover:bg-emerald-100' : 'bg-gray-50 hover:bg-amber-50'}`}
               >
-                <div>
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-semibold text-gray-800">{s.module}</p>
                     {isFinishedRow(s) && (
@@ -974,7 +1065,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                   {!s.hasRealSessionName && <p className="text-[11px] text-amber-700 mt-0.5">{s.missingSessionNameReason}</p>}
                   <p className="text-xs text-gray-500">{s.cohort} · {s.programme}</p>
                 </div>
-                <div className="text-right">
+                <div className="text-left sm:text-right">
                   {(() => {
                     const cell = getRowSessionCell(s);
                     return (
@@ -1016,7 +1107,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
         </div>
       </div>
 
-      <div ref={scrollRef} className="overflow-x-auto" onScroll={handleTableScroll}>
+      <div ref={scrollRef} className="max-h-[calc(100vh-210px)] overflow-auto" onScroll={handleTableScroll}>
         <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }}>
           {renderColumnGroup()}
           <tbody>
@@ -1076,12 +1167,14 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                         {!row.hasRealSessionName && <p className="text-[11px] text-amber-700 mt-0.5">{row.missingSessionNameReason}</p>}
                         {row.sessionDescription && <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{row.sessionDescription}</p>}
                         <div className="mt-1 flex flex-wrap gap-1">
-                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">Assigned</span>
+                          {(!isFinishedRow(row) || row.currentCoverage?.tutorUnavailable || row.currentCoverage?.coverageStatus === 'required' || row.currentCoverage?.coverageTutorProfileId) && (
+                            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">Primary Tutor</span>
+                          )}
                           {row.currentCoverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
                           {row.currentCoverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
                           {row.currentCoverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(row.currentCoverage.coverageTutorProfileId)}</span>}
                         </div>
-                        {canEdit && onUpdateSessionCoverage && (
+                        {canEdit && onUpdateSessionCoverage && !isFinishedRow(row) && (
                           <button
                             type="button"
                             onClick={(event) => {
@@ -1283,7 +1376,9 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                               <p className="mt-0.5 text-xs opacity-80">{formatDisplayDate(session.date)}</p>
                               {session.description && <p className="mt-1 text-xs opacity-80">{session.description}</p>}
                               <div className="mt-2 flex flex-wrap gap-1">
-                                <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-extrabold">Assigned</span>
+                                {(session.status !== 'completed' || session.coverage?.tutorUnavailable || session.coverage?.coverageStatus === 'required' || session.coverage?.coverageTutorProfileId) && (
+                                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-extrabold">Primary Tutor</span>
+                                )}
                                 {session.coverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
                                 {session.coverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
                                 {session.coverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(session.coverage.coverageTutorProfileId)}</span>}
@@ -1293,7 +1388,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                               <span className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-bold capitalize">
                                 {session.status}
                               </span>
-                              {canEdit && onUpdateSessionCoverage && (
+                              {canEdit && onUpdateSessionCoverage && session.status !== 'completed' && (
                                 <button
                                   type="button"
                                   onClick={() => openCoverageEditor(selectedRow, session)}
@@ -1318,8 +1413,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
       {coverageEditor && coverageDraft && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[4px]" onClick={() => setCoverageEditor(null)} />
-          <div className="relative w-full max-w-xl overflow-hidden rounded-xl bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+          <div className="relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="shrink-0 flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
               <div>
                 <p className="text-xs font-semibold text-white/60">{coverageEditor.row.module} - Session {coverageEditor.session.number}</p>
                 <h3 className="mt-1 text-base font-extrabold text-white">Tutor Coverage</h3>
@@ -1329,12 +1424,23 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
-            <div className="space-y-4 bg-gray-50 p-5">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 p-5">
               <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700">
                 <input
                   type="checkbox"
                   checked={coverageDraft.tutorUnavailable}
-                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, tutorUnavailable: event.target.checked } : prev)}
+                  onChange={event => {
+                    const checked = event.target.checked;
+                    setCoverageDraft(prev => prev ? {
+                      ...prev,
+                      tutorUnavailable: checked,
+                      tutorUnavailableReason: checked ? prev.tutorUnavailableReason : '',
+                      coverageTutorProfileId: checked ? prev.coverageTutorProfileId : '',
+                      coverageReason: checked ? prev.coverageReason : '',
+                      coverageNotes: checked ? prev.coverageNotes : '',
+                    } : prev);
+                    setCoverageError('');
+                  }}
                 />
                 Assigned tutor unavailable
               </label>
@@ -1343,12 +1449,18 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                 <input
                   value={coverageDraft.tutorUnavailableReason || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, tutorUnavailableReason: event.target.value } : prev)}
+                  disabled={!coverageDraft.tutorUnavailable}
                   className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
                   placeholder="e.g. sickness, annual leave"
                 />
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Tutor</label>
+                {!coverageDraft.tutorUnavailable && (
+                  <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
+                    Mark the assigned tutor as unavailable before assigning coverage.
+                  </div>
+                )}
                 <div className="mb-3 rounded-xl border border-gray-200 bg-white">
                   <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
                     <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Doctors</p>
@@ -1356,22 +1468,31 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                       {coverageSuggestions.filter(item => !item.hasConflict).length} available
                     </span>
                   </div>
-                  <div className="grid gap-2 p-2">
+                  <div className="grid max-h-64 gap-2 overflow-y-auto p-2">
                     {coverageSuggestions.map(suggestion => {
                       const selected = coverageDraft.coverageTutorProfileId === suggestion.profile.id;
                       return (
                         <button
                           key={suggestion.profile.id}
                           type="button"
+                          disabled={!coverageDraft.tutorUnavailable || suggestion.hasConflict}
                           onClick={() => {
+                            if (!coverageDraft.tutorUnavailable) {
+                              setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+                              return;
+                            }
+                            if (suggestion.conflict) {
+                              setCoverageError(coverageConflictMessage(suggestion.conflict));
+                              return;
+                            }
                             setCoverageDraft(prev => prev ? {
                               ...prev,
                               coverageTutorProfileId: suggestion.profile.id,
                               coverageReason: prev.coverageReason || `Suggested from Training Plan experience: ${suggestion.reasons.join(', ')}`,
                             } : prev);
-                            setCoverageError(suggestion.hasConflict ? 'This tutor already has a session at this time.' : '');
+                            setCoverageError('');
                           }}
-                          className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50"
+                          className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
                           style={{
                             borderColor: selected ? '#1B2A4A' : suggestion.hasConflict ? '#FCA5A5' : '#E5E7EB',
                             background: selected ? '#F8FAFC' : '#FFFFFF',
@@ -1389,6 +1510,9 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{suggestion.totalAssignedSessions} sessions</span>
                           </div>
                           <p className="mt-1 text-xs text-gray-500">{suggestion.reasons.join(' - ')}</p>
+                          {suggestion.conflict && (
+                            <p className="mt-1 text-xs font-bold text-red-600">{coverageConflictMessage(suggestion.conflict)}</p>
+                          )}
                         </button>
                       );
                     })}
@@ -1401,14 +1525,19 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                 </div>
                 <SelectField
                   value={coverageDraft.coverageTutorProfileId || ''}
-                  options={tutorOptions.filter(option => option.value !== coverageEditor.row.assignedTutorProfileId)}
+                  options={coverageDraft.tutorUnavailable ? coverageTutorOptions : []}
                   onChange={value => {
-                    setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: value } : prev);
-                    if (hasCoverageConflict(value, coverageEditor.row, coverageEditor.session)) {
-                      setCoverageError('This tutor already has a session at this time.');
-                    } else {
-                      setCoverageError('');
+                    if (!coverageDraft.tutorUnavailable) {
+                      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+                      return;
                     }
+                    const conflict = getCoverageConflict(value, coverageEditor.row, coverageEditor.session);
+                    if (conflict) {
+                      setCoverageError(coverageConflictMessage(conflict));
+                      return;
+                    }
+                    setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: value } : prev);
+                    setCoverageError('');
                   }}
                   placeholder="Select coverage tutor"
                   label="Tutor Profiles"
@@ -1435,6 +1564,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                 <input
                   value={coverageDraft.coverageReason || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageReason: event.target.value } : prev)}
+                  disabled={!coverageDraft.tutorUnavailable || !coverageDraft.coverageTutorProfileId}
                   className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
                   placeholder="Required when coverage tutor is selected"
                 />
@@ -1445,6 +1575,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                   rows={3}
                   value={coverageDraft.coverageNotes || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageNotes: event.target.value } : prev)}
+                  disabled={!coverageDraft.tutorUnavailable || !coverageDraft.coverageTutorProfileId}
                   className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
                 />
               </div>
@@ -1453,7 +1584,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
               )}
               {coverageError && <p className="text-xs font-bold text-red-600">{coverageError}</p>}
             </div>
-            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+            <div className="shrink-0 flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
               <button onClick={() => setCoverageEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
               <button disabled={coverageSaving} onClick={() => void saveCoverageDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
                 Save Coverage

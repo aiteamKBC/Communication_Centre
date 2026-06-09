@@ -1,5 +1,5 @@
 import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule } from '../types';
+import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
@@ -10,7 +10,7 @@ import {
 
 const LEFT_W    = 220;
 const TOP_NAV_H = 56;
-const ZOOM_BAR_H = 46;
+const ZOOM_BAR_H = 52;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
@@ -56,32 +56,34 @@ function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []):
 function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = []): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
+  const blocksByGroup = new Map<string, ModuleBlock[]>();
 
-  const sorted = [...blks].sort((a, b) => {
-    const ga = (a.groupName || '').toLowerCase();
-    const gb = (b.groupName || '').toLowerCase();
-    if (ga !== gb) return ga.localeCompare(gb);
-    return a.startDate.localeCompare(b.startDate);
-  });
-
-  for (const blk of sorted) {
+  for (const blk of blks) {
     const key = (blk.groupName || '').trim();
     if (!rowMap.has(key)) {
       rowMap.set(key, { groupName: key, lanes: [], laneCount: 1 });
       order.push(key);
     }
+    blocksByGroup.set(key, [...(blocksByGroup.get(key) || []), blk]);
+  }
+
+  for (const key of order) {
     const row = rowMap.get(key)!;
+    const sortedGroupBlocks = [...(blocksByGroup.get(key) || [])].sort((a, b) => a.startDate.localeCompare(b.startDate));
 
-    // Try to fit in lane 0 first, then lane 1
-    const overlapsLane0 = row.lanes
-      .filter(lb => lb.lane === 0)
-      .some(lb => datesOverlap(lb.blk, blk, holidays));
+    for (const blk of sortedGroupBlocks) {
 
-    if (overlapsLane0) {
-      row.lanes.push({ blk, lane: 1 });
-      row.laneCount = 2;
-    } else {
-      row.lanes.push({ blk, lane: 0 });
+      // Try to fit in lane 0 first, then lane 1
+      const overlapsLane0 = row.lanes
+        .filter(lb => lb.lane === 0)
+        .some(lb => datesOverlap(lb.blk, blk, holidays));
+
+      if (overlapsLane0) {
+        row.lanes.push({ blk, lane: 1 });
+        row.laneCount = 2;
+      } else {
+        row.lanes.push({ blk, lane: 0 });
+      }
     }
   }
 
@@ -210,6 +212,30 @@ function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[
   };
 }
 
+function coverageTutorName(profileId: string, tutorProfiles: TutorProfile[]): string {
+  return tutorProfiles.find(profile => profile.id === profileId)?.name || 'Selected cover';
+}
+
+function getBlockCoverageItems(blk: ModuleBlock, tutorProfiles: TutorProfile[], activeHolidays: Holiday[] = []) {
+  const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+  const sessionDateByNumber = new Map<number, string>();
+  plan.sessions.forEach(session => {
+    sessionDateByNumber.set(session.originalNumber, session.date);
+  });
+
+  return (blk.sessionCoverage || [])
+    .filter(item => item.tutorUnavailable)
+    .map(item => ({
+      sessionNumber: item.sessionNumber,
+      date: sessionDateByNumber.get(item.sessionNumber) || blk.startDate,
+      assignedTutor: blk.tutor || 'Primary tutor',
+      coverageTutor: item.coverageTutorProfileId ? coverageTutorName(item.coverageTutorProfileId, tutorProfiles) : '',
+      reason: item.tutorUnavailableReason || item.coverageReason || '',
+      isCovered: Boolean(item.coverageTutorProfileId),
+    }))
+    .sort((a, b) => a.sessionNumber - b.sessionNumber);
+}
+
 interface LeftLabelEntry {
   key: string;
   label: string;
@@ -272,6 +298,7 @@ interface TooltipData {
   x: number;
   y: number;
   customModules: CustomModule[];
+  tutorProfiles: TutorProfile[];
 }
 
 interface ClashMarker {
@@ -306,7 +333,7 @@ interface TimelineTutorConnector {
 }
 
 type BadgeTooltipData = {
-  type: 'tutor' | 'holiday';
+  type: 'tutor' | 'holiday' | 'coverage';
   title: string;
   tone: {
     header: string;
@@ -373,6 +400,7 @@ interface Props {
   holidays: Holiday[];
   customModules?: CustomModule[];
   catalogModules?: CatalogModule[];
+  tutorProfiles?: TutorProfile[];
   zoom: ZoomLevel;
   onZoomChange: (z: ZoomLevel) => void;
   onManageHolidays?: () => void;
@@ -738,7 +766,7 @@ function BadgeTooltip({ data }: { data: BadgeTooltipData }) {
     >
       <div className="w-80 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: data.tone.border }}>
         <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: data.tone.header }}>
-          <i className="ri-alert-line text-sm" />
+          <i className={`${data.type === 'coverage' ? 'ri-shield-user-line' : 'ri-alert-line'} text-sm`} />
           <span className="truncate text-sm font-extrabold">{data.title}</span>
         </div>
         <div className="space-y-2 px-3 py-2 text-xs">
@@ -829,7 +857,7 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
 }
 
 export default function GanttTimeline({
-  groups, holidays, customModules = [], catalogModules = [], zoom, onZoomChange,
+  groups, holidays, customModules = [], catalogModules = [], tutorProfiles = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
 }: Props) {
@@ -857,11 +885,29 @@ export default function GanttTimeline({
   } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
   const scrollRef = useRef<HTMLDivElement>(null);
+  const headerTrackRef = useRef<HTMLDivElement>(null);
+  const headerScrollFrame = useRef<number | null>(null);
+  const panState = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; windowY: number } | null>(null);
   const timelineSurfaceRef = useRef<HTMLDivElement>(null);
   const classesPopupRef = useRef<HTMLDivElement>(null);
+  const leftW = viewportWidth < 640 ? 184 : viewportWidth < 1024 ? 210 : LEFT_W;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => () => {
+    if (headerScrollFrame.current !== null) {
+      window.cancelAnimationFrame(headerScrollFrame.current);
+    }
+  }, []);
 
   // Drag-and-drop state
   type DragItem = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
@@ -918,8 +964,80 @@ export default function GanttTimeline({
 
   const handleTimelineScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (el) setHeaderScrollLeft(el.scrollLeft);
+    const header = headerTrackRef.current;
+    if (!el || !header) return;
+
+    if (headerScrollFrame.current !== null) {
+      window.cancelAnimationFrame(headerScrollFrame.current);
+    }
+
+    headerScrollFrame.current = window.requestAnimationFrame(() => {
+      header.style.transform = `translate3d(-${el.scrollLeft}px, 0, 0)`;
+      headerScrollFrame.current = null;
+    });
   }, []);
+
+  const handleTimelineWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    if (event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      event.preventDefault();
+      el.scrollLeft += event.deltaY;
+      handleTimelineScroll();
+      return;
+    }
+
+    if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      event.preventDefault();
+      window.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
+    }
+  }, [handleTimelineScroll]);
+
+  const endTimelinePan = useCallback((event?: React.PointerEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (event && panState.current) {
+      try {
+        event.currentTarget.releasePointerCapture(panState.current.pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+    }
+    panState.current = null;
+    el?.classList.remove('is-panning');
+    document.body.style.userSelect = '';
+  }, []);
+
+  const handleTimelinePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.pointerType !== 'mouse') return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('button,input,textarea,select,a,[draggable="true"]')) return;
+
+    const el = scrollRef.current;
+    if (!el) return;
+    panState.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: el.scrollLeft,
+      windowY: window.scrollY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    el.classList.add('is-panning');
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  const handleTimelinePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const pan = panState.current;
+    const el = scrollRef.current;
+    if (!pan || !el) return;
+
+    event.preventDefault();
+    el.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
+    window.scrollTo({ top: pan.windowY - (event.clientY - pan.y), left: window.scrollX, behavior: 'auto' });
+    handleTimelineScroll();
+  }, [handleTimelineScroll]);
 
   const handleCohortDrop = useCallback((e: React.DragEvent, toGroupIdx: number, toRowIdx: number) => {
     e.preventDefault();
@@ -1332,6 +1450,22 @@ export default function GanttTimeline({
     return colorMap;
   }, [catalogModules, collapsedGroups, crossRowTutorConflictPairs, customModules, groups, holidays]);
 
+  const timelineLayoutSignature = useMemo(() => (
+    groups.map(grp => [
+      grp.id,
+      collapsedGroups.has(grp.id) ? 'collapsed' : 'open',
+      ...grp.rows.map(row => [
+        row.id,
+        ...row.blks.map(blk => [
+          blk.id,
+          blk.groupName || '',
+          blk.startDate,
+          blk.endDate,
+        ].join(':')),
+      ].join('|')),
+    ].join('~')).join('||')
+  ), [collapsedGroups, groups]);
+
   useEffect(() => {
     const measureConnectors = () => {
       const surface = timelineSurfaceRef.current;
@@ -1358,7 +1492,7 @@ export default function GanttTimeline({
         const secondRect = second.getBoundingClientRect();
         const firstY = firstRect.top - surfaceRect.top + firstRect.height / 2;
         const secondY = secondRect.top - surfaceRect.top + secondRect.height / 2;
-        const x = LEFT_W + datePos.left + Math.max(2, datePos.width) / 2;
+        const x = leftW + datePos.left + Math.max(2, datePos.width) / 2;
         const points = [
           { y: firstY, label: pair.labels[0] },
           { y: secondY, label: pair.labels[1] },
@@ -1386,7 +1520,7 @@ export default function GanttTimeline({
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', measureConnectors);
     };
-  }, [cols, crossRowTutorConflictPairs, tutorConflictColorMap]);
+  }, [cols, crossRowTutorConflictPairs, leftW, timelineLayoutSignature, tutorConflictColorMap]);
 
   // ── Header rows ───────────────────────────────────────────────────────
   const classSummaries = useMemo<ClassSummary[]>(() => {
@@ -1606,7 +1740,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -1621,7 +1755,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1 border-r border-gray-100 shrink-0"
@@ -1646,7 +1780,7 @@ export default function GanttTimeline({
       return (
         <>
           <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {yearGroups.map((yg, i) => {
                 const w = yg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -1661,7 +1795,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => (
                 <div key={c.key} className="text-center py-1.5 border-r border-gray-200 shrink-0"
@@ -1679,7 +1813,7 @@ export default function GanttTimeline({
     if (zoom === 'year') {
       return (
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {cols.map((c, i) => {
               const navyShades = ['#1B2A4A','#243560','#2E4482','#3D5A99'];
@@ -1707,8 +1841,8 @@ export default function GanttTimeline({
 
       return (
         <>
-          <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {monthGroups.map((mg, i) => {
                 const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
@@ -1726,7 +1860,7 @@ export default function GanttTimeline({
             </div>
           </div>
           <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-            <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+            <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
             <div className="flex">
               {cols.map((c, i) => {
                 const start = new Date(c.startDate);
@@ -1736,8 +1870,8 @@ export default function GanttTimeline({
                 return (
                   <div
                     key={c.key}
-                    className="text-center py-2 border-r shrink-0 flex flex-col items-center justify-center bg-white"
-                    style={{ width: c.widthPx, minHeight: 56, borderColor: '#D1D5DB' }}
+                    className="text-center py-1.5 border-r shrink-0 flex flex-col items-center justify-center bg-white"
+                    style={{ width: c.widthPx, minHeight: 44, borderColor: '#E2E8F0' }}
                   >
                     <span style={{ fontSize: '7px', color: isSpecial ? '#D00000' : '#6B7280', fontWeight: 700 }}>
                       {start.toLocaleDateString('en-GB', { weekday: 'short' })}
@@ -1783,15 +1917,15 @@ export default function GanttTimeline({
     });
     return (
       <>
-        <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+        <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
+          <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {monthGroups.map((mg, i) => {
               const w = mg.cols.reduce((s, c) => s + c.widthPx, 0);
               const navyShades = ['#1B2A4A','#243560','#2E4482','#3D5A99'];
               return (
                 <div key={i} className="text-center font-bold py-2 border-r border-white/20 shrink-0"
-                  style={{ width: w, background: navyShades[i % navyShades.length], color: '#fff', fontSize: '10px' }}>
+                  style={{ width: w, background: navyShades[i % navyShades.length], color: '#fff', fontSize: '12px' }}>
                   {mg.label}
                 </div>
               );
@@ -1799,10 +1933,10 @@ export default function GanttTimeline({
           </div>
         </div>
         <div className="flex" style={{ borderBottom: '1px solid #D1D5DB' }}>
-          <div style={{ width: LEFT_W, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
+          <div style={{ width: leftW, flexShrink: 0, borderRight: '1px solid #E5E7EB', background: '#F8FAFC', position: 'sticky', left: 0, zIndex: 20 }} />
           <div className="flex">
             {cols.map((c, i) => (
-              <div key={c.key} className="text-center py-1.5 border-r shrink-0 flex flex-col items-center"
+              <div key={c.key} className="text-center py-1 border-r shrink-0 flex flex-col items-center justify-center"
                 style={{ width: c.widthPx, ...getGridColumnStyle(c, i), boxShadow: getGridColumnStyle(c, i).cellOutline }}>
                 <span style={{ fontSize: '8px', color: isCurrentColumn(c.startDate, c.endDate) ? '#C2410C' : '#9CA3AF', fontWeight: isCurrentColumn(c.startDate, c.endDate) ? 800 : 600 }}>
                   {c.subLabel}
@@ -1872,6 +2006,16 @@ export default function GanttTimeline({
     const hasTutorConflict = !sessionSummary.isFinished && tutorConflictMarkers.length > 0;
     const coachLabel = (blk.coachName || '').trim();
     const tutorLabel = (blk.tutor || '').trim();
+    const coverageItems = getBlockCoverageItems(blk, tutorProfiles, activeHolidays);
+    const firstCoverage = coverageItems[0];
+    const coverageMarkers = coverageItems.map(item => {
+      const datePos = getBlockPosition(item.date, item.date, cols);
+      const left = datePos ? datePos.left - pos.left + Math.max(6, datePos.width / 2) : 8;
+      return {
+        item,
+        left: Math.max(0, Math.min(pos.width, left)),
+      };
+    });
     const personLabel = tutorLabel || coachLabel;
     const personRole = tutorLabel ? 'Tutor' : coachLabel ? 'Coach' : '';
     const showPerson = pos.width > 78 && Boolean(personLabel);
@@ -1896,6 +2040,27 @@ export default function GanttTimeline({
     };
     const moveBadgeTip = (event: ReactMouseEvent) => {
       setBadgeTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+    };
+    const showCoverageTip = (event: ReactMouseEvent) => {
+      event.stopPropagation();
+      if (!coverageItems.length) return;
+      setTooltip(null);
+      setClashTip(null);
+      setExtensionTip(null);
+      const coveredCount = coverageItems.filter(item => item.coverageTutor).length;
+      showBadgeTip(event, {
+        type: 'coverage',
+        title: coveredCount === coverageItems.length ? 'Coverage assigned' : 'Coverage required',
+        tone: firstCoverage?.coverageTutor
+          ? { header: '#059669', border: '#A7F3D0', text: '#047857' }
+          : { header: '#D97706', border: '#FDE68A', text: '#92400E' },
+        summary: `${coverageItems.length} coverage session${coverageItems.length === 1 ? '' : 's'} for ${mod.lbl}.`,
+        rows: coverageItems.map(item => [
+          `Session ${item.sessionNumber} (${formatDateShort(item.date)}): ${item.assignedTutor} unavailable`,
+          item.coverageTutor ? `covered by ${item.coverageTutor}` : 'coverage required',
+          item.reason ? `Reason: ${item.reason}` : '',
+        ].filter(Boolean).join(' - ')),
+      });
     };
     const openConflictFix = (event: { stopPropagation: () => void }) => {
       event.stopPropagation();
@@ -1927,7 +2092,7 @@ export default function GanttTimeline({
       <div
         key={blk.id}
         data-timeline-block-id={blk.id}
-        className="absolute overflow-hidden z-10 cursor-pointer transition-all"
+        className={`absolute z-10 cursor-pointer transition-all ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
         style={{
           left: pos.left,
           width: pos.width,
@@ -1944,7 +2109,7 @@ export default function GanttTimeline({
         onMouseEnter={e => {
           setClashTip(null);
           setExtensionTip(null);
-          setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules });
+          setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
         }}
         onMouseLeave={() => {
           setTooltip(null);
@@ -1991,7 +2156,7 @@ export default function GanttTimeline({
         {pos.width > 30 && (
           <div
             className="relative z-[1] min-w-0 w-full select-none"
-            style={{ padding: hasTutorConflict ? '0 18px 0 8px' : '0 8px', display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
+            style={{ padding: `${0} ${hasTutorConflict ? 18 : 8}px 0 ${coverageItems.length > 0 ? 24 : 8}px`, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
           >
             <div className="min-w-0 flex-1" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
@@ -2069,6 +2234,28 @@ export default function GanttTimeline({
             Finished
           </span>
         )}
+        {coverageMarkers.map(({ item, left }) => (
+          <span
+            key={`coverage-marker-${blk.id}-${item.sessionNumber}`}
+            className="absolute -top-1 flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border shadow-sm"
+            onMouseEnter={showCoverageTip}
+            onMouseMove={showCoverageTip}
+            onMouseLeave={() => setBadgeTip(null)}
+            onClick={event => event.stopPropagation()}
+            style={{
+              left,
+              background: item.coverageTutor ? '#DCFCE7' : '#FEF3C7',
+              borderColor: item.coverageTutor ? '#34D399' : '#F59E0B',
+              color: item.coverageTutor ? '#047857' : '#92400E',
+              boxShadow: item.coverageTutor
+                ? '0 1px 4px rgba(4,120,87,0.22), 0 0 0 2px rgba(220,252,231,0.85)'
+                : '0 1px 4px rgba(146,64,14,0.24), 0 0 0 2px rgba(254,243,199,0.9)',
+              zIndex: 8,
+            }}
+          >
+            <i className={item.coverageTutor ? 'ri-shield-check-line' : 'ri-shield-user-line'} style={{ fontSize: '11px', lineHeight: 1 }} />
+          </span>
+        ))}
         {hasTutorConflict && (
           <span className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
             {hasTutorConflict && (
@@ -2113,42 +2300,45 @@ export default function GanttTimeline({
     <div className="relative">
       {/* Zoom controls */}
       <div
-        className="sticky flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 bg-gray-50 flex-wrap"
+        className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
         style={{
+          position: 'sticky',
           top: TOP_NAV_H,
-          zIndex: 36,
+          zIndex: 40,
+          height: ZOOM_BAR_H,
           minHeight: ZOOM_BAR_H,
-          boxShadow: '0 10px 18px -18px rgba(15,23,42,0.45)',
+          padding: '0 16px',
+          boxShadow: '0 12px 24px -22px rgba(15,23,42,0.6)',
         }}
       >
-        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Zoom:</span>
-        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-0.5">
+        <span className="shrink-0 text-xs font-extrabold uppercase text-slate-500" style={{ letterSpacing: '0.05em' }}>Zoom:</span>
+        <div className="flex h-8 shrink-0 items-center overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
           {ZOOM_LEVELS.map(z => (
             <button key={z} onClick={() => handleZoomChange(z)}
-              className="px-3 py-1 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
-              style={{ background: zoom === z ? '#1B2A4A' : 'transparent', color: zoom === z ? '#fff' : '#6B7280' }}>
+              className="flex h-7 min-w-14 items-center justify-center rounded-md px-3 text-xs font-bold cursor-pointer transition-all whitespace-nowrap"
+              style={{ background: zoom === z ? '#1B2A4A' : 'transparent', color: zoom === z ? '#fff' : '#64748B', boxShadow: zoom === z ? '0 1px 2px rgba(15,23,42,0.16)' : 'none' }}>
               {getZoomLabel(z)}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1 ml-1">
+        <div className="flex shrink-0 items-center gap-1 ml-1">
           <button onClick={() => handleZoomChange(zoomOut(zoom))} disabled={zoom === 'year'}
-            className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 cursor-pointer disabled:opacity-30 transition-all">
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
             <i className="ri-zoom-out-line text-sm" />
           </button>
           <button onClick={() => handleZoomChange(zoomIn(zoom))} disabled={zoom === 'day'}
-            className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 cursor-pointer disabled:opacity-30 transition-all">
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
             <i className="ri-zoom-in-line text-sm" />
           </button>
         </div>
 
-        <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1.5 ml-auto shrink-0">
           {(zoom === 'week' || zoom === 'day') && (
             <button
               onClick={() => {
                 setViewWindow(getDefaultViewWindow(zoom, groups, holidays));
               }}
-              className="px-2.5 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 cursor-pointer transition-all text-xs font-semibold"
+              className="px-3 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
             >
               {zoom === 'week' ? 'This Week' : 'Today'}
             </button>
@@ -2157,7 +2347,7 @@ export default function GanttTimeline({
               <button
                 type="button"
                 onClick={() => setClassesOpen(prev => !prev)}
-                className="px-2.5 h-7 flex items-center gap-1.5 justify-center rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 cursor-pointer transition-all text-xs font-semibold"
+                className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
               >
                 <i className="ri-group-line text-sm" />
                 Classes
@@ -2331,7 +2521,7 @@ export default function GanttTimeline({
               type="button"
               onClick={onExportExcel}
               disabled={exportExcelDisabled}
-              className="px-2.5 h-7 flex items-center gap-1.5 justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 transition-all text-xs font-semibold"
+              className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 transition-all text-xs font-bold"
               title="Export the full training plan table as Excel"
             >
               <i className="ri-file-excel-2-line text-sm" />
@@ -2349,10 +2539,10 @@ export default function GanttTimeline({
                     : { start: shiftDateByDays(prev.start, -days), end: shiftDateByDays(prev.end, -days) }
                 ));
               }}
-              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 cursor-pointer transition-all">
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer transition-all">
               <i className="ri-arrow-left-s-line text-sm" />
             </button>
-            <span className="text-xs text-gray-500 font-semibold px-2">
+            <span className="text-xs text-slate-500 font-bold px-2 whitespace-nowrap">
               {effectiveViewWindow.start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
               {' – '}
               {effectiveViewWindow.end.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
@@ -2366,14 +2556,14 @@ export default function GanttTimeline({
                     : { start: shiftDateByDays(prev.start, days), end: shiftDateByDays(prev.end, days) }
                 ));
               }}
-              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 cursor-pointer transition-all">
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer transition-all">
               <i className="ri-arrow-right-s-line text-sm" />
             </button>
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
+        <div className="flex shrink-0 items-center gap-3 text-xs font-semibold text-slate-400">
           <span className="flex items-center gap-1"><span className="inline-block h-5 shrink-0 rounded-full" style={{ width: 5, backgroundImage: 'repeating-linear-gradient(to bottom, #F7A800 0 8px, transparent 8px 12px)', boxShadow: '0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(247,168,0,0.35)' }} />Now</span>
           <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
         </div>
@@ -2383,15 +2573,17 @@ export default function GanttTimeline({
         className="sticky overflow-hidden"
         style={{
           top: TOP_NAV_H + ZOOM_BAR_H,
-          zIndex: 35,
+          zIndex: 39,
           background: '#FFFFFF',
-          boxShadow: '0 10px 18px -16px rgba(15,23,42,0.55)',
+          boxShadow: '0 8px 14px -14px rgba(15,23,42,0.45)',
         }}
       >
         <div
+          ref={headerTrackRef}
           style={{
-            width: totalWidth + LEFT_W,
-            transform: `translateX(-${headerScrollLeft}px)`,
+            width: totalWidth + leftW,
+            transform: 'translate3d(0, 0, 0)',
+            willChange: 'transform',
           }}
         >
           {renderHeaders()}
@@ -2401,11 +2593,16 @@ export default function GanttTimeline({
       {/* Scrollable gantt */}
       <div
         ref={scrollRef}
-        className="overflow-x-scroll"
-        style={{ scrollbarGutter: 'stable' }}
+        className="training-plan-gantt-scroll"
+        onWheel={handleTimelineWheel}
         onScroll={handleTimelineScroll}
+        onPointerDown={handleTimelinePointerDown}
+        onPointerMove={handleTimelinePointerMove}
+        onPointerUp={endTimelinePan}
+        onPointerCancel={endTimelinePan}
       >
-        <div ref={timelineSurfaceRef} className="relative" style={{ width: totalWidth + LEFT_W }}>
+        <div style={{ width: totalWidth + leftW }}>
+        <div ref={timelineSurfaceRef} className="relative" style={{ width: totalWidth + leftW }}>
           {/* Full-height holiday bands — start below headers, span all rows */}
           {holidayPositions.map(({ h, pos }) => pos && (
             <div
@@ -2413,7 +2610,7 @@ export default function GanttTimeline({
               className="absolute bottom-0"
               style={{
                 top: 0,
-                left: LEFT_W + pos.left,
+                left: leftW + pos.left,
                 width: Math.max(pos.width, 4),
                 background: h.color,
                 opacity: 0.5,
@@ -2430,7 +2627,7 @@ export default function GanttTimeline({
             <div
               className="absolute bottom-0 pointer-events-none"
               style={{
-                left: LEFT_W,
+                left: leftW,
                 right: 0,
                 top: 0,
                 ...getTimelineSurfaceStyle('#FFFFFF'),
@@ -2516,9 +2713,9 @@ export default function GanttTimeline({
               {/* ── Programme group header row ────────────────────────── */}
               <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
                 <div
-                  className="shrink-0 px-3 py-2"
+                  className="shrink-0 px-3.5 py-2.5"
                   style={{
-                    width: LEFT_W,
+                    width: leftW,
                     background: grp.color,
                     position: 'sticky',
                     left: 0,
@@ -2547,7 +2744,7 @@ export default function GanttTimeline({
                       <i className={isCollapsed ? 'ri-arrow-down-s-line' : 'ri-arrow-up-s-line'} style={{ fontSize: '11px' }} />
                     </button>
                   </div>
-                  <div className="mt-2 flex items-center justify-between gap-2 min-w-0">
+                  <div className="mt-2.5 flex items-center justify-between gap-2.5 min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
                         <i className="ri-book-open-line text-white" style={{ fontSize: '11px' }} />
@@ -2706,7 +2903,7 @@ export default function GanttTimeline({
                       <div
                         className="shrink-0 flex items-center px-3 border-r bg-white relative"
                         style={{
-                          width: LEFT_W,
+                          width: leftW,
                           borderColor: isFocusedCohort ? '#DC2626' : '#E5E7EB',
                           position: 'sticky',
                           left: 0,
@@ -2770,7 +2967,7 @@ export default function GanttTimeline({
                     {/* Module rows */}
                     <div className="flex relative" style={{ height: totalModuleH || MODULE_H, borderBottom: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}` }}>
                       {/* Left panel: stacked module entries */}
-                      <div className="shrink-0 border-r bg-white relative" style={{ width: LEFT_W, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
+                      <div className="shrink-0 border-r bg-white relative" style={{ width: leftW, borderColor: '#E5E7EB', position: 'sticky', left: 0, zIndex: 20 }}>
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
                         {ganttRows.length === 0 ? (
                           <div className="pl-6 flex items-center h-full">
@@ -2908,7 +3105,7 @@ export default function GanttTimeline({
 
               {grp.rows.length === 0 && (
                 <div className="flex items-center" style={{ height: MODULE_H, background: 'transparent' }}>
-                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: LEFT_W, height: MODULE_H, position: 'sticky', left: 0, zIndex: 20 }}>
+                  <div className="shrink-0 flex items-center justify-center border-r border-gray-200 bg-white" style={{ width: leftW, height: MODULE_H, position: 'sticky', left: 0, zIndex: 20 }}>
                     <span className="text-xs text-gray-300 italic pl-4">No cohorts yet</span>
                   </div>
                   <div className="flex-1 flex items-center justify-center">
@@ -2929,6 +3126,7 @@ export default function GanttTimeline({
           );
           })}
 
+        </div>
         </div>
       </div>
 

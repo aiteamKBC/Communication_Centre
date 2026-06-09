@@ -259,7 +259,9 @@ function KsbProfilePicker({
                   ))}
                 </div>
               ) : (
-                <p className="text-[11px] font-semibold text-gray-300">All added</p>
+                <p className="text-[11px] font-semibold text-gray-300">
+                  {section.codes.length ? 'All profile codes added' : 'No profile codes'}
+                </p>
               )}
             </div>
           );
@@ -307,6 +309,11 @@ function KsbSessionMappingRows({
     <div className="space-y-3">
       {Array.from({ length: sessionCount }, (_, i) => {
         const mapping = normalizedMappings[i] || emptySessionKsbMapping();
+        const availableProfileCodeCount = (['K', 'S', 'B'] as const).reduce((total, prefix) => {
+          const field = prefix === 'K' ? 'knowledgeCodes' : prefix === 'S' ? 'skillCodes' : 'behaviourCodes';
+          return total + (profileCodes?.[prefix] || []).filter(option => !mapping[field].includes(option.code)).length;
+        }, 0);
+        const hasProfileCodes = (['K', 'S', 'B'] as const).some(prefix => (profileCodes?.[prefix] || []).length > 0);
         return (
           <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.85fr)_minmax(0,1.3fr)]">
@@ -336,14 +343,20 @@ function KsbSessionMappingRows({
                   className="w-full rounded-lg border border-gray-100 bg-gray-50 px-3 py-1.5 text-xs text-gray-500 focus:outline-none"
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
-                  >
-                    <i className="ri-add-circle-line" />
-                    Add from profile
-                  </button>
+                  {availableProfileCodeCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
+                    >
+                      <i className="ri-add-circle-line" />
+                      Add from profile
+                    </button>
+                  ) : (
+                    <span className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] font-extrabold text-gray-300">
+                      {hasProfileCodes ? 'Profile codes already added' : 'No profile codes'}
+                    </span>
+                  )}
                   {sourceLabel && (
                     <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-500">
                       Source: {sourceLabel}
@@ -358,7 +371,7 @@ function KsbSessionMappingRows({
                 <KsbCodeInput label="Behaviours" placeholder="B1, B4" prefix="B" value={mapping.behaviourCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'behaviourCodes', codes)} />
               </div>
             </div>
-            {openPickerIndex === i && (
+            {openPickerIndex === i && availableProfileCodeCount > 0 && (
               <KsbProfilePicker
                 mapping={mapping}
                 codeDescriptions={codeDescriptions}

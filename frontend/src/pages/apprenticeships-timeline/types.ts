@@ -37,6 +37,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 
 export interface ModuleBlock {
   id: string;
+  groupId?: string;
   mod: ModuleValue;
   groupName?: string;
   coachName?: string;

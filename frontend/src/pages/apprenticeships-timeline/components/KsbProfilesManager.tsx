@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import type { KsbProfile, KsbProfileItem } from '../types';
 import { kbcSwal } from '@/components/feature/sweetAlert';
+import SelectField from './SelectField';
 
 interface Props {
   profiles: KsbProfile[];
+  programmeOptions?: string[];
   onCreate: (profile: Omit<KsbProfile, 'id'>) => Promise<KsbProfile | null>;
   onUpdate: (id: string, profile: Omit<KsbProfile, 'id'>) => Promise<KsbProfile | null>;
   onDelete: (id: string) => Promise<boolean>;
@@ -62,7 +64,7 @@ function codesFromItems(items: KsbProfileItem[], type: 'K' | 'S' | 'B'): string[
   return normalizeItems(items).filter(item => item.type === type).map(item => item.code);
 }
 
-export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDelete, onClose }: Props) {
+export default function KsbProfilesManager({ profiles, programmeOptions = [], onCreate, onUpdate, onDelete, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(profiles[0]?.id || null);
   const [draft, setDraft] = useState<Omit<KsbProfile, 'id'>>(profiles[0] ? { ...profiles[0], ksbItems: itemsFromProfile(profiles[0]) } : emptyProfile());
@@ -80,6 +82,29 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
       itemsFromProfile(profile).some(item => item.description.toLowerCase().includes(q))
     ));
   }, [profiles, query]);
+
+  const programmeStandardOptions = useMemo(() => {
+    const values = new Set<string>();
+    programmeOptions.forEach(item => {
+      const value = item.replace(/\s+/g, ' ').trim();
+      if (value) values.add(value);
+    });
+    profiles.forEach(profile => {
+      const value = profile.programmeName.replace(/\s+/g, ' ').trim();
+      if (value) values.add(value);
+    });
+    const currentValue = draft.programmeName.replace(/\s+/g, ' ').trim();
+    if (currentValue) values.add(currentValue);
+    return Array.from(values)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .map(value => ({
+        value,
+        label: value,
+        description: profiles.some(profile => profile.programmeName.replace(/\s+/g, ' ').trim() === value) ? 'Used by KSB profile' : 'Programme standard',
+        color: '#1B2A4A',
+      }));
+  }, [draft.programmeName, profiles, programmeOptions]);
 
   const profileReady = Boolean(draft.name.trim() && draft.programmeName.trim());
   const draftDirty = JSON.stringify(draft) !== draftSnapshot;
@@ -305,7 +330,17 @@ export default function KsbProfilesManager({ profiles, onCreate, onUpdate, onDel
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-extrabold uppercase tracking-wider text-gray-500">Programme / standard <span className="text-red-500">*</span></label>
-                    <input value={draft.programmeName} onChange={event => updateDraft('programmeName', event.target.value)} placeholder="ME L4" className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold focus:outline-none" />
+                    <SelectField
+                      value={draft.programmeName}
+                      options={programmeStandardOptions}
+                      onChange={value => updateDraft('programmeName', value)}
+                      placeholder="Select programme / standard"
+                      accentColor="#1B2A4A"
+                      label="Programmes"
+                      searchPlaceholder="Search programmes..."
+                      emptyTitle="No matching programmes"
+                      emptyText="Choose one of the Training Plan programmes."
+                    />
                   </div>
                 </div>
                 <div>
