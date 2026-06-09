@@ -1012,7 +1012,7 @@ export default function GanttTimeline({
     if (event.button !== 0 || event.pointerType !== 'mouse') return;
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    if (target.closest('button,input,textarea,select,a,[draggable="true"]')) return;
+    if (target.closest('button,input,textarea,select,a,[draggable="true"],[data-timeline-block-id]')) return;
 
     const el = scrollRef.current;
     if (!el) return;
@@ -2141,7 +2141,6 @@ export default function GanttTimeline({
             onMouseEnter={showExtensionTip}
             onMouseMove={showExtensionTip}
             onMouseLeave={() => setExtensionTip(null)}
-            onClick={event => event.stopPropagation()}
             style={{
               left: extensionStyle.left,
               width: extensionStyle.width,
