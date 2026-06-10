@@ -3,7 +3,7 @@ import type { CatalogModule, CoachProfile, Holiday, KsbProfile, ModuleBlock, Pro
 import { getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import SelectField from './SelectField';
-import { profileIdForTutorName, resolveTutorProfile, tutorDisplayName } from '../tutorProfiles';
+import { normalizeTutorName, profileIdForTutorName, resolveTutorProfile, tutorDisplayName } from '../tutorProfiles';
 import { buildHolidayAdjustedSessionPlan } from '../utils';
 
 interface SessionCell {
@@ -46,6 +46,25 @@ interface CoverageConflict {
   programme: string;
   cohort: string;
   groupName?: string;
+}
+
+interface CoachCandidate {
+  key: string;
+  name: string;
+  normalizedName: string;
+  profile?: CoachProfile;
+  email?: string;
+  sessionCount: number;
+  source: 'profile' | 'training-plan' | 'both';
+}
+
+interface CoachCoverageSuggestion {
+  candidate: CoachCandidate;
+  score: number;
+  sameModuleSessions: number;
+  sameProgrammeSessions: number;
+  totalAssignedSessions: number;
+  reasons: string[];
 }
 
 interface CurrentTutorModule {
@@ -861,18 +880,66 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
     color: '#1B2A4A',
   })), [tutorProfiles]);
 
-  const persistedCoachProfiles = useMemo(() => coachProfiles.filter(profile => profile.isActive && !profile.id.startsWith('legacy:')), [coachProfiles]);
+  const coachCandidates = useMemo<CoachCandidate[]>(() => {
+    const byName = new Map<string, CoachCandidate>();
+
+    coachProfiles
+      .filter(profile => profile.isActive)
+      .forEach(profile => {
+        const normalizedName = normalizeTutorName(profile.name);
+        if (!normalizedName) return;
+        byName.set(normalizedName, {
+          key: `profile:${profile.id}`,
+          name: profile.name,
+          normalizedName,
+          profile,
+          email: profile.email,
+          sessionCount: profile.sessionCount || 0,
+          source: 'profile',
+        });
+      });
+
+    groups.forEach(group => group.rows.forEach(row => row.blks.forEach(block => {
+      const name = (block.coachName || '').trim();
+      const normalizedName = normalizeTutorName(name);
+      if (!normalizedName) return;
+      const sessions = Math.max(1, Number(block.sessions || 1));
+      const existing = byName.get(normalizedName);
+      if (existing) {
+        if (existing.source === 'training-plan') {
+          existing.sessionCount += sessions;
+          return;
+        }
+        existing.source = existing.source === 'profile' ? 'both' : existing.source;
+        existing.sessionCount = Math.max(existing.sessionCount, sessions);
+        return;
+      }
+      byName.set(normalizedName, {
+        key: `training-plan:${normalizedName}`,
+        name,
+        normalizedName,
+        sessionCount: sessions,
+        source: 'training-plan',
+      });
+    })));
+
+    return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [coachProfiles, groups]);
   const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
   const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
   const ksbCodeDescriptions = useMemo(() => buildKsbDescriptionLookup(selectedKsbProfile), [selectedKsbProfile]);
   const ksbProfileCodes = useMemo(() => buildKsbProfileCodeOptions(selectedKsbProfile), [selectedKsbProfile]);
 
-  const coachOptions = useMemo(() => persistedCoachProfiles.map(profile => ({
-    value: profile.id,
-    label: profile.name,
-    description: [profile.email, `${profile.sessionCount || 0} sessions`].filter(Boolean).join(' - '),
+  const coachOptions = useMemo(() => coachCandidates.map(candidate => ({
+    value: candidate.key,
+    label: candidate.name,
+    description: [
+      candidate.source === 'both' ? 'Training Plan + Coach Profile' : candidate.source === 'profile' ? 'Coach Profile' : 'Training Plan',
+      candidate.email,
+      `${candidate.sessionCount || 0} sessions`,
+    ].filter(Boolean).join(' - '),
     color: '#1B2A4A',
-  })), [persistedCoachProfiles]);
+  })), [coachCandidates]);
 
   const openCoverageEditor = (row: DerivedScheduleRow, session: SessionInstance) => {
     if (!row.trainingPlanId) {
@@ -1043,6 +1110,9 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
 
   const coverageTutorName = (profileId?: string) => tutorProfiles.find(profile => profile.id === profileId)?.name || '';
   const coverageCoachName = (profileId?: string) => coachProfiles.find(profile => profile.id === profileId)?.name || '';
+  const coverageCoachSelectValue = coverageDraft?.coverageCoachProfileId
+    ? coachCandidates.find(candidate => candidate.profile?.id === coverageDraft.coverageCoachProfileId)?.key || coverageDraft.coverageCoachProfileId
+    : '';
 
   const getCoverageConflict = (profileId: string, row: DerivedScheduleRow, session: SessionInstance): CoverageConflict | null => {
     if (!profileId) return null;
@@ -1147,6 +1217,38 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       })
     : [];
 
+  const getCoachCoverageSuggestions = (row: DerivedScheduleRow): CoachCoverageSuggestion[] => {
+    return coachCandidates.map(candidate => {
+      let sameModuleSessions = 0;
+      let sameProgrammeSessions = 0;
+      let trainingPlanSessions = 0;
+
+      groups.forEach(group => group.rows.forEach(cohort => cohort.blks.forEach(block => {
+        if (normalizeTutorName(block.coachName || '') !== candidate.normalizedName) return;
+        const sessions = Math.max(1, Number(block.sessions) || 1);
+        trainingPlanSessions += sessions;
+        if (getModuleMeta(block.mod).lbl === row.module) {
+          sameModuleSessions += sessions;
+        }
+        if (programmeLabelFromGroupName(group.name) === row.programme) {
+          sameProgrammeSessions += sessions;
+        }
+      })));
+
+      const totalAssignedSessions = trainingPlanSessions || candidate.sessionCount || 0;
+      const score = (sameModuleSessions * 6) + (sameProgrammeSessions * 3) + Math.min(totalAssignedSessions, 80) / 10;
+      const reasons = [
+        sameModuleSessions ? `${sameModuleSessions} session${sameModuleSessions === 1 ? '' : 's'} in this module` : '',
+        sameProgrammeSessions ? `${sameProgrammeSessions} session${sameProgrammeSessions === 1 ? '' : 's'} in this programme` : '',
+        totalAssignedSessions ? `${totalAssignedSessions} total assigned sessions` : 'No assigned sessions yet',
+      ].filter(Boolean);
+
+      return { candidate, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
+    }).sort((a, b) => b.score - a.score || a.candidate.name.localeCompare(b.candidate.name));
+  };
+
+  const coachCoverageSuggestions = coverageEditor ? getCoachCoverageSuggestions(coverageEditor.row).slice(0, 8) : [];
+
   const saveCoverageDraft = async () => {
     if (!coverageEditor || !coverageDraft || !onUpdateSessionCoverage) return;
     const tutorUnavailable = Boolean(coverageDraft.tutorUnavailable);
@@ -1223,6 +1325,46 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       setCoverageDraft(prev => prev ? { ...prev, coverageCoachProfileId: profile.id } : prev);
       setCreateCoachName('');
     }
+  };
+
+  const selectCoverageCoach = async (candidateKey: string, reasons?: string[]) => {
+    if (!coverageDraft?.tutorUnavailable) {
+      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+      return;
+    }
+
+    const candidate = coachCandidates.find(item => item.key === candidateKey);
+    if (!candidate) {
+      setCoverageDraft(prev => prev ? { ...prev, coverageCoachProfileId: candidateKey } : prev);
+      setCoverageError('');
+      return;
+    }
+
+    let profile = candidate.profile;
+    if (!profile) {
+      if (!onCreateCoachProfile) {
+        setCoverageError('Create a Coach Profile before assigning this coach for coverage.');
+        return;
+      }
+      const result = await onCreateCoachProfile({ name: candidate.name });
+      const savedProfile = 'id' in result ? result : result.possibleExistingProfile || result.existingProfile;
+      if (!savedProfile) {
+        setCoverageError('Coach Profile could not be created.');
+        return;
+      }
+      profile = savedProfile;
+    }
+
+    setCoverageDraft(prev => prev ? {
+      ...prev,
+      coverageCoachProfileId: profile.id,
+      coverageReason: prev.coverageReason || (
+        reasons?.length
+          ? `Suggested from Training Plan coach experience: ${reasons.join(', ')}`
+          : `Suggested coverage coach: ${profile.name}`
+      ),
+    } : prev);
+    setCoverageError('');
   };
 
   const renderCell = (cell: SessionCell | undefined, bg: string) => {
@@ -2008,63 +2150,61 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                   <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
                     <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Coaches</p>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                      {persistedCoachProfiles.length} available
+                      {coachCoverageSuggestions.length} coaches
                     </span>
                   </div>
                   <div className="grid max-h-48 gap-2 overflow-y-auto p-2">
-                    {persistedCoachProfiles.slice(0, 8).map(profile => {
-                      const selected = coverageDraft.coverageCoachProfileId === profile.id;
+                    {coachCoverageSuggestions.map(suggestion => {
+                      const candidate = suggestion.candidate;
+                      const selected = coverageDraft.coverageCoachProfileId === candidate.profile?.id || coverageDraft.coverageCoachProfileId === candidate.key;
+                      const sourceLabel = candidate.source === 'both' ? 'Training Plan + Profile' : candidate.source === 'profile' ? 'Coach Profile' : 'Training Plan';
+                      const sourceClassName = candidate.source === 'both'
+                        ? 'bg-cyan-100 text-cyan-700'
+                        : candidate.source === 'profile'
+                          ? 'bg-indigo-100 text-indigo-700'
+                          : 'bg-amber-100 text-amber-700';
                       return (
                         <button
-                          key={profile.id}
+                          key={candidate.key}
                           type="button"
                           disabled={!coverageDraft.tutorUnavailable}
-                          onClick={() => {
-                            if (!coverageDraft.tutorUnavailable) {
-                              setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
-                              return;
-                            }
-                            setCoverageDraft(prev => prev ? {
-                              ...prev,
-                              coverageCoachProfileId: profile.id,
-                              coverageReason: prev.coverageReason || `Suggested coverage coach: ${profile.name}`,
-                            } : prev);
-                            setCoverageError('');
-                          }}
+                          onClick={() => void selectCoverageCoach(candidate.key, suggestion.reasons)}
                           className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
                           style={{ borderColor: selected ? '#1B2A4A' : '#E5E7EB', background: selected ? '#F8FAFC' : '#FFFFFF' }}
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-sm font-extrabold text-gray-800">{profile.name}</span>
-                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Available</span>
+                            <span className="text-sm font-extrabold text-gray-800">{candidate.name}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${sourceClassName}`}>
+                              {sourceLabel}
+                            </span>
                           </div>
-                          <p className="mt-1 text-xs text-gray-500">{profile.sessionCount || 0} assigned sessions{profile.email ? ` - ${profile.email}` : ''}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {suggestion.sameModuleSessions > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">Same module</span>}
+                            {suggestion.sameProgrammeSessions > 0 && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Same programme</span>}
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{suggestion.totalAssignedSessions} sessions</span>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-500">
+                            {suggestion.reasons.join(' - ')}{candidate.email ? ` - ${candidate.email}` : ''}
+                          </p>
                         </button>
                       );
                     })}
-                    {persistedCoachProfiles.length === 0 && (
+                    {coachCoverageSuggestions.length === 0 && (
                       <div className="px-3 py-4 text-center text-xs font-semibold text-gray-400">
-                        No Coach Profiles available for coverage suggestions.
+                        No Training Plan coaches or Coach Profiles available for coverage suggestions.
                       </div>
                     )}
                   </div>
                 </div>
                 <SelectField
-                  value={coverageDraft.coverageCoachProfileId || ''}
+                  value={coverageCoachSelectValue}
                   options={coverageDraft.tutorUnavailable ? coachOptions : []}
-                  onChange={value => {
-                    if (!coverageDraft.tutorUnavailable) {
-                      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
-                      return;
-                    }
-                    setCoverageDraft(prev => prev ? { ...prev, coverageCoachProfileId: value } : prev);
-                    setCoverageError('');
-                  }}
+                  onChange={value => void selectCoverageCoach(value)}
                   placeholder="Select coverage coach"
                   label="Coach Profiles"
                   searchPlaceholder="Search coaches..."
                   emptyTitle="No coaches found"
-                  emptyText="Create a Coach Profile first."
+                  emptyText="Add coach names in the Training Plan or create Coach Profiles first."
                 />
                 {onCreateCoachProfile && (
                   <div className="mt-2 flex gap-2">
