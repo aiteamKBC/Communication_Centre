@@ -1,4 +1,5 @@
 import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
@@ -561,6 +562,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
       session.holidays.some(item => item.id === holiday.id)
     ),
   }));
+  const showLegacyHolidayOverlap = false;
 
   return (
     <div className="fixed z-50 pointer-events-none"
@@ -690,7 +692,7 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
               )}
             </div>
           )}
-          {false && hasHolidays && (
+          {showLegacyHolidayOverlap && hasHolidays && (
             <div className="rounded-lg p-2.5 border" style={{ background: '#FFF8E0', borderColor: '#F7A800' }}>
               <div className="flex items-center gap-1.5 mb-1.5">
                 <i className="ri-alert-line text-xs" style={{ color: '#C49A00' }} />
@@ -872,6 +874,7 @@ export default function GanttTimeline({
   const [showCompletedClasses, setShowCompletedClasses] = useState(false);
   const [collapsedClassProgrammes, setCollapsedClassProgrammes] = useState<Set<string>>(new Set());
   const [lastClassSelection, setLastClassSelection] = useState<{ classKey: string; moduleKey?: string } | null>(null);
+  const [classesPopupPosition, setClassesPopupPosition] = useState({ left: 12, top: 12, width: 360, maxHeight: 520 });
   const [focusedTimelineTarget, setFocusedTimelineTarget] = useState<{ groupIdx?: number; rowKey?: string; blockId?: string } | null>(null);
   const [pendingTimelineNavigation, setPendingTimelineNavigation] = useState<{ groupIdx?: number; rowKey?: string; targetDate: string } | null>(null);
   const [editChoice, setEditChoice] = useState<{
@@ -892,8 +895,29 @@ export default function GanttTimeline({
   const headerScrollFrame = useRef<number | null>(null);
   const panState = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; windowY: number } | null>(null);
   const timelineSurfaceRef = useRef<HTMLDivElement>(null);
+  const classesButtonRef = useRef<HTMLButtonElement>(null);
   const classesPopupRef = useRef<HTMLDivElement>(null);
   const leftW = viewportWidth < 640 ? 184 : viewportWidth < 1024 ? 210 : LEFT_W;
+
+  const updateClassesPopupPosition = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const button = classesButtonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(360, Math.max(280, window.innerWidth - 24));
+    const belowTop = rect.bottom + 8;
+    const preferredMaxHeight = 520;
+    const belowSpace = window.innerHeight - belowTop - 12;
+    const aboveSpace = rect.top - 12;
+    const shouldOpenAbove = belowSpace < 260 && aboveSpace > belowSpace;
+    const maxHeight = Math.max(240, Math.min(preferredMaxHeight, shouldOpenAbove ? aboveSpace - 8 : belowSpace));
+    const top = shouldOpenAbove ? Math.max(12, rect.top - maxHeight - 8) : belowTop;
+    const left = Math.min(
+      Math.max(12, rect.right - width),
+      Math.max(12, window.innerWidth - width - 12),
+    );
+    setClassesPopupPosition({ left, top, width, maxHeight });
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -920,6 +944,9 @@ export default function GanttTimeline({
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
+      if (target instanceof Node && classesButtonRef.current?.contains(target)) {
+        return;
+      }
       if (target instanceof Node && classesPopupRef.current?.contains(target)) {
         return;
       }
@@ -929,6 +956,17 @@ export default function GanttTimeline({
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [classesOpen]);
+
+  useEffect(() => {
+    if (!classesOpen) return undefined;
+    updateClassesPopupPosition();
+    window.addEventListener('resize', updateClassesPopupPosition);
+    window.addEventListener('scroll', updateClassesPopupPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateClassesPopupPosition);
+      window.removeEventListener('scroll', updateClassesPopupPosition, true);
+    };
+  }, [classesOpen, updateClassesPopupPosition]);
 
   useEffect(() => {
     if (!classesOpen || !lastClassSelection) return;
@@ -1216,7 +1254,7 @@ export default function GanttTimeline({
   const handleDeleteRequest = useCallback(async (groupIdx: number, rowIdx: number, cohortLabel: string) => {
     const result = await kbcSwal.fire({
       title: 'Delete Cohort?',
-      html: `The cohort <strong>${cohortLabel}</strong> will be removed from the training plan and database.`,
+      html: `The cohort <strong>${cohortLabel}</strong> will be archived and hidden from the normal Training Plan view. It can be recovered by an administrator.`,
       icon: 'warning',
       showCancelButton: true,
       confirmButtonText: 'Delete Cohort',
@@ -1228,7 +1266,7 @@ export default function GanttTimeline({
 
     void kbcSwal.fire({
       title: 'Deleting Cohort...',
-      html: `Removing <strong>${cohortLabel}</strong> from the training plan. Please wait.`,
+      html: `Archiving <strong>${cohortLabel}</strong> from the training plan. Please wait.`,
       allowOutsideClick: false,
       allowEscapeKey: false,
       didOpen: () => {
@@ -1241,7 +1279,7 @@ export default function GanttTimeline({
       await kbcSwal.fire({
         icon: 'success',
         title: 'Cohort Deleted',
-        html: `<strong>${cohortLabel}</strong> was removed successfully.`,
+        html: `<strong>${cohortLabel}</strong> was archived successfully.`,
         confirmButtonText: 'OK',
       });
     } catch (error) {
@@ -2342,18 +2380,31 @@ export default function GanttTimeline({
               {zoom === 'week' ? 'This Week' : 'Today'}
             </button>
           )}
-            <div ref={classesPopupRef} className="relative">
+            <div className="relative">
               <button
+                ref={classesButtonRef}
                 type="button"
-                onClick={() => setClassesOpen(prev => !prev)}
+                onClick={() => {
+                  updateClassesPopupPosition();
+                  setClassesOpen(prev => !prev);
+                }}
                 className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
               >
                 <i className="ri-group-line text-sm" />
                 Classes
                 <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-extrabold text-slate-500">{classSummaries.length}</span>
               </button>
-              {classesOpen && (
-                <div className="absolute left-0 top-9 z-50 w-[360px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl">
+              {classesOpen && typeof document !== 'undefined' && createPortal(
+                <div
+                  ref={classesPopupRef}
+                  className="fixed z-[160] flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl ring-1 ring-slate-900/5"
+                  style={{
+                    left: classesPopupPosition.left,
+                    top: classesPopupPosition.top,
+                    width: classesPopupPosition.width,
+                    maxHeight: classesPopupPosition.maxHeight,
+                  }}
+                >
                   <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2">
                     <div>
                       <p className="text-xs font-extrabold text-kbc-navy">Classes</p>
@@ -2381,7 +2432,7 @@ export default function GanttTimeline({
                       )}
                     </div>
                   </div>
-                  <div className="max-h-[440px] overflow-y-auto px-2 py-1.5">
+                  <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
                     {classNavigationGroups.active.length ? classNavigationGroups.active.map(programme => {
                       const isProgrammeCollapsed = collapsedClassProgrammes.has(programme.programmeName);
                       return (
@@ -2512,7 +2563,8 @@ export default function GanttTimeline({
                       </div>
                     )}
                   </div>
-                </div>
+                </div>,
+                document.body,
               )}
             </div>
           {onExportExcel && (

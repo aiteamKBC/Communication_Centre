@@ -90,7 +90,7 @@ export default function ManageProgramModal({
     const row = group.rows[rowIdx];
     const result = await kbcSwal.fire({
       title: 'Delete Cohort?',
-      html: `You are about to permanently delete <strong>${row?.label || 'this cohort'}</strong>. This action cannot be undone.`,
+      html: `The cohort <strong>${row?.label || 'this cohort'}</strong> will be archived and hidden from the normal Training Plan view. It can be recovered by an administrator.`,
       icon: 'warning',
       showCancelButton: true,
       confirmButtonText: 'Delete Cohort',

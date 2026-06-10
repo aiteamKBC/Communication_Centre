@@ -653,6 +653,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
 
   const inProgressModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'in-progress');
   const assignedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'assigned');
+  const completedModules = moduleBlocks.filter(item => getModuleStatus(item, now) === 'completed');
   const allUpcomingSessions = tutorSessions
     .filter(item => parseLocalDateTime(item.date, item.endTime) > now)
     .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
@@ -795,6 +796,10 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
               <p className="mt-1 text-xl font-extrabold text-gray-800">{assignedModules.length}</p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Completed</p>
+              <p className="mt-1 text-xl font-extrabold text-gray-800">{completedModules.length}</p>
+            </div>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Assigned Sessions</p>
               <p className="mt-1 text-xl font-extrabold text-gray-800">{tutorSessions.length}</p>
             </div>
@@ -868,6 +873,19 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
             modules={assignedModules}
             conflicts={activeConflicts}
             emptyText="No future assigned modules for this tutor."
+            canEdit={canEdit}
+            onEditTrainingPlan={onEditTrainingPlan}
+            onAddModuleForTutor={onAddModuleForTutor}
+            activeTutorProfileId={activeTutorId}
+            moduleOptions={moduleOptions}
+            now={now}
+          />
+
+          <ModuleList
+            title="Completed Modules"
+            modules={completedModules}
+            conflicts={activeConflicts}
+            emptyText="No completed modules for this tutor yet."
             canEdit={canEdit}
             onEditTrainingPlan={onEditTrainingPlan}
             onAddModuleForTutor={onAddModuleForTutor}

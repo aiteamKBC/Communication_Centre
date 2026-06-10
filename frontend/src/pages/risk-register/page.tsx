@@ -362,12 +362,6 @@ export default function RiskRegisterPage() {
   const [riskCategoryFilter, setRiskCategoryFilter] = useState('');
 
   useEffect(() => {
-    fetch('/api/support-tickets/')
-      .then(response => response.ok ? response.json() : Promise.reject(`HTTP ${response.status}`))
-      .then((data: SupportTicket[]) => setTickets(Array.isArray(data) ? data : []))
-      .catch(error => setTicketsError(String(error)))
-      .finally(() => setTicketsLoading(false));
-
     fetch('/api/risk-register/')
       .then(response => response.ok ? response.json() : Promise.reject(`HTTP ${response.status}`))
       .then((data: RiskItem[]) => setRisks(Array.isArray(data) ? data : []))
@@ -452,84 +446,11 @@ export default function RiskRegisterPage() {
               <i className="ri-error-warning-line text-base" />
             </div>
             <div>
-              <h1 className="text-lg font-extrabold leading-none text-gray-950">Risk Register</h1>
-              <p className="mt-1 text-xs text-gray-400">Student support tickets and Ofsted risk tracking</p>
+              <h1 className="text-lg font-extrabold leading-none text-gray-950">Ofsted Risk Register</h1>
+              <p className="mt-1 text-xs text-gray-400">Risk items, RAG status, and owners</p>
             </div>
           </div>
         </div>
-
-        <section id="student-support" className="scroll-mt-24 overflow-hidden rounded-lg border border-gray-200 bg-white">
-          <div className="space-y-4 p-4">
-            {!ticketsLoading && !ticketsError && (
-              <>
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-                  <SummaryCard icon="ri-file-list-3-line" label="Total tickets" value={ticketStats.total} tone={{ bg: '#EEF2FF', color: '#4F46E5', border: '#C7D2FE' }} />
-                  <SummaryCard icon="ri-door-open-line" label="Open" value={ticketStats.open} tone={{ bg: '#ECFDF5', color: '#059669', border: '#A7F3D0' }} />
-                  <SummaryCard icon="ri-checkbox-circle-line" label="Closed" value={ticketStats.closed} tone={{ bg: '#F1F5F9', color: '#64748B', border: '#CBD5E1' }} />
-                  <SummaryCard icon="ri-alarm-warning-line" label="Urgent / High open" value={ticketStats.urgentHighOpen} tone={{ bg: '#FEE2E2', color: '#DC2626', border: '#FECACA' }} />
-                  <SummaryCard icon="ri-shield-cross-line" label="Safeguarding" value={ticketStats.safeguarding} tone={{ bg: '#FFF7ED', color: '#EA580C', border: '#FED7AA' }} />
-                </div>
-
-                <div className="rounded-lg border border-gray-100 bg-slate-50/70 p-3">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs font-bold text-slate-500">Student support records</p>
-                    <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-extrabold text-slate-600">
-                      Showing {filteredTickets.length} of {tickets.length}
-                    </span>
-                  </div>
-                  <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_150px_160px_170px_auto]">
-                    <div className="relative">
-                      <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-300" />
-                      <input
-                        value={ticketSearch}
-                        onChange={event => setTicketSearch(event.target.value)}
-                        placeholder="Search student, email, subject..."
-                        className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-xs font-semibold text-slate-600 outline-none transition-colors focus:border-kbc-navy/40"
-                      />
-                    </div>
-                    <select value={ticketState} onChange={event => setTicketState(event.target.value as 'all' | 'open' | 'closed')} className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-slate-600 outline-none focus:border-kbc-navy/40">
-                      <option value="all">All states</option>
-                      <option value="open">Open only</option>
-                      <option value="closed">Closed only</option>
-                    </select>
-                    <select value={ticketUrgency} onChange={event => setTicketUrgency(event.target.value)} className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-slate-600 outline-none focus:border-kbc-navy/40">
-                      <option value="">All urgency</option>
-                      {ticketUrgencies.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}
-                    </select>
-                    <select value={ticketType} onChange={event => setTicketType(event.target.value)} className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-slate-600 outline-none focus:border-kbc-navy/40">
-                      <option value="">All types</option>
-                      {ticketTypes.map(value => <option key={value} value={value}>{titleCase(value)}</option>)}
-                    </select>
-                    {hasTicketFilters && (
-                      <button type="button" onClick={clearTicketFilters} className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-slate-500 hover:bg-gray-50">
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {ticketsLoading ? (
-              <Skeleton rows={5} />
-            ) : ticketsError ? (
-              <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
-                <i className="ri-error-warning-line mr-1" /> {ticketsError}
-              </div>
-            ) : tickets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-200 py-12 text-center">
-                <i className="ri-shield-check-line mb-2 text-3xl text-green-400" />
-                <p className="text-sm font-bold text-gray-500">No student support tickets yet</p>
-              </div>
-            ) : filteredTickets.length === 0 ? (
-              <div className="rounded-lg border border-gray-100 bg-white py-10 text-center text-sm font-semibold text-gray-400">No tickets match your filters.</div>
-            ) : (
-              <div className="grid items-start gap-3 xl:grid-cols-2">
-                {filteredTickets.map(ticket => <SupportTicketCard key={ticket.id} ticket={ticket} />)}
-              </div>
-            )}
-          </div>
-        </section>
 
         <section id="ofsted-risk-register" className="scroll-mt-24 overflow-hidden rounded-lg border border-gray-200 bg-white">
           <div className="border-b border-gray-100 px-4 py-4">

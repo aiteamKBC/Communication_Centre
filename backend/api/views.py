@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -20,7 +21,24 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import AuditLog, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+from .models import AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+
+
+logger = logging.getLogger(__name__)
+
+MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES = {
+	'cohort_add',
+	'cohort_edit',
+	'cohort_delete',
+	'module_add_for_tutor',
+	'module_edit_linked_timeline_rows',
+	'module_delete_linked_timeline_rows',
+	'programme_edit_linked_timeline_rows',
+	'reorder_programmes',
+	'reorder_cohorts',
+}
+LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_HEADER = 'X-KBC-Legacy-Training-Plan-Full-Save'
+LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE = 'internal-admin-debug'
 
 
 REALTIME_RESOURCE_ENTITIES = {
@@ -702,8 +720,11 @@ def upload_image(request):
 
 
 def serialize_training_plan(item: TrainingPlan) -> dict:
+	identity = training_plan_row_identity(item)
 	return {
 		'id': int(item.id),
+		'programmeId': identity['programmeId'],
+		'cohortId': identity['cohortId'],
 		'cohortName': item.cohort_name,
 		'program': item.program,
 		'startingDateLabel': item.starting_date_lable,
@@ -721,6 +742,12 @@ def serialize_training_plan(item: TrainingPlan) -> dict:
 		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
 		'sessionCoverage': normalize_session_coverage(getattr(item, 'session_coverage_json', '')),
 		'ksbProfileId': str(item.ksb_profile_id) if getattr(item, 'ksb_profile_id', None) else '',
+		'programmeDisplayOrder': item.programme_display_order,
+		'cohortDisplayOrder': item.cohort_display_order,
+		'isArchived': bool(getattr(item, 'is_archived', False)),
+		'archivedAt': item.archived_at.isoformat() if getattr(item, 'archived_at', None) else '',
+		'archivedBy': getattr(item, 'archived_by', '') or '',
+		'archiveReason': getattr(item, 'archive_reason', '') or '',
 		'notes': item.notes,
 	}
 
@@ -779,12 +806,46 @@ def serialize_tutor_profile(item: TutorProfile, session_counts: dict[int, int] |
 	}
 
 
+def serialize_coach_profile(item: CoachProfile, session_counts: dict[int, int] | None = None) -> dict:
+	return {
+		'id': str(item.id),
+		'name': item.name,
+		'normalizedName': item.normalized_name,
+		'email': item.email,
+		'phone': item.phone,
+		'notes': item.notes,
+		'availabilityNotes': item.availability_notes,
+		'isActive': item.is_active,
+		'sessionCount': (session_counts or {}).get(int(item.id), 0),
+		'createdAt': item.created_at.isoformat() if item.created_at else '',
+		'updatedAt': item.updated_at.isoformat() if item.updated_at else '',
+	}
+
+
 def tutor_profile_session_counts() -> dict[int, int]:
 	counts: dict[int, int] = {}
 	for row in TrainingPlan.objects.exclude(tutor_profile_id__isnull=True).values('tutor_profile_id', 'sessions_number'):
 		try:
 			profile_id = int(row.get('tutor_profile_id'))
 		except (TypeError, ValueError):
+			continue
+		try:
+			sessions = max(1, int(row.get('sessions_number') or 1))
+		except (TypeError, ValueError):
+			sessions = 1
+		counts[profile_id] = counts.get(profile_id, 0) + sessions
+	return counts
+
+
+def coach_profile_session_counts() -> dict[int, int]:
+	counts: dict[int, int] = {}
+	profiles_by_name = {
+		normalize_tutor_profile_name(profile.name): int(profile.id)
+		for profile in CoachProfile.objects.filter(is_active=True)
+	}
+	for row in TrainingPlan.objects.exclude(coach_name='').values('coach_name', 'sessions_number'):
+		profile_id = profiles_by_name.get(normalize_tutor_profile_name(row.get('coach_name') or ''))
+		if not profile_id:
 			continue
 		try:
 			sessions = max(1, int(row.get('sessions_number') or 1))
@@ -805,12 +866,34 @@ def possible_tutor_profile_matches(name: str, *, exclude_id: int | None = None, 
 	return sorted(matches, key=lambda item: (-item['score'], item['profile'].name.lower()))
 
 
+def possible_coach_profile_matches(name: str, *, exclude_id: int | None = None, threshold: float = 0.86) -> list[dict]:
+	matches = []
+	for profile in CoachProfile.objects.filter(is_active=True).order_by('name', 'id'):
+		if exclude_id is not None and int(profile.id) == int(exclude_id):
+			continue
+		score = tutor_similarity(name, profile.name)
+		if is_probable_tutor_profile_match(name, profile.name, threshold=threshold):
+			matches.append({'profile': profile, 'score': round(score, 3), 'exact': normalize_tutor_profile_name(name) == profile.normalized_name})
+	return sorted(matches, key=lambda item: (-item['score'], item['profile'].name.lower()))
+
+
 TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT = 100
 TRAINING_PLAN_PARTIAL_SAVE_RATIO = 0.75
 
 
-def training_plan_queryset():
-	return TrainingPlan.objects.all().order_by('id')
+def active_training_plan_filter():
+	return models.Q(is_archived=False) | models.Q(is_archived__isnull=True)
+
+
+def training_plan_queryset(*, include_archived: bool = False):
+	queryset = TrainingPlan.objects.all()
+	if not include_archived:
+		queryset = queryset.filter(active_training_plan_filter())
+	return queryset.order_by(
+		models.F('programme_display_order').asc(nulls_last=True),
+		models.F('cohort_display_order').asc(nulls_last=True),
+		'id',
+	)
 
 
 def training_plan_items_snapshot() -> list[dict]:
@@ -826,12 +909,415 @@ def training_plan_version(items: list[dict] | None = None) -> str:
 	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
+def training_plan_row_version(row: TrainingPlan) -> str:
+	return training_plan_version([serialize_training_plan(row)])
+
+
+def parse_json_payload(request) -> tuple[dict, JsonResponse | HttpResponseBadRequest | None]:
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		return {}, HttpResponseBadRequest('Invalid JSON payload.')
+	if not isinstance(payload, dict):
+		return {}, JsonResponse({'detail': 'Payload must be an object.'}, status=400)
+	return payload, None
+
+
+def require_training_plan_version(payload: dict, current_version: str, current_items: list[dict]) -> JsonResponse | None:
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if not submitted_version:
+		return JsonResponse({
+			'detail': 'Reload the latest Training Plan before saving. This prevents an older page from overwriting newer timeline data.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	if submitted_version != current_version:
+		return JsonResponse({
+			'detail': 'The Training Plan was updated by someone else. Please reload and review before saving.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	return None
+
+
+def normalize_time_text(value) -> str:
+	text = str(value or '').strip()
+	if not text:
+		return ''
+	if not re.match(r'^\d{2}:\d{2}$', text):
+		raise ValueError('Time must use HH:MM format.')
+	hour, minute = [int(part) for part in text.split(':')]
+	if hour > 23 or minute > 59:
+		raise ValueError('Time must be a valid 24-hour value.')
+	return text
+
+
+def validate_tutor_profile_id(value, field_label: str) -> tuple[int | None, TutorProfile | None, str]:
+	profile_id = normalize_nullable_int(value)
+	if profile_id is None:
+		return None, None, ''
+	try:
+		profile = TutorProfile.objects.get(pk=profile_id, is_active=True)
+	except TutorProfile.DoesNotExist:
+		return None, None, f'{field_label} references an unknown active tutor profile.'
+	return profile_id, profile, ''
+
+
+def validate_coach_profile_id(value, field_label: str) -> tuple[int | None, CoachProfile | None, str]:
+	profile_id = normalize_nullable_int(value)
+	if profile_id is None:
+		return None, None, ''
+	try:
+		profile = CoachProfile.objects.get(pk=profile_id, is_active=True)
+	except CoachProfile.DoesNotExist:
+		return None, None, f'{field_label} references an unknown active coach profile.'
+	return profile_id, profile, ''
+
+
+def training_plan_partial_response(row: TrainingPlan) -> dict:
+	items = training_plan_items_snapshot()
+	return {
+		'item': serialize_training_plan(row),
+		'version': training_plan_version(items),
+		'rowVersion': training_plan_row_version(row),
+		'items': items,
+		'count': len(items),
+	}
+
+
+def training_plan_order_response(extra: dict | None = None) -> dict:
+	items = training_plan_items_snapshot()
+	response = {
+		'items': items,
+		'version': training_plan_version(items),
+		'count': len(items),
+	}
+	if extra:
+		response.update(extra)
+	return response
+
+
+def validate_reorder_ids(payload: dict, key: str, label: str) -> tuple[list[str], JsonResponse | None]:
+	value = payload.get(key)
+	if not isinstance(value, list):
+		return [], JsonResponse({'detail': f'{key} must be a list.'}, status=400)
+	ids = [str(item or '').strip() for item in value]
+	if any(not item for item in ids):
+		return [], JsonResponse({'detail': f'{label} reorder contains a missing id.'}, status=400)
+	if len(ids) != len(set(ids)):
+		return [], JsonResponse({'detail': f'{label} reorder contains duplicate ids.'}, status=400)
+	if not ids:
+		return [], JsonResponse({'detail': f'{label} reorder requires at least one id.'}, status=400)
+	return ids, None
+
+
+def validate_training_plan_row_ids(payload: dict, key: str, label: str) -> tuple[list[int], JsonResponse | None]:
+	value = payload.get(key)
+	if not isinstance(value, list):
+		return [], JsonResponse({'detail': f'{key} must be a list.'}, status=400)
+	ids = []
+	for item in value:
+		text = str(item or '').strip()
+		if not text:
+			return [], JsonResponse({'detail': f'{label} archive contains a missing id.'}, status=400)
+		try:
+			row_id = int(text)
+		except (TypeError, ValueError):
+			return [], JsonResponse({'detail': f'{label} archive contains an invalid id.'}, status=400)
+		ids.append(row_id)
+	if len(ids) != len(set(ids)):
+		return [], JsonResponse({'detail': f'{label} archive contains duplicate ids.'}, status=400)
+	if not ids:
+		return [], JsonResponse({'detail': f'{label} archive requires at least one id.'}, status=400)
+	return ids, None
+
+
+def validate_training_plan_linked_module_rows(payload: dict) -> tuple[list[dict], JsonResponse | None]:
+	value = payload.get('linkedRows')
+	if not isinstance(value, list):
+		return [], JsonResponse({'detail': 'linkedRows must be a list.'}, status=400)
+	if not value:
+		return [], JsonResponse({'detail': 'linkedRows requires at least one row.'}, status=400)
+
+	rows = []
+	row_ids = []
+	identity_keys = []
+	for index, item in enumerate(value):
+		if not isinstance(item, dict):
+			return [], JsonResponse({'detail': f'linkedRows[{index}] must be an object.'}, status=400)
+		try:
+			row_id = int(str(item.get('trainingPlanId') or '').strip())
+		except (TypeError, ValueError):
+			return [], JsonResponse({'detail': f'linkedRows[{index}] is missing a valid trainingPlanId.'}, status=400)
+		programme_id = str(item.get('programmeId') or '').strip()
+		cohort_id = str(item.get('cohortId') or '').strip()
+		block_id = str(item.get('blockId') or '').strip()
+		group_id = str(item.get('groupId') or '').strip()
+		if not programme_id or not cohort_id or not block_id:
+			return [], JsonResponse({'detail': f'linkedRows[{index}] is missing stable programmeId, cohortId, or blockId.'}, status=400)
+		row_ids.append(row_id)
+		identity_keys.append((programme_id, cohort_id, group_id, block_id))
+		rows.append({
+			'trainingPlanId': row_id,
+			'programmeId': programme_id,
+			'cohortId': cohort_id,
+			'groupId': group_id,
+			'blockId': block_id,
+		})
+	if len(row_ids) != len(set(row_ids)):
+		return [], JsonResponse({'detail': 'linkedRows contains duplicate trainingPlanId values.'}, status=400)
+	if len(identity_keys) != len(set(identity_keys)):
+		return [], JsonResponse({'detail': 'linkedRows contains ambiguous duplicate module identifiers.'}, status=400)
+	return rows, None
+
+
+def validate_training_plan_programme_linked_rows(payload: dict, programme_id: str) -> tuple[list[int], str, JsonResponse | None]:
+	target_programme_id = str(programme_id or '').strip()
+	if not target_programme_id or target_programme_id.startswith('db-row-') or target_programme_id.startswith('row-'):
+		return [], '', JsonResponse({'detail': 'A stable programme id is required.'}, status=400)
+	payload_programme_id = str(payload.get('programmeId') or '').strip()
+	if payload_programme_id and payload_programme_id != target_programme_id:
+		return [], '', JsonResponse({'detail': 'payload programmeId does not match the requested programme.'}, status=400)
+	program_label = str(payload.get('program') or '').strip()
+	if not program_label:
+		return [], '', JsonResponse({'detail': 'program is required.'}, status=400)
+	if any(key in payload for key in ('items', 'rows', 'linkedRows', 'blocks', 'row', 'archiveReason', 'restore', 'trainingPlanIdsToDelete')):
+		return [], '', JsonResponse({'detail': 'Programme linked-row update payload must not include full-save, row mutation, archive, or restore fields.'}, status=400)
+
+	value = payload.get('trainingPlanIds')
+	if not isinstance(value, list) or not value:
+		return [], '', JsonResponse({'detail': 'trainingPlanIds must be a non-empty list.'}, status=400)
+	row_ids = []
+	for item in value:
+		try:
+			row_id = int(str(item or '').strip())
+		except (TypeError, ValueError):
+			return [], '', JsonResponse({'detail': 'trainingPlanIds contains an invalid id.'}, status=400)
+		row_ids.append(row_id)
+	if len(row_ids) != len(set(row_ids)):
+		return [], '', JsonResponse({'detail': 'trainingPlanIds contains duplicate ids.'}, status=400)
+	return row_ids, program_label, None
+
+
+def validate_training_plan_add_for_tutor_payload(payload: dict) -> tuple[dict, JsonResponse | None]:
+	programme_id = str(payload.get('programmeId') or '').strip()
+	cohort_id = str(payload.get('cohortId') or '').strip()
+	group_id = str(payload.get('groupId') or '').strip()
+	block_id = str(payload.get('blockId') or '').strip()
+	module_identity = str(payload.get('moduleCatalogueId') or payload.get('moduleStableId') or '').strip()
+	tutor_profile_id = str(payload.get('tutorProfileId') or '').strip()
+	row = payload.get('row')
+
+	if not programme_id or not cohort_id:
+		return {}, JsonResponse({'detail': 'programmeId and cohortId are required.'}, status=400)
+	if not group_id or not block_id:
+		return {}, JsonResponse({'detail': 'groupId and blockId are required.'}, status=400)
+	if not module_identity:
+		return {}, JsonResponse({'detail': 'moduleCatalogueId or moduleStableId is required.'}, status=400)
+	if not tutor_profile_id:
+		return {}, JsonResponse({'detail': 'tutorProfileId is required.'}, status=400)
+	if not isinstance(row, dict):
+		return {}, JsonResponse({'detail': 'row must be an object.'}, status=400)
+	if row.get('id') or row.get('trainingPlanId'):
+		return {}, JsonResponse({'detail': 'Module add payload must not include an existing Training Plan row id.'}, status=400)
+
+	row_programme_id = str(row.get('programmeId') or '').strip()
+	row_cohort_id = str(row.get('cohortId') or '').strip()
+	row_tutor_profile_id = str(row.get('tutorProfileId') or '').strip()
+	if row_programme_id != programme_id or row_cohort_id != cohort_id:
+		return {}, JsonResponse({'detail': 'Submitted row does not match the requested programme/cohort scope.'}, status=400)
+	if row_tutor_profile_id != tutor_profile_id:
+		return {}, JsonResponse({'detail': 'Submitted row does not match the requested tutor assignment.'}, status=400)
+
+	notes = str(row.get('notes') or '')
+	if (
+		training_plan_marker_value(notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX) != programme_id
+		or training_plan_marker_value(notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX) != cohort_id
+		or training_plan_marker_value(notes, '__group_id:') != group_id
+		or training_plan_marker_value(notes, '__block_id:') != block_id
+	):
+		return {}, JsonResponse({'detail': 'Submitted row is missing matching Training Plan metadata markers.'}, status=400)
+
+	values, error = training_plan_values_from_payload_row(row, 0)
+	if error:
+		return {}, JsonResponse({'detail': error}, status=400)
+
+	return {
+		'programmeId': programme_id,
+		'cohortId': cohort_id,
+		'groupId': group_id,
+		'blockId': block_id,
+		'moduleIdentity': module_identity,
+		'tutorProfileId': tutor_profile_id,
+		'row': row,
+		'values': values,
+	}, None
+
+
+def training_plan_row_matches_values(row: TrainingPlan, values: dict) -> bool:
+	return (
+		row.cohort_name == values.get('cohort_name')
+		and row.program == values.get('program')
+		and row.starting_date_lable == values.get('starting_date_lable')
+		and row.module_name == values.get('module_name')
+		and row.group_name == values.get('group_name')
+		and row.coach_name == values.get('coach_name')
+		and row.tutor_name == values.get('tutor_name')
+		and row.tutor_profile_id == values.get('tutor_profile_id')
+		and row.start_date == values.get('start_date')
+		and row.end_date == values.get('end_date')
+		and row.sessions_number == values.get('sessions_number')
+		and row.session_week_day == values.get('session_week_day')
+		and row.session_start_time == values.get('session_start_time')
+		and row.session_end_time == values.get('session_end_time')
+		and normalize_session_ksb_mappings(row.session_ksb_json) == normalize_session_ksb_mappings(values.get('session_ksb_json'))
+		and normalize_session_coverage(row.session_coverage_json) == normalize_session_coverage(values.get('session_coverage_json'))
+		and row.ksb_profile_id == values.get('ksb_profile_id')
+		and row.programme_display_order == values.get('programme_display_order')
+		and row.cohort_display_order == values.get('cohort_display_order')
+		and row.notes == values.get('notes')
+	)
+
+
+def find_module_add_for_tutor_duplicates(rows: list[TrainingPlan], validated: dict) -> list[TrainingPlan]:
+	return [
+		row for row in rows
+		if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
+		and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+		and training_plan_marker_value(row.notes, '__group_id:') == validated['groupId']
+		and training_plan_marker_value(row.notes, '__block_id:') == validated['blockId']
+	]
+
+
+def validate_training_plan_cohort_create_payload(payload: dict) -> tuple[dict, JsonResponse | None]:
+	programme_id = str(payload.get('programmeId') or '').strip()
+	cohort_id = str(payload.get('cohortId') or '').strip()
+	rows = payload.get('rows')
+	if not programme_id:
+		return {}, JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	if not cohort_id:
+		return {}, JsonResponse({'detail': 'cohortId is required.'}, status=400)
+	if not isinstance(rows, list):
+		return {}, JsonResponse({'detail': 'rows must be a list.'}, status=400)
+	if not rows:
+		return {}, JsonResponse({'detail': 'rows requires at least one new cohort row.'}, status=400)
+
+	validated_rows = []
+	identity_keys = []
+	for index, row in enumerate(rows):
+		if not isinstance(row, dict):
+			return {}, JsonResponse({'detail': f'rows[{index}] must be an object.'}, status=400)
+		if row.get('id') or row.get('trainingPlanId'):
+			return {}, JsonResponse({'detail': f'rows[{index}] must not include an existing Training Plan row id.'}, status=400)
+		if str(row.get('programmeId') or '').strip() != programme_id or str(row.get('cohortId') or '').strip() != cohort_id:
+			return {}, JsonResponse({'detail': f'rows[{index}] does not match the requested programme/cohort scope.'}, status=400)
+		notes = str(row.get('notes') or '')
+		group_id = training_plan_marker_value(notes, '__group_id:')
+		block_id = training_plan_marker_value(notes, '__block_id:')
+		if (
+			training_plan_marker_value(notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX) != programme_id
+			or training_plan_marker_value(notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX) != cohort_id
+			or not group_id
+			or not block_id
+		):
+			return {}, JsonResponse({'detail': f'rows[{index}] is missing matching programme/cohort/group/block metadata markers.'}, status=400)
+		identity_key = (programme_id, cohort_id, group_id, block_id)
+		identity_keys.append(identity_key)
+		values, error = training_plan_values_from_payload_row(row, index)
+		if error:
+			return {}, JsonResponse({'detail': error}, status=400)
+		validated_rows.append({
+			'row': row,
+			'values': values,
+			'groupId': group_id,
+			'blockId': block_id,
+		})
+	if len(identity_keys) != len(set(identity_keys)):
+		return {}, JsonResponse({'detail': 'rows contains duplicate programme/cohort/group/block identifiers.'}, status=400)
+	return {
+		'programmeId': programme_id,
+		'cohortId': cohort_id,
+		'rows': validated_rows,
+	}, None
+
+
+def training_plan_programme_scope_exists(programme_id: str, active_rows: list[TrainingPlan]) -> bool:
+	if any(training_plan_row_identity(row)['programmeId'] == programme_id for row in active_rows):
+		return True
+	return TrainingPlanProgramConfig.objects.filter(program_id=programme_id).exists()
+
+
+def training_plan_rows_match_values_by_identity(existing_rows: list[TrainingPlan], validated_rows: list[dict]) -> bool:
+	if len(existing_rows) != len(validated_rows):
+		return False
+	existing_by_identity = {
+		(training_plan_marker_value(row.notes, '__group_id:'), training_plan_marker_value(row.notes, '__block_id:')): row
+		for row in existing_rows
+	}
+	if len(existing_by_identity) != len(existing_rows):
+		return False
+	for item in validated_rows:
+		row = existing_by_identity.get((item['groupId'], item['blockId']))
+		if row is None or not training_plan_row_matches_values(row, item['values']):
+			return False
+	return True
+
+
+def current_training_plan_rows_for_update() -> list[TrainingPlan]:
+	return list(TrainingPlan.objects.select_for_update().filter(active_training_plan_filter()).order_by('id'))
+
+
+def all_training_plan_rows_for_update() -> list[TrainingPlan]:
+	return list(TrainingPlan.objects.select_for_update().order_by('id'))
+
+
+def restore_archived_training_plan_rows(rows: list[TrainingPlan]) -> None:
+	for row in rows:
+		row.is_archived = False
+		row.archived_at = None
+		row.archived_by = ''
+		row.archive_reason = ''
+		row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
+
+
+def validate_optional_training_plan_row_ids(payload: dict, key: str, label: str) -> tuple[list[int], JsonResponse | None]:
+	if key not in payload:
+		return [], None
+	value = payload.get(key)
+	if not isinstance(value, list):
+		return [], JsonResponse({'detail': f'{key} must be a list.'}, status=400)
+	ids = []
+	for item in value:
+		text = str(item or '').strip()
+		if not text:
+			return [], JsonResponse({'detail': f'{label} restore contains a missing id.'}, status=400)
+		try:
+			row_id = int(text)
+		except (TypeError, ValueError):
+			return [], JsonResponse({'detail': f'{label} restore contains an invalid id.'}, status=400)
+		ids.append(row_id)
+	if len(ids) != len(set(ids)):
+		return [], JsonResponse({'detail': f'{label} restore contains duplicate ids.'}, status=400)
+	return ids, None
+
+
 def training_plan_recovery_confirmed(request, payload: dict) -> bool:
 	if payload.get('confirmAdminRecovery') is not True:
 		return False
 	expected_token = os.getenv('TRAINING_PLAN_RECOVERY_TOKEN', '').strip()
 	submitted_token = _header_text(request, 'X-KBC-Admin-Recovery-Token')
 	return bool(expected_token and submitted_token and submitted_token == expected_token)
+
+
+def validate_legacy_training_plan_full_save_access(request, payload: dict) -> str:
+	source = _header_text(request, 'X-KBC-Training-Plan-Save-Source')
+	if source in MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES:
+		return f'Migrated Training Plan flow "{source}" cannot use legacy replace-all.'
+	if _header_text(request, LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_HEADER) != LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE:
+		return 'Legacy Training Plan replace-all requires an explicit internal/admin/debug flag.'
+	if payload.get('confirmLegacyReplaceAll') is not True:
+		return 'Legacy Training Plan replace-all requires confirmLegacyReplaceAll=true.'
+	return ''
 
 
 def audit_training_plan_rejection(request, *, reason: str, status_code: int, current_items: list[dict], incoming_count: int | None, submitted_version: str = '', current_version: str = '') -> None:
@@ -852,6 +1338,39 @@ def audit_training_plan_rejection(request, *, reason: str, status_code: int, cur
 			'currentVersion': current_version or training_plan_version(current_items),
 			'timestamp': timezone.now().isoformat(),
 		},
+	)
+
+
+def log_legacy_training_plan_full_save(
+	request,
+	*,
+	incoming_count: int | None,
+	current_count: int,
+	submitted_version: str,
+	current_version: str,
+	accepted: bool | None,
+	rejection_reason: str = '',
+	after_count: int | None = None,
+) -> None:
+	logger.warning(
+		'LEGACY_TRAINING_PLAN_FULL_SAVE_TRIGGERED %s',
+		json.dumps({
+			'userId': _header_int(request, 'X-KBC-User-Id'),
+			'username': _header_text(request, 'X-KBC-Username'),
+			'email': _header_text(request, 'X-KBC-User-Email'),
+			'displayName': _header_text(request, 'X-KBC-Display-Name'),
+			'path': request.get_full_path(),
+			'method': request.method,
+			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			'incomingItemCount': incoming_count,
+			'currentRowCount': current_count,
+			'payloadVersion': submitted_version,
+			'currentServerVersion': current_version,
+			'accepted': accepted,
+			'rejectionReason': rejection_reason,
+			'afterRowCount': after_count,
+			'timestamp': timezone.now().isoformat(),
+		}, sort_keys=True),
 	)
 
 
@@ -905,15 +1424,189 @@ def training_plan_values_from_payload_row(row: dict, index: int) -> tuple[dict, 
 		'session_ksb_json': json.dumps(normalize_session_ksb_mappings(row.get('sessionKsbMappings', [])), ensure_ascii=False),
 		'session_coverage_json': json.dumps(normalize_session_coverage(row.get('sessionCoverage', [])), ensure_ascii=False),
 		'ksb_profile_id': normalize_nullable_int(row.get('ksbProfileId', None)),
+		'programme_display_order': normalize_nullable_int(row.get('programmeDisplayOrder', None)),
+		'cohort_display_order': normalize_nullable_int(row.get('cohortDisplayOrder', None)),
 		'notes': str(row.get('notes', '')).strip(),
 	}, ''
 
 
 KSB_CODE_PATTERNS = {
-	'knowledgeCodes': re.compile(r'^K\d+$', re.IGNORECASE),
-	'skillCodes': re.compile(r'^S\d+$', re.IGNORECASE),
-	'behaviourCodes': re.compile(r'^B\d+$', re.IGNORECASE),
+	'knowledgeCodes': re.compile(r'^K\d+(?:\.\d+)*$', re.IGNORECASE),
+	'skillCodes': re.compile(r'^S\d+(?:\.\d+)*$', re.IGNORECASE),
+	'behaviourCodes': re.compile(r'^B\d+(?:\.\d+)*$', re.IGNORECASE),
 }
+
+TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX = '__module_color:'
+TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX = '__program_id:'
+TRAINING_PLAN_COHORT_ID_MARKER_PREFIX = '__cohort_id:'
+TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
+	TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX,
+	TRAINING_PLAN_COHORT_ID_MARKER_PREFIX,
+	'__group_id:',
+	'__block_id:',
+	'__holiday_ids:',
+	'__cohort_color:',
+	TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
+	'__cohort_end_date:',
+	'__group_name:',
+	'__coach_name:',
+)
+
+
+def training_plan_marker_value(notes: str, prefix: str) -> str:
+	reading_markers = True
+	for raw_line in str(notes or '').splitlines():
+		line = raw_line.strip()
+		if not line:
+			continue
+		if reading_markers and line.startswith(prefix):
+			return line[len(prefix):].strip()
+		if not line.startswith('__'):
+			reading_markers = False
+	return ''
+
+
+def normalize_training_plan_identity(value: str) -> str:
+	return re.sub(r'\s+', ' ', str(value or '').strip().lower())
+
+
+def training_plan_programme_id_from_label(value: str) -> str:
+	normalized_value = normalize_training_plan_identity(value)
+	if not normalized_value:
+		return ''
+	for config in TrainingPlanProgramConfig.objects.all().order_by('id'):
+		candidates = {
+			normalize_training_plan_identity(config.program_id),
+			normalize_training_plan_identity(config.name),
+			normalize_training_plan_identity(str(config.name or '').split('\n', 1)[0]),
+		}
+		if normalized_value in candidates:
+			return config.program_id
+		for candidate in candidates:
+			if candidate and (candidate in normalized_value or normalized_value in candidate):
+				return config.program_id
+	if 'pcp' in normalized_value or 'project control' in normalized_value:
+		return 'pcp'
+	if normalized_value == 'mm' or 'marketing manager' in normalized_value:
+		return 'mm'
+	if normalized_value == 'me' or 'marketing executive' in normalized_value:
+		return 'me'
+	return normalized_value
+
+
+def training_plan_row_identity(row: TrainingPlan) -> dict:
+	programme_id = training_plan_marker_value(row.notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX)
+	if not programme_id:
+		programme_id = training_plan_programme_id_from_label(row.program)
+	cohort_id = training_plan_marker_value(row.notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX)
+	if not cohort_id:
+		cohort_id = f'{normalize_training_plan_identity(row.cohort_name)}::{normalize_training_plan_identity(row.starting_date_lable)}'
+	return {'programmeId': programme_id, 'cohortId': cohort_id}
+TRAINING_PLAN_COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def normalize_training_plan_color(value) -> str:
+	color = str(value or '').strip()
+	if not color:
+		raise ValueError('color cannot be empty.')
+	if not TRAINING_PLAN_COLOR_PATTERN.match(color):
+		raise ValueError('color must be a hex color in #RRGGBB format.')
+	return color.upper()
+
+
+def update_training_plan_module_color_marker(notes: str, color: str) -> str:
+	lines = str(notes or '').strip().split('\n') if str(notes or '').strip() else []
+	markers = []
+	note_lines = []
+	reading_markers = True
+	replaced = False
+
+	for line in lines:
+		if reading_markers and line.startswith(TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX):
+			markers.append(f'{TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX}{color}')
+			replaced = True
+			continue
+		if reading_markers and any(line.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+			markers.append(line)
+			continue
+		reading_markers = False
+		note_lines.append(line)
+
+	if not replaced:
+		insert_at = 0
+		for index, marker in enumerate(markers):
+			if marker.startswith('__cohort_color:'):
+				insert_at = index + 1
+			elif insert_at == 0 and marker.startswith(('__program_id:', '__cohort_id:', '__group_id:', '__block_id:', '__holiday_ids:')):
+				insert_at = index + 1
+		markers.insert(insert_at, f'{TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX}{color}')
+
+	return '\n'.join([*markers, *note_lines]).strip()
+
+
+def update_training_plan_visible_notes(existing_notes: str, visible_notes: str) -> str:
+	incoming = str(visible_notes or '').strip()
+	if any(incoming.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+		return incoming
+
+	lines = str(existing_notes or '').strip().split('\n') if str(existing_notes or '').strip() else []
+	markers = []
+	reading_markers = True
+	for line in lines:
+		if reading_markers and any(line.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+			markers.append(line)
+			continue
+		reading_markers = False
+		break
+
+	if not markers:
+		return incoming
+	return '\n'.join([*markers, incoming]).strip()
+
+
+def training_plan_metadata_lines(notes: str) -> tuple[list[str], list[str]]:
+	lines = str(notes or '').strip().split('\n') if str(notes or '').strip() else []
+	markers = []
+	note_lines = []
+	reading_markers = True
+	for line in lines:
+		if reading_markers and any(line.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+			markers.append(line)
+			continue
+		reading_markers = False
+		note_lines.append(line)
+	return markers, note_lines
+
+
+def set_training_plan_metadata_markers(notes: str, marker_values: dict[str, str]) -> str:
+	markers, note_lines = training_plan_metadata_lines(notes)
+	marker_by_prefix = {}
+	unknown_markers = []
+	for marker in markers:
+		matched_prefix = next((prefix for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES if marker.startswith(prefix)), '')
+		if matched_prefix:
+			marker_by_prefix[matched_prefix] = marker[len(matched_prefix):].strip()
+		else:
+			unknown_markers.append(marker)
+	marker_by_prefix.update(marker_values)
+	ordered_prefixes = [
+		TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX,
+		TRAINING_PLAN_COHORT_ID_MARKER_PREFIX,
+		'__group_id:',
+		'__block_id:',
+		'__holiday_ids:',
+		'__cohort_color:',
+		TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
+		'__cohort_end_date:',
+		'__group_name:',
+		'__coach_name:',
+	]
+	next_markers = []
+	for prefix in ordered_prefixes:
+		value = str(marker_by_prefix.get(prefix, '') or '').strip()
+		if value:
+			next_markers.append(f'{prefix}{value}')
+	return '\n'.join([*unknown_markers, *next_markers, *note_lines]).strip()
 
 
 def normalize_ksb_codes(value, field_name: str) -> list[str]:
@@ -931,6 +1624,14 @@ def normalize_ksb_codes(value, field_name: str) -> list[str]:
 	return codes
 
 
+def normalize_ksb_number(value) -> str:
+	number = re.sub(r'[^0-9.]+', '', str(value or '').strip())
+	number = re.sub(r'\.+', '.', number).strip('.')
+	if not re.match(r'^\d+(?:\.\d+)*$', number):
+		return ''
+	return '.'.join(str(int(part)) for part in number.split('.'))
+
+
 def normalize_ksb_profile_items(value) -> list[dict]:
 	if not isinstance(value, list):
 		return []
@@ -942,20 +1643,20 @@ def normalize_ksb_profile_items(value) -> list[dict]:
 		item_type = str(item.get('type', '')).strip().upper()
 		if item_type not in {'K', 'S', 'B'}:
 			continue
-		number = str(item.get('number', '')).strip()
-		if not number.isdigit():
+		number = normalize_ksb_number(item.get('number', ''))
+		if not number:
 			code = str(item.get('code', '')).strip().upper()
-			match = re.match(rf'^{item_type}(\d+)$', code)
-			number = match.group(1) if match else ''
+			match = re.match(rf'^{item_type}(\d+(?:\.\d+)*)$', code)
+			number = normalize_ksb_number(match.group(1)) if match else ''
 		if not number:
 			continue
-		code = f'{item_type}{int(number)}'
+		code = f'{item_type}{number}'
 		if code in seen:
 			continue
 		seen.add(code)
 		items.append({
 			'type': item_type,
-			'number': str(int(number)),
+			'number': number,
 			'code': code,
 			'description': str(item.get('description', '')).strip(),
 		})
@@ -1010,11 +1711,12 @@ def normalize_session_coverage(value) -> list[dict]:
 			continue
 		assigned_id = normalize_nullable_int(item.get('assignedTutorProfileId'))
 		coverage_id = normalize_nullable_int(item.get('coverageTutorProfileId'))
+		coverage_coach_id = normalize_nullable_int(item.get('coverageCoachProfileId'))
 		tutor_unavailable = bool(item.get('tutorUnavailable'))
 		coverage_status = str(item.get('coverageStatus') or 'none').strip().lower()
 		if coverage_status not in {'none', 'required', 'covered'}:
 			coverage_status = 'none'
-		if tutor_unavailable and not coverage_id:
+		if tutor_unavailable and not coverage_id and not coverage_coach_id:
 			coverage_status = 'required'
 		if coverage_id:
 			if assigned_id and assigned_id == coverage_id:
@@ -1022,13 +1724,18 @@ def normalize_session_coverage(value) -> list[dict]:
 			if not TutorProfile.objects.filter(pk=coverage_id, is_active=True).exists():
 				continue
 			coverage_status = 'covered'
+		if coverage_coach_id:
+			if not CoachProfile.objects.filter(pk=coverage_coach_id, is_active=True).exists():
+				continue
+			coverage_status = 'covered'
 		coverage_reason = str(item.get('coverageReason', '')).strip()
-		if coverage_id and not coverage_reason:
+		if (coverage_id or coverage_coach_id) and not coverage_reason:
 			continue
 		normalized.append({
 			'sessionNumber': session_number,
 			'assignedTutorProfileId': str(assigned_id) if assigned_id else '',
 			'coverageTutorProfileId': str(coverage_id) if coverage_id else '',
+			'coverageCoachProfileId': str(coverage_coach_id) if coverage_coach_id else '',
 			'coverageStatus': coverage_status,
 			'tutorUnavailable': tutor_unavailable,
 			'tutorUnavailableReason': str(item.get('tutorUnavailableReason', '')).strip(),
@@ -1069,11 +1776,12 @@ def remove_tutor_profile_references(profile_id: int) -> int:
 				next_item['coverageTutorProfileId'] = ''
 				next_item['coverageReason'] = ''
 				next_item['coverageNotes'] = ''
-				next_item['coverageStatus'] = 'required' if next_item.get('tutorUnavailable') else 'none'
+				next_item['coverageStatus'] = 'covered' if next_item.get('coverageCoachProfileId') else 'required' if next_item.get('tutorUnavailable') else 'none'
 				coverage_changed = True
 			keep_item = (
 				bool(next_item.get('tutorUnavailable'))
 				or bool(str(next_item.get('coverageTutorProfileId') or '').strip())
+				or bool(str(next_item.get('coverageCoachProfileId') or '').strip())
 				or str(next_item.get('coverageStatus') or '').strip().lower() not in {'', 'none'}
 			)
 			if keep_item:
@@ -1085,6 +1793,45 @@ def remove_tutor_profile_references(profile_id: int) -> int:
 
 		if update_fields:
 			row.save(update_fields=sorted(set(update_fields)))
+			changed_rows += 1
+	return changed_rows
+
+
+def remove_coach_profile_references(profile_id: int) -> int:
+	profile_id_text = str(profile_id)
+	changed_rows = 0
+	for row in TrainingPlan.objects.all():
+		try:
+			raw_coverage = json.loads(row.session_coverage_json or '[]')
+		except (TypeError, json.JSONDecodeError):
+			raw_coverage = []
+		if not isinstance(raw_coverage, list):
+			raw_coverage = []
+
+		next_coverage = []
+		coverage_changed = False
+		for item in raw_coverage:
+			if not isinstance(item, dict):
+				continue
+			next_item = dict(item)
+			if str(next_item.get('coverageCoachProfileId') or '').strip() == profile_id_text:
+				next_item['coverageCoachProfileId'] = ''
+				next_item['coverageReason'] = ''
+				next_item['coverageNotes'] = ''
+				next_item['coverageStatus'] = 'covered' if next_item.get('coverageTutorProfileId') else 'required' if next_item.get('tutorUnavailable') else 'none'
+				coverage_changed = True
+			keep_item = (
+				bool(next_item.get('tutorUnavailable'))
+				or bool(str(next_item.get('coverageTutorProfileId') or '').strip())
+				or bool(str(next_item.get('coverageCoachProfileId') or '').strip())
+				or str(next_item.get('coverageStatus') or '').strip().lower() not in {'', 'none'}
+			)
+			if keep_item:
+				next_coverage.append(next_item)
+
+		if coverage_changed:
+			row.session_coverage_json = json.dumps(next_coverage, ensure_ascii=False)
+			row.save(update_fields=['session_coverage_json'])
 			changed_rows += 1
 	return changed_rows
 
@@ -1146,6 +1893,24 @@ def tutor_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
 	normalized_name = normalize_tutor_profile_name(name)
 	if not normalized_name:
 		return {}, 'Tutor name is required.'
+	return {
+		'name': name,
+		'normalized_name': normalized_name,
+		'email': str(payload.get('email', '')).strip(),
+		'phone': str(payload.get('phone', '')).strip(),
+		'notes': str(payload.get('notes', '')).strip(),
+		'availability_notes': str(payload.get('availabilityNotes', '')).strip(),
+		'is_active': bool(payload.get('isActive', True)),
+	}, ''
+
+
+def coach_profile_values_from_payload(payload: dict) -> tuple[dict, str]:
+	name = str(payload.get('name', '')).strip()
+	if not name:
+		return {}, 'Coach name is required.'
+	normalized_name = normalize_tutor_profile_name(name)
+	if not normalized_name:
+		return {}, 'Coach name is required.'
 	return {
 		'name': name,
 		'normalized_name': normalized_name,
@@ -1322,7 +2087,8 @@ def feedback(request):
 @csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
-		items = training_plan_items_snapshot()
+		include_archived = str(request.GET.get('includeArchived', '')).strip().lower() in {'1', 'true', 'yes'}
+		items = [serialize_training_plan(item) for item in training_plan_queryset(include_archived=include_archived)]
 		return JsonResponse({
 			'items': items,
 			'version': training_plan_version(items),
@@ -1340,27 +2106,55 @@ def training_plan(request):
 		current_items = training_plan_items_snapshot()
 		current_version = training_plan_version(current_items)
 		incoming_count = len(items) if isinstance(items, list) else None
+		current_count = len(current_items)
+		access_rejection = validate_legacy_training_plan_full_save_access(request, payload if isinstance(payload, dict) else {})
+		if access_rejection:
+			log_legacy_training_plan_full_save(
+				request,
+				incoming_count=incoming_count,
+				current_count=current_count,
+				submitted_version=submitted_version,
+				current_version=current_version,
+				accepted=False,
+				rejection_reason=access_rejection,
+			)
+			audit_training_plan_rejection(request, reason=access_rejection, status_code=403, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			return JsonResponse({'detail': access_rejection}, status=403)
+
+		log_legacy_training_plan_full_save(
+			request,
+			incoming_count=incoming_count,
+			current_count=current_count,
+			submitted_version=submitted_version,
+			current_version=current_version,
+			accepted=None,
+		)
 		if not isinstance(items, list):
-			audit_training_plan_rejection(request, reason='Payload must include an items array.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			reason = 'Payload must include an items array.'
+			log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
+			audit_training_plan_rejection(request, reason=reason, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return HttpResponseBadRequest('Payload must include an items array.')
 
 		recovery_confirmed = training_plan_recovery_confirmed(request, payload if isinstance(payload, dict) else {})
 
 		if not submitted_version:
 			reason = 'Reload the latest Training Plan before saving. This prevents an older page from overwriting newer timeline data.'
+			log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
 			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
 
 		if submitted_version != current_version:
 			reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+			log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
 			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return JsonResponse({'detail': reason, 'currentVersion': current_version, 'items': current_items}, status=409)
 
 		if not items and not recovery_confirmed:
-			audit_training_plan_rejection(request, reason='Empty Training Plan saves are not allowed.', status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
+			reason = 'Empty Training Plan saves are not allowed.'
+			log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
+			audit_training_plan_rejection(request, reason=reason, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return JsonResponse({'detail': 'Empty Training Plan saves are not allowed.'}, status=400)
 
-		current_count = len(current_items)
 		if (
 			not recovery_confirmed
 			and current_count >= TRAINING_PLAN_PARTIAL_SAVE_MIN_CURRENT
@@ -1368,6 +2162,7 @@ def training_plan(request):
 			and incoming_count < int(current_count * TRAINING_PLAN_PARTIAL_SAVE_RATIO)
 		):
 			reason = 'Suspicious partial Training Plan save rejected.'
+			log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
 			audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 			return JsonResponse(
 				{
@@ -1384,10 +2179,12 @@ def training_plan(request):
 		for index, row in enumerate(items):
 			if not isinstance(row, dict):
 				reason = f'Row {index + 1} must be an object.'
+				log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=reason)
 				audit_training_plan_rejection(request, reason=reason, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 				return JsonResponse({'detail': reason}, status=400)
 			values, error = training_plan_values_from_payload_row(row, index)
 			if error:
+				log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=False, rejection_reason=error)
 				audit_training_plan_rejection(request, reason=error, status_code=400, current_items=current_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=current_version)
 				return JsonResponse({'detail': error}, status=400)
 			validated_items.append(values)
@@ -1397,10 +2194,11 @@ def training_plan(request):
 			locked_version = training_plan_version(locked_items)
 			if submitted_version != locked_version:
 				reason = 'The Training Plan was updated by someone else. Please reload and review before saving.'
+				log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=len(locked_items), submitted_version=submitted_version, current_version=locked_version, accepted=False, rejection_reason=reason)
 				audit_training_plan_rejection(request, reason=reason, status_code=409, current_items=locked_items, incoming_count=incoming_count, submitted_version=submitted_version, current_version=locked_version)
 				return JsonResponse({'detail': reason, 'currentVersion': locked_version, 'items': locked_items}, status=409)
 
-			TrainingPlan.objects.all().delete()
+			TrainingPlan.objects.filter(active_training_plan_filter()).delete()
 			created = [
 				TrainingPlan.objects.create(**item)
 				for item in validated_items
@@ -1408,6 +2206,7 @@ def training_plan(request):
 
 		after_items = [serialize_training_plan(item) for item in created]
 		next_version = training_plan_version(after_items)
+		log_legacy_training_plan_full_save(request, incoming_count=incoming_count, current_count=current_count, submitted_version=submitted_version, current_version=current_version, accepted=True, after_count=len(after_items))
 		diff = _bulk_diff(current_items, after_items, ignored_keys={'id'})
 		_audit_log(
 			request,
@@ -1433,6 +2232,1507 @@ def training_plan(request):
 		return JsonResponse({'saved': len(created), 'items': after_items, 'version': next_version, 'count': len(after_items)})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_reorder_programmes(request):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeIds'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	programme_ids, validation_error = validate_reorder_ids(payload, 'programmeIds', 'Programme')
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		existing_ids = []
+		for row in rows:
+			programme_id = training_plan_row_identity(row)['programmeId']
+			if programme_id and programme_id not in existing_ids:
+				existing_ids.append(programme_id)
+		existing_set = set(existing_ids)
+		submitted_set = set(programme_ids)
+		missing_ids = sorted(existing_set - submitted_set)
+		unknown_ids = sorted(submitted_set - existing_set)
+		if missing_ids:
+			return JsonResponse({'detail': 'Programme reorder is missing existing programme ids.', 'missingIds': missing_ids}, status=400)
+		if unknown_ids:
+			return JsonResponse({'detail': 'Programme reorder contains unknown programme ids.', 'unknownIds': unknown_ids}, status=400)
+
+		order_by_programme_id = {programme_id: index for index, programme_id in enumerate(programme_ids)}
+		before = [
+			{'id': row.id, 'programmeId': training_plan_row_identity(row)['programmeId'], 'programmeDisplayOrder': row.programme_display_order}
+			for row in rows
+		]
+		for row in rows:
+			next_order = order_by_programme_id[training_plan_row_identity(row)['programmeId']]
+			if row.programme_display_order == next_order:
+				continue
+			row.programme_display_order = next_order
+			row.save(update_fields=['programme_display_order'])
+		after_rows = list(TrainingPlan.objects.order_by('id'))
+		after = [
+			{'id': row.id, 'programmeId': training_plan_row_identity(row)['programmeId'], 'programmeDisplayOrder': row.programme_display_order}
+			for row in after_rows
+		]
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='PROGRAMME_REORDER_PARTIAL_UPDATE',
+			before={'order': before, 'version': locked_version},
+			after={'order': after, 'programmeIds': programme_ids},
+			metadata={'partialUpdate': True, 'section': 'programme-order', 'changedFields': ['programmeDisplayOrder']},
+		)
+
+	return JsonResponse(training_plan_order_response({'programmeOrder': programme_ids}))
+
+
+@csrf_exempt
+def training_plan_reorder_cohorts(request):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'cohortIds'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	programme_id = str(payload.get('programmeId') or '').strip()
+	if not programme_id:
+		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	cohort_ids, validation_error = validate_reorder_ids(payload, 'cohortIds', 'Cohort')
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		cohorts_by_programme: dict[str, list[str]] = {}
+		cohort_programmes: dict[str, set[str]] = {}
+		for row in rows:
+			identity = training_plan_row_identity(row)
+			row_programme_id = identity['programmeId']
+			cohort_id = identity['cohortId']
+			if row_programme_id and cohort_id:
+				cohorts_by_programme.setdefault(row_programme_id, [])
+				if cohort_id not in cohorts_by_programme[row_programme_id]:
+					cohorts_by_programme[row_programme_id].append(cohort_id)
+				cohort_programmes.setdefault(cohort_id, set()).add(row_programme_id)
+
+		existing_ids = cohorts_by_programme.get(programme_id)
+		if existing_ids is None:
+			return JsonResponse({'detail': 'Programme scope for cohort reorder was not found.'}, status=404)
+		existing_set = set(existing_ids)
+		submitted_set = set(cohort_ids)
+		cross_scope_ids = sorted([
+			cohort_id
+			for cohort_id in submitted_set
+			if cohort_id in cohort_programmes and programme_id not in cohort_programmes[cohort_id]
+		])
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Cohort reorder contains ids from another programme.', 'crossScopeIds': cross_scope_ids}, status=400)
+		missing_ids = sorted(existing_set - submitted_set)
+		unknown_ids = sorted(submitted_set - existing_set)
+		if missing_ids:
+			return JsonResponse({'detail': 'Cohort reorder is missing existing cohort ids.', 'missingIds': missing_ids}, status=400)
+		if unknown_ids:
+			return JsonResponse({'detail': 'Cohort reorder contains unknown cohort ids.', 'unknownIds': unknown_ids}, status=400)
+
+		order_by_cohort_id = {cohort_id: index for index, cohort_id in enumerate(cohort_ids)}
+		before = [
+			{'id': row.id, 'programmeId': training_plan_row_identity(row)['programmeId'], 'cohortId': training_plan_row_identity(row)['cohortId'], 'cohortDisplayOrder': row.cohort_display_order}
+			for row in rows
+			if training_plan_row_identity(row)['programmeId'] == programme_id
+		]
+		for row in rows:
+			identity = training_plan_row_identity(row)
+			if identity['programmeId'] != programme_id:
+				continue
+			next_order = order_by_cohort_id[identity['cohortId']]
+			if row.cohort_display_order == next_order:
+				continue
+			row.cohort_display_order = next_order
+			row.save(update_fields=['cohort_display_order'])
+		after_rows = list(TrainingPlan.objects.order_by('id'))
+		after = [
+			{'id': row.id, 'programmeId': training_plan_row_identity(row)['programmeId'], 'cohortId': training_plan_row_identity(row)['cohortId'], 'cohortDisplayOrder': row.cohort_display_order}
+			for row in after_rows
+			if training_plan_row_identity(row)['programmeId'] == programme_id
+		]
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='COHORT_REORDER_PARTIAL_UPDATE',
+			before={'order': before, 'version': locked_version},
+			after={'order': after, 'programmeId': programme_id, 'cohortIds': cohort_ids},
+			metadata={'partialUpdate': True, 'section': 'cohort-order', 'changedFields': ['cohortDisplayOrder']},
+		)
+
+	return JsonResponse(training_plan_order_response({'programmeId': programme_id, 'cohortOrder': cohort_ids}))
+
+
+@csrf_exempt
+def training_plan_cohort_detail(request, cohort_id: str):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'cohortName', 'startingDateLabel', 'cohortColor', 'cohortEndDate', 'holidayIds', 'ksbProfileId', 'blocks'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	programme_id = str(payload.get('programmeId') or '').strip()
+	target_cohort_id = str(cohort_id or '').strip()
+	if not programme_id:
+		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	if not target_cohort_id or target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
+		return JsonResponse({'detail': 'A stable cohort id is required.'}, status=400)
+
+	cohort_name = str(payload.get('cohortName') or '').strip()
+	starting_date_label = str(payload.get('startingDateLabel') or '').strip()
+	if not cohort_name:
+		return JsonResponse({'detail': 'cohortName is required.'}, status=400)
+	if not starting_date_label:
+		return JsonResponse({'detail': 'startingDateLabel is required.'}, status=400)
+	cohort_color = str(payload.get('cohortColor') or '').strip()
+	if cohort_color:
+		try:
+			cohort_color = normalize_training_plan_color(cohort_color)
+		except ValueError as exc:
+			return JsonResponse({'detail': str(exc)}, status=400)
+	cohort_end_date = str(payload.get('cohortEndDate') or '').strip()
+	holiday_ids_value = payload.get('holidayIds', [])
+	if not isinstance(holiday_ids_value, list):
+		return JsonResponse({'detail': 'holidayIds must be a list.'}, status=400)
+	holiday_ids = [str(item or '').strip() for item in holiday_ids_value if str(item or '').strip()]
+	if len(holiday_ids) != len(set(holiday_ids)):
+		return JsonResponse({'detail': 'holidayIds contains duplicate ids.'}, status=400)
+	ksb_profile_id = normalize_nullable_int(payload.get('ksbProfileId', None))
+	blocks_value = payload.get('blocks')
+	if not isinstance(blocks_value, list) or not blocks_value:
+		return JsonResponse({'detail': 'blocks must be a non-empty list.'}, status=400)
+	block_payload_by_id = {}
+	for block in blocks_value:
+		if not isinstance(block, dict):
+			return JsonResponse({'detail': 'blocks must contain objects.'}, status=400)
+		row_id = normalize_nullable_int(block.get('trainingPlanId'))
+		if row_id is None:
+			return JsonResponse({'detail': 'Cohort edit block is missing a Training Plan row id.'}, status=400)
+		if row_id in block_payload_by_id:
+			return JsonResponse({'detail': 'Cohort edit contains duplicate Training Plan row ids.'}, status=400)
+		block_payload_by_id[row_id] = {
+			'groupId': str(block.get('groupId') or '').strip(),
+			'blockId': str(block.get('blockId') or '').strip(),
+			'groupName': str(block.get('groupName') or '').strip(),
+			'coachName': str(block.get('coachName') or '').strip(),
+		}
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [
+			row for row in rows
+			if training_plan_row_identity(row)['programmeId'] == programme_id
+			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+		]
+		if not scope_rows:
+			return JsonResponse({'detail': 'Training Plan cohort edit scope not found.'}, status=404)
+		scope_ids = {int(row.id) for row in scope_rows}
+		submitted_ids = set(block_payload_by_id.keys())
+		all_active_ids = {int(row.id) for row in rows}
+		unknown_ids = sorted(submitted_ids - all_active_ids)
+		if unknown_ids:
+			return JsonResponse({'detail': 'Cohort edit contains unknown Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+		cross_scope_ids = sorted(submitted_ids - scope_ids)
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Cohort edit contains row ids outside the requested cohort scope.', 'crossScopeIds': cross_scope_ids}, status=400)
+		missing_ids = sorted(scope_ids - submitted_ids)
+		if missing_ids:
+			return JsonResponse({'detail': 'Cohort edit is missing rows from the requested cohort scope.', 'missingIds': missing_ids}, status=400)
+
+		before = [
+			{
+				'id': row.id,
+				'cohortName': row.cohort_name,
+				'startingDateLabel': row.starting_date_lable,
+				'groupName': row.group_name,
+				'coachName': row.coach_name,
+				'ksbProfileId': row.ksb_profile_id,
+				'cohortDisplayOrder': row.cohort_display_order,
+			}
+			for row in scope_rows
+		]
+		for row in scope_rows:
+			block_payload = block_payload_by_id[int(row.id)]
+			row.cohort_name = cohort_name
+			row.starting_date_lable = starting_date_label
+			row.group_name = block_payload['groupName']
+			row.coach_name = block_payload['coachName']
+			row.ksb_profile_id = ksb_profile_id
+			row.notes = set_training_plan_metadata_markers(row.notes, {
+				TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX: programme_id,
+				TRAINING_PLAN_COHORT_ID_MARKER_PREFIX: target_cohort_id,
+				'__group_id:': block_payload['groupId'],
+				'__block_id:': block_payload['blockId'],
+				'__holiday_ids:': '|'.join(holiday_ids),
+				'__cohort_color:': cohort_color,
+				'__cohort_end_date:': cohort_end_date,
+				'__group_name:': block_payload['groupName'],
+				'__coach_name:': block_payload['coachName'],
+			})
+			row.save(update_fields=['cohort_name', 'starting_date_lable', 'group_name', 'coach_name', 'ksb_profile_id', 'notes'])
+		after = [
+			{
+				'id': row.id,
+				'cohortName': row.cohort_name,
+				'startingDateLabel': row.starting_date_lable,
+				'groupName': row.group_name,
+				'coachName': row.coach_name,
+				'ksbProfileId': row.ksb_profile_id,
+				'cohortDisplayOrder': row.cohort_display_order,
+			}
+			for row in scope_rows
+		]
+		metadata = {
+			'partialUpdate': True,
+			'section': 'cohort-edit',
+			'changedFields': ['cohortName', 'startingDateLabel', 'groupName', 'coachName', 'ksbProfileId', 'notesMetadata'],
+			'programmeId': programme_id,
+			'cohortId': target_cohort_id,
+			'updatedCount': len(scope_rows),
+			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+		}
+		logger.info('cohort_edit_partial_update %s', json.dumps(metadata, sort_keys=True))
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='COHORT_EDIT_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'programmeId': programme_id, 'cohortId': target_cohort_id},
+			metadata=metadata,
+		)
+
+	return JsonResponse(training_plan_order_response({'cohort_id': target_cohort_id, 'updated_count': len(scope_rows), 'programmeId': programme_id}))
+
+
+@csrf_exempt
+def training_plan_create_cohort(request):
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'cohortId', 'rows'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if any(key in payload for key in ('items', 'linkedRows', 'trainingPlanIds', 'archiveReason', 'restore', 'blocks')):
+		return JsonResponse({'detail': 'Cohort add payload must not include full-save, existing-row, archive, or restore fields.'}, status=400)
+
+	validated, validation_error = validate_training_plan_cohort_create_payload(payload)
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if submitted_version and submitted_version != current_version:
+		active_rows = list(TrainingPlan.objects.filter(active_training_plan_filter()).order_by('id'))
+		duplicate_rows = [
+			row for row in active_rows
+			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
+			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+		]
+		if duplicate_rows and training_plan_rows_match_values_by_identity(duplicate_rows, validated['rows']):
+			identifiers = {
+				'programmeId': validated['programmeId'],
+				'cohortId': validated['cohortId'],
+				'rowCount': len(validated['rows']),
+				'blockIds': [item['blockId'] for item in validated['rows']],
+			}
+			logger.info(
+				'cohort_add_scoped_create %s',
+				json.dumps({
+					'action': 'cohort_add_scoped_create',
+					'identifiers': identifiers,
+					'createdCount': 0,
+					'skippedCount': len(duplicate_rows),
+					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+				}, sort_keys=True),
+			)
+			return JsonResponse(training_plan_order_response({
+				'created_count': 0,
+				'skipped_count': len(duplicate_rows),
+				'created_ids': [],
+				'skipped_ids': [int(row.id) for row in duplicate_rows],
+				'identifiers': identifiers,
+				'createdRows': [],
+			}))
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		if not training_plan_programme_scope_exists(validated['programmeId'], rows):
+			return JsonResponse({'detail': 'Training Plan programme scope not found for cohort add.'}, status=404)
+		scope_rows = [
+			row for row in rows
+			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
+			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+		]
+		identifiers = {
+			'programmeId': validated['programmeId'],
+			'cohortId': validated['cohortId'],
+			'rowCount': len(validated['rows']),
+			'blockIds': [item['blockId'] for item in validated['rows']],
+		}
+		created_rows = []
+		skipped_rows = []
+		if scope_rows:
+			if not training_plan_rows_match_values_by_identity(scope_rows, validated['rows']):
+				return JsonResponse({'detail': 'A Training Plan cohort already exists for this identity with different values.'}, status=400)
+			skipped_rows = scope_rows
+		else:
+			created_rows = [
+				TrainingPlan.objects.create(**item['values'])
+				for item in validated['rows']
+			]
+
+		logger.info(
+			'cohort_add_scoped_create %s',
+			json.dumps({
+				'action': 'cohort_add_scoped_create',
+				'identifiers': identifiers,
+				'createdCount': len(created_rows),
+				'skippedCount': len(skipped_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			}, sort_keys=True),
+		)
+		_audit_log(
+			request,
+			action='create',
+			entity='TrainingPlan',
+			object_label='COHORT_ADD_SCOPED_CREATE',
+			before=None,
+			after={'rows': [serialize_training_plan(row) for row in created_rows], 'identifiers': identifiers},
+			metadata={
+				'partialUpdate': True,
+				'section': 'cohort-add',
+				'actionName': 'cohort_add_scoped_create',
+				'createdCount': len(created_rows),
+				'skippedCount': len(skipped_rows),
+				'createdIds': [int(row.id) for row in created_rows],
+				'skippedIds': [int(row.id) for row in skipped_rows],
+				'identifiers': identifiers,
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			},
+		)
+
+	result = training_plan_order_response({
+		'created_count': len(created_rows),
+		'skipped_count': len(skipped_rows),
+		'created_ids': [int(row.id) for row in created_rows],
+		'skipped_ids': [int(row.id) for row in skipped_rows],
+		'identifiers': identifiers,
+		'createdRows': [serialize_training_plan(row) for row in created_rows],
+	})
+	return JsonResponse(result, status=201 if created_rows else 200)
+
+
+@csrf_exempt
+def training_plan_archive_cohort(request, cohort_id: str):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'trainingPlanIds', 'archiveReason'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	programme_id = str(payload.get('programmeId') or '').strip()
+	target_cohort_id = str(cohort_id or '').strip()
+	if not programme_id:
+		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	if not target_cohort_id:
+		return JsonResponse({'detail': 'cohort id is required.'}, status=400)
+	row_ids, validation_error = validate_training_plan_row_ids(payload, 'trainingPlanIds', 'Cohort')
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [
+			row for row in rows
+			if training_plan_row_identity(row)['programmeId'] == programme_id
+			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+		]
+		if not scope_rows:
+			return JsonResponse({'detail': 'Training Plan cohort archive scope not found.'}, status=404)
+		scope_ids = {int(row.id) for row in scope_rows}
+		submitted_ids = set(row_ids)
+		unknown_ids = sorted(submitted_ids - {int(row.id) for row in rows})
+		if unknown_ids:
+			return JsonResponse({'detail': 'Cohort archive contains unknown Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+		cross_scope_ids = sorted(submitted_ids - scope_ids)
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Cohort archive contains row ids outside the requested cohort scope.', 'crossScopeIds': cross_scope_ids}, status=400)
+		missing_ids = sorted(scope_ids - submitted_ids)
+		if missing_ids:
+			return JsonResponse({'detail': 'Cohort archive is missing rows from the requested cohort scope.', 'missingIds': missing_ids}, status=400)
+
+		before = [serialize_training_plan(row) for row in scope_rows]
+		now = timezone.now()
+		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archive_reason = str(payload.get('archiveReason') or 'Cohort archived from Training Plan UI').strip()
+		for row in scope_rows:
+			row.is_archived = True
+			row.archived_at = now
+			row.archived_by = archived_by
+			row.archive_reason = archive_reason
+			row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
+		after = [serialize_training_plan(row) for row in scope_rows]
+		_audit_log(
+			request,
+			action='archive',
+			entity='TrainingPlan',
+			object_label='COHORT_ARCHIVE_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'programmeId': programme_id, 'cohortId': target_cohort_id},
+			metadata={'partialUpdate': True, 'section': 'cohort-archive', 'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason']},
+		)
+
+	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'programmeId': programme_id, 'cohortId': target_cohort_id}))
+
+
+@csrf_exempt
+def training_plan_archive_module(request):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'moduleName', 'trainingPlanIds', 'archiveReason'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	module_name = str(payload.get('moduleName') or '').strip()
+	if not module_name:
+		return JsonResponse({'detail': 'moduleName is required.'}, status=400)
+	row_ids, validation_error = validate_training_plan_row_ids(payload, 'trainingPlanIds', 'Module')
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [row for row in rows if str(row.module_name or '').strip() == module_name]
+		if not scope_rows:
+			return JsonResponse({'detail': 'Training Plan module archive scope not found.'}, status=404)
+		scope_ids = {int(row.id) for row in scope_rows}
+		submitted_ids = set(row_ids)
+		unknown_ids = sorted(submitted_ids - {int(row.id) for row in rows})
+		if unknown_ids:
+			return JsonResponse({'detail': 'Module archive contains unknown Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+		cross_scope_ids = sorted(submitted_ids - scope_ids)
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Module archive contains row ids outside the requested module scope.', 'crossScopeIds': cross_scope_ids}, status=400)
+		missing_ids = sorted(scope_ids - submitted_ids)
+		if missing_ids:
+			return JsonResponse({'detail': 'Module archive is missing rows from the requested module scope.', 'missingIds': missing_ids}, status=400)
+
+		before = [serialize_training_plan(row) for row in scope_rows]
+		now = timezone.now()
+		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archive_reason = str(payload.get('archiveReason') or 'Linked module archived from Training Plan UI').strip()
+		for row in scope_rows:
+			row.is_archived = True
+			row.archived_at = now
+			row.archived_by = archived_by
+			row.archive_reason = archive_reason
+			row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
+		after = [serialize_training_plan(row) for row in scope_rows]
+		_audit_log(
+			request,
+			action='archive',
+			entity='TrainingPlan',
+			object_label='MODULE_ARCHIVE_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'moduleName': module_name},
+			metadata={'partialUpdate': True, 'section': 'module-archive', 'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason']},
+		)
+
+	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'moduleName': module_name}))
+
+
+@csrf_exempt
+def training_plan_restore_cohort(request, cohort_id: str):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	programme_id = str(payload.get('programmeId') or '').strip()
+	target_cohort_id = str(cohort_id or '').strip()
+	if not programme_id:
+		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	if not target_cohort_id:
+		return JsonResponse({'detail': 'cohort id is required.'}, status=400)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = all_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [
+			row for row in rows
+			if row.is_archived
+			and training_plan_row_identity(row)['programmeId'] == programme_id
+			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+		]
+		restore_archived_training_plan_rows(scope_rows)
+		_audit_log(
+			request,
+			action='restore',
+			entity='TrainingPlan',
+			object_label='COHORT_RESTORE_PARTIAL_UPDATE',
+			before=None,
+			after=None,
+			metadata={
+				'partialUpdate': True,
+				'section': 'cohort-restore',
+				'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason'],
+				'programmeId': programme_id,
+				'cohortId': target_cohort_id,
+				'restoredCount': len(scope_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			},
+		)
+
+	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'cohort_id': target_cohort_id, 'programmeId': programme_id}))
+
+
+@csrf_exempt
+def training_plan_restore_module(request):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'moduleName', 'trainingPlanIds'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	module_name = str(payload.get('moduleName') or '').strip()
+	if not module_name:
+		return JsonResponse({'detail': 'moduleName is required.'}, status=400)
+	row_ids, validation_error = validate_optional_training_plan_row_ids(payload, 'trainingPlanIds', 'Module')
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = all_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [
+			row for row in rows
+			if row.is_archived and str(row.module_name or '').strip() == module_name
+		]
+		if row_ids:
+			submitted_ids = set(row_ids)
+			all_ids = {int(row.id) for row in rows}
+			archived_ids = {int(row.id) for row in rows if row.is_archived}
+			scope_ids = {int(row.id) for row in scope_rows}
+			unknown_ids = sorted(submitted_ids - all_ids)
+			if unknown_ids:
+				return JsonResponse({'detail': 'Module restore contains unknown Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+			active_ids = sorted(submitted_ids - archived_ids)
+			if active_ids:
+				return JsonResponse({'detail': 'Module restore contains non-archived Training Plan row ids.', 'activeIds': active_ids}, status=400)
+			cross_scope_ids = sorted(submitted_ids - scope_ids)
+			if cross_scope_ids:
+				return JsonResponse({'detail': 'Module restore contains row ids outside the requested module scope.', 'crossScopeIds': cross_scope_ids}, status=400)
+			scope_rows = [row for row in scope_rows if int(row.id) in submitted_ids]
+
+		restore_archived_training_plan_rows(scope_rows)
+		_audit_log(
+			request,
+			action='restore',
+			entity='TrainingPlan',
+			object_label='MODULE_RESTORE_PARTIAL_UPDATE',
+			before=None,
+			after=None,
+			metadata={
+				'partialUpdate': True,
+				'section': 'module-restore',
+				'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason'],
+				'moduleName': module_name,
+				'trainingPlanIds': row_ids,
+				'restoredCount': len(scope_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			},
+		)
+
+	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'moduleName': module_name, 'trainingPlanIds': row_ids}))
+
+
+@csrf_exempt
+def training_plan_session_detail(request, session_id: int):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'startDate', 'endDate', 'sessionStartTime', 'sessionEndTime', 'sessionWeekDay', 'tutorProfileId', 'tutorName', 'notes', 'coachName'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if not TrainingPlan.objects.filter(pk=session_id).exists():
+		return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		try:
+			row = TrainingPlan.objects.select_for_update().get(pk=session_id)
+		except TrainingPlan.DoesNotExist:
+			return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+		locked_items = training_plan_items_snapshot()
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		before = serialize_training_plan(row)
+		update_fields = []
+
+		if 'startDate' in payload:
+			start_date = str(payload.get('startDate') or '').strip()
+			if parse_date(start_date) is None:
+				return JsonResponse({'detail': 'startDate must be a valid YYYY-MM-DD date.'}, status=400)
+			row.start_date = start_date
+			update_fields.append('start_date')
+		if 'endDate' in payload:
+			end_date = str(payload.get('endDate') or '').strip()
+			if parse_date(end_date) is None:
+				return JsonResponse({'detail': 'endDate must be a valid YYYY-MM-DD date.'}, status=400)
+			row.end_date = end_date
+			update_fields.append('end_date')
+		if parse_date(row.start_date) is not None and parse_date(row.end_date) is not None and row.end_date < row.start_date:
+			return JsonResponse({'detail': 'endDate cannot be before startDate.'}, status=400)
+		if 'sessionStartTime' in payload:
+			try:
+				row.session_start_time = normalize_time_text(payload.get('sessionStartTime'))
+			except ValueError as exc:
+				return JsonResponse({'detail': str(exc)}, status=400)
+			update_fields.append('session_start_time')
+		if 'sessionEndTime' in payload:
+			try:
+				row.session_end_time = normalize_time_text(payload.get('sessionEndTime'))
+			except ValueError as exc:
+				return JsonResponse({'detail': str(exc)}, status=400)
+			update_fields.append('session_end_time')
+		if 'sessionWeekDay' in payload:
+			session_week_day = str(payload.get('sessionWeekDay') or '').strip().lower()
+			valid_days = {'saturday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'}
+			parts = [part.strip() for part in session_week_day.split(',') if part.strip()]
+			if any(part not in valid_days for part in parts):
+				return JsonResponse({'detail': 'sessionWeekDay contains an unsupported day.'}, status=400)
+			row.session_week_day = ', '.join(parts)
+			update_fields.append('session_week_day')
+		if 'tutorProfileId' in payload:
+			profile_id, profile, tutor_error = validate_tutor_profile_id(payload.get('tutorProfileId'), 'tutorProfileId')
+			if tutor_error:
+				return JsonResponse({'detail': tutor_error}, status=400)
+			row.tutor_profile_id = profile_id
+			row.tutor_name = profile.name if profile is not None else str(payload.get('tutorName') or '').strip()
+			update_fields.extend(['tutor_profile_id', 'tutor_name'])
+		elif 'tutorName' in payload:
+			row.tutor_name = str(payload.get('tutorName') or '').strip()
+			update_fields.append('tutor_name')
+		if 'notes' in payload:
+			row.notes = update_training_plan_visible_notes(row.notes, payload.get('notes'))
+			update_fields.append('notes')
+		if 'coachName' in payload:
+			row.coach_name = str(payload.get('coachName') or '').strip()
+			update_fields.append('coach_name')
+
+		if update_fields:
+			row.save(update_fields=sorted(set(update_fields)))
+
+		row.refresh_from_db()
+		after = serialize_training_plan(row)
+		changed_fields = [field for field in after if before.get(field) != after.get(field)]
+		schedule_fields = {'startDate', 'endDate', 'sessionStartTime', 'sessionEndTime', 'sessionWeekDay', 'tutorName', 'tutorProfileId', 'coachName'}
+		assignment_fields = {'tutorName', 'tutorProfileId', 'coachName'}
+		audit_label = f'SESSION_NOTES_PARTIAL_UPDATE session {row.id}' if changed_fields == ['notes'] else (
+			f'SESSION_ASSIGNMENT_PARTIAL_UPDATE session {row.id}' if changed_fields and set(changed_fields).issubset(assignment_fields) else (
+				f'SESSION_SCHEDULE_PARTIAL_UPDATE session {row.id}' if any(field in schedule_fields for field in changed_fields) else f'Session updated: {row.id}'
+			)
+		)
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_id=row.id,
+			object_label=audit_label,
+			before={field: before.get(field) for field in changed_fields},
+			after={field: after.get(field) for field in changed_fields},
+			metadata={'changedFields': changed_fields, 'partialUpdate': True},
+		)
+
+	return JsonResponse(training_plan_partial_response(row))
+
+
+@csrf_exempt
+def training_plan_module_detail(request, module_id: int):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'moduleName', 'tutorProfileId', 'tutorName', 'notes', 'color'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if not TrainingPlan.objects.filter(pk=module_id).exists():
+		return JsonResponse({'detail': 'Training Plan module not found.'}, status=404)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		try:
+			row = TrainingPlan.objects.select_for_update().get(pk=module_id)
+		except TrainingPlan.DoesNotExist:
+			return JsonResponse({'detail': 'Training Plan module not found.'}, status=404)
+
+		locked_items = training_plan_items_snapshot()
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		before = serialize_training_plan(row)
+		update_fields = []
+
+		if 'moduleName' in payload:
+			module_name = str(payload.get('moduleName') or '').strip()
+			if not module_name:
+				return JsonResponse({'detail': 'moduleName cannot be empty.'}, status=400)
+			row.module_name = module_name
+			update_fields.append('module_name')
+		if 'tutorProfileId' in payload:
+			profile_id, profile, tutor_error = validate_tutor_profile_id(payload.get('tutorProfileId'), 'tutorProfileId')
+			if tutor_error:
+				return JsonResponse({'detail': tutor_error}, status=400)
+			row.tutor_profile_id = profile_id
+			row.tutor_name = profile.name if profile is not None else str(payload.get('tutorName') or '').strip()
+			update_fields.extend(['tutor_profile_id', 'tutor_name'])
+		elif 'tutorName' in payload:
+			row.tutor_name = str(payload.get('tutorName') or '').strip()
+			update_fields.append('tutor_name')
+		if 'notes' in payload:
+			row.notes = str(payload.get('notes') or '').strip()
+			update_fields.append('notes')
+		if 'color' in payload:
+			try:
+				module_color = normalize_training_plan_color(payload.get('color'))
+			except ValueError as error:
+				return JsonResponse({'detail': str(error)}, status=400)
+			row.notes = update_training_plan_module_color_marker(row.notes, module_color)
+			update_fields.append('notes')
+
+		if update_fields:
+			row.save(update_fields=sorted(set(update_fields)))
+
+		row.refresh_from_db()
+		after = serialize_training_plan(row)
+		changed_fields = [field for field in after if before.get(field) != after.get(field)]
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_id=row.id,
+			object_label=f'MODULE_PARTIAL_UPDATE module {row.id}',
+			before={field: before.get(field) for field in changed_fields},
+			after={field: after.get(field) for field in changed_fields},
+			metadata={'changedFields': changed_fields, 'partialUpdate': True, 'section': 'module'},
+		)
+
+	return JsonResponse(training_plan_partial_response(row))
+
+
+@csrf_exempt
+def training_plan_linked_module_rows(request):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'previousModuleName', 'moduleName', 'moduleCatalogueId', 'linkedRows'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	previous_module_name = str(payload.get('previousModuleName') or '').strip()
+	module_name = str(payload.get('moduleName') or '').strip()
+	module_catalogue_id = str(payload.get('moduleCatalogueId') or '').strip()
+	if not previous_module_name:
+		return JsonResponse({'detail': 'previousModuleName is required.'}, status=400)
+	if not module_name:
+		return JsonResponse({'detail': 'moduleName cannot be empty.'}, status=400)
+	if not module_catalogue_id:
+		return JsonResponse({'detail': 'moduleCatalogueId is required.'}, status=400)
+	linked_rows, validation_error = validate_training_plan_linked_module_rows(payload)
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		rows_by_id = {int(row.id): row for row in rows}
+		submitted_ids = {item['trainingPlanId'] for item in linked_rows}
+		unknown_ids = sorted(submitted_ids - set(rows_by_id.keys()))
+		if unknown_ids:
+			return JsonResponse({'detail': 'Linked module update contains unknown or archived Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+
+		cross_scope_ids = []
+		for item in linked_rows:
+			row = rows_by_id[item['trainingPlanId']]
+			identity = training_plan_row_identity(row)
+			row_block_id = training_plan_marker_value(row.notes, '__block_id:')
+			row_group_id = training_plan_marker_value(row.notes, '__group_id:')
+			if (
+				str(row.module_name or '').strip() != previous_module_name
+				or identity['programmeId'] != item['programmeId']
+				or identity['cohortId'] != item['cohortId']
+				or row_block_id != item['blockId']
+				or (item['groupId'] and row_group_id != item['groupId'])
+			):
+				cross_scope_ids.append(item['trainingPlanId'])
+				continue
+
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Linked module update contains row ids outside the requested module scope.', 'crossScopeIds': sorted(cross_scope_ids)}, status=400)
+
+		update_rows = [rows_by_id[item['trainingPlanId']] for item in linked_rows]
+		before = [serialize_training_plan(row) for row in update_rows]
+		for row in update_rows:
+			row.module_name = module_name
+			row.save(update_fields=['module_name'])
+			row.refresh_from_db()
+		updated_rows = update_rows
+		after = [serialize_training_plan(row) for row in updated_rows]
+		identifiers = {
+			'moduleCatalogueId': module_catalogue_id,
+			'previousModuleName': previous_module_name,
+			'moduleName': module_name,
+			'linkedRows': linked_rows,
+		}
+		logger.info(
+			'module_edit_linked_timeline_rows_partial_update %s',
+			json.dumps({
+				'action': 'module_edit_linked_timeline_rows_partial_update',
+				'identifiers': identifiers,
+				'updatedCount': len(updated_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			}, sort_keys=True),
+		)
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='MODULE_LINKED_ROWS_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'identifiers': identifiers},
+			metadata={
+				'partialUpdate': True,
+				'section': 'module-linked-rows',
+				'actionName': 'module_edit_linked_timeline_rows_partial_update',
+				'changedFields': ['moduleName'],
+				'identifiers': identifiers,
+				'updatedCount': len(updated_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			},
+		)
+
+	response = training_plan_order_response({
+		'updated_count': len(updated_rows),
+		'identifiers': identifiers,
+		'moduleName': module_name,
+		'previousModuleName': previous_module_name,
+		'moduleCatalogueId': module_catalogue_id,
+	})
+	return JsonResponse(response)
+
+
+@csrf_exempt
+def training_plan_linked_programme_rows(request, programme_id: str):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'program', 'trainingPlanIds'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	target_programme_id = str(programme_id or '').strip()
+	training_plan_ids, program_label, validation_error = validate_training_plan_programme_linked_rows(payload, target_programme_id)
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		rows_by_id = {int(row.id): row for row in rows}
+		submitted_ids = set(training_plan_ids)
+		unknown_ids = sorted(submitted_ids - set(rows_by_id.keys()))
+		if unknown_ids:
+			return JsonResponse({'detail': 'Programme linked-row update contains unknown or archived Training Plan row ids.', 'unknownIds': unknown_ids}, status=400)
+
+		scope_rows = []
+		unsafe_marker_ids = []
+		for row in rows:
+			marker_programme_id = training_plan_marker_value(row.notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX)
+			if marker_programme_id == target_programme_id:
+				scope_rows.append(row)
+			elif training_plan_row_identity(row)['programmeId'] == target_programme_id:
+				unsafe_marker_ids.append(int(row.id))
+		if unsafe_marker_ids:
+			return JsonResponse({'detail': 'Programme linked-row update scope has missing or inconsistent programme markers.', 'unsafeRowIds': sorted(unsafe_marker_ids)}, status=400)
+		if not scope_rows:
+			return JsonResponse({'detail': 'Training Plan programme linked-row scope not found.'}, status=404)
+
+		scope_ids = {int(row.id) for row in scope_rows}
+		cross_scope_ids = sorted(submitted_ids - scope_ids)
+		if cross_scope_ids:
+			return JsonResponse({'detail': 'Programme linked-row update contains row ids outside the requested programme scope.', 'crossScopeIds': cross_scope_ids}, status=400)
+		missing_ids = sorted(scope_ids - submitted_ids)
+		if missing_ids:
+			return JsonResponse({'detail': 'Programme linked-row update is missing rows from the requested programme scope.', 'missingIds': missing_ids}, status=400)
+
+		before = [{'id': row.id, 'program': row.program, 'notes': row.notes} for row in scope_rows]
+		for row in scope_rows:
+			row.program = program_label
+			row.notes = set_training_plan_metadata_markers(row.notes, {
+				TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX: target_programme_id,
+			})
+			row.save(update_fields=['program', 'notes'])
+			row.refresh_from_db()
+		after = [{'id': row.id, 'program': row.program, 'notes': row.notes} for row in scope_rows]
+		identifiers = {
+			'programmeId': target_programme_id,
+			'trainingPlanIds': training_plan_ids,
+			'programmeMarker': f'{TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX}{target_programme_id}',
+		}
+		changed_fields = ['program', 'notesMetadata.programmeId']
+		metadata = {
+			'partialUpdate': True,
+			'section': 'programme-linked-rows',
+			'actionName': 'programme_edit_linked_timeline_rows_partial_update',
+			'programmeId': target_programme_id,
+			'changedFields': changed_fields,
+			'updatedCount': len(scope_rows),
+			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+		}
+		logger.info('programme_edit_linked_timeline_rows_partial_update %s', json.dumps(metadata, sort_keys=True))
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='PROGRAMME_LINKED_ROWS_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'identifiers': identifiers},
+			metadata=metadata,
+		)
+
+	response = training_plan_order_response({
+		'programme_id': target_programme_id,
+		'updated_count': len(scope_rows),
+		'identifiers': identifiers,
+		'allowedFieldsUpdated': changed_fields,
+	})
+	return JsonResponse(response)
+
+
+@csrf_exempt
+def training_plan_add_module_for_tutor(request):
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'programmeId', 'cohortId', 'groupId', 'blockId', 'moduleCatalogueId', 'moduleStableId', 'tutorProfileId', 'row'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if any(key in payload for key in ('items', 'linkedRows', 'trainingPlanIds', 'archiveReason', 'restore')):
+		return JsonResponse({'detail': 'Module add payload must not include full-save or archive/restore fields.'}, status=400)
+
+	validated, validation_error = validate_training_plan_add_for_tutor_payload(payload)
+	if validation_error is not None:
+		return validation_error
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if submitted_version and submitted_version != current_version:
+		active_rows = list(TrainingPlan.objects.filter(active_training_plan_filter()).order_by('id'))
+		duplicate_rows = find_module_add_for_tutor_duplicates(active_rows, validated)
+		if len(duplicate_rows) == 1 and training_plan_row_matches_values(duplicate_rows[0], validated['values']):
+			identifiers = {
+				'programmeId': validated['programmeId'],
+				'cohortId': validated['cohortId'],
+				'groupId': validated['groupId'],
+				'blockId': validated['blockId'],
+				'moduleIdentity': validated['moduleIdentity'],
+				'tutorProfileId': validated['tutorProfileId'],
+			}
+			logger.info(
+				'module_add_for_tutor_scoped_create %s',
+				json.dumps({
+					'action': 'module_add_for_tutor_scoped_create',
+					'identifiers': identifiers,
+					'createdCount': 0,
+					'skippedCount': 1,
+					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+				}, sort_keys=True),
+			)
+			return JsonResponse(training_plan_order_response({
+				'created_count': 0,
+				'skipped_count': 1,
+				'created_ids': [],
+				'skipped_ids': [int(duplicate_rows[0].id)],
+				'identifiers': identifiers,
+				'createdRows': [],
+			}))
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		scope_rows = [
+			row for row in rows
+			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
+			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+		]
+		if not scope_rows:
+			return JsonResponse({'detail': 'Training Plan cohort scope not found for module add.'}, status=404)
+
+		duplicate_rows = find_module_add_for_tutor_duplicates(rows, validated)
+		if len(duplicate_rows) > 1:
+			return JsonResponse({'detail': 'Existing Training Plan rows contain ambiguous duplicate module add identifiers.'}, status=400)
+
+		created_rows = []
+		skipped_rows = []
+		if duplicate_rows:
+			duplicate = duplicate_rows[0]
+			if not training_plan_row_matches_values(duplicate, validated['values']):
+				return JsonResponse({'detail': 'A Training Plan row already exists for this module add identity with different values.'}, status=400)
+			skipped_rows.append(duplicate)
+		else:
+			created_rows.append(TrainingPlan.objects.create(**validated['values']))
+
+		identifiers = {
+			'programmeId': validated['programmeId'],
+			'cohortId': validated['cohortId'],
+			'groupId': validated['groupId'],
+			'blockId': validated['blockId'],
+			'moduleIdentity': validated['moduleIdentity'],
+			'tutorProfileId': validated['tutorProfileId'],
+		}
+		logger.info(
+			'module_add_for_tutor_scoped_create %s',
+			json.dumps({
+				'action': 'module_add_for_tutor_scoped_create',
+				'identifiers': identifiers,
+				'createdCount': len(created_rows),
+				'skippedCount': len(skipped_rows),
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			}, sort_keys=True),
+		)
+		_audit_log(
+			request,
+			action='create',
+			entity='TrainingPlan',
+			object_label='MODULE_ADD_FOR_TUTOR_SCOPED_CREATE',
+			before=None,
+			after={'rows': [serialize_training_plan(row) for row in created_rows], 'identifiers': identifiers},
+			metadata={
+				'partialUpdate': True,
+				'section': 'module-add-for-tutor',
+				'actionName': 'module_add_for_tutor_scoped_create',
+				'createdCount': len(created_rows),
+				'skippedCount': len(skipped_rows),
+				'createdIds': [int(row.id) for row in created_rows],
+				'skippedIds': [int(row.id) for row in skipped_rows],
+				'identifiers': identifiers,
+				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
+			},
+		)
+
+	result = training_plan_order_response({
+		'created_count': len(created_rows),
+		'skipped_count': len(skipped_rows),
+		'created_ids': [int(row.id) for row in created_rows],
+		'skipped_ids': [int(row.id) for row in skipped_rows],
+		'identifiers': identifiers,
+		'createdRows': [serialize_training_plan(row) for row in created_rows],
+	})
+	return JsonResponse(result, status=201 if created_rows else 200)
+
+
+@csrf_exempt
+def training_plan_session_coverage(request, session_id: int):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'sessionNumber', 'assignedTutorProfileId', 'coverageTutorProfileId', 'coverageCoachProfileId', 'coverageStatus', 'tutorUnavailable', 'tutorUnavailableReason', 'tutorUnavailableNotes', 'coverageReason', 'coverageNotes'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+	try:
+		session_number = int(payload.get('sessionNumber') or 0)
+	except (TypeError, ValueError):
+		session_number = 0
+	if session_number < 1:
+		return JsonResponse({'detail': 'sessionNumber must be a positive integer.'}, status=400)
+	if not TrainingPlan.objects.filter(pk=session_id).exists():
+		return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		try:
+			row = TrainingPlan.objects.select_for_update().get(pk=session_id)
+		except TrainingPlan.DoesNotExist:
+			return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+		try:
+			total_sessions = int(row.sessions_number or 1)
+		except (TypeError, ValueError):
+			total_sessions = 1
+		if session_number > max(1, total_sessions):
+			return JsonResponse({'detail': 'sessionNumber is outside this Training Plan session range.'}, status=400)
+
+		locked_items = training_plan_items_snapshot()
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		assigned_id, _, tutor_error = validate_tutor_profile_id(payload.get('assignedTutorProfileId') or row.tutor_profile_id, 'assignedTutorProfileId')
+		if tutor_error:
+			return JsonResponse({'detail': tutor_error}, status=400)
+		coverage_id, _, coverage_error = validate_tutor_profile_id(payload.get('coverageTutorProfileId'), 'coverageTutorProfileId')
+		if coverage_error:
+			return JsonResponse({'detail': coverage_error}, status=400)
+		coverage_coach_id, _, coverage_coach_error = validate_coach_profile_id(payload.get('coverageCoachProfileId'), 'coverageCoachProfileId')
+		if coverage_coach_error:
+			return JsonResponse({'detail': coverage_coach_error}, status=400)
+		if assigned_id and coverage_id and assigned_id == coverage_id:
+			return JsonResponse({'detail': 'coverageTutorProfileId cannot match assignedTutorProfileId.'}, status=400)
+
+		tutor_unavailable = bool(payload.get('tutorUnavailable'))
+		coverage_reason = str(payload.get('coverageReason') or '').strip()
+		if (coverage_id or coverage_coach_id) and not coverage_reason:
+			return JsonResponse({'detail': 'coverageReason is required when coverage is selected.'}, status=400)
+
+		before = serialize_training_plan(row)
+		current_coverage = [item for item in normalize_session_coverage(row.session_coverage_json) if item.get('sessionNumber') != session_number]
+		next_item = {
+			'sessionNumber': session_number,
+			'assignedTutorProfileId': str(assigned_id) if assigned_id else '',
+			'coverageTutorProfileId': str(coverage_id) if coverage_id else '',
+			'coverageCoachProfileId': str(coverage_coach_id) if coverage_coach_id else '',
+			'coverageStatus': 'covered' if (coverage_id or coverage_coach_id) else 'required' if tutor_unavailable else 'none',
+			'tutorUnavailable': tutor_unavailable,
+			'tutorUnavailableReason': str(payload.get('tutorUnavailableReason') or '').strip() if tutor_unavailable else '',
+			'tutorUnavailableNotes': str(payload.get('tutorUnavailableNotes') or '').strip() if tutor_unavailable else '',
+			'coverageReason': coverage_reason if (coverage_id or coverage_coach_id) else '',
+			'coverageNotes': str(payload.get('coverageNotes') or '').strip() if (coverage_id or coverage_coach_id) else '',
+		}
+		if next_item['coverageStatus'] != 'none' or next_item['tutorUnavailable'] or next_item['coverageTutorProfileId'] or next_item['coverageCoachProfileId']:
+			current_coverage.append(next_item)
+		current_coverage.sort(key=lambda item: int(item.get('sessionNumber') or 0))
+		row.session_coverage_json = json.dumps(normalize_session_coverage(current_coverage), ensure_ascii=False)
+		row.save(update_fields=['session_coverage_json'])
+		row.refresh_from_db()
+		after = serialize_training_plan(row)
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_id=row.id,
+			object_label=f'Tutor Coverage updated for session {row.id}',
+			before={'sessionCoverage': before.get('sessionCoverage')},
+			after={'sessionCoverage': after.get('sessionCoverage')},
+			metadata={'partialUpdate': True, 'section': 'coverage', 'sessionNumber': session_number},
+		)
+
+	return JsonResponse(training_plan_partial_response(row))
+
+
+@csrf_exempt
+def training_plan_session_ksb(request, session_id: int):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'sessionNumber', 'knowledgeCodes', 'skillCodes', 'behaviourCodes'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+	try:
+		session_number = int(payload.get('sessionNumber') or 0)
+	except (TypeError, ValueError):
+		session_number = 0
+	if session_number < 1:
+		return JsonResponse({'detail': 'sessionNumber must be a positive integer.'}, status=400)
+	if not TrainingPlan.objects.filter(pk=session_id).exists():
+		return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		try:
+			row = TrainingPlan.objects.select_for_update().get(pk=session_id)
+		except TrainingPlan.DoesNotExist:
+			return JsonResponse({'detail': 'Training Plan session not found.'}, status=404)
+
+		try:
+			total_sessions = int(row.sessions_number or 1)
+		except (TypeError, ValueError):
+			total_sessions = 1
+		if session_number > max(1, total_sessions):
+			return JsonResponse({'detail': 'sessionNumber is outside this Training Plan session range.'}, status=400)
+
+		locked_items = training_plan_items_snapshot()
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		before = serialize_training_plan(row)
+		mappings = normalize_session_ksb_mappings(row.session_ksb_json)
+		while len(mappings) < total_sessions:
+			mappings.append({'knowledgeCodes': [], 'skillCodes': [], 'behaviourCodes': []})
+		mappings[session_number - 1] = {
+			'knowledgeCodes': normalize_ksb_codes(payload.get('knowledgeCodes', []), 'knowledgeCodes'),
+			'skillCodes': normalize_ksb_codes(payload.get('skillCodes', []), 'skillCodes'),
+			'behaviourCodes': normalize_ksb_codes(payload.get('behaviourCodes', []), 'behaviourCodes'),
+		}
+		row.session_ksb_json = json.dumps(normalize_session_ksb_mappings(mappings[:total_sessions]), ensure_ascii=False)
+		row.save(update_fields=['session_ksb_json'])
+		row.refresh_from_db()
+		after = serialize_training_plan(row)
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_id=row.id,
+			object_label=f'SESSION_KSB_PARTIAL_UPDATE session {row.id}',
+			before={'sessionKsbMappings': before.get('sessionKsbMappings')},
+			after={'sessionKsbMappings': after.get('sessionKsbMappings')},
+			metadata={'partialUpdate': True, 'section': 'ksb', 'sessionNumber': session_number},
+		)
+
+	return JsonResponse(training_plan_partial_response(row))
+
+
+def health(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	return JsonResponse({'status': 'ok', 'service': 'communication-centre-backend'})
 
 
 @csrf_exempt
@@ -1576,11 +3876,106 @@ def tutor_profile_duplicates(request):
 
 
 @csrf_exempt
+def coach_profiles(request):
+	if request.method == 'GET':
+		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
+		records = CoachProfile.objects.all() if include_inactive else CoachProfile.objects.filter(is_active=True)
+		counts = coach_profile_session_counts()
+		return JsonResponse([serialize_coach_profile(item, counts) for item in records.order_by('name', 'id')], safe=False)
+
+	if request.method == 'POST':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		values, error = coach_profile_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+
+		exact = CoachProfile.objects.filter(normalized_name=values['normalized_name']).first()
+		if exact:
+			return JsonResponse({'detail': 'A coach profile with this name already exists.', 'existingProfile': serialize_coach_profile(exact, coach_profile_session_counts())}, status=409)
+
+		matches = possible_coach_profile_matches(values['name'])
+		if matches and payload.get('confirmCreateNew') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing coach found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_coach_profile(best['profile'], coach_profile_session_counts()),
+				'score': best['score'],
+			}, status=409)
+
+		record = CoachProfile.objects.create(**values)
+		serialized = serialize_coach_profile(record, coach_profile_session_counts())
+		_audit_log(request, action='create', entity='CoachProfile', object_id=record.id, object_label=record.name, after=serialized)
+		return JsonResponse(serialized, status=201)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def coach_profile_detail(request, profile_id: int):
+	try:
+		record = CoachProfile.objects.get(pk=profile_id)
+	except CoachProfile.DoesNotExist:
+		return JsonResponse({'detail': 'Coach profile not found.'}, status=404)
+
+	if request.method == 'GET':
+		return JsonResponse(serialize_coach_profile(record, coach_profile_session_counts()))
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		before = serialize_coach_profile(record, coach_profile_session_counts())
+		values, error = coach_profile_values_from_payload({**before, **payload})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		exact = CoachProfile.objects.filter(normalized_name=values['normalized_name']).exclude(pk=record.id).first()
+		if exact:
+			return JsonResponse({'detail': 'A coach profile with this name already exists.', 'existingProfile': serialize_coach_profile(exact, coach_profile_session_counts())}, status=409)
+		matches = possible_coach_profile_matches(values['name'], exclude_id=record.id)
+		if matches and payload.get('confirmSave') is not True:
+			best = matches[0]
+			return JsonResponse({
+				'detail': f"Possible existing coach found: {best['profile'].name}. Use existing profile instead?",
+				'possibleExistingProfile': serialize_coach_profile(best['profile'], coach_profile_session_counts()),
+				'score': best['score'],
+			}, status=409)
+		for field, value in values.items():
+			setattr(record, field, value)
+		record.save()
+		serialized = serialize_coach_profile(record, coach_profile_session_counts())
+		_audit_log(request, action='update', entity='CoachProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
+		return JsonResponse(serialized)
+
+	if request.method == 'DELETE':
+		before = serialize_coach_profile(record, coach_profile_session_counts())
+		force_delete = str(request.GET.get('force', '')).strip().lower() in {'1', 'true', 'yes'}
+		with transaction.atomic():
+			unlinked_rows = remove_coach_profile_references(record.id)
+			if force_delete or unlinked_rows == 0:
+				record.delete()
+				_audit_log(request, action='delete', entity='CoachProfile', object_id=profile_id, object_label=before.get('name', ''), before=before, metadata={'force': force_delete, 'unlinkedRows': unlinked_rows})
+				return JsonResponse({'deleted': True, 'force': force_delete, 'unlinkedRows': unlinked_rows})
+			record.is_active = False
+			record.save(update_fields=['is_active', 'updated_at'])
+		serialized = serialize_coach_profile(record, coach_profile_session_counts())
+		_audit_log(request, action='deactivate', entity='CoachProfile', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'unlinkedRows': unlinked_rows})
+		return JsonResponse(serialized)
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
 def ksb_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
 		records = KsbProfile.objects.all() if include_inactive else KsbProfile.objects.filter(is_active=True)
-		return JsonResponse([serialize_ksb_profile(item) for item in records.order_by('name', 'id')], safe=False)
+		return JsonResponse([serialize_ksb_profile(item) for item in records.order_by('id')], safe=False)
 
 	if request.method == 'POST':
 		try:

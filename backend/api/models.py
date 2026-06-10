@@ -57,6 +57,12 @@ class TrainingPlan(models.Model):
 	session_ksb_json = models.TextField(blank=True, default='')
 	session_coverage_json = models.TextField(blank=True, default='')
 	ksb_profile_id = models.BigIntegerField(null=True, blank=True)
+	programme_display_order = models.IntegerField(null=True, blank=True)
+	cohort_display_order = models.IntegerField(null=True, blank=True)
+	is_archived = models.BooleanField(default=False)
+	archived_at = models.DateTimeField(null=True, blank=True)
+	archived_by = models.TextField(blank=True, default='')
+	archive_reason = models.TextField(blank=True, default='')
 	notes = models.TextField(blank=True, default='')
 
 	class Meta:
@@ -81,6 +87,26 @@ class TutorProfile(models.Model):
 		indexes = [
 			models.Index(fields=['is_active', 'name'], name='tutor_profi_is_acti_2d7e38_idx'),
 			models.Index(fields=['normalized_name'], name='tutor_profi_normali_34d7cb_idx'),
+		]
+
+
+class CoachProfile(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	name = models.CharField(max_length=255)
+	normalized_name = models.CharField(max_length=255, unique=True)
+	email = models.EmailField(blank=True, default='')
+	phone = models.CharField(max_length=80, blank=True, default='')
+	notes = models.TextField(blank=True, default='')
+	availability_notes = models.TextField(blank=True, default='')
+	is_active = models.BooleanField(default=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'coach_profiles'
+		indexes = [
+			models.Index(fields=['is_active', 'name'], name='coach_profi_is_acti_58a4f2_idx'),
+			models.Index(fields=['normalized_name'], name='coach_profi_normali_7e2d41_idx'),
 		]
 
 

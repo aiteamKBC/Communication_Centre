@@ -1,5 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import * as XLSX from 'xlsx';
+import type { ChangeEvent } from 'react';
 import type { CatalogModule, KsbProfile, SessionKsbMapping } from '../types';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 
@@ -61,7 +63,7 @@ function emptySessionKsbMapping(): SessionKsbMapping {
 
 function normalizeKsbCodes(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
   if (!Array.isArray(value)) return [];
-  const pattern = new RegExp(`^${prefix}\\d+$`, 'i');
+  const pattern = new RegExp(`^${prefix}\\d+(?:\\.\\d+)*$`, 'i');
   const seen = new Set<string>();
   return value.reduce<string[]>((codes, item) => {
     const code = String(item || '').trim().toUpperCase();
@@ -84,6 +86,61 @@ function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMappi
       behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
     };
   });
+}
+
+function cellText(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeHeader(value: unknown): string {
+  return cellText(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function parseKsbCodeText(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
+  return normalizeKsbCodes(cellText(value).split(/[,\s|;]+/), prefix);
+}
+
+function parseSessionKsbTemplateRows(rows: unknown[][], sessionCount: number) {
+  const usefulRows = rows.filter(row => row.some(cell => cellText(cell)));
+  const headerRowIndex = usefulRows.findIndex(row => {
+    const headers = row.map(normalizeHeader);
+    return headers.some(header => ['session', 'sessionnumber', 'no', 'number'].includes(header)) &&
+      headers.some(header => ['knowledge', 'k', 'knowledgecodes', 'kcoding'].includes(header));
+  });
+  const headers = headerRowIndex >= 0 ? usefulRows[headerRowIndex].map(normalizeHeader) : [];
+  const indexFor = (names: string[], fallback: number) => {
+    const index = headers.findIndex(header => names.includes(header));
+    return index >= 0 ? index : fallback;
+  };
+  const indexes = headerRowIndex >= 0
+    ? {
+        session: indexFor(['session', 'sessionnumber', 'no', 'number'], 0),
+        name: indexFor(['name', 'sessionname', 'title'], 1),
+        description: indexFor(['description', 'desc', 'details', 'notes'], 2),
+        knowledge: indexFor(['knowledge', 'k', 'knowledgecodes'], 3),
+        skills: indexFor(['skills', 'skill', 's', 'skillcodes'], 4),
+        behaviours: indexFor(['behaviours', 'behaviour', 'behavior', 'behaviors', 'b', 'behaviourcodes', 'behaviorcodes'], 5),
+      }
+    : { session: 0, name: 1, description: 2, knowledge: 3, skills: 4, behaviours: 5 };
+  const dataRows = headerRowIndex >= 0 ? usefulRows.slice(headerRowIndex + 1) : usefulRows;
+  const mappings = normalizeSessionKsbMappings([], sessionCount);
+  const sessionNames: string[] = [];
+  const sessionDescriptions: string[] = [];
+
+  dataRows.forEach((row, rowIndex) => {
+    const sessionNumber = parseInt(cellText(row[indexes.session]), 10);
+    const index = Number.isFinite(sessionNumber) && sessionNumber > 0 ? sessionNumber - 1 : rowIndex;
+    if (index < 0 || index >= sessionCount) return;
+    mappings[index] = {
+      knowledgeCodes: parseKsbCodeText(row[indexes.knowledge], 'K'),
+      skillCodes: parseKsbCodeText(row[indexes.skills], 'S'),
+      behaviourCodes: parseKsbCodeText(row[indexes.behaviours], 'B'),
+    };
+    sessionNames[index] = cellText(row[indexes.name]);
+    sessionDescriptions[index] = cellText(row[indexes.description]);
+  });
+
+  return { mappings, sessionNames, sessionDescriptions };
 }
 
 function countNamedSessions(names: string[] | undefined, count: number): number {
@@ -136,6 +193,7 @@ function KsbCodeInput({
   prefix,
   value,
   codeDescriptions = {},
+  suggestions = [],
   onChange,
 }: {
   label: string;
@@ -143,15 +201,24 @@ function KsbCodeInput({
   prefix: 'K' | 'S' | 'B';
   value: string[];
   codeDescriptions?: Record<string, string>;
+  suggestions?: KsbProfileCodeOption[];
   onChange: (codes: string[]) => void;
 }) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [focused, setFocused] = useState(false);
   const tone = prefix === 'K'
-    ? { label: 'bg-sky-600 text-white', border: 'border-sky-200 focus-within:border-sky-400', chip: 'border-sky-200 bg-sky-50 text-sky-800' }
+    ? { label: 'bg-sky-600 text-white', border: 'border-sky-200 focus-within:border-sky-400', chip: 'border-sky-200 bg-sky-50 text-sky-800', suggest: 'hover:bg-sky-50 text-sky-800' }
     : prefix === 'S'
-      ? { label: 'bg-emerald-600 text-white', border: 'border-emerald-200 focus-within:border-emerald-400', chip: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
-      : { label: 'bg-amber-500 text-white', border: 'border-amber-200 focus-within:border-amber-400', chip: 'border-amber-200 bg-amber-50 text-amber-800' };
+      ? { label: 'bg-emerald-600 text-white', border: 'border-emerald-200 focus-within:border-emerald-400', chip: 'border-emerald-200 bg-emerald-50 text-emerald-800', suggest: 'hover:bg-emerald-50 text-emerald-800' }
+      : { label: 'bg-amber-500 text-white', border: 'border-amber-200 focus-within:border-amber-400', chip: 'border-amber-200 bg-amber-50 text-amber-800', suggest: 'hover:bg-amber-50 text-amber-800' };
+  const suggestionMatches = useMemo(() => {
+    const query = draft.trim().toUpperCase();
+    if (!focused || !query) return [];
+    return suggestions
+      .filter(option => !value.includes(option.code) && option.code.startsWith(query))
+      .slice(0, 6);
+  }, [draft, focused, suggestions, value]);
 
   const addDraftCodes = () => {
     const parts = draft.split(/[,\s]+/).map(item => item.trim()).filter(Boolean);
@@ -161,10 +228,17 @@ function KsbCodeInput({
       return;
     }
     const valid = normalizeKsbCodes(parts, prefix);
-    const invalid = parts.some(part => !new RegExp(`^${prefix}\\d+$`, 'i').test(part));
+    const invalid = parts.some(part => !new RegExp(`^${prefix}\\d+(?:\\.\\d+)*$`, 'i').test(part));
     onChange(normalizeKsbCodes([...value, ...valid], prefix));
     setDraft('');
-    setError(invalid ? `${prefix} codes need ${prefix} followed by a number.` : '');
+    setError(invalid ? `${prefix} codes need ${prefix} followed by a number, e.g. ${prefix}1 or ${prefix}1.1.` : '');
+  };
+
+  const addSuggestedCode = (code: string) => {
+    onChange(normalizeKsbCodes([...value, code], prefix));
+    setDraft('');
+    setError('');
+    setFocused(true);
   };
 
   return (
@@ -175,98 +249,66 @@ function KsbCodeInput({
         </span>
         <span>{label}</span>
       </label>
-      <div className={`min-h-10 rounded-lg border bg-white px-2 py-1.5 transition-colors ${tone.border}`}>
-        <div className="flex flex-wrap items-center gap-1">
-          {value.map(code => (
-            <span key={code} title={codeDescriptions[code] || code} className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-extrabold leading-none ${tone.chip}`}>
-              {code}
-              <button type="button" aria-label={`Remove ${code}`} onClick={() => onChange(value.filter(item => item !== code))} className="text-current opacity-45 hover:opacity-100">
-                <i className="ri-close-line text-[10px]" />
-              </button>
-            </span>
-          ))}
-          <input
-            type="text"
-            value={draft}
-            onChange={event => {
-              setDraft(event.target.value.toUpperCase());
-              if (error) setError('');
-            }}
-            onBlur={addDraftCodes}
-            onKeyDown={event => {
-              if (event.key === 'Enter' || event.key === ',') {
-                event.preventDefault();
+      <div className="relative">
+        <div className={`min-h-10 rounded-lg border bg-white px-2 py-1.5 transition-colors ${tone.border}`}>
+          <div className="flex flex-wrap items-center gap-1">
+            {value.map(code => (
+              <span key={code} title={codeDescriptions[code] || code} className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-extrabold leading-none ${tone.chip}`}>
+                {code}
+                <button type="button" aria-label={`Remove ${code}`} onClick={() => onChange(value.filter(item => item !== code))} className="text-current opacity-45 hover:opacity-100">
+                  <i className="ri-close-line text-[10px]" />
+                </button>
+              </span>
+            ))}
+            <input
+              type="text"
+              value={draft}
+              onChange={event => {
+                setDraft(event.target.value.toUpperCase());
+                if (error) setError('');
+              }}
+              onFocus={() => setFocused(true)}
+              onBlur={() => {
+                setFocused(false);
                 addDraftCodes();
-              }
-            }}
-            placeholder={value.length ? `Add ${prefix}...` : placeholder}
-            className="min-w-20 flex-1 bg-transparent px-1 py-0.5 text-xs font-semibold text-gray-700 placeholder:text-gray-300 focus:outline-none"
-          />
+              }}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ',') {
+                  event.preventDefault();
+                  addDraftCodes();
+                }
+              }}
+              placeholder={value.length ? `Add ${prefix}...` : placeholder}
+              className="min-w-20 flex-1 bg-transparent px-1 py-0.5 text-xs font-semibold text-gray-700 placeholder:text-gray-300 focus:outline-none"
+            />
+          </div>
         </div>
+        {suggestionMatches.length > 0 && (
+          <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[170] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
+            {suggestionMatches.map(option => (
+              <button
+                key={`${option.profileName}-${option.code}`}
+                type="button"
+                title={`${option.code} - ${codeDescriptions[option.code] || option.code}`}
+                onMouseDown={event => {
+                  event.preventDefault();
+                  addSuggestedCode(option.code);
+                }}
+                className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors ${tone.suggest}`}
+              >
+                <span className={`mt-0.5 rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold ${tone.chip}`}>
+                  {option.code}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[11px] font-extrabold text-gray-700" title={codeDescriptions[option.code] || option.code}>{codeDescriptions[option.code] || option.code}</span>
+                  <span className="block truncate text-[10px] font-semibold text-gray-400">{option.profileName}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      {value.some(code => codeDescriptions[code]) && (
-        <div className="mt-1 space-y-0.5">
-          {value.filter(code => codeDescriptions[code]).map(code => (
-            <p key={code} className="line-clamp-2 text-[10px] font-medium text-gray-400">
-              <span className="font-extrabold text-gray-500">{code}</span> {codeDescriptions[code]}
-            </p>
-          ))}
-        </div>
-      )}
       {error && <p className="mt-1 text-[10px] font-semibold text-red-500">{error}</p>}
-    </div>
-  );
-}
-
-function KsbProfilePicker({
-  mapping,
-  codeDescriptions = {},
-  profileCodes,
-  onAddCode,
-}: {
-  mapping: SessionKsbMapping;
-  codeDescriptions?: Record<string, string>;
-  profileCodes?: Record<'K' | 'S' | 'B', KsbProfileCodeOption[]>;
-  onAddCode: (field: KsbCodeField, code: string) => void;
-}) {
-  const sections = [
-    { title: 'Knowledge', prefix: 'K' as const, field: 'knowledgeCodes' as const, selected: mapping.knowledgeCodes, codes: profileCodes?.K || [], tone: 'border-sky-200 bg-sky-50 text-sky-800' },
-    { title: 'Skills', prefix: 'S' as const, field: 'skillCodes' as const, selected: mapping.skillCodes, codes: profileCodes?.S || [], tone: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
-    { title: 'Behaviours', prefix: 'B' as const, field: 'behaviourCodes' as const, selected: mapping.behaviourCodes, codes: profileCodes?.B || [], tone: 'border-amber-200 bg-amber-50 text-amber-800' },
-  ];
-
-  return (
-    <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
-      <div className="grid gap-3 md:grid-cols-3">
-        {sections.map(section => {
-          const available = section.codes.filter(option => !section.selected.includes(option.code));
-          return (
-            <div key={section.prefix} className="rounded-lg bg-white p-2">
-              <p className="mb-2 text-[10px] font-extrabold uppercase tracking-wider text-gray-400">{section.title}</p>
-              {available.length ? (
-                <div className="flex flex-wrap gap-1">
-                  {available.map(option => (
-                    <button
-                      key={`${option.profileName}-${option.code}`}
-                      type="button"
-                      title={`${option.profileName}${codeDescriptions[option.code] ? ` - ${codeDescriptions[option.code]}` : ''}`}
-                      onClick={() => onAddCode(section.field, option.code)}
-                      className={`flex max-w-full flex-col items-start rounded-md border px-2 py-1 text-left transition-all hover:shadow-sm ${section.tone}`}
-                    >
-                      <span className="text-[10px] font-extrabold leading-none">+ {option.code}</span>
-                      <span className="mt-0.5 max-w-[8rem] truncate text-[9px] font-bold opacity-65">{option.profileName}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[11px] font-semibold text-gray-300">
-                  {section.codes.length ? 'All profile codes added' : 'No profile codes'}
-                </p>
-              )}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -295,10 +337,7 @@ function KsbSessionMappingRows({
   onSessionDescriptionChange: (sessionIndex: number, value: string) => void;
 }) {
   const normalizedMappings = normalizeSessionKsbMappings(mappings, sessionCount);
-  const [openPickerIndex, setOpenPickerIndex] = useState<number | null>(null);
-  const sourceProfileNames = Array.from(new Set(
-    (['K', 'S', 'B'] as const).flatMap(prefix => (profileCodes?.[prefix] || []).map(option => option.profileName)),
-  ));
+  const sourceProfileNames = Array.from(new Set((['K', 'S', 'B'] as const).flatMap(prefix => (profileCodes?.[prefix] || []).map(option => option.profileName))));
   const sourceLabel = sourceProfileNames.length === 1
     ? sourceProfileNames[0]
     : sourceProfileNames.length > 1
@@ -309,11 +348,6 @@ function KsbSessionMappingRows({
     <div className="space-y-3">
       {Array.from({ length: sessionCount }, (_, i) => {
         const mapping = normalizedMappings[i] || emptySessionKsbMapping();
-        const availableProfileCodeCount = (['K', 'S', 'B'] as const).reduce((total, prefix) => {
-          const field = prefix === 'K' ? 'knowledgeCodes' : prefix === 'S' ? 'skillCodes' : 'behaviourCodes';
-          return total + (profileCodes?.[prefix] || []).filter(option => !mapping[field].includes(option.code)).length;
-        }, 0);
-        const hasProfileCodes = (['K', 'S', 'B'] as const).some(prefix => (profileCodes?.[prefix] || []).length > 0);
         return (
           <div key={i} className="rounded-xl border border-gray-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="grid gap-3 xl:grid-cols-[minmax(260px,0.85fr)_minmax(0,1.3fr)]">
@@ -343,42 +377,20 @@ function KsbSessionMappingRows({
                   className="w-full rounded-lg border border-gray-100 bg-gray-50 px-3 py-1.5 text-xs text-gray-500 focus:outline-none"
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  {availableProfileCodeCount > 0 ? (
-                    <button
-                      type="button"
-                      onClick={() => setOpenPickerIndex(openPickerIndex === i ? null : i)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-gray-500 transition-all hover:border-gray-300 hover:bg-gray-50"
-                    >
-                      <i className="ri-add-circle-line" />
-                      Add from profile
-                    </button>
-                  ) : (
-                    <span className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] font-extrabold text-gray-300">
-                      {hasProfileCodes ? 'Profile codes already added' : 'No profile codes'}
-                    </span>
-                  )}
                   {sourceLabel && (
                     <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-500">
-                      Source: {sourceLabel}
+                      Profile: {sourceLabel}
                     </span>
                   )}
                 </div>
               </div>
             </div>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                <KsbCodeInput label="Knowledge" placeholder="K1, K3" prefix="K" value={mapping.knowledgeCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'knowledgeCodes', codes)} />
-                <KsbCodeInput label="Skills" placeholder="S2, S5" prefix="S" value={mapping.skillCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'skillCodes', codes)} />
-                <KsbCodeInput label="Behaviours" placeholder="B1, B4" prefix="B" value={mapping.behaviourCodes} codeDescriptions={codeDescriptions} onChange={codes => onChange(i, 'behaviourCodes', codes)} />
+                <KsbCodeInput label="Knowledge" placeholder="K1, K3" prefix="K" value={mapping.knowledgeCodes} codeDescriptions={codeDescriptions} suggestions={profileCodes?.K || []} onChange={codes => onChange(i, 'knowledgeCodes', codes)} />
+                <KsbCodeInput label="Skills" placeholder="S2, S5" prefix="S" value={mapping.skillCodes} codeDescriptions={codeDescriptions} suggestions={profileCodes?.S || []} onChange={codes => onChange(i, 'skillCodes', codes)} />
+                <KsbCodeInput label="Behaviours" placeholder="B1, B4" prefix="B" value={mapping.behaviourCodes} codeDescriptions={codeDescriptions} suggestions={profileCodes?.B || []} onChange={codes => onChange(i, 'behaviourCodes', codes)} />
               </div>
             </div>
-            {openPickerIndex === i && availableProfileCodeCount > 0 && (
-              <KsbProfilePicker
-                mapping={mapping}
-                codeDescriptions={codeDescriptions}
-                profileCodes={profileCodes}
-                onAddCode={(field, code) => onChange(i, field, normalizeKsbCodes([...(mapping[field] || []), code], field === 'knowledgeCodes' ? 'K' : field === 'skillCodes' ? 'S' : 'B'))}
-              />
-            )}
           </div>
         );
       })}
@@ -387,6 +399,7 @@ function KsbSessionMappingRows({
 }
 
 export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
+  const ksbTemplateInputRef = useRef<HTMLInputElement | null>(null);
   const [editing, setEditing] = useState<EditState | null>(() => {
     const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
     return target ? editStateFromModule(target) : null;
@@ -399,8 +412,14 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [ksbEditorOpen, setKsbEditorOpen] = useState(false);
-  const codeDescriptions = useMemo(() => buildKsbDescriptionLookup(ksbProfiles), [ksbProfiles]);
-  const profileCodes = useMemo(() => buildKsbProfileCodeOptions(ksbProfiles), [ksbProfiles]);
+  const [selectedKsbProfileId, setSelectedKsbProfileId] = useState('');
+  const selectedKsbProfile = useMemo(
+    () => ksbProfiles.find(profile => profile.id === selectedKsbProfileId),
+    [ksbProfiles, selectedKsbProfileId],
+  );
+  const selectedProfileList = useMemo(() => selectedKsbProfile ? [selectedKsbProfile] : [], [selectedKsbProfile]);
+  const codeDescriptions = useMemo(() => buildKsbDescriptionLookup(selectedProfileList), [selectedProfileList]);
+  const profileCodes = useMemo(() => buildKsbProfileCodeOptions(selectedProfileList), [selectedProfileList]);
 
   const openEdit = (m: CatalogModule) => {
     const next = editStateFromModule(m);
@@ -487,6 +506,51 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       };
       return { ...prev, sessionKsbMappings: nextMappings };
     });
+  };
+
+  const importKsbTemplate = async (file: File) => {
+    if (!editing) return;
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+      if (!worksheet) {
+        await kbcSwal.fire({ title: 'Empty template', html: 'The selected file does not contain a readable sheet.', icon: 'warning', confirmButtonText: 'OK' });
+        return;
+      }
+      const count = Math.max(1, parseSessionCount(editing.sessions) || 1);
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '' });
+      const imported = parseSessionKsbTemplateRows(rows, count);
+      const importedCodeCount = imported.mappings.reduce(
+        (total, mapping) => total + mapping.knowledgeCodes.length + mapping.skillCodes.length + mapping.behaviourCodes.length,
+        0,
+      );
+      if (!importedCodeCount) {
+        await kbcSwal.fire({ title: 'No KSB mappings found', html: 'Use columns like Session, Name, Description, Knowledge, Skills, and Behaviours.', icon: 'info', confirmButtonText: 'OK' });
+        return;
+      }
+      setEditing(prev => {
+        if (!prev) return prev;
+        const names = [...prev.sessionNames];
+        const descriptions = [...prev.sessionDescriptions];
+        imported.sessionNames.forEach((name, index) => {
+          if (name) names[index] = name;
+        });
+        imported.sessionDescriptions.forEach((description, index) => {
+          if (description) descriptions[index] = description;
+        });
+        return { ...prev, sessionNames: names, sessionDescriptions: descriptions, sessionKsbMappings: imported.mappings };
+      });
+      await kbcSwal.fire({ title: 'Template uploaded', html: `${importedCodeCount} KSB code${importedCodeCount === 1 ? '' : 's'} mapped from the template.`, icon: 'success', confirmButtonText: 'OK' });
+    } catch {
+      await kbcSwal.fire({ title: 'Could not read template', html: 'Please upload a valid Excel or CSV file.', icon: 'error', confirmButtonText: 'OK' });
+    }
+  };
+
+  const handleKsbTemplateFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) void importKsbTemplate(file);
   };
 
   const handleDelete = async (m: CatalogModule) => {
@@ -786,13 +850,41 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
             </div>
 
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-100 bg-white px-6 py-4">
+              <input
+                ref={ksbTemplateInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleKsbTemplateFileChange}
+                className="hidden"
+              />
               <span className="rounded-full px-3 py-1.5 text-xs font-extrabold" style={{ background: `${editing.colour}12`, color: editing.colour }}>
                 {sessionCount} session{sessionCount === 1 ? '' : 's'}
               </span>
               <span className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-500">
                 {mappedKsbCount > 0 ? `${mappedKsbCount} code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'No KSBs mapped yet'}
               </span>
-              <p className="w-full text-xs font-medium text-gray-400 sm:w-auto">
+              <select
+                value={selectedKsbProfile?.id || ''}
+                onChange={event => setSelectedKsbProfileId(event.target.value)}
+                className="h-9 min-w-56 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-gray-700 focus:outline-none"
+                aria-label="Add from profile"
+              >
+                <option value="">Add from profile</option>
+                {ksbProfiles.map(profile => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}{profile.programmeName ? ` - ${profile.programmeName}` : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => ksbTemplateInputRef.current?.click()}
+                className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-kbc-navy transition-colors hover:bg-gray-50"
+              >
+                <i className="ri-upload-2-line" />
+                Upload Template
+              </button>
+              <p className="w-full text-xs font-medium text-gray-400 lg:w-auto">
                 Map the KSBs covered by each session, for example K1, K3, S2, B1.
               </p>
             </div>

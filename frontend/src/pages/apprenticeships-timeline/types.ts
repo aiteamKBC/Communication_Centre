@@ -25,6 +25,7 @@ export interface SessionCoverage {
   sessionNumber: number;
   assignedTutorProfileId?: string;
   coverageTutorProfileId?: string;
+  coverageCoachProfileId?: string;
   coverageStatus: CoverageStatus;
   tutorUnavailable: boolean;
   tutorUnavailableReason?: string;
@@ -37,6 +38,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 
 export interface ModuleBlock {
   id: string;
+  trainingPlanId?: string;
   groupId?: string;
   mod: ModuleValue;
   groupName?: string;
@@ -136,6 +138,20 @@ export interface KsbProfile {
 }
 
 export interface TutorProfile {
+  id: string;
+  name: string;
+  normalizedName: string;
+  email?: string;
+  phone?: string;
+  notes?: string;
+  availabilityNotes?: string;
+  isActive: boolean;
+  sessionCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CoachProfile {
   id: string;
   name: string;
   normalizedName: string;

@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
-import type { CatalogModule, ModuleBlock, ProgrammeGroup, SessionCoverage, TutorProfile, WeekDayKey } from '../types';
+import type { CatalogModule, CoachProfile, Holiday, KsbProfile, ModuleBlock, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import SelectField from './SelectField';
 import { profileIdForTutorName, resolveTutorProfile, tutorDisplayName } from '../tutorProfiles';
+import { buildHolidayAdjustedSessionPlan } from '../utils';
 
 interface SessionCell {
   trainer: string;
@@ -19,6 +20,7 @@ interface SessionInstance {
   hasRealName: boolean;
   status: 'completed' | 'current' | 'upcoming';
   coverage?: SessionCoverage;
+  ksbMapping: SessionKsbMapping;
 }
 
 interface TutorSessionOccurrence {
@@ -79,6 +81,7 @@ interface DerivedScheduleRow {
   groupIdx: number;
   rowIdx: number;
   blockId: string;
+  trainingPlanId?: string;
   cohort: string;
   cohortColor: string;
   programme: string;
@@ -94,6 +97,8 @@ interface DerivedScheduleRow {
   assignedTutorProfileId: string;
   assignedTutorName: string;
   currentCoverage?: SessionCoverage;
+  currentKsbMapping: SessionKsbMapping;
+  notes?: string;
   completedSessions: number;
   totalSessions: number;
   sessionInstances: SessionInstance[];
@@ -108,8 +113,11 @@ interface DerivedScheduleRow {
   rowHighlight?: string;
   startDate: string;
   endDate: string;
+  rawEndDate: string;
+  sessionWeekDay: string;
   sessionStartTime: string;
   sessionEndTime: string;
+  coachName: string;
   isCurrent?: boolean;
 }
 
@@ -122,14 +130,34 @@ interface ProgrammeSection {
 interface Props {
   groups: ProgrammeGroup[];
   tutorProfiles?: TutorProfile[];
+  coachProfiles?: CoachProfile[];
   catalogModules?: CatalogModule[];
+  holidays?: Holiday[];
+  ksbProfiles?: KsbProfile[];
   canEdit?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
   onUpdateSessionCoverage?: (groupIdx: number, rowIdx: number, blockId: string, coverage: SessionCoverage) => Promise<boolean>;
+  onUpdateSessionSchedule?: (groupIdx: number, rowIdx: number, blockId: string, payload: SessionScheduleUpdatePayload) => Promise<boolean>;
+  onUpdateSessionKsb?: (groupIdx: number, rowIdx: number, blockId: string, sessionNumber: number, mapping: SessionKsbMapping) => Promise<boolean>;
+  onUpdateSessionNotes?: (groupIdx: number, rowIdx: number, blockId: string, notes: string) => Promise<boolean>;
   onCreateTutorProfile?: (payload: { name: string; email?: string; notes?: string; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
+  onCreateCoachProfile?: (payload: { name: string; email?: string; notes?: string; confirmCreateNew?: boolean }) => Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }>;
+}
+
+export interface SessionScheduleUpdatePayload {
+  startDate?: string;
+  endDate?: string;
+  sessionStartTime?: string;
+  sessionEndTime?: string;
+  sessionWeekDay?: string;
+  tutorProfileId?: string;
+  tutorName?: string;
+  coachName?: string;
 }
 
 type DayKey = WeekDayKey;
+type KsbCodePrefix = 'K' | 'S' | 'B';
+type KsbProfileCodeOption = { code: string; description: string; profileName: string };
 
 const TOP_NAV_H = 56;
 const TABLE_COLUMNS = [
@@ -189,6 +217,11 @@ function inferDayFromIsoDate(isoDate: string): DayKey {
     return 'monday';
   }
   return JS_DAY_TO_KEY[d.getDay()] || 'monday';
+}
+
+function getActiveRowHolidays(row: ProgrammeGroup['rows'][number], holidays: Holiday[]): Holiday[] {
+  const selectedHolidayIds = new Set(row.holidayIds || []);
+  return selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
 }
 
 function formatDisplayDate(isoDate: string): string {
@@ -290,30 +323,13 @@ function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function getSessionDates(blk: ModuleBlock): string[] {
-  const total = Math.max(1, blk.sessions || 1);
-  const start = parseLocalIsoDate(blk.startDate);
-  const end = parseLocalIsoDate(blk.endDate || blk.startDate);
-  const weekdays = blk.days?.length ? blk.days : [inferDayFromIsoDate(blk.startDate)];
-  const dates: string[] = [];
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return [blk.startDate].filter(Boolean);
-  }
-
-  const cursor = new Date(start);
-  while (cursor <= end && dates.length < total) {
-    const dayKey = JS_DAY_TO_KEY[cursor.getDay()];
-    if (weekdays.includes(dayKey)) {
-      dates.push(toIsoDate(cursor));
-    }
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return dates.length ? dates : [blk.startDate];
+function getSessionDates(blk: ModuleBlock, holidays: Holiday[] = []): string[] {
+  const plan = buildHolidayAdjustedSessionPlan(blk, holidays);
+  const dates = plan.sessions.map(session => session.date);
+  return dates.length ? dates : [blk.startDate].filter(Boolean);
 }
 
-function buildTutorSessionOccurrences(groups: ProgrammeGroup[]): TutorSessionOccurrence[] {
+function buildTutorSessionOccurrences(groups: ProgrammeGroup[], holidays: Holiday[]): TutorSessionOccurrence[] {
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
       row.blks.flatMap(block => {
@@ -327,8 +343,9 @@ function buildTutorSessionOccurrences(groups: ProgrammeGroup[]): TutorSessionOcc
         const time = formatTimeRange(startTime, endTime);
         const coach = block.coachName?.trim() || 'TBD';
         const groupName = (block.groupName || row.label || '').trim();
+        const activeHolidays = getActiveRowHolidays(row, holidays);
 
-        return getSessionDates(block).map(date => ({
+        return getSessionDates(block, activeHolidays).map(date => ({
           blockId: block.id,
           date,
           module,
@@ -350,12 +367,13 @@ function getTutorTimeConflicts(
   nextBlock: ModuleBlock,
   nextTutor: string,
   tutorSessions: TutorSessionOccurrence[],
+  activeHolidays: Holiday[] = [],
 ): TutorSessionOccurrence[] {
   const normalizedTutor = normalizePersonName(nextTutor);
   const nextStartTime = nextBlock.sessionStartTime || '09:00';
   const nextEndTime = nextBlock.sessionEndTime || '11:00';
   const nextTime = formatTimeRange(nextStartTime, nextEndTime);
-  const nextSessionDates = new Set(getSessionDates(nextBlock));
+  const nextSessionDates = new Set(getSessionDates(nextBlock, activeHolidays));
 
   return tutorSessions
     .filter(item =>
@@ -376,6 +394,7 @@ function getCurrentTutorModules(
   tutor: string,
   catalogModules: CatalogModule[],
   now: Date,
+  holidays: Holiday[],
   excludeBlockId?: string,
 ): CurrentTutorModule[] {
   const normalizedTutor = normalizePersonName(tutor);
@@ -390,14 +409,16 @@ function getCurrentTutorModules(
           return [];
         }
 
+        const activeHolidays = getActiveRowHolidays(row, holidays);
+        const effectiveEndDate = buildHolidayAdjustedSessionPlan(block, activeHolidays).effectiveEndDate || block.endDate;
         const startTs = parseLocalIsoDate(block.startDate).getTime();
-        const endTs = parseLocalDateTime(block.endDate, block.sessionEndTime || '11:00').getTime();
+        const endTs = parseLocalDateTime(effectiveEndDate, block.sessionEndTime || '11:00').getTime();
         if (Number.isNaN(startTs) || Number.isNaN(endTs) || now.getTime() < startTs || now.getTime() > endTs) {
           return [];
         }
 
         const module = getModuleMeta(block.mod).lbl;
-        const progress = getSessionProgress(block, module, catalogModules);
+        const progress = getSessionProgress(block, module, catalogModules, '', getActiveRowHolidays(row, holidays));
 
         return [{
           blockId: block.id,
@@ -407,7 +428,7 @@ function getCurrentTutorModules(
           groupName: (block.groupName || row.label || '').trim() || undefined,
           coach: block.coachName?.trim() || 'TBD',
           startDate: block.startDate,
-          endDate: block.endDate,
+          endDate: effectiveEndDate,
           time: formatTimeRange(block.sessionStartTime || '09:00', block.sessionEndTime || '11:00'),
           completedSessions: progress.completedSessions,
           totalSessions: progress.totalSessions,
@@ -440,11 +461,162 @@ function getCoverageForSession(block: ModuleBlock, sessionNumber: number, assign
   };
 }
 
-function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules: CatalogModule[], assignedTutorProfileId = '') {
+function emptyKsbMapping(): SessionKsbMapping {
+  return { knowledgeCodes: [], skillCodes: [], behaviourCodes: [] };
+}
+
+function normalizeKsbCodes(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
+  const raw = Array.isArray(value) ? value : String(value || '').split(/[,\s;|]+/);
+  const seen = new Set<string>();
+  const codes: string[] = [];
+  raw.forEach(item => {
+    const code = String(item || '').trim().toUpperCase();
+    if (!code || seen.has(code) || !new RegExp(`^${prefix}\\d+(?:\\.\\d+)*$`).test(code)) {
+      return;
+    }
+    seen.add(code);
+    codes.push(code);
+  });
+  return codes;
+}
+
+function normalizeKsbMapping(value: unknown): SessionKsbMapping {
+  const record = value && typeof value === 'object' ? value as Partial<SessionKsbMapping> : {};
+  return {
+    knowledgeCodes: normalizeKsbCodes(record.knowledgeCodes, 'K'),
+    skillCodes: normalizeKsbCodes(record.skillCodes, 'S'),
+    behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
+  };
+}
+
+function buildKsbDescriptionLookup(profile: KsbProfile | undefined): Record<string, string> {
+  const lookup: Record<string, string> = {};
+  (profile?.ksbItems || []).forEach(item => {
+    const code = (item.code || `${item.type}${item.number}`).trim().toUpperCase();
+    if (code) lookup[code] = item.description || code;
+  });
+  return lookup;
+}
+
+function buildKsbProfileCodeOptions(profile: KsbProfile | undefined): Record<KsbCodePrefix, KsbProfileCodeOption[]> {
+  const buckets: Record<KsbCodePrefix, KsbProfileCodeOption[]> = { K: [], S: [], B: [] };
+  const seen: Record<KsbCodePrefix, Set<string>> = { K: new Set(), S: new Set(), B: new Set() };
+  (profile?.ksbItems || []).forEach(item => {
+    const prefix = item.type;
+    if (prefix !== 'K' && prefix !== 'S' && prefix !== 'B') return;
+    const code = (item.code || `${item.type}${item.number}`).trim().toUpperCase();
+    if (!code || seen[prefix].has(code)) return;
+    seen[prefix].add(code);
+    buckets[prefix].push({ code, description: item.description || code, profileName: profile.name });
+  });
+  return buckets;
+}
+
+function ksbCodesFromText(value: string, prefix: KsbCodePrefix): string[] {
+  return normalizeKsbCodes(value.split(/[,\s;|]+/), prefix);
+}
+
+function replaceActiveKsbToken(value: string, code: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return code;
+  const parts = trimmed.split(/([,\s;|]+)/);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    if (parts[i].trim()) {
+      parts[i] = code;
+      return parts.join('').replace(/[,\s;|]+$/g, '').trim();
+    }
+  }
+  return code;
+}
+
+function KsbDraftInput({
+  label,
+  placeholder,
+  prefix,
+  value,
+  disabled,
+  descriptions,
+  suggestions,
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
+  prefix: KsbCodePrefix;
+  value: string;
+  disabled: boolean;
+  descriptions: Record<string, string>;
+  suggestions: KsbProfileCodeOption[];
+  onChange: (value: string) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const tokens = value.split(/[,\s;|]+/).map(item => item.trim().toUpperCase()).filter(Boolean);
+  const lastToken = tokens[tokens.length - 1] || '';
+  const usedCodes = new Set(ksbCodesFromText(value, prefix));
+  const matches = focused && !disabled && lastToken
+    ? suggestions
+      .filter(option => !usedCodes.has(option.code) && option.code.startsWith(lastToken))
+      .slice(0, 6)
+    : [];
+
+  const tone = prefix === 'K'
+    ? { label: 'text-sky-700', row: 'hover:bg-sky-50', chip: 'border-sky-200 bg-sky-50 text-sky-800' }
+    : prefix === 'S'
+      ? { label: 'text-emerald-700', row: 'hover:bg-emerald-50', chip: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
+      : { label: 'text-amber-700', row: 'hover:bg-amber-50', chip: 'border-amber-200 bg-amber-50 text-amber-800' };
+
+  return (
+    <div className="relative">
+      <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">{label}</label>
+      <input
+        value={value}
+        disabled={disabled}
+        onFocus={() => setFocused(true)}
+        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
+        onChange={event => onChange(event.target.value)}
+        placeholder={disabled ? 'Select a KSB profile first' : placeholder}
+        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+      />
+      {matches.length > 0 && (
+        <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[90] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
+          {matches.map(option => (
+            <button
+              key={option.code}
+              type="button"
+              title={`${option.code} - ${descriptions[option.code] || option.description}`}
+              onMouseDown={event => {
+                event.preventDefault();
+                onChange(replaceActiveKsbToken(value, option.code));
+              }}
+              className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors ${tone.row}`}
+            >
+              <span className={`mt-0.5 rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold ${tone.chip}`}>{option.code}</span>
+              <span className="min-w-0 flex-1">
+                <span className={`block truncate text-[11px] font-extrabold ${tone.label}`} title={descriptions[option.code] || option.description}>
+                  {descriptions[option.code] || option.description}
+                </span>
+                <span className="block truncate text-[10px] font-semibold text-gray-400">{option.profileName}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getKsbMappingForSession(block: ModuleBlock, sessionNumber: number): SessionKsbMapping {
+  return normalizeKsbMapping(block.sessionKsbMappings?.[sessionNumber - 1] || emptyKsbMapping());
+}
+
+function ksbCodeText(codes: string[]): string {
+  return codes.join(', ');
+}
+
+function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules: CatalogModule[], assignedTutorProfileId = '', holidays: Holiday[] = []) {
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
   const totalSessions = Math.max(1, blk.sessions || 1);
-  const sessionDates = getSessionDates(blk);
+  const sessionDates = getSessionDates(blk, holidays);
   const completedSessions = Math.min(totalSessions, sessionDates.filter(date => hasSessionEnded(date, endTime, now)).length);
   const isFinished = totalSessions > 0 && completedSessions >= totalSessions;
   const nextIndex = sessionDates.findIndex(date => !hasSessionEnded(date, endTime, now));
@@ -466,6 +638,7 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
       hasRealName: Boolean(catalogModule?.sessionNames?.[i]?.trim()),
       status: ended ? 'completed' : number === currentSessionNumber ? 'current' : 'upcoming',
       coverage: getCoverageForSession(blk, number, assignedTutorProfileId),
+      ksbMapping: getKsbMappingForSession(blk, number),
     };
   });
 
@@ -481,15 +654,16 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
     sessionDate: sessionDates[sessionIndex] || blk.startDate,
     currentSessionNumber,
     currentCoverage: getCoverageForSession(blk, currentSessionNumber, assignedTutorProfileId),
+    currentKsbMapping: getKsbMappingForSession(blk, currentSessionNumber),
     completedSessions,
     totalSessions,
     sessionInstances,
   };
 }
 
-function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[], tutorProfiles: TutorProfile[]): DerivedScheduleRow[] {
+function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[], tutorProfiles: TutorProfile[], holidays: Holiday[]): DerivedScheduleRow[] {
   const now = new Date();
-  const tutorSessions = buildTutorSessionOccurrences(groups);
+  const tutorSessions = buildTutorSessionOccurrences(groups, holidays);
 
   return groups
     .flatMap((group, groupIdx) =>
@@ -499,9 +673,14 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
           const assignedTutorProfile = resolveTutorProfile(blk, tutorProfiles);
           const assignedTutorProfileId = assignedTutorProfile?.id || blk.tutorProfileId || profileIdForTutorName(blk.tutor || '', tutorProfiles);
           const assignedTutorName = assignedTutorProfile?.name || tutorDisplayName(blk, tutorProfiles) || blk.tutor?.trim() || 'TBD';
-          const sessionProgress = getSessionProgress(blk, moduleName, catalogModules, assignedTutorProfileId);
+          const activeHolidays = getActiveRowHolidays(row, holidays);
+          const sessionProgress = getSessionProgress(blk, moduleName, catalogModules, assignedTutorProfileId, activeHolidays);
+          const effectiveEndDate = buildHolidayAdjustedSessionPlan(blk, activeHolidays).effectiveEndDate || blk.endDate;
           const groupName = (blk.groupName || row.label || '').trim();
           const nextBlock = row.blks[idx + 1];
+          const nextEffectiveEndDate = nextBlock
+            ? buildHolidayAdjustedSessionPlan(nextBlock, activeHolidays).effectiveEndDate || nextBlock.endDate
+            : '';
           const nextModule = nextBlock ? getModuleMeta(nextBlock.mod).lbl : '';
           const nextTutor = nextBlock?.tutor?.trim() || '';
           const nextGroupName = nextBlock ? (nextBlock.groupName || row.label || '').trim() : '';
@@ -515,13 +694,13 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
               cohort: row.label,
               groupName: nextGroupName || undefined,
               startDate: nextBlock.startDate,
-              endDate: nextBlock.endDate,
+              endDate: nextEffectiveEndDate,
               sessions: nextBlock.sessions,
               currentTutorModules: nextTutor
-                ? getCurrentTutorModules(groups, nextTutor, catalogModules, now, nextBlock.id)
+                ? getCurrentTutorModules(groups, nextTutor, catalogModules, now, holidays, nextBlock.id)
                 : [],
               otherTutorSessions: nextTutor
-                ? getTutorTimeConflicts(nextBlock, nextTutor, tutorSessions)
+                ? getTutorTimeConflicts(nextBlock, nextTutor, tutorSessions, activeHolidays)
                 : [],
             }
             : {
@@ -546,14 +725,15 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
           const cell: SessionCell = { trainer, coach, time: formatTimeRange(startTime, endTime) };
 
           const startTs = parseLocalIsoDate(blk.startDate).getTime();
-          const endTs = parseLocalDateTime(blk.endDate, endTime).getTime();
+          const endTs = parseLocalDateTime(effectiveEndDate, endTime).getTime();
           const isCurrent = !Number.isNaN(startTs) && !Number.isNaN(endTs) && now.getTime() >= startTs && now.getTime() <= endTs;
 
           const base: DerivedScheduleRow = {
             groupIdx,
             rowIdx,
             blockId: blk.id,
-            cohort: `${formatCompactIsoDate(blk.startDate)} → ${formatCompactIsoDate(blk.endDate)}`,
+            trainingPlanId: blk.trainingPlanId,
+            cohort: `${formatCompactIsoDate(blk.startDate)} → ${formatCompactIsoDate(effectiveEndDate)}`,
             cohortColor: row.color || group.color,
             programme: programmeLabelFromGroupName(group.name),
             programmeColor: group.color,
@@ -566,9 +746,13 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
             nextModuleInfo,
             rowHighlight: isCurrent ? '#FFFBEB' : `${(row.color || group.color)}0D`,
             startDate: blk.startDate,
-            endDate: blk.endDate,
+            endDate: effectiveEndDate,
+            rawEndDate: blk.endDate,
+            sessionWeekDay: weekdays.join(', '),
             sessionStartTime: startTime,
             sessionEndTime: endTime,
+            coachName: coach,
+            notes: blk.notes || '',
             isCurrent,
           };
 
@@ -609,8 +793,8 @@ function toProgrammeSections(rows: DerivedScheduleRow[]): ProgrammeSection[] {
   return sections.sort((a, b) => a.programme.localeCompare(b.programme));
 }
 
-export default function ScheduleTable({ groups, tutorProfiles = [], catalogModules = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onCreateTutorProfile }: Props) {
-  const rows = toDerivedRows(groups, catalogModules, tutorProfiles);
+export default function ScheduleTable({ groups, tutorProfiles = [], coachProfiles = [], catalogModules = [], holidays = [], ksbProfiles = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onUpdateSessionSchedule, onUpdateSessionKsb, onUpdateSessionNotes, onCreateTutorProfile, onCreateCoachProfile }: Props) {
+  const rows = toDerivedRows(groups, catalogModules, tutorProfiles, holidays);
   const sections = toProgrammeSections(rows);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
@@ -619,7 +803,30 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
   const [coverageDraft, setCoverageDraft] = useState<SessionCoverage | null>(null);
   const [coverageError, setCoverageError] = useState('');
   const [coverageSaving, setCoverageSaving] = useState(false);
+  const [scheduleEditor, setScheduleEditor] = useState<DerivedScheduleRow | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<Required<Pick<SessionScheduleUpdatePayload, 'startDate' | 'endDate' | 'sessionStartTime' | 'sessionEndTime' | 'sessionWeekDay' | 'tutorProfileId' | 'tutorName' | 'coachName'>>>({
+    startDate: '',
+    endDate: '',
+    sessionStartTime: '',
+    sessionEndTime: '',
+    sessionWeekDay: '',
+    tutorProfileId: '',
+    tutorName: '',
+    coachName: '',
+  });
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleError, setScheduleError] = useState('');
+  const [ksbEditor, setKsbEditor] = useState<DerivedScheduleRow | null>(null);
+  const [ksbDraftText, setKsbDraftText] = useState({ knowledgeCodes: '', skillCodes: '', behaviourCodes: '' });
+  const [ksbProfileId, setKsbProfileId] = useState('');
+  const [ksbSaving, setKsbSaving] = useState(false);
+  const [ksbError, setKsbError] = useState('');
+  const [notesEditor, setNotesEditor] = useState<DerivedScheduleRow | null>(null);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [notesError, setNotesError] = useState('');
   const [createTutorName, setCreateTutorName] = useState('');
+  const [createCoachName, setCreateCoachName] = useState('');
 
   // Today's sessions
   const todayIndex = new Date().getDay();
@@ -654,27 +861,188 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
     color: '#1B2A4A',
   })), [tutorProfiles]);
 
+  const persistedCoachProfiles = useMemo(() => coachProfiles.filter(profile => profile.isActive && !profile.id.startsWith('legacy:')), [coachProfiles]);
+  const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
+  const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
+  const ksbCodeDescriptions = useMemo(() => buildKsbDescriptionLookup(selectedKsbProfile), [selectedKsbProfile]);
+  const ksbProfileCodes = useMemo(() => buildKsbProfileCodeOptions(selectedKsbProfile), [selectedKsbProfile]);
+
+  const coachOptions = useMemo(() => persistedCoachProfiles.map(profile => ({
+    value: profile.id,
+    label: profile.name,
+    description: [profile.email, `${profile.sessionCount || 0} sessions`].filter(Boolean).join(' - '),
+    color: '#1B2A4A',
+  })), [persistedCoachProfiles]);
+
   const openCoverageEditor = (row: DerivedScheduleRow, session: SessionInstance) => {
+    if (!row.trainingPlanId) {
+      showMissingTrainingPlanId('coverage');
+      return;
+    }
     const existing = session.coverage || row.currentCoverage;
     const hasCoverageTutor = Boolean(existing?.coverageTutorProfileId);
-    const tutorUnavailable = Boolean(existing?.tutorUnavailable) || hasCoverageTutor;
+    const hasCoverageCoach = Boolean(existing?.coverageCoachProfileId);
+    const tutorUnavailable = Boolean(existing?.tutorUnavailable) || hasCoverageTutor || hasCoverageCoach;
     setCoverageDraft({
       sessionNumber: session.number,
       assignedTutorProfileId: row.assignedTutorProfileId,
       coverageTutorProfileId: existing?.coverageTutorProfileId || '',
-      coverageStatus: hasCoverageTutor ? 'covered' : tutorUnavailable ? 'required' : 'none',
+      coverageCoachProfileId: existing?.coverageCoachProfileId || '',
+      coverageStatus: hasCoverageTutor || hasCoverageCoach ? 'covered' : tutorUnavailable ? 'required' : 'none',
       tutorUnavailable,
       tutorUnavailableReason: tutorUnavailable ? existing?.tutorUnavailableReason || '' : '',
       tutorUnavailableNotes: tutorUnavailable ? existing?.tutorUnavailableNotes || '' : '',
-      coverageReason: hasCoverageTutor ? existing?.coverageReason || '' : '',
-      coverageNotes: hasCoverageTutor ? existing?.coverageNotes || '' : '',
+      coverageReason: hasCoverageTutor || hasCoverageCoach ? existing?.coverageReason || '' : '',
+      coverageNotes: hasCoverageTutor || hasCoverageCoach ? existing?.coverageNotes || '' : '',
     });
     setCoverageError('');
     setCreateTutorName('');
+    setCreateCoachName('');
     setCoverageEditor({ row, session });
   };
 
+  const showMissingTrainingPlanId = (kind: 'schedule' | 'coverage' | 'ksb' | 'notes') => {
+    console.warn(
+      kind === 'schedule'
+        ? 'SESSION_SCHEDULE_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID'
+        : kind === 'coverage'
+        ? 'TUTOR_COVERAGE_PARTIAL_SAVE_BLOCKED_MISSING_TRAINING_PLAN_ID'
+        : kind === 'ksb'
+        ? 'KSB_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID'
+        : 'NOTES_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID',
+      {
+        reason: 'missing trainingPlanId',
+        message: 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.',
+      },
+    );
+    void kbcSwal.fire({
+      title: 'Partial Save Unavailable',
+      html: 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.',
+      icon: 'info',
+      confirmButtonText: 'OK',
+    });
+  };
+
+  const openScheduleEditor = (row: DerivedScheduleRow) => {
+    if (!row.trainingPlanId) {
+      showMissingTrainingPlanId('schedule');
+      return;
+    }
+    setScheduleDraft({
+      startDate: row.startDate || '',
+      endDate: row.rawEndDate || row.endDate || '',
+      sessionStartTime: row.sessionStartTime || '09:00',
+      sessionEndTime: row.sessionEndTime || '11:00',
+      sessionWeekDay: row.sessionWeekDay || inferDayFromIsoDate(row.startDate),
+      tutorProfileId: row.assignedTutorProfileId || '',
+      tutorName: row.assignedTutorName || '',
+      coachName: row.coachName || '',
+    });
+    setScheduleError('');
+    setScheduleEditor(row);
+  };
+
+  const openKsbEditor = (row: DerivedScheduleRow) => {
+    if (!row.trainingPlanId) {
+      showMissingTrainingPlanId('ksb');
+      return;
+    }
+    const normalized = normalizeKsbMapping(row.currentKsbMapping);
+    setKsbProfileId('');
+    setKsbDraftText({
+      knowledgeCodes: ksbCodeText(normalized.knowledgeCodes),
+      skillCodes: ksbCodeText(normalized.skillCodes),
+      behaviourCodes: ksbCodeText(normalized.behaviourCodes),
+    });
+    setKsbError('');
+    setKsbEditor(row);
+  };
+
+  const openNotesEditor = (row: DerivedScheduleRow) => {
+    if (!row.trainingPlanId) {
+      showMissingTrainingPlanId('notes');
+      return;
+    }
+    setNotesDraft(row.notes || '');
+    setNotesError('');
+    setNotesEditor(row);
+  };
+
+  const saveKsbDraft = async () => {
+    if (!ksbEditor || !onUpdateSessionKsb) return;
+    const normalized = normalizeKsbMapping({
+      knowledgeCodes: ksbDraftText.knowledgeCodes,
+      skillCodes: ksbDraftText.skillCodes,
+      behaviourCodes: ksbDraftText.behaviourCodes,
+    });
+    setKsbSaving(true);
+    setKsbError('');
+    try {
+      const saved = await onUpdateSessionKsb(ksbEditor.groupIdx, ksbEditor.rowIdx, ksbEditor.blockId, ksbEditor.currentSessionNumber, normalized);
+      if (saved) {
+        setKsbEditor(null);
+        setKsbDraftText({ knowledgeCodes: '', skillCodes: '', behaviourCodes: '' });
+      }
+    } catch (error) {
+      setKsbError(error instanceof Error ? error.message : 'KSB Mapping could not be saved.');
+    } finally {
+      setKsbSaving(false);
+    }
+  };
+
+  const saveNotesDraft = async () => {
+    if (!notesEditor || !onUpdateSessionNotes) return;
+    setNotesSaving(true);
+    setNotesError('');
+    try {
+      const saved = await onUpdateSessionNotes(notesEditor.groupIdx, notesEditor.rowIdx, notesEditor.blockId, notesDraft);
+      if (saved) {
+        setNotesEditor(null);
+        setNotesDraft('');
+      }
+    } catch (error) {
+      setNotesError(error instanceof Error ? error.message : 'Session notes could not be saved.');
+    } finally {
+      setNotesSaving(false);
+    }
+  };
+
+  const saveScheduleDraft = async () => {
+    if (!scheduleEditor || !onUpdateSessionSchedule) return;
+    if (!scheduleDraft.startDate || !scheduleDraft.endDate) {
+      setScheduleError('Start date and end date are required.');
+      return;
+    }
+    if (scheduleDraft.endDate < scheduleDraft.startDate) {
+      setScheduleError('End date cannot be before start date.');
+      return;
+    }
+    setScheduleSaving(true);
+    setScheduleError('');
+    try {
+      const selectedTutor = tutorProfiles.find(profile => profile.id === scheduleDraft.tutorProfileId);
+      const saved = await onUpdateSessionSchedule(scheduleEditor.groupIdx, scheduleEditor.rowIdx, scheduleEditor.blockId, {
+        startDate: scheduleDraft.startDate,
+        endDate: scheduleDraft.endDate,
+        sessionStartTime: scheduleDraft.sessionStartTime,
+        sessionEndTime: scheduleDraft.sessionEndTime,
+        sessionWeekDay: scheduleDraft.sessionWeekDay,
+        tutorProfileId: scheduleDraft.tutorProfileId,
+        tutorName: selectedTutor?.name || scheduleDraft.tutorName,
+        coachName: scheduleDraft.coachName,
+      });
+      if (saved) {
+        setScheduleEditor(null);
+      }
+    } catch (error) {
+      setScheduleError(error instanceof Error ? error.message : 'Session schedule could not be saved.');
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
   const coverageTutorName = (profileId?: string) => tutorProfiles.find(profile => profile.id === profileId)?.name || '';
+  const coverageCoachName = (profileId?: string) => coachProfiles.find(profile => profile.id === profileId)?.name || '';
 
   const getCoverageConflict = (profileId: string, row: DerivedScheduleRow, session: SessionInstance): CoverageConflict | null => {
     if (!profileId) return null;
@@ -682,7 +1050,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
     for (const group of groups) {
       for (const cohort of group.rows) {
         for (const block of cohort.blks) {
-          const sessionDates = getSessionDates(block);
+          const sessionDates = getSessionDates(block, getActiveRowHolidays(cohort, holidays));
           const startTime = block.sessionStartTime || '09:00';
           const endTime = block.sessionEndTime || '11:00';
           if (!timeRangesOverlap(startTime, endTime, row.sessionStartTime, row.sessionEndTime)) {
@@ -783,6 +1151,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
     if (!coverageEditor || !coverageDraft || !onUpdateSessionCoverage) return;
     const tutorUnavailable = Boolean(coverageDraft.tutorUnavailable);
     const coverageTutorProfileId = tutorUnavailable ? coverageDraft.coverageTutorProfileId || '' : '';
+    const coverageCoachProfileId = tutorUnavailable ? coverageDraft.coverageCoachProfileId || '' : '';
     if (coverageTutorProfileId && coverageTutorProfileId === coverageDraft.assignedTutorProfileId) {
       setCoverageError('Coverage tutor cannot be the same as assigned tutor.');
       return;
@@ -794,19 +1163,20 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
         return;
       }
     }
-    if (coverageTutorProfileId && !coverageDraft.coverageReason?.trim()) {
-      setCoverageError('Coverage reason is required when a coverage tutor is selected.');
+    if ((coverageTutorProfileId || coverageCoachProfileId) && !coverageDraft.coverageReason?.trim()) {
+      setCoverageError('Coverage reason is required when coverage is selected.');
       return;
     }
     const normalized: SessionCoverage = {
       ...coverageDraft,
       coverageTutorProfileId,
-      coverageStatus: coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none',
+      coverageCoachProfileId,
+      coverageStatus: coverageTutorProfileId || coverageCoachProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none',
       tutorUnavailable,
       tutorUnavailableReason: tutorUnavailable ? coverageDraft.tutorUnavailableReason?.trim() || '' : '',
       tutorUnavailableNotes: tutorUnavailable ? coverageDraft.tutorUnavailableNotes?.trim() || '' : '',
-      coverageReason: coverageTutorProfileId ? coverageDraft.coverageReason?.trim() || '' : '',
-      coverageNotes: coverageTutorProfileId ? coverageDraft.coverageNotes?.trim() || '' : '',
+      coverageReason: coverageTutorProfileId || coverageCoachProfileId ? coverageDraft.coverageReason?.trim() || '' : '',
+      coverageNotes: coverageTutorProfileId || coverageCoachProfileId ? coverageDraft.coverageNotes?.trim() || '' : '',
     };
     setCoverageSaving(true);
     try {
@@ -838,6 +1208,20 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
       }
       setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: profile.id } : prev);
       setCreateTutorName('');
+    }
+  };
+
+  const createCoverageCoach = async () => {
+    if (!onCreateCoachProfile || !createCoachName.trim()) return;
+    if (!coverageDraft?.tutorUnavailable) {
+      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+      return;
+    }
+    const result = await onCreateCoachProfile({ name: createCoachName.trim() });
+    const profile = 'id' in result ? result : result.possibleExistingProfile || result.existingProfile;
+    if (profile) {
+      setCoverageDraft(prev => prev ? { ...prev, coverageCoachProfileId: profile.id } : prev);
+      setCreateCoachName('');
     }
   };
 
@@ -1166,25 +1550,80 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                         <p className="text-[11px] text-gray-500 mt-0.5">{formatDisplayDate(row.sessionDate)}</p>
                         {!row.hasRealSessionName && <p className="text-[11px] text-amber-700 mt-0.5">{row.missingSessionNameReason}</p>}
                         {row.sessionDescription && <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{row.sessionDescription}</p>}
+                        {(row.currentKsbMapping.knowledgeCodes.length > 0 || row.currentKsbMapping.skillCodes.length > 0 || row.currentKsbMapping.behaviourCodes.length > 0) && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {row.currentKsbMapping.knowledgeCodes.map(code => <span key={`k-${code}`} className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-extrabold text-sky-700">{code}</span>)}
+                            {row.currentKsbMapping.skillCodes.map(code => <span key={`s-${code}`} className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-extrabold text-violet-700">{code}</span>)}
+                            {row.currentKsbMapping.behaviourCodes.map(code => <span key={`b-${code}`} className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-extrabold text-rose-700">{code}</span>)}
+                          </div>
+                        )}
+                        {row.notes && <p className="mt-1 line-clamp-2 text-[11px] font-medium text-gray-500">{row.notes}</p>}
                         <div className="mt-1 flex flex-wrap gap-1">
                           {(!isFinishedRow(row) || row.currentCoverage?.tutorUnavailable || row.currentCoverage?.coverageStatus === 'required' || row.currentCoverage?.coverageTutorProfileId) && (
                             <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">Primary Tutor</span>
                           )}
                           {row.currentCoverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
                           {row.currentCoverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
-                          {row.currentCoverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(row.currentCoverage.coverageTutorProfileId)}</span>}
+                          {row.currentCoverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By Tutor {coverageTutorName(row.currentCoverage.coverageTutorProfileId)}</span>}
+                          {row.currentCoverage?.coverageCoachProfileId && <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-extrabold text-cyan-700">Covered By Coach {coverageCoachName(row.currentCoverage.coverageCoachProfileId)}</span>}
                         </div>
                         {canEdit && onUpdateSessionCoverage && !isFinishedRow(row) && (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openCoverageEditor(row, row.sessionInstances.find(session => session.number === row.currentSessionNumber) || row.sessionInstances[0]);
-                            }}
-                            className="mt-2 rounded-md bg-kbc-navy px-2.5 py-1 text-[11px] font-bold text-white"
-                          >
-                            Manage Coverage
-                          </button>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {onUpdateSessionSchedule && (
+                              <button
+                                type="button"
+                                aria-disabled={!row.trainingPlanId}
+                                title={row.trainingPlanId ? 'Edit schedule for this saved session row' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openScheduleEditor(row);
+                                }}
+                                className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${row.trainingPlanId ? 'bg-white text-kbc-navy ring-1 ring-kbc-navy/20 hover:bg-kbc-navy/5' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
+                              >
+                                Edit Schedule
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              aria-disabled={!row.trainingPlanId}
+                              title={row.trainingPlanId ? 'Manage tutor coverage for this saved session row' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openCoverageEditor(row, row.sessionInstances.find(session => session.number === row.currentSessionNumber) || row.sessionInstances[0]);
+                              }}
+                              className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${row.trainingPlanId ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
+                            >
+                              Manage Coverage
+                            </button>
+                            {onUpdateSessionKsb && (
+                              <button
+                                type="button"
+                                aria-disabled={!row.trainingPlanId}
+                                title={row.trainingPlanId ? 'Edit KSB Mapping for this session' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openKsbEditor(row);
+                                }}
+                                className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${row.trainingPlanId ? 'bg-white text-kbc-navy ring-1 ring-kbc-navy/20 hover:bg-kbc-navy/5' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
+                              >
+                                Edit KSB
+                              </button>
+                            )}
+                            {onUpdateSessionNotes && (
+                              <button
+                                type="button"
+                                aria-disabled={!row.trainingPlanId}
+                                title={row.trainingPlanId ? 'Edit notes for this session' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openNotesEditor(row);
+                                }}
+                                className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${row.trainingPlanId ? 'bg-white text-kbc-navy ring-1 ring-kbc-navy/20 hover:bg-kbc-navy/5' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
+                              >
+                                Edit Notes
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </td>
@@ -1381,7 +1820,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                                 )}
                                 {session.coverage?.tutorUnavailable && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-700">Unavailable</span>}
                                 {session.coverage?.coverageStatus === 'required' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">Coverage Required</span>}
-                                {session.coverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By {coverageTutorName(session.coverage.coverageTutorProfileId)}</span>}
+                                {session.coverage?.coverageTutorProfileId && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Covered By Tutor {coverageTutorName(session.coverage.coverageTutorProfileId)}</span>}
+                                {session.coverage?.coverageCoachProfileId && <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-extrabold text-cyan-700">Covered By Coach {coverageCoachName(session.coverage.coverageCoachProfileId)}</span>}
                               </div>
                             </div>
                             <div className="flex shrink-0 flex-col items-end gap-2">
@@ -1391,8 +1831,10 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                               {canEdit && onUpdateSessionCoverage && session.status !== 'completed' && (
                                 <button
                                   type="button"
+                                  aria-disabled={!selectedRow.trainingPlanId}
+                                  title={selectedRow.trainingPlanId ? 'Manage tutor coverage for this saved session row' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
                                   onClick={() => openCoverageEditor(selectedRow, session)}
-                                  className="rounded-md bg-kbc-navy px-2.5 py-1 text-[11px] font-bold text-white"
+                                  className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${selectedRow.trainingPlanId ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
                                 >
                                   Coverage
                                 </button>
@@ -1436,6 +1878,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                       tutorUnavailable: checked,
                       tutorUnavailableReason: checked ? prev.tutorUnavailableReason : '',
                       coverageTutorProfileId: checked ? prev.coverageTutorProfileId : '',
+                      coverageCoachProfileId: checked ? prev.coverageCoachProfileId : '',
                       coverageReason: checked ? prev.coverageReason : '',
                       coverageNotes: checked ? prev.coverageNotes : '',
                     } : prev);
@@ -1560,13 +2003,91 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                 )}
               </div>
               <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Coach</label>
+                <div className="mb-3 rounded-xl border border-gray-200 bg-white">
+                  <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Coaches</p>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                      {persistedCoachProfiles.length} available
+                    </span>
+                  </div>
+                  <div className="grid max-h-48 gap-2 overflow-y-auto p-2">
+                    {persistedCoachProfiles.slice(0, 8).map(profile => {
+                      const selected = coverageDraft.coverageCoachProfileId === profile.id;
+                      return (
+                        <button
+                          key={profile.id}
+                          type="button"
+                          disabled={!coverageDraft.tutorUnavailable}
+                          onClick={() => {
+                            if (!coverageDraft.tutorUnavailable) {
+                              setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+                              return;
+                            }
+                            setCoverageDraft(prev => prev ? {
+                              ...prev,
+                              coverageCoachProfileId: profile.id,
+                              coverageReason: prev.coverageReason || `Suggested coverage coach: ${profile.name}`,
+                            } : prev);
+                            setCoverageError('');
+                          }}
+                          className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                          style={{ borderColor: selected ? '#1B2A4A' : '#E5E7EB', background: selected ? '#F8FAFC' : '#FFFFFF' }}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-extrabold text-gray-800">{profile.name}</span>
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">Available</span>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-500">{profile.sessionCount || 0} assigned sessions{profile.email ? ` - ${profile.email}` : ''}</p>
+                        </button>
+                      );
+                    })}
+                    {persistedCoachProfiles.length === 0 && (
+                      <div className="px-3 py-4 text-center text-xs font-semibold text-gray-400">
+                        No Coach Profiles available for coverage suggestions.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <SelectField
+                  value={coverageDraft.coverageCoachProfileId || ''}
+                  options={coverageDraft.tutorUnavailable ? coachOptions : []}
+                  onChange={value => {
+                    if (!coverageDraft.tutorUnavailable) {
+                      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+                      return;
+                    }
+                    setCoverageDraft(prev => prev ? { ...prev, coverageCoachProfileId: value } : prev);
+                    setCoverageError('');
+                  }}
+                  placeholder="Select coverage coach"
+                  label="Coach Profiles"
+                  searchPlaceholder="Search coaches..."
+                  emptyTitle="No coaches found"
+                  emptyText="Create a Coach Profile first."
+                />
+                {onCreateCoachProfile && (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={createCoachName}
+                      onChange={event => setCreateCoachName(event.target.value)}
+                      placeholder="New coach name"
+                      className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                    />
+                    <button type="button" onClick={() => void createCoverageCoach()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
+                      Create
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Reason</label>
                 <input
                   value={coverageDraft.coverageReason || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageReason: event.target.value } : prev)}
-                  disabled={!coverageDraft.tutorUnavailable || !coverageDraft.coverageTutorProfileId}
+                  disabled={!coverageDraft.tutorUnavailable || (!coverageDraft.coverageTutorProfileId && !coverageDraft.coverageCoachProfileId)}
                   className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
-                  placeholder="Required when coverage tutor is selected"
+                  placeholder="Required when coverage tutor or coach is selected"
                 />
               </div>
               <div>
@@ -1575,11 +2096,11 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
                   rows={3}
                   value={coverageDraft.coverageNotes || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageNotes: event.target.value } : prev)}
-                  disabled={!coverageDraft.tutorUnavailable || !coverageDraft.coverageTutorProfileId}
+                  disabled={!coverageDraft.tutorUnavailable || (!coverageDraft.coverageTutorProfileId && !coverageDraft.coverageCoachProfileId)}
                   className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
                 />
               </div>
-              {coverageDraft.tutorUnavailable && !coverageDraft.coverageTutorProfileId && (
+              {coverageDraft.tutorUnavailable && !coverageDraft.coverageTutorProfileId && !coverageDraft.coverageCoachProfileId && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">Coverage Required</div>
               )}
               {coverageError && <p className="text-xs font-bold text-red-600">{coverageError}</p>}
@@ -1588,6 +2109,208 @@ export default function ScheduleTable({ groups, tutorProfiles = [], catalogModul
               <button onClick={() => setCoverageEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
               <button disabled={coverageSaving} onClick={() => void saveCoverageDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
                 Save Coverage
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {ksbEditor && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[3px]" onClick={() => setKsbEditor(null)} />
+          <div className="relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div>
+                <p className="text-xs font-semibold text-white/60">{ksbEditor.module} - Session {ksbEditor.currentSessionNumber}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Edit KSB Mapping</h3>
+                <p className="mt-1 text-xs text-white/70">{formatDisplayDate(ksbEditor.sessionDate)}</p>
+              </div>
+              <button onClick={() => setKsbEditor(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="space-y-4 bg-gray-50 p-5">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">KSB Profile</label>
+                <select
+                  value={ksbProfileId}
+                  onChange={event => {
+                    setKsbProfileId(event.target.value);
+                    setKsbError('');
+                  }}
+                  className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-extrabold text-gray-700 focus:outline-none"
+                >
+                  <option value="">Select profile first</option>
+                  {activeKsbProfiles.map(profile => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name}{profile.programmeName ? ` - ${profile.programmeName}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {([
+                ['Knowledge', 'knowledgeCodes', 'K1, K3', 'K'],
+                ['Skills', 'skillCodes', 'S2, S5', 'S'],
+                ['Behaviours', 'behaviourCodes', 'B1, B4', 'B'],
+              ] as const).map(([label, field, placeholder, prefix]) => (
+                <KsbDraftInput
+                  key={field}
+                  label={label}
+                  placeholder={placeholder}
+                  prefix={prefix}
+                  value={ksbDraftText[field]}
+                  disabled={!selectedKsbProfile}
+                  descriptions={ksbCodeDescriptions}
+                  suggestions={ksbProfileCodes[prefix]}
+                  onChange={value => {
+                    setKsbDraftText(prev => ({ ...prev, [field]: value }));
+                    setKsbError('');
+                  }}
+                />
+              ))}
+              {ksbError && <p className="text-xs font-bold text-red-600">{ksbError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <button onClick={() => setKsbEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button disabled={ksbSaving} onClick={() => void saveKsbDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
+                {ksbSaving ? 'Saving...' : 'Save KSB'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {notesEditor && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[3px]" onClick={() => setNotesEditor(null)} />
+          <div className="relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div>
+                <p className="text-xs font-semibold text-white/60">{notesEditor.module} - Session {notesEditor.currentSessionNumber}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Edit Notes</h3>
+                <p className="mt-1 text-xs text-white/70">{formatDisplayDate(notesEditor.sessionDate)}</p>
+              </div>
+              <button onClick={() => setNotesEditor(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="space-y-4 bg-gray-50 p-5">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Notes</label>
+                <textarea
+                  rows={7}
+                  value={notesDraft}
+                  onChange={event => {
+                    setNotesDraft(event.target.value);
+                    setNotesError('');
+                  }}
+                  className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                />
+              </div>
+              {notesError && <p className="text-xs font-bold text-red-600">{notesError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <button onClick={() => setNotesEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button disabled={notesSaving} onClick={() => void saveNotesDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
+                {notesSaving ? 'Saving...' : 'Save Notes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {scheduleEditor && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[3px]" onClick={() => setScheduleEditor(null)} />
+          <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div>
+                <p className="text-xs font-semibold text-white/60">{scheduleEditor.module} - Session {scheduleEditor.currentSessionNumber}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Edit Schedule</h3>
+                <p className="mt-1 text-xs text-white/70">{formatDisplayDate(scheduleEditor.sessionDate)}</p>
+              </div>
+              <button onClick={() => setScheduleEditor(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="space-y-4 bg-gray-50 p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Start date</label>
+                  <input
+                    type="date"
+                    value={scheduleDraft.startDate}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, startDate: event.target.value, sessionWeekDay: inferDayFromIsoDate(event.target.value) }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">End date</label>
+                  <input
+                    type="date"
+                    value={scheduleDraft.endDate}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, endDate: event.target.value }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Start time</label>
+                  <input
+                    type="time"
+                    value={scheduleDraft.sessionStartTime}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, sessionStartTime: event.target.value }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">End time</label>
+                  <input
+                    type="time"
+                    value={scheduleDraft.sessionEndTime}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, sessionEndTime: event.target.value }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Weekday</label>
+                  <select
+                    value={scheduleDraft.sessionWeekDay}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, sessionWeekDay: event.target.value }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  >
+                    {DAY_COLS.map(day => <option key={day.key} value={day.key}>{day.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coach</label>
+                  <input
+                    type="text"
+                    value={scheduleDraft.coachName}
+                    onChange={event => setScheduleDraft(prev => ({ ...prev, coachName: event.target.value }))}
+                    className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Tutor</label>
+                <SelectField
+                  value={scheduleDraft.tutorProfileId}
+                  options={tutorOptions}
+                  placeholder="Select tutor"
+                  accentColor="#1B2A4A"
+                  label="Tutor Profiles"
+                  searchPlaceholder="Search tutors..."
+                  emptyTitle="No matching tutors"
+                  emptyText="Create or activate a tutor profile first."
+                  onChange={value => {
+                    const selected = tutorProfiles.find(profile => profile.id === value);
+                    setScheduleDraft(prev => ({ ...prev, tutorProfileId: value, tutorName: selected?.name || prev.tutorName }));
+                  }}
+                />
+              </div>
+              {scheduleError && <p className="text-xs font-bold text-red-600">{scheduleError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <button onClick={() => setScheduleEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button disabled={scheduleSaving} onClick={() => void saveScheduleDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
+                {scheduleSaving ? 'Saving...' : 'Save Schedule'}
               </button>
             </div>
           </div>

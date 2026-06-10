@@ -3,10 +3,10 @@ import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
-import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, ModuleBlock } from './types';
+import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, CoachProfile, ModuleBlock } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
-import CohortModal from './components/CohortModal';
+import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
 import AddModuleCatalogModal from './components/AddModuleCatalogModal';
@@ -14,8 +14,9 @@ import ManageModulesModal from './components/ManageModulesModal';
 import AddProgramModal from './components/AddProgramModal';
 import ManageProgramModal from './components/ManageProgramModal';
 import KsbProfilesManager from './components/KsbProfilesManager';
-import ScheduleTable from '@/pages/apprenticeships-timeline/components/ScheduleTable';
+import ScheduleTable, { type SessionScheduleUpdatePayload } from '@/pages/apprenticeships-timeline/components/ScheduleTable';
 import TutorProfiles from './components/TutorProfiles';
+import CoachProfiles from './components/CoachProfiles';
 import DateField from './components/DateField';
 import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
@@ -23,6 +24,7 @@ import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
 import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
+import { buildCoachProfilesFromGroups } from './coachProfiles';
 
 type ModalState =
   | { open: false }
@@ -56,6 +58,9 @@ interface TutorModuleGroupDraft {
 }
 
 interface TrainingPlanItem {
+  id?: string | number;
+  programmeId?: string;
+  cohortId?: string;
   cohortName: string;
   program: string;
   startingDateLabel: string;
@@ -73,8 +78,23 @@ interface TrainingPlanItem {
   sessionKsbMappings?: SessionKsbMapping[];
   sessionCoverage?: SessionCoverage[];
   ksbProfileId?: string;
+  programmeDisplayOrder?: number | null;
+  cohortDisplayOrder?: number | null;
   notes: string;
 }
+
+interface TrainingPlanMutationResult {
+  item?: TrainingPlanItem;
+  items?: TrainingPlanItem[];
+  version?: string;
+  rowVersion?: string;
+  count?: number;
+  updated_count?: number;
+  created_count?: number;
+  skipped_count?: number;
+}
+
+const TEMPORARY_SERVER_STATUSES = new Set([502, 503, 504]);
 
 interface MonthlySessionDetail {
   date: string;
@@ -171,7 +191,7 @@ function emptySessionKsbMapping(): SessionKsbMapping {
 
 function normalizeKsbCodes(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
   if (!Array.isArray(value)) return [];
-  const pattern = new RegExp(`^${prefix}\\d+$`, 'i');
+  const pattern = new RegExp(`^${prefix}\\d+(?:\\.\\d+)*$`, 'i');
   const seen = new Set<string>();
   return value.reduce<string[]>((codes, item) => {
     const code = String(item || '').trim().toUpperCase();
@@ -203,14 +223,17 @@ function normalizeSessionCoverage(value: unknown, count = 0, assignedTutorProfil
     const sessionNumber = Math.max(0, Number(record.sessionNumber) || 0);
     if (!sessionNumber || (count > 0 && sessionNumber > count)) return items;
     const coverageTutorProfileId = String(record.coverageTutorProfileId || '').trim();
-    const tutorUnavailable = Boolean(record.tutorUnavailable) || Boolean(coverageTutorProfileId);
+    const coverageCoachProfileId = String(record.coverageCoachProfileId || '').trim();
+    const tutorUnavailable = Boolean(record.tutorUnavailable) || Boolean(coverageTutorProfileId) || Boolean(coverageCoachProfileId);
     const coverageReason = String(record.coverageReason || '').trim();
-    const coverageStatus = coverageTutorProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none';
+    const coverageStatus = coverageTutorProfileId || coverageCoachProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none';
     if (coverageTutorProfileId && (!coverageReason || coverageTutorProfileId === assignedTutorProfileId)) return items;
+    if (coverageCoachProfileId && !coverageReason) return items;
     items.push({
       sessionNumber,
       assignedTutorProfileId: String(record.assignedTutorProfileId || assignedTutorProfileId || '').trim(),
       coverageTutorProfileId,
+      coverageCoachProfileId,
       coverageStatus,
       tutorUnavailable,
       tutorUnavailableReason: String(record.tutorUnavailableReason || '').trim(),
@@ -469,22 +492,30 @@ function buildGroupsFromTrainingRows(
   const allGroups = buildAllGroups(customPrograms);
   const templatesById = new Map(allGroups.map(group => [group.id, group]));
   const cohortIndex = new Map<string, CohortRow>();
+  const programmeOrderById = new Map<string, number>();
+  const cohortOrderByKey = new Map<string, number>();
 
   items.forEach((item, index) => {
     const parsedNotes = splitPersistedNotes(item.notes || '');
-    const groupId = parsedNotes.programId && templatesById.has(parsedNotes.programId)
-      ? parsedNotes.programId
+    const persistedProgrammeId = parsedNotes.programId || item.programmeId;
+    const groupId = persistedProgrammeId && templatesById.has(persistedProgrammeId)
+      ? persistedProgrammeId
       : inferGroupId(item.program || '', allGroups);
     const group = templatesById.get(groupId);
     if (!group) {
       return;
     }
+    if (typeof item.programmeDisplayOrder === 'number') {
+      const currentOrder = programmeOrderById.get(groupId);
+      programmeOrderById.set(groupId, currentOrder === undefined ? item.programmeDisplayOrder : Math.min(currentOrder, item.programmeDisplayOrder));
+    }
 
-    const cohortKey = parsedNotes.cohortId || `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
+    const persistedCohortId = parsedNotes.cohortId || item.cohortId;
+    const cohortKey = persistedCohortId || `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
     let cohort = cohortIndex.get(cohortKey);
     if (!cohort) {
       cohort = {
-        id: parsedNotes.cohortId || `db-row-${groupId}-${cohortIndex.size + 1}`,
+        id: persistedCohortId || `db-row-${groupId}-${cohortIndex.size + 1}`,
         label: item.cohortName || 'Cohort',
         dateLbl: item.startingDateLabel || '',
         endDateLbl: undefined,
@@ -496,6 +527,11 @@ function buildGroupsFromTrainingRows(
       };
       cohortIndex.set(cohortKey, cohort);
       group.rows.push(cohort);
+    }
+    if (typeof item.cohortDisplayOrder === 'number') {
+      const orderKey = `${groupId}::${cohort.id}`;
+      const currentOrder = cohortOrderByKey.get(orderKey);
+      cohortOrderByKey.set(orderKey, currentOrder === undefined ? item.cohortDisplayOrder : Math.min(currentOrder, item.cohortDisplayOrder));
     }
 
     const modKey = moduleKeyByLabel[(item.moduleName || '').toLowerCase()] || item.moduleName || 'Untitled Module';
@@ -514,6 +550,7 @@ function buildGroupsFromTrainingRows(
     }
     cohort.blks.push({
       id: parsedNotes.blockId || `db-blk-${index + 1}`,
+      trainingPlanId: item.id ? String(item.id) : undefined,
       groupId: parsedNotes.groupId,
       mod: modKey,
       groupName: item.groupName || parsedNotes.groupName,
@@ -533,13 +570,29 @@ function buildGroupsFromTrainingRows(
     });
   });
 
-  return allGroups.map(group => templatesById.get(group.id) || { ...group, rows: [] });
+  return allGroups
+    .map(group => templatesById.get(group.id) || { ...group, rows: [] })
+    .map(group => ({
+      ...group,
+      rows: [...group.rows].sort((left, right) => {
+        const leftOrder = cohortOrderByKey.get(`${group.id}::${left.id}`) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = cohortOrderByKey.get(`${group.id}::${right.id}`) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder;
+      }),
+    }))
+    .sort((left, right) => {
+      const leftOrder = programmeOrderById.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = programmeOrderById.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder;
+    });
 }
 
 function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfile[] = []): TrainingPlanItem[] {
-  return groups.flatMap(group =>
-    group.rows.flatMap(row =>
+  return groups.flatMap((group, groupIndex) =>
+    group.rows.flatMap((row, rowIndex) =>
       row.blks.map(block => ({
+        programmeId: group.id,
+        cohortId: row.id,
         cohortName: row.label,
         program: toProgrammeLabel(group),
         startingDateLabel: row.dateLbl,
@@ -557,10 +610,46 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
         sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
         sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
         ksbProfileId: row.ksbProfileId || '',
+        programmeDisplayOrder: groupIndex,
+        cohortDisplayOrder: rowIndex,
         notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id),
       })),
     ),
   );
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function sameStringArray(left: string[] | undefined, right: string[] | undefined): boolean {
+  return stableJson(left || []) === stableJson(right || []);
+}
+
+function hasOnlyCohortMetadataChanges(before: CohortRow, after: CohortRow): boolean {
+  if (before.blks.length !== after.blks.length) return false;
+  const beforeBlocksById = new Map(before.blks.map(block => [block.id, block]));
+  return after.blks.every(block => {
+    const previous = beforeBlocksById.get(block.id);
+    if (!previous) return false;
+    return (
+      previous.trainingPlanId === block.trainingPlanId &&
+      previous.groupId === block.groupId &&
+      previous.mod === block.mod &&
+      previous.color === block.color &&
+      previous.tutor === block.tutor &&
+      previous.tutorProfileId === block.tutorProfileId &&
+      previous.startDate === block.startDate &&
+      previous.endDate === block.endDate &&
+      previous.sessions === block.sessions &&
+      previous.sessionStartTime === block.sessionStartTime &&
+      previous.sessionEndTime === block.sessionEndTime &&
+      previous.notes === block.notes &&
+      sameStringArray(previous.days, block.days) &&
+      stableJson(normalizeSessionKsbMappings(previous.sessionKsbMappings, previous.sessions)) === stableJson(normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions)) &&
+      stableJson(normalizeSessionCoverage(previous.sessionCoverage, previous.sessions, previous.tutorProfileId)) === stableJson(normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId))
+    );
+  });
 }
 
 function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]): Array<Record<string, string | number>> {
@@ -1812,6 +1901,7 @@ export default function ApprenticeshipTimeline() {
   const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
   const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
   const [tutorProfiles, setTutorProfiles] = useState<TutorProfile[]>([]);
+  const [coachProfiles, setCoachProfiles] = useState<CoachProfile[]>([]);
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [trainingPlanVersion, setTrainingPlanVersion] = useState<string | undefined>(undefined);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
@@ -1843,15 +1933,68 @@ export default function ApprenticeshipTimeline() {
   const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<ModuleMonthlySummary | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
-  const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors'>('gantt');
+  const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors' | 'coaches'>('gantt');
   const [addDropdownOpen, setAddDropdownOpen] = useState(false);
   const showHiddenCohortActions = addDropdownOpen && !addDropdownOpen;
   const addDropdownRef = useRef<HTMLDivElement>(null);
   const [trainingPlanSaveState, setTrainingPlanSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [trainingPlanSaveMessage, setTrainingPlanSaveMessage] = useState('Waiting for changes');
+  const [trainingPlanServerUnavailable, setTrainingPlanServerUnavailable] = useState(false);
+  const [trainingPlanServerRecovered, setTrainingPlanServerRecovered] = useState(false);
   const [hasLoadedTrainingPlan, setHasLoadedTrainingPlan] = useState(false);
   const [hasLoadedProgramConfigs, setHasLoadedProgramConfigs] = useState(false);
   const skipPersistRef = useRef(true);
+
+  const markTrainingPlanServerUnavailable = useCallback((message = 'Server temporarily unavailable. Training Plan data has not been deleted.'): void => {
+    setTrainingPlanServerUnavailable(true);
+    setTrainingPlanServerRecovered(false);
+    setTrainingPlanSaveState('error');
+    setTrainingPlanSaveMessage(message);
+  }, []);
+
+  const checkTrainingPlanHealth = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/health/', { cache: 'no-store' });
+      const healthy = response.ok;
+      if (healthy) {
+        setTrainingPlanServerUnavailable(false);
+        setTrainingPlanServerRecovered(true);
+        setTrainingPlanSaveMessage('Server recovered. Reload latest data before saving.');
+      }
+      return healthy;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const isTemporaryTrainingPlanOutage = (error: unknown): boolean => {
+    if (error instanceof TypeError) return true;
+    const status = error && typeof error === 'object' && 'status' in error ? Number((error as { status?: number }).status) : 0;
+    return TEMPORARY_SERVER_STATUSES.has(status);
+  };
+
+  const handleTrainingPlanRequestFailure = useCallback(async (error: unknown, title = 'Training Plan Server Unavailable'): Promise<void> => {
+    if (isTemporaryTrainingPlanOutage(error)) {
+      markTrainingPlanServerUnavailable();
+      await kbcSwal.fire({
+        title,
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again. Reload latest data after recovery.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return;
+    }
+    throw error;
+  }, [checkTrainingPlanHealth, markTrainingPlanServerUnavailable]);
+
+  useEffect(() => {
+    if (!trainingPlanServerUnavailable) return;
+    const timer = window.setInterval(() => {
+      void checkTrainingPlanHealth();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [checkTrainingPlanHealth, trainingPlanServerUnavailable]);
 
   const reloadTrainingPlan = useCallback(async (): Promise<boolean> => {
     try {
@@ -1913,6 +2056,25 @@ export default function ApprenticeshipTimeline() {
     }
   }, []);
 
+  const reloadCoachProfiles = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/coach-profiles/?includeInactive=1');
+      if (!response.ok) {
+        return false;
+      }
+
+      const items = (await response.json()) as CoachProfile[];
+      if (!Array.isArray(items)) {
+        return false;
+      }
+
+      setCoachProfiles(items);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const reloadTrainingPlanSupportData = useCallback(async (): Promise<void> => {
     const [
       moduleDefinitionsResult,
@@ -1921,6 +2083,7 @@ export default function ApprenticeshipTimeline() {
       catalogModulesResult,
       ksbProfilesResult,
       tutorProfilesResult,
+      coachProfilesResult,
     ] = await Promise.allSettled([
       fetch('/api/training-plan-modules/'),
       fetch('/api/training-plan-program-configs/'),
@@ -1928,6 +2091,7 @@ export default function ApprenticeshipTimeline() {
       fetch('/api/modules/'),
       fetch('/api/ksb-profiles/?includeInactive=1'),
       reloadTutorProfiles(),
+      reloadCoachProfiles(),
     ]);
 
     if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
@@ -1972,7 +2136,11 @@ export default function ApprenticeshipTimeline() {
     if (tutorProfilesResult.status === 'rejected') {
       // Keep current tutor profiles if the reload fails.
     }
-  }, [reloadTrainingPlanHolidays, reloadTutorProfiles]);
+
+    if (coachProfilesResult.status === 'rejected') {
+      // Keep current coach profiles if the reload fails.
+    }
+  }, [reloadCoachProfiles, reloadTrainingPlanHolidays, reloadTutorProfiles]);
 
   useEffect(() => {
     void reloadTrainingPlan();
@@ -1997,9 +2165,54 @@ export default function ApprenticeshipTimeline() {
 
 
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
+  const canEditTrainingPlan = canManageCohorts && !trainingPlanServerUnavailable;
 
-  const persistTrainingPlan = async (nextGroups: ProgrammeGroup[], silent = false) => {
+  const migratedTrainingPlanFullSaveSources = new Set([
+    'cohort_add',
+    'cohort_edit',
+    'cohort_delete',
+    'module_add_for_tutor',
+    'module_edit_linked_timeline_rows',
+    'module_delete_linked_timeline_rows',
+    'programme_edit_linked_timeline_rows',
+    'reorder_programmes',
+    'reorder_cohorts',
+  ]);
+  const legacyTrainingPlanFullSaveFlagValue = 'internal-admin-debug';
+
+  // Protected legacy/admin/debug escape hatch only. Normal Training Plan UI flows must use scoped endpoints.
+  const persistTrainingPlan = async (
+    nextGroups: ProgrammeGroup[],
+    silent = false,
+    source = 'unknown_legacy_save',
+    options: { allowLegacyReplaceAll?: boolean } = {},
+  ) => {
+    if (migratedTrainingPlanFullSaveSources.has(source) || !options.allowLegacyReplaceAll) {
+      console.error('LEGACY_TRAINING_PLAN_FULL_SAVE_BLOCKED', {
+        source,
+        migratedSource: migratedTrainingPlanFullSaveSources.has(source),
+        allowLegacyReplaceAll: options.allowLegacyReplaceAll === true,
+        reminder: 'Normal Training Plan UI flows must not call POST /api/training-plan/.',
+      });
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save blocked. Reload the Training Plan and try the scoped action again.');
+      return false;
+    }
+
     const items = flattenGroupsForApi(nextGroups, tutorProfiles);
+
+    if (trainingPlanServerUnavailable) {
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Server temporarily unavailable. Training Plan data has not been deleted.');
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again. Use Reload latest data after recovery.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
 
     if (!hasLoadedTrainingPlan || !trainingPlanVersion) {
       setTrainingPlanSaveState('error');
@@ -2025,7 +2238,16 @@ export default function ApprenticeshipTimeline() {
       return false;
     }
 
-    const payload = { items, version: trainingPlanVersion };
+    const payload = { items, version: trainingPlanVersion, confirmLegacyReplaceAll: true };
+    console.warn('LEGACY_TRAINING_PLAN_FULL_SAVE_USED', {
+      callerLabel: 'LEGACY_TRAINING_PLAN_FULL_SAVE_CALLER',
+      userActionLabel: 'LEGACY_TRAINING_PLAN_FULL_SAVE_USER_ACTION',
+      source,
+      userAction: source,
+      itemCount: items.length,
+      reason: source,
+      reminder: 'POST /api/training-plan/ deletes and recreates TrainingPlan rows after safeguards pass.',
+    });
 
     setTrainingPlanSaveState('saving');
     setTrainingPlanSaveMessage('Saving cohorts...');
@@ -2045,7 +2267,11 @@ export default function ApprenticeshipTimeline() {
     try {
       const response = await fetch('/api/training-plan/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-KBC-Training-Plan-Save-Source': source,
+          'X-KBC-Legacy-Training-Plan-Full-Save': legacyTrainingPlanFullSaveFlagValue,
+        },
         body: JSON.stringify(payload),
       });
 
@@ -2077,6 +2303,9 @@ export default function ApprenticeshipTimeline() {
           });
           return false;
         }
+        if (TEMPORARY_SERVER_STATUSES.has(response.status)) {
+          throw { status: response.status };
+        }
         const errorText = (await response.text()).trim();
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
@@ -2102,6 +2331,12 @@ export default function ApprenticeshipTimeline() {
       }
       return true;
     } catch (error) {
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Saved');
+        return false;
+      } catch {
+        // Continue with the normal non-outage save error below.
+      }
       const message = error instanceof Error ? error.message : 'Unknown save error';
       setTrainingPlanSaveState('error');
       setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
@@ -2305,7 +2540,7 @@ export default function ApprenticeshipTimeline() {
       });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
       const saved = await response.json() as KsbProfile;
-      setKsbProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+      setKsbProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved]);
       return saved;
     } catch (error) {
       await kbcSwal.fire({ title: 'KSB Profile Not Saved', html: error instanceof Error ? error.message : 'Unknown save error', icon: 'error', confirmButtonText: 'OK' });
@@ -2380,6 +2615,73 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const createCoachProfile = async (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }): Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }> => {
+    const response = await fetch('/api/coach-profiles/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    if (response.status === 409) {
+      return await response.json() as { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number };
+    }
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const saved = await response.json() as CoachProfile;
+    setCoachProfiles(prev => [...prev.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+    void reloadCoachProfiles();
+    return saved;
+  };
+
+  const updateCoachProfile = async (id: string, profile: Partial<CoachProfile> & { confirmSave?: boolean }): Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }> => {
+    const response = await fetch(`/api/coach-profiles/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    if (response.status === 409) {
+      return await response.json() as { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number };
+    }
+    if (!response.ok) {
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const saved = await response.json() as CoachProfile;
+    setCoachProfiles(prev => prev.map(item => item.id === saved.id ? saved : item).sort((a, b) => a.name.localeCompare(b.name)));
+    return saved;
+  };
+
+  const deleteCoachProfile = async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/coach-profiles/${id}/?force=1`, { method: 'DELETE' });
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
+      const result = await response.json() as { deleted?: boolean; unlinkedRows?: number };
+      setCoachProfiles(prev => prev.filter(item => item.id !== id));
+      await reloadTrainingPlan();
+      await kbcSwal.fire({
+        title: 'Coach Deleted',
+        html: result.unlinkedRows
+          ? `The coach profile was deleted and unlinked from ${result.unlinkedRows} Training Plan coverage record${result.unlinkedRows === 1 ? '' : 's'}.`
+          : 'The coach profile was deleted.',
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Coach Not Deleted',
+        html: error instanceof Error ? error.message : 'Unknown delete error',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
   const updateKsbProfile = async (id: string, profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
     try {
       const response = await fetch(`/api/ksb-profiles/${id}/`, {
@@ -2389,7 +2691,7 @@ export default function ApprenticeshipTimeline() {
       });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
       const saved = await response.json() as KsbProfile;
-      setKsbProfiles(prev => prev.map(item => item.id === saved.id ? saved : item).sort((a, b) => a.name.localeCompare(b.name)));
+      setKsbProfiles(prev => prev.map(item => item.id === saved.id ? saved : item));
       return saved;
     } catch (error) {
       await kbcSwal.fire({ title: 'KSB Profile Not Updated', html: error instanceof Error ? error.message : 'Unknown update error', icon: 'error', confirmButtonText: 'OK' });
@@ -2436,20 +2738,477 @@ export default function ApprenticeshipTimeline() {
       savedRow = next[groupIdx].rows[next[groupIdx].rows.length - 1];
     }
 
-    const saved = await persistTrainingPlan(next);
-    if (!saved) {
+    if (modal.open && modal.mode === 'edit') {
+      const previousGroupIdx = prevGroupIdx ?? groupIdx;
+      const previousGroup = groups[previousGroupIdx];
+      const previousRow = modal.row;
+      const blockTrainingPlanIds = savedRow.blks.map(block => block.trainingPlanId).filter(Boolean);
+      if (!previousGroup?.id || !savedRow.id || savedRow.id.startsWith('db-row-') || savedRow.id.startsWith('row-') || blockTrainingPlanIds.length !== savedRow.blks.length) {
+        console.warn('COHORT_EDIT_PARTIAL_BLOCKED_MISSING_ID', {
+          reason: 'missing stable programme, cohort, or Training Plan row id',
+          programmeId: previousGroup?.id,
+          cohortId: savedRow.id,
+          rowCount: savedRow.blks.length,
+          trainingPlanIdCount: blockTrainingPlanIds.length,
+          reminder: 'Cohort edit partial save was blocked. No legacy POST /api/training-plan/ fallback was used.',
+        });
+        setTrainingPlanSaveState('error');
+        setTrainingPlanSaveMessage('Cohort was not saved because it has no stable Training Plan ID.');
+        await kbcSwal.fire({
+          title: 'Cohort Not Saved',
+          html: 'This cohort could not be saved safely because it does not have stable Training Plan IDs. Reload latest data before trying again.',
+          icon: 'warning',
+          confirmButtonText: 'OK',
+        });
+        return false;
+      }
+      if (groupIdx !== previousGroupIdx || !hasOnlyCohortMetadataChanges(previousRow, savedRow)) {
+        setTrainingPlanSaveState('error');
+        setTrainingPlanSaveMessage('Cohort was not saved because this edit requires a dedicated module or programme save.');
+        await kbcSwal.fire({
+          title: 'Cohort Not Saved',
+          html: 'This edit includes module, session, or programme changes that cannot be saved by the cohort metadata save. Save the specific module/session change first, then try again.',
+          icon: 'warning',
+          confirmButtonText: 'OK',
+        });
+        return false;
+      }
+
+      setTrainingPlanSaveState('saving');
+      setTrainingPlanSaveMessage('Saving cohort...');
+      void kbcSwal.fire({
+        title: 'Saving cohort...',
+        html: 'Please wait while the Training Plan is being updated.',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+        didOpen: () => {
+          kbcSwal.showLoading();
+        },
+      });
+      try {
+        const result = await updateTrainingPlanCohort(savedRow.id, {
+          programmeId: previousGroup.id,
+          cohortName: savedRow.label,
+          startingDateLabel: savedRow.dateLbl,
+          cohortColor: savedRow.color || '',
+          cohortEndDate: savedRow.endDateLbl || '',
+          holidayIds: savedRow.holidayIds || [],
+          ksbProfileId: savedRow.ksbProfileId || '',
+          blocks: savedRow.blks.map(block => ({
+            trainingPlanId: block.trainingPlanId,
+            blockId: block.id,
+            groupId: block.groupId || '',
+            groupName: block.groupName || '',
+            coachName: block.coachName || '',
+          })),
+        });
+        if (result.version) setTrainingPlanVersion(result.version);
+        setTrainingPlanItems(Array.isArray(result.items) ? result.items : flattenGroupsForApi(next, tutorProfiles));
+        setGroups(next);
+        setModal({ open: false });
+        setTrainingPlanSaveState('saved');
+        setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+        await kbcSuccessSwal.fire({
+          icon: 'success',
+          title: 'Cohort saved successfully',
+          confirmButtonText: 'OK',
+        });
+        return true;
+      } catch (error) {
+        if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) {
+          return false;
+        }
+        try {
+          await handleTrainingPlanRequestFailure(error, 'Cohort Not Saved');
+          return false;
+        } catch {
+          // Continue with normal validation/server error handling.
+        }
+        const message = error instanceof Error ? error.message : 'Unknown save error';
+        setTrainingPlanSaveState('error');
+        setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
+        await kbcSwal.fire({
+          title: 'Cohort Not Saved',
+          html: `The latest cohort change was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+          icon: 'error',
+          confirmButtonText: 'OK',
+        });
+        return false;
+      }
+    }
+
+    const nextItems = flattenGroupsForApi(next, tutorProfiles);
+    const cohortRows = nextItems.filter(item => item.programmeId === next[groupIdx]?.id && item.cohortId === savedRow.id);
+    const hasUnsafeCohortRows = (
+      !trainingPlanVersion ||
+      !next[groupIdx]?.id ||
+      !savedRow.id ||
+      !cohortRows.length ||
+      cohortRows.length !== savedRow.blks.length ||
+      cohortRows.some(item => {
+        const notes = item.notes || '';
+        return (
+          Boolean(item.id) ||
+          !item.programmeId ||
+          !item.cohortId ||
+          !notes.includes(`${PROGRAM_ID_MARKER_PREFIX}${next[groupIdx]?.id}`) ||
+          !notes.includes(`${COHORT_ID_MARKER_PREFIX}${savedRow.id}`) ||
+          !notes.includes(GROUP_ID_MARKER_PREFIX) ||
+          !notes.includes(BLOCK_ID_MARKER_PREFIX)
+        );
+      })
+    );
+    if (hasUnsafeCohortRows) {
+      console.warn('COHORT_ADD_SCOPED_CREATE_BLOCKED', {
+        reason: 'missing stable identifiers or generated cohort rows',
+        programmeId: next[groupIdx]?.id,
+        cohortId: savedRow.id,
+        blockCount: savedRow.blks.length,
+        generatedRowCount: cohortRows.length,
+        hasTrainingPlanVersion: Boolean(trainingPlanVersion),
+      });
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Cohort was not saved because it is missing stable Training Plan identifiers.');
+      await kbcSwal.fire({
+        title: 'Cohort Not Saved',
+        html: 'This cohort could not be saved safely because the latest Training Plan identifiers have not loaded. Reload latest data before trying again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
       return false;
     }
 
-    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
-    setGroups(next);
-    setModal({ open: false });
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving cohort...');
+    void kbcSwal.fire({
+      title: 'Saving cohort...',
+      html: 'Please wait while the Training Plan is being updated.',
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
+    try {
+      const result = await createTrainingPlanCohort(next[groupIdx].id, savedRow.id, cohortRows);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(nextItems);
+        setGroups(next);
+      }
+      setModal({ open: false });
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      await kbcSuccessSwal.fire({
+        icon: 'success',
+        title: 'Cohort saved successfully',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save failed. Refresh would lose the latest cohort changes.');
+      await kbcSwal.fire({
+        title: 'Cohort Not Saved',
+        html: `The latest cohort change was not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
 
-    return true;
+  const handleTrainingPlanPartialResponse = async (response: Response): Promise<TrainingPlanMutationResult> => {
+    if (response.status === 409) {
+      let detail = 'The Training Plan was updated by someone else. Please reload and review before saving.';
+      try {
+        const conflict = await response.json() as { detail?: string; currentVersion?: string; items?: TrainingPlanItem[] };
+        if (conflict.detail) detail = conflict.detail;
+        if (conflict.currentVersion) setTrainingPlanVersion(conflict.currentVersion);
+        if (Array.isArray(conflict.items)) setTrainingPlanItems(conflict.items);
+      } catch {
+        // Use the default conflict message.
+      }
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save blocked because the Training Plan changed elsewhere.');
+      await kbcSwal.fire({
+        title: 'Training Plan Changed',
+        html: `${detail}<br /><br />Please reload and review before saving.`,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      throw new Error('Training Plan version conflict.');
+    }
+    if (response.status === 404) {
+      let detail = 'This Training Plan session no longer exists. Reload latest data before saving again.';
+      try {
+        const missing = await response.json() as { detail?: string };
+        if (missing.detail) detail = missing.detail;
+      } catch {
+        // Use the default not-found message.
+      }
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Save blocked because the session no longer exists.');
+      await kbcSwal.fire({
+        title: 'Training Plan Session Missing',
+        html: `${detail}<br /><br />Please reload latest data.`,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      throw new Error('Training Plan session not found.');
+    }
+    if (TEMPORARY_SERVER_STATUSES.has(response.status)) {
+      throw { status: response.status };
+    }
+    if (!response.ok) {
+      let errorText = '';
+      try {
+        const errorPayload = await response.clone().json() as { detail?: string };
+        errorText = errorPayload.detail || '';
+      } catch {
+        errorText = (await response.text()).trim();
+      }
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const result = await response.json() as TrainingPlanMutationResult;
+    if (!result.version) {
+      throw new Error('The server did not return a new Training Plan version.');
+    }
+    console.info('PARTIAL_TRAINING_PLAN_SAVE_CONFIRMED', {
+      status: response.status,
+      itemId: result.item?.id,
+      itemCount: result.count,
+      hasVersion: Boolean(result.version),
+    });
+    return result;
+  };
+
+  const updateTrainingPlanSession = async (id: string, payload: Record<string, unknown>): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/sessions/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanSessionCoverage = async (id: string, coverage: SessionCoverage): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/sessions/${id}/coverage/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...coverage, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanSessionKSB = async (id: string, sessionNumber: number, mapping: SessionKsbMapping): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/sessions/${id}/ksb/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...mapping, sessionNumber, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanModule = async (id: string, payload: Record<string, unknown>): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/modules/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanLinkedModuleRows = async (
+    moduleCatalogueId: number,
+    previousModuleName: string,
+    moduleName: string,
+    linkedRows: Array<{ trainingPlanId: string; programmeId: string; cohortId: string; groupId?: string; blockId: string }>,
+  ): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/modules/linked-rows/', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'module_edit_linked_timeline_rows',
+      },
+      body: JSON.stringify({
+        moduleCatalogueId: String(moduleCatalogueId),
+        previousModuleName,
+        moduleName,
+        linkedRows,
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanLinkedProgrammeRows = async (
+    programmeId: string,
+    program: string,
+    trainingPlanIds: string[],
+  ): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/programmes/${encodeURIComponent(programmeId)}/linked-rows/`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'programme_edit_linked_timeline_rows',
+      },
+      body: JSON.stringify({
+        programmeId,
+        program,
+        trainingPlanIds,
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const addTrainingPlanModuleForTutor = async (
+    identifiers: {
+      programmeId: string;
+      cohortId: string;
+      groupId: string;
+      blockId: string;
+      moduleCatalogueId?: string;
+      moduleStableId?: string;
+      tutorProfileId: string;
+    },
+    row: TrainingPlanItem,
+  ): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/modules/add-for-tutor/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'module_add_for_tutor',
+      },
+      body: JSON.stringify({
+        ...identifiers,
+        row,
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanProgrammeOrder = async (programmeIds: string[]): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/reorder/programmes/', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'reorder_programmes',
+      },
+      body: JSON.stringify({ programmeIds, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanCohortOrder = async (programmeId: string, cohortIds: string[]): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/reorder/cohorts/', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'reorder_cohorts',
+      },
+      body: JSON.stringify({ programmeId, cohortIds, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const archiveTrainingPlanCohort = async (programmeId: string, cohortId: string, trainingPlanIds: string[]): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/cohorts/${encodeURIComponent(cohortId)}/archive/`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'cohort_delete',
+      },
+      body: JSON.stringify({
+        programmeId,
+        trainingPlanIds,
+        archiveReason: 'Cohort archived from Training Plan UI',
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const archiveTrainingPlanModule = async (moduleName: string, trainingPlanIds: string[]): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/modules/archive/', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'module_delete_linked_timeline_rows',
+      },
+      body: JSON.stringify({
+        moduleName,
+        trainingPlanIds,
+        archiveReason: 'Linked module archived from Training Plan UI',
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const updateTrainingPlanCohort = async (id: string, payload: Record<string, unknown>): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/cohorts/${encodeURIComponent(id)}/`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'cohort_edit',
+      },
+      body: JSON.stringify({ ...payload, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
+  const createTrainingPlanCohort = async (
+    programmeId: string,
+    cohortId: string,
+    rows: TrainingPlanItem[],
+  ): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch('/api/training-plan/cohorts/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'cohort_add',
+      },
+      body: JSON.stringify({
+        programmeId,
+        cohortId,
+        rows,
+        version: trainingPlanVersion,
+      }),
+    });
+    return handleTrainingPlanPartialResponse(response);
   };
 
   const updateSessionCoverage = async (groupIdx: number, rowIdx: number, blockId: string, coverage: SessionCoverage): Promise<boolean> => {
     if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+    const targetBlock = groups[groupIdx]?.rows[rowIdx]?.blks.find(block => block.id === blockId);
     const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
       ...group,
       rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
@@ -2459,16 +3218,356 @@ export default function ApprenticeshipTimeline() {
           const nextCoverage = [
             ...(block.sessionCoverage || []).filter(item => item.sessionNumber !== coverage.sessionNumber),
             coverage,
-          ].filter(item => item.coverageStatus !== 'none' || item.tutorUnavailable || item.coverageTutorProfileId);
+          ].filter(item => item.coverageStatus !== 'none' || item.tutorUnavailable || item.coverageTutorProfileId || item.coverageCoachProfileId);
           return { ...block, sessionCoverage: nextCoverage };
         }),
       }),
     });
-    const saved = await persistTrainingPlan(next);
-    if (!saved) return false;
-    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
-    setGroups(next);
-    return true;
+
+    if (!targetBlock?.trainingPlanId) {
+      console.warn('TUTOR_COVERAGE_PARTIAL_SAVE_BLOCKED_MISSING_TRAINING_PLAN_ID', {
+        reason: 'missing trainingPlanId',
+        blockId,
+        source: 'tutor_coverage_missing_trainingPlanId',
+        reminder: 'Tutor coverage partial save was blocked. No legacy POST /api/training-plan/ fallback was used.',
+      });
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Tutor Coverage was not saved because this session has no stable Training Plan ID.');
+      await kbcSwal.fire({
+        title: 'Tutor Coverage Not Saved',
+        html: 'Partial save is unavailable for this session because it does not have a stable Training Plan ID. Reload latest data before trying again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
+    if (!trainingPlanVersion) {
+      console.warn('TUTOR_COVERAGE_PARTIAL_SAVE_BLOCKED_MISSING_TRAINING_PLAN_VERSION', {
+        reason: 'missing trainingPlanVersion',
+        blockId,
+        trainingPlanId: targetBlock.trainingPlanId,
+        reminder: 'Tutor coverage partial save was blocked. No legacy POST /api/training-plan/ fallback was used.',
+      });
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Reload the Training Plan before saving Tutor Coverage.');
+      await kbcSwal.fire({
+        title: 'Tutor Coverage Not Saved',
+        html: 'Partial save is unavailable until the latest Training Plan version is loaded. Reload latest data before trying again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving Tutor Coverage...');
+    try {
+      const result = await updateTrainingPlanSessionCoverage(targetBlock.trainingPlanId, coverage);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) setTrainingPlanItems(result.items);
+      setGroups(next);
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Tutor Coverage saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Tutor Coverage Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Tutor Coverage was not saved.');
+      await kbcSwal.fire({
+        title: 'Tutor Coverage Not Saved',
+        html: message,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
+  const updateSessionSchedule = async (groupIdx: number, rowIdx: number, blockId: string, payload: SessionScheduleUpdatePayload): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+
+    const targetBlock = groups[groupIdx]?.rows[rowIdx]?.blks.find(block => block.id === blockId);
+    if (!targetBlock?.trainingPlanId) {
+      console.warn('SESSION_SCHEDULE_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID', { reason: 'missing trainingPlanId', blockId });
+      await kbcSwal.fire({
+        title: 'Session Schedule Partial Save Unavailable',
+        html: 'Partial save is unavailable for this session. Use the full editor until this row has a stable Training Plan ID.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving session schedule...');
+    try {
+      const result = await updateTrainingPlanSession(targetBlock.trainingPlanId, { ...payload });
+      const updatedItem = result.item;
+      const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+        ...group,
+        rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
+          ...row,
+          blks: row.blks.map(block => {
+            if (block.id !== blockId) return block;
+            return {
+              ...block,
+              startDate: updatedItem?.startDate || payload.startDate || block.startDate,
+              endDate: updatedItem?.endDate || payload.endDate || block.endDate,
+              sessionStartTime: updatedItem?.sessionStartTime || payload.sessionStartTime || block.sessionStartTime,
+              sessionEndTime: updatedItem?.sessionEndTime || payload.sessionEndTime || block.sessionEndTime,
+              days: parseDays(updatedItem?.sessionWeekDay || payload.sessionWeekDay || (block.days || []).join(', ')),
+              tutor: updatedItem?.tutorName || payload.tutorName || block.tutor,
+              tutorProfileId: updatedItem?.tutorProfileId || payload.tutorProfileId || block.tutorProfileId,
+              coachName: updatedItem?.coachName || payload.coachName || block.coachName,
+            };
+          }),
+        }),
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) setTrainingPlanItems(result.items);
+      setGroups(next);
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Session schedule saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Session Schedule Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Session schedule was not saved.');
+      await kbcSwal.fire({ title: 'Session Schedule Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
+      return false;
+    }
+  };
+
+  const updateSessionKsb = async (groupIdx: number, rowIdx: number, blockId: string, sessionNumber: number, mapping: SessionKsbMapping): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+
+    const targetBlock = groups[groupIdx]?.rows[rowIdx]?.blks.find(block => block.id === blockId);
+    if (!targetBlock?.trainingPlanId) {
+      console.warn('KSB_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID', { reason: 'missing trainingPlanId', blockId });
+      return false;
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving KSB Mapping...');
+    try {
+      const result = await updateTrainingPlanSessionKSB(targetBlock.trainingPlanId, sessionNumber, mapping);
+      const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+        ...group,
+        rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
+          ...row,
+          blks: row.blks.map(block => {
+            if (block.id !== blockId) return block;
+            const sessionCount = Math.max(1, block.sessions || 1);
+            const nextMappings = Array.from({ length: sessionCount }, (_, index) => block.sessionKsbMappings?.[index] || { knowledgeCodes: [], skillCodes: [], behaviourCodes: [] });
+            nextMappings[sessionNumber - 1] = mapping;
+            return { ...block, sessionKsbMappings: nextMappings };
+          }),
+        }),
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) setTrainingPlanItems(result.items);
+      setGroups(next);
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`KSB Mapping saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'KSB Mapping Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('KSB Mapping was not saved.');
+      await kbcSwal.fire({ title: 'KSB Mapping Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
+      return false;
+    }
+  };
+
+  const updateSessionNotes = async (groupIdx: number, rowIdx: number, blockId: string, notes: string): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+
+    const targetBlock = groups[groupIdx]?.rows[rowIdx]?.blks.find(block => block.id === blockId);
+    if (!targetBlock?.trainingPlanId) {
+      console.warn('NOTES_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID', { reason: 'missing trainingPlanId', blockId });
+      return false;
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving session notes...');
+    try {
+      const result = await updateTrainingPlanSession(targetBlock.trainingPlanId, { notes });
+      const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+        ...group,
+        rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
+          ...row,
+          blks: row.blks.map(block => block.id === blockId ? { ...block, notes } : block),
+        }),
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) setTrainingPlanItems(result.items);
+      setGroups(next);
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Session notes saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Session Notes Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Session notes were not saved.');
+      await kbcSwal.fire({ title: 'Session Notes Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
+      return false;
+    }
+  };
+
+  const updateModulePartial = async (groupIdx: number, rowIdx: number, blockId: string, payload: ModulePartialUpdatePayload): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+
+    const targetRow = groups[groupIdx]?.rows[rowIdx];
+    const targetBlock = targetRow?.blks.find(block => block.id === blockId);
+    if (!targetBlock?.trainingPlanId) {
+      console.warn(payload.color ? 'MODULE_COLOR_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID' : 'MODULE_PARTIAL_SAVE_UNAVAILABLE_MISSING_TRAINING_PLAN_ID', { reason: 'missing trainingPlanId', blockId });
+      await kbcSwal.fire({
+        title: 'Module Partial Save Unavailable',
+        html: 'Partial save is unavailable for this module. Use the full cohort editor until this row has a stable Training Plan ID.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+
+    const requestPayload: Record<string, unknown> = { ...payload };
+    if ('notes' in payload) {
+      requestPayload.notes = joinPersistedNotes(
+        payload.notes || '',
+        targetRow?.holidayIds || [],
+        targetRow?.color,
+        typeof payload.color === 'string' ? payload.color : targetBlock.color,
+        targetRow?.endDateLbl,
+        targetBlock.groupName,
+        targetBlock.coachName,
+        groups[groupIdx]?.id,
+        targetRow?.id,
+        targetBlock.groupId,
+        targetBlock.id,
+      );
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving module...');
+    try {
+      const result = await updateTrainingPlanModule(targetBlock.trainingPlanId, requestPayload);
+      const updatedItem = result.item;
+      const next = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+        ...group,
+        rows: group.rows.map((row, ri) => ri !== rowIdx ? row : {
+          ...row,
+          blks: row.blks.map(block => {
+            if (block.id !== blockId) return block;
+            return {
+              ...block,
+              mod: updatedItem?.moduleName || payload.moduleName || block.mod,
+              tutor: updatedItem?.tutorName || payload.tutorName || block.tutor,
+              tutorProfileId: updatedItem?.tutorProfileId || payload.tutorProfileId || block.tutorProfileId,
+              notes: 'notes' in payload ? payload.notes : block.notes,
+              color: typeof payload.color === 'string' ? payload.color : block.color,
+            };
+          }),
+        }),
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) setTrainingPlanItems(result.items);
+      setGroups(next);
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Module saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) {
+        return false;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Module Not Saved');
+        return false;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Module was not saved.');
+      await kbcSwal.fire({ title: 'Module Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
+      return false;
+    }
   };
 
   const handleDeleteRow = async (groupIdx: number, rowIdx: number) => {
@@ -2481,27 +3580,110 @@ export default function ApprenticeshipTimeline() {
       throw new Error('The selected cohort could not be found.');
     }
 
-    const next = groups.map((g, gi) =>
-      gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
-    );
-
-    const saved = await persistTrainingPlan(next, true);
-    if (!saved) {
-      throw new Error('The training plan save was not completed.');
+    const targetGroup = groups[groupIdx];
+    const trainingPlanIds = target.blks.map(block => block.trainingPlanId).filter((id): id is string => Boolean(id));
+    if (!targetGroup?.id || !target.id || trainingPlanIds.length !== target.blks.length) {
+      console.warn('COHORT_ARCHIVE_BLOCKED_MISSING_ID', {
+        reason: 'missing stable cohort or Training Plan row ids',
+        programmeId: targetGroup?.id,
+        cohortId: target.id,
+        trainingPlanIds,
+      });
+      throw new Error('This cohort cannot be archived safely until all Training Plan row IDs have loaded. Reload latest data and try again.');
     }
 
-    setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
-    setGroups(next);
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Archiving cohort...');
+    try {
+      const result = await archiveTrainingPlanCohort(targetGroup.id, target.id, trainingPlanIds);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        const next = groups.map((g, gi) =>
+          gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
+        );
+        setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
+        setGroups(next);
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Cohort archived at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Archived');
+        return;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown archive error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Cohort was not archived.');
+      throw new Error(message);
+    }
   };
 
   const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => {
     if (!canManageCohorts) return;
+    if (fromGroupIdx !== toGroupIdx) {
+      console.warn('COHORT_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
+        reason: 'cross-programme cohort move is not a pure reorder',
+        fromGroupIdx,
+        toGroupIdx,
+      });
+      await kbcSwal.fire({
+        title: 'Cohort Not Reordered',
+        html: 'Moving a cohort between programmes changes programme membership, so it is not included in the safe reorder save yet.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
     const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
     const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < toRowIdx ? toRowIdx - 1 : toRowIdx;
     next[toGroupIdx].rows.splice(insertAt, 0, moved);
+    const targetGroup = next[toGroupIdx];
+    const cohortIds = targetGroup.rows.map(row => row.id).filter(Boolean);
+    if (!targetGroup.id || cohortIds.length !== targetGroup.rows.length || cohortIds.some(id => id.startsWith('db-row-'))) {
+      console.warn('COHORT_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
+        reason: 'missing stable cohort ids',
+        programmeId: targetGroup.id,
+        cohortIds,
+      });
+      await kbcSwal.fire({
+        title: 'Cohort Not Reordered',
+        html: 'This cohort order cannot be saved safely until the latest Training Plan row IDs have loaded. Reload latest data and try again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+
     setGroups(next);
-    await persistTrainingPlan(next, true);
+    try {
+      const result = await updateTrainingPlanCohortOrder(targetGroup.id, cohortIds);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Reordered');
+        return;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      await kbcSwal.fire({ title: 'Cohort Not Reordered', html: message, icon: 'error', confirmButtonText: 'OK' });
+    }
   };
 
   const handleReorderGroup = async (fromGroupIdx: number, toGroupIdx: number) => {
@@ -2510,8 +3692,41 @@ export default function ApprenticeshipTimeline() {
     const [moved] = next.splice(fromGroupIdx, 1);
     const insertAt = fromGroupIdx < toGroupIdx ? toGroupIdx - 1 : toGroupIdx;
     next.splice(insertAt, 0, moved);
+    const programmeIds = next.filter(group => group.rows.length > 0).map(group => group.id).filter(Boolean);
+    if (programmeIds.length !== next.filter(group => group.rows.length > 0).length) {
+      console.warn('PROGRAMME_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
+        reason: 'missing stable programme ids',
+        programmeIds,
+      });
+      await kbcSwal.fire({
+        title: 'Programme Not Reordered',
+        html: 'This programme order cannot be saved safely until stable programme IDs have loaded. Reload latest data and try again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
     setGroups(next);
-    await persistTrainingPlan(next, true);
+    try {
+      const result = await updateTrainingPlanProgrammeOrder(programmeIds);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Programme Not Reordered');
+        return;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      await kbcSwal.fire({ title: 'Programme Not Reordered', html: message, icon: 'error', confirmButtonText: 'OK' });
+    }
   };
 
   const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string, returnToChoice = false) => {
@@ -2609,8 +3824,9 @@ export default function ApprenticeshipTimeline() {
     const activeHolidays = holidays.filter(holiday => (targetRow.holidayIds || []).includes(holiday.id));
     const plan = buildWeeklyTutorModulePlan(pendingTutorModuleStartDate, sessionCount, days, activeHolidays);
     const nextGroupId = shouldCreateGroup ? `grp-${Date.now()}-${Math.random()}` : selectedGroupBlock?.groupId;
+    const nextBlockId = `blk-${Date.now()}`;
     const nextBlock: ModuleBlock = {
-      id: `blk-${Date.now()}`,
+      id: nextBlockId,
       groupId: nextGroupId,
       mod: pendingTutorModuleAdd.moduleValue,
       groupName: shouldCreateGroup ? pendingTutorModuleGroupDraft.name.trim() : selectedGroupBlock?.groupName,
@@ -2640,10 +3856,51 @@ export default function ApprenticeshipTimeline() {
     setPendingTutorModuleSaving(true);
     setPendingTutorModuleError('');
     try {
-      const saved = await persistTrainingPlan(nextGroups, true);
-      if (!saved) return;
-      setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
-      setGroups(nextGroups);
+      const nextItems = flattenGroupsForApi(nextGroups, tutorProfiles);
+      const newRow = nextItems.find(item => (item.notes || '').includes(`${BLOCK_ID_MARKER_PREFIX}${nextBlock.id}`));
+      const moduleStableId = String(catalogModule?.id || customModule?.id || pendingTutorModuleAdd.moduleValue || '').trim();
+      if (
+        !trainingPlanVersion ||
+        !targetGroup.id ||
+        !targetRow.id ||
+        targetRow.id.startsWith('db-row-') ||
+        !nextBlock.groupId ||
+        !nextBlock.id ||
+        !moduleStableId ||
+        !newRow
+      ) {
+        console.warn('MODULE_ADD_FOR_TUTOR_SCOPED_CREATE_BLOCKED', {
+          reason: 'missing stable identifiers or generated row for module add',
+          programmeId: targetGroup.id,
+          cohortId: targetRow.id,
+          groupId: nextBlock.groupId,
+          blockId: nextBlock.id,
+          moduleStableId,
+          tutorProfileId: tutorProfile.id,
+          hasTrainingPlanVersion: Boolean(trainingPlanVersion),
+          hasGeneratedRow: Boolean(newRow),
+        });
+        throw new Error('This module cannot be added safely until the latest Training Plan IDs have loaded. Reload latest data and try again.');
+      }
+      const result = await addTrainingPlanModuleForTutor({
+        programmeId: targetGroup.id,
+        cohortId: targetRow.id,
+        groupId: nextBlock.groupId,
+        blockId: nextBlock.id,
+        moduleCatalogueId: catalogModule?.id ? String(catalogModule.id) : undefined,
+        moduleStableId,
+        tutorProfileId: tutorProfile.id,
+      }, newRow);
+      if (result.version) {
+        setTrainingPlanVersion(result.version);
+      }
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(nextItems);
+        setGroups(nextGroups);
+      }
       setPendingTutorModuleAdd(null);
       setPendingTutorModuleCohort('');
       setPendingTutorModuleGroup('');
@@ -2653,6 +3910,24 @@ export default function ApprenticeshipTimeline() {
         icon: 'success',
         title: 'Module added',
         html: `<strong>${catalogModule?.name || moduleMeta.lbl}</strong> was added to <strong>${targetRow.label || 'the selected cohort'}</strong>.`,
+        confirmButtonText: 'OK',
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Module Not Added');
+        return;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setPendingTutorModuleError(message);
+      await kbcSwal.fire({
+        title: 'Module Not Added',
+        html: `The module was not added to the Training Plan.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
         confirmButtonText: 'OK',
       });
     } finally {
@@ -2747,12 +4022,48 @@ export default function ApprenticeshipTimeline() {
         )
       );
       if (hasLinkedBlocks) {
-        const timelineSaved = await persistTrainingPlan(nextGroups, true);
-        if (!timelineSaved) {
-          throw new Error('Module name was updated, but linked timeline rows could not be re-saved safely.');
+        const linkedRows = groups.flatMap(group =>
+          group.rows.flatMap(row =>
+            row.blks
+              .filter(block => String(block.mod).trim() === previousName)
+              .map(block => ({
+                trainingPlanId: block.trainingPlanId || '',
+                programmeId: group.id,
+                cohortId: row.id,
+                groupId: block.groupId,
+                blockId: block.id,
+              })),
+          ),
+        );
+        const missingLinkedRowId = linkedRows.some(row => (
+          !row.trainingPlanId ||
+          !row.programmeId ||
+          !row.cohortId ||
+          row.cohortId.startsWith('db-row-') ||
+          !row.blockId ||
+          row.blockId.startsWith('db-blk-')
+        ));
+        if (!linkedRows.length || missingLinkedRowId) {
+          console.warn('MODULE_EDIT_LINKED_ROWS_PARTIAL_BLOCKED_MISSING_ID', {
+            reason: 'missing stable identifiers for linked module timeline rows',
+            moduleCatalogueId: mod.id,
+            previousModuleName: previousName,
+            moduleName: nextName,
+            linkedRows,
+          });
+          throw new Error('Linked Training Plan rows for this module cannot be updated safely until all row IDs have loaded. Reload latest data and try again.');
         }
-        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
-        setGroups(nextGroups);
+        const result = await updateTrainingPlanLinkedModuleRows(mod.id, previousName, nextName, linkedRows);
+        if (result.version) {
+          setTrainingPlanVersion(result.version);
+        }
+        if (result.items) {
+          setTrainingPlanItems(result.items);
+          setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+        } else {
+          setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+          setGroups(nextGroups);
+        }
       }
     }
 
@@ -2761,6 +4072,35 @@ export default function ApprenticeshipTimeline() {
 
   const handleDeleteCatalogModule = async (id: number) => {
     const moduleName = catalogModules.find(m => m.id === id)?.name;
+    let archiveReturnedItems = false;
+
+    if (moduleName) {
+      const linkedBlocks = groups.flatMap(group =>
+        group.rows.flatMap(row =>
+          row.blks
+            .filter(blk => blk.mod === moduleName)
+            .map(blk => ({ blockId: blk.id, trainingPlanId: blk.trainingPlanId })),
+        ),
+      );
+      if (linkedBlocks.length) {
+        const trainingPlanIds = linkedBlocks.map(item => item.trainingPlanId).filter((item): item is string => Boolean(item));
+        if (trainingPlanIds.length !== linkedBlocks.length) {
+          console.warn('MODULE_ARCHIVE_BLOCKED_MISSING_ID', {
+            reason: 'missing stable Training Plan row ids for linked module archive',
+            moduleName,
+            linkedBlocks,
+          });
+          throw new Error('Linked Training Plan rows for this module cannot be archived safely until all row IDs have loaded. Reload latest data and try again.');
+        }
+        const archiveResult = await archiveTrainingPlanModule(moduleName, trainingPlanIds);
+        if (archiveResult.version) setTrainingPlanVersion(archiveResult.version);
+        if (archiveResult.items) {
+          archiveReturnedItems = true;
+          setTrainingPlanItems(archiveResult.items);
+          setGroups(buildGroupsFromTrainingRows(archiveResult.items, customPrograms, tutorProfiles));
+        }
+      }
+    }
 
     const response = await fetch(`/api/modules/${id}/`, { method: 'DELETE' });
     if (!response.ok) {
@@ -2770,8 +4110,8 @@ export default function ApprenticeshipTimeline() {
 
     setCatalogModules(prev => prev.filter(m => m.id !== id));
 
-    // Remove all blocks referencing this catalogue module from every group
-    if (moduleName) {
+    // Keep local state consistent with the archive response when one was not returned.
+    if (moduleName && !archiveReturnedItems) {
       const nextGroups = groups.map(g => ({
         ...g,
         rows: g.rows.map(row => ({
@@ -2784,10 +4124,6 @@ export default function ApprenticeshipTimeline() {
         g.rows.some((row, ri) => row.blks.length !== groups[gi].rows[ri]?.blks.length)
       );
       if (hasChanges) {
-        const saved = await persistTrainingPlan(nextGroups, true);
-        if (!saved) {
-          throw new Error('The linked Training Plan rows were not re-saved safely.');
-        }
         setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
         setGroups(nextGroups);
       }
@@ -2801,18 +4137,35 @@ export default function ApprenticeshipTimeline() {
       ? groups.map(group => group.id === prog.id ? { ...group, name: prog.name, sub: prog.sub, color: prog.color } : group)
       : groups;
     const shouldPersistTimeline = existingCustom && nextGroups.some(group => group.id === prog.id && group.rows.length > 0);
+    const linkedBlocks = shouldPersistTimeline
+      ? (nextGroups.find(group => group.id === prog.id)?.rows || []).flatMap(row => row.blks.map(block => ({ trainingPlanId: block.trainingPlanId })))
+      : [];
+    const linkedTrainingPlanIds = linkedBlocks.map(block => block.trainingPlanId).filter((item): item is string => Boolean(item));
 
     try {
+      if (shouldPersistTimeline) {
+        if (!prog.id || linkedTrainingPlanIds.length !== linkedBlocks.length || !linkedTrainingPlanIds.length) {
+          console.warn('PROGRAMME_EDIT_LINKED_ROWS_PARTIAL_BLOCKED', {
+            reason: 'missing stable programme id or Training Plan row ids for linked programme update',
+            programmeId: prog.id,
+            linkedBlocks,
+          });
+          throw new Error('Linked Training Plan rows for this programme cannot be updated safely until all row IDs have loaded. Reload latest data and try again.');
+        }
+      }
       const persistedItems = await persistProgramConfigs(nextCustomPrograms);
       if (shouldPersistTimeline) {
-        const timelineSaved = await persistTrainingPlan(nextGroups, true);
-        if (!timelineSaved) {
-          throw new Error('Programme details were saved, but the linked timeline rows could not be re-saved safely.');
+        const targetGroup = nextGroups.find(group => group.id === prog.id);
+        const timelineResult = await updateTrainingPlanLinkedProgrammeRows(prog.id, targetGroup ? toProgrammeLabel(targetGroup) : prog.name.replace('\n', ' '), linkedTrainingPlanIds);
+        if (timelineResult.version) {
+          setTrainingPlanVersion(timelineResult.version);
+        }
+        if (timelineResult.items) {
+          setTrainingPlanItems(timelineResult.items);
         }
       }
       setCustomPrograms(persistedItems);
       if (shouldPersistTimeline) {
-        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
         setGroups(nextGroups);
       }
       setProgramModal({ open: false });
@@ -3267,6 +4620,35 @@ export default function ApprenticeshipTimeline() {
       </div>
 
       <main className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
+        {(trainingPlanServerUnavailable || trainingPlanServerRecovered) && (
+          <div className={`rounded-lg border px-4 py-3 text-sm ${trainingPlanServerUnavailable ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-extrabold">
+                  {trainingPlanServerUnavailable ? 'Training Plan server temporarily unavailable' : 'Training Plan server recovered'}
+                </p>
+                <p className="mt-1 text-xs font-semibold">
+                  Training Plan data has not been deleted. Save is disabled during outages, and failed saves are not retried automatically.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const loaded = await reloadTrainingPlan();
+                  if (loaded) {
+                    setTrainingPlanServerRecovered(false);
+                    setTrainingPlanSaveMessage('Latest Training Plan data loaded.');
+                  }
+                }}
+                disabled={trainingPlanServerUnavailable}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-kbc-navy px-3 py-1.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <i className="ri-refresh-line" />
+                Reload latest data
+              </button>
+            </div>
+          </div>
+        )}
         {/* Today's Sessions */}
         <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
           <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
@@ -3310,6 +4692,7 @@ export default function ApprenticeshipTimeline() {
               { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
               { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
               { key: 'tutors',   label: 'Tutor Profiles', icon: 'ri-user-star-line' },
+              { key: 'coaches',  label: 'Coach Profiles', icon: 'ri-user-follow-line' },
             ] as const).map(tab => (
               <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
@@ -3407,7 +4790,7 @@ export default function ApprenticeshipTimeline() {
                   onReorderGroup={handleReorderGroup}
                   onExportExcel={exportTrainingPlanExcel}
                   exportExcelDisabled={isInitialProgrammesLoading || exportRowCount === 0}
-                  canManageCohorts={canManageCohorts}
+                  canManageCohorts={canEditTrainingPlan}
                 />
               </div>
             </>
@@ -3441,11 +4824,18 @@ export default function ApprenticeshipTimeline() {
             <ScheduleTable
               groups={groups}
               tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
               catalogModules={catalogModules}
-              canEdit={canManageCohorts}
+              holidays={holidays}
+              ksbProfiles={ksbProfiles}
+              canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
               onUpdateSessionCoverage={updateSessionCoverage}
+              onUpdateSessionSchedule={updateSessionSchedule}
+              onUpdateSessionKsb={updateSessionKsb}
+              onUpdateSessionNotes={updateSessionNotes}
               onCreateTutorProfile={createTutorProfile}
+              onCreateCoachProfile={createCoachProfile}
             />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
@@ -3464,7 +4854,7 @@ export default function ApprenticeshipTimeline() {
               tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
               catalogModules={catalogModules}
               holidays={holidays}
-              canEdit={canManageCohorts}
+              canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
               onAddModuleForTutor={handleAddModuleForTutor}
               onCreateTutorProfile={createTutorProfile}
@@ -3478,11 +4868,33 @@ export default function ApprenticeshipTimeline() {
           )
         )}
 
+        {/* COACH PROFILES */}
+        {activeTab === 'coaches' && (
+          isInitialProgrammesLoading ? (
+            <SessionScheduleSkeleton />
+          ) : groups.length ? (
+            <CoachProfiles
+              groups={groups}
+              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+              holidays={holidays}
+              canEdit={canEditTrainingPlan}
+              onEditTrainingPlan={handleEditScheduleRow}
+              onCreateCoachProfile={createCoachProfile}
+              onUpdateCoachProfile={updateCoachProfile}
+              onDeleteCoachProfile={deleteCoachProfile}
+            />
+          ) : (
+            <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
+              No coach profiles yet because there are no saved programmes in the database.
+            </div>
+          )
+        )}
+
       </main>
       <Footer />
 
       {/* Modals */}
-      {canManageCohorts && visibleEditChoice && visibleEditChoiceDetails && (
+      {canEditTrainingPlan && visibleEditChoice && visibleEditChoiceDetails && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/35 backdrop-blur-[5px]" onClick={() => setVisibleEditChoice(null)} />
           <div className="relative w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
@@ -3574,7 +4986,7 @@ export default function ApprenticeshipTimeline() {
         <MonthlyModuleSummaryModal summary={selectedMonthlySummary} onClose={() => setSelectedMonthlySummary(null)} />
       )}
 
-      {canManageCohorts && pendingTutorModuleAdd && (
+      {canEditTrainingPlan && pendingTutorModuleAdd && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[4px]" />
           <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -3884,7 +5296,7 @@ export default function ApprenticeshipTimeline() {
         </div>
       )}
 
-      {canManageCohorts && modal.open && (
+      {canEditTrainingPlan && modal.open && (
         <CohortModal
           mode={modal.mode}
           groups={groups}
@@ -3900,6 +5312,7 @@ export default function ApprenticeshipTimeline() {
           prefillModule={'prefillModule' in modal ? modal.prefillModule : undefined}
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
+          onUpdateModulePartial={modal.open && modal.mode === 'edit' ? (blockId, payload) => updateModulePartial(modal.groupIdx, modal.rowIdx, blockId, payload) : undefined}
           onCreateTutorProfile={createTutorProfile}
           onManageHolidays={() => setShowHolidayMgr(true)}
           onBackToPreviousStep={() => {
@@ -3916,7 +5329,7 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canManageCohorts && showHolidayMgr && (
+      {canEditTrainingPlan && showHolidayMgr && (
         <HolidayManager
           holidays={holidays}
           onSave={persistHolidays}
@@ -3924,7 +5337,7 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canManageCohorts && showKsbProfiles && (
+      {canEditTrainingPlan && showKsbProfiles && (
         <KsbProfilesManager
           profiles={ksbProfiles}
           programmeOptions={groups.map(group => group.name.replace(/\s+/g, ' ').trim()).filter(Boolean)}
@@ -3935,21 +5348,21 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canManageCohorts && showAddModule && (
+      {canEditTrainingPlan && showAddModule && (
         <AddModuleModal
           onSave={handleAddModule}
           onClose={() => setShowAddModule(false)}
         />
       )}
 
-      {canManageCohorts && showAddCatalogModule && (
+      {canEditTrainingPlan && showAddCatalogModule && (
         <AddModuleCatalogModal
           onSave={handleAddCatalogModule}
           onClose={() => setShowAddCatalogModule(false)}
         />
       )}
 
-      {canManageCohorts && programModal.open && (
+      {canEditTrainingPlan && programModal.open && (
         programModal.mode === 'add' ? (
           <AddProgramModal
             onSave={handleAddProgram}
@@ -3992,7 +5405,7 @@ export default function ApprenticeshipTimeline() {
         )
       )}
 
-      {canManageCohorts && showManageModules && (
+      {canEditTrainingPlan && showManageModules && (
         <ManageModulesModal
           modules={catalogModules}
           ksbProfiles={ksbProfiles}

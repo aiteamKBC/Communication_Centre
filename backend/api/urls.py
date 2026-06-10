@@ -1,10 +1,11 @@
 from django.urls import path
 
-from .views import audit_logs, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_holiday_types, training_plan_holidays, training_plan_modules, training_plan_program_configs, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
+from .views import audit_logs, coach_profile_detail, coach_profiles, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, health, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_add_module_for_tutor, training_plan_archive_cohort, training_plan_archive_module, training_plan_cohort_detail, training_plan_create_cohort, training_plan_holiday_types, training_plan_holidays, training_plan_linked_module_rows, training_plan_linked_programme_rows, training_plan_module_detail, training_plan_modules, training_plan_program_configs, training_plan_reorder_cohorts, training_plan_reorder_programmes, training_plan_restore_cohort, training_plan_restore_module, training_plan_session_coverage, training_plan_session_detail, training_plan_session_ksb, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
 urlpatterns = [
     path('employees/', employees, name='employees'),
     path('realtime/', realtime, name='realtime'),
+    path('health/', health, name='health'),
     path('employees/<int:employee_id>/', employee_detail, name='employee-detail'),
 	path('events/', events, name='events'),
 	path('events/<int:event_id>/', event_detail, name='event-detail'),
@@ -17,6 +18,21 @@ urlpatterns = [
 	path('upload-image/', upload_image, name='upload-image'),
 	path('feedback/', feedback, name='feedback'),
     path('training-plan/', training_plan, name='training-plan'),
+    path('training-plan/sessions/<int:session_id>/', training_plan_session_detail, name='training-plan-session-detail'),
+    path('training-plan/sessions/<int:session_id>/coverage/', training_plan_session_coverage, name='training-plan-session-coverage'),
+    path('training-plan/sessions/<int:session_id>/ksb/', training_plan_session_ksb, name='training-plan-session-ksb'),
+    path('training-plan/modules/linked-rows/', training_plan_linked_module_rows, name='training-plan-linked-module-rows'),
+    path('training-plan/programmes/<str:programme_id>/linked-rows/', training_plan_linked_programme_rows, name='training-plan-linked-programme-rows'),
+    path('training-plan/modules/add-for-tutor/', training_plan_add_module_for_tutor, name='training-plan-add-module-for-tutor'),
+    path('training-plan/modules/<int:module_id>/', training_plan_module_detail, name='training-plan-module-detail'),
+    path('training-plan/reorder/programmes/', training_plan_reorder_programmes, name='training-plan-reorder-programmes'),
+    path('training-plan/reorder/cohorts/', training_plan_reorder_cohorts, name='training-plan-reorder-cohorts'),
+    path('training-plan/cohorts/', training_plan_create_cohort, name='training-plan-create-cohort'),
+    path('training-plan/cohorts/<str:cohort_id>/', training_plan_cohort_detail, name='training-plan-cohort-detail'),
+    path('training-plan/cohorts/<str:cohort_id>/archive/', training_plan_archive_cohort, name='training-plan-archive-cohort'),
+    path('training-plan/modules/archive/', training_plan_archive_module, name='training-plan-archive-module'),
+    path('training-plan/cohorts/<str:cohort_id>/restore/', training_plan_restore_cohort, name='training-plan-restore-cohort'),
+    path('training-plan/modules/restore/', training_plan_restore_module, name='training-plan-restore-module'),
     path('training-plan-holidays/', training_plan_holidays, name='training-plan-holidays'),
     path('training-plan-holiday-types/', training_plan_holiday_types, name='training-plan-holiday-types'),
     path('training-plan-modules/', training_plan_modules, name='training-plan-modules'),
@@ -24,6 +40,8 @@ urlpatterns = [
     path('tutor-profiles/', tutor_profiles, name='tutor-profiles'),
     path('tutor-profiles/duplicates/', tutor_profile_duplicates, name='tutor-profile-duplicates'),
     path('tutor-profiles/<int:profile_id>/', tutor_profile_detail, name='tutor-profile-detail'),
+    path('coach-profiles/', coach_profiles, name='coach-profiles'),
+    path('coach-profiles/<int:profile_id>/', coach_profile_detail, name='coach-profile-detail'),
     path('ksb-profiles/', ksb_profiles, name='ksb-profiles'),
     path('ksb-profiles/<int:profile_id>/', ksb_profile_detail, name='ksb-profile-detail'),
     path('documents-live/', documents_live, name='documents-live'),

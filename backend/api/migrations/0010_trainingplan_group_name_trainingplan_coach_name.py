@@ -1,6 +1,20 @@
 from django.db import migrations
 
 
+def provision_training_plan_table_for_tests(apps, schema_editor):
+	connection = schema_editor.connection
+	database_name = str(connection.settings_dict.get('NAME', ''))
+	if not database_name.startswith('test_'):
+		return
+
+	from api.models import TrainingPlan
+
+	if TrainingPlan._meta.db_table in connection.introspection.table_names():
+		return
+
+	schema_editor.create_model(TrainingPlan)
+
+
 class Migration(migrations.Migration):
 
 	dependencies = [
@@ -8,6 +22,10 @@ class Migration(migrations.Migration):
 	]
 
 	operations = [
+		migrations.RunPython(
+			provision_training_plan_table_for_tests,
+			reverse_code=migrations.RunPython.noop,
+		),
 		migrations.RunSQL(
 			sql=r"""
 				ALTER TABLE "Training_plan"
