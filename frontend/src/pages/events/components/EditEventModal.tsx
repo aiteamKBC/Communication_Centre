@@ -77,31 +77,61 @@ export default function EditEventModal({ event, onClose, onEventUpdated }: Props
     return errs;
   };
 
-  const readFile = (file: File): Promise<EventMedia> =>
-    new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = ev => resolve({
-        id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
-        kind: file.type.startsWith('video/') ? 'video' : 'image',
-        url: ev.target?.result as string,
-        name: file.name,
-      });
-      reader.readAsDataURL(file);
+  const uploadEventImage = async (file: File): Promise<EventMedia> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('folder', 'events');
+
+    const response = await fetch('/api/upload-image/', {
+      method: 'POST',
+      body: formData,
     });
+
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      throw new Error(detail || `Upload failed with status ${response.status}`);
+    }
+
+    const payload = await response.json() as { url?: string };
+    if (!payload.url) throw new Error('Upload response did not include a file URL.');
+
+    return {
+      id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'image',
+      url: payload.url,
+      name: file.name,
+    };
+  };
 
   const handleCoverChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setCover(await readFile(file));
-    if (coverInputRef.current) coverInputRef.current.value = '';
+    try {
+      setSaving(true);
+      setSaveError(null);
+      setCover(await uploadEventImage(file));
+    } catch {
+      setSaveError('Could not upload the selected cover image. Please try again.');
+    } finally {
+      setSaving(false);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
   };
 
   const handleGalleryChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    const next = await Promise.all(files.map(readFile));
-    setGallery(prev => [...prev, ...next]);
-    if (galleryInputRef.current) galleryInputRef.current.value = '';
+    try {
+      setSaving(true);
+      setSaveError(null);
+      const next = await Promise.all(files.map(uploadEventImage));
+      setGallery(prev => [...prev, ...next]);
+    } catch {
+      setSaveError('Could not upload one or more selected images. Please try again.');
+    } finally {
+      setSaving(false);
+      if (galleryInputRef.current) galleryInputRef.current.value = '';
+    }
   };
 
   const buildUpdated = (): CalendarEvent => {
@@ -276,12 +306,12 @@ export default function EditEventModal({ event, onClose, onEventUpdated }: Props
                     <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
                       <i className="ri-gallery-upload-line text-gray-400 text-lg" />
                     </div>
-                    <p className="text-xs font-semibold text-gray-500">Click to upload images or videos</p>
-                    <p className="text-xs text-gray-400">PNG, JPG, MP4, MOV and more</p>
+                    <p className="text-xs font-semibold text-gray-500">Click to upload images</p>
+                    <p className="text-xs text-gray-400">PNG, JPG recommended</p>
                   </div>
                 )}
               </div>
-              <input ref={galleryInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleGalleryChange} />
+              <input ref={galleryInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleGalleryChange} />
             </div>
 
             {/* Event Type */}

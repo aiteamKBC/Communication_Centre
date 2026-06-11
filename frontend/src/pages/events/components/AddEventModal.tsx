@@ -80,35 +80,63 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     };
   };
 
-  const readFile = (file: File): Promise<EventMedia> =>
-    new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        resolve({
-          id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
-          kind: file.type.startsWith('video/') ? 'video' : 'image',
-          url: ev.target?.result as string,
-          name: file.name,
-        });
-      };
-      reader.readAsDataURL(file);
+  const uploadEventImage = async (file: File): Promise<EventMedia> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('folder', 'events');
+
+    const response = await fetch('/api/upload-image/', {
+      method: 'POST',
+      body: formData,
     });
+
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      throw new Error(detail || `Upload failed with status ${response.status}`);
+    }
+
+    const payload = await response.json() as { url?: string };
+    if (!payload.url) throw new Error('Upload response did not include a file URL.');
+
+    return {
+      id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'image',
+      url: payload.url,
+      name: file.name,
+    };
+  };
 
   const handleCoverChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const media = await readFile(file);
-    setForm(prev => ({ ...prev, cover: media }));
-    if (coverInputRef.current) coverInputRef.current.value = '';
+    try {
+      setSaving(true);
+      setSaveError(null);
+      const media = await uploadEventImage(file);
+      setForm(prev => ({ ...prev, cover: media }));
+    } catch {
+      setSaveError('Could not upload the selected cover image. Please try again.');
+    } finally {
+      setSaving(false);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
   };
 
   const handleMediaChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    const nextMedia = await Promise.all(files.map(readFile));
-    setForm(prev => ({ ...prev, media: [...prev.media, ...nextMedia] }));
-    if (galleryInputRef.current) galleryInputRef.current.value = '';
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    try {
+      setSaving(true);
+      setSaveError(null);
+      const nextMedia = await Promise.all(files.map(uploadEventImage));
+      setForm(prev => ({ ...prev, media: [...prev.media, ...nextMedia] }));
+    } catch {
+      setSaveError('Could not upload one or more selected images. Please try again.');
+    } finally {
+      setSaving(false);
+      if (galleryInputRef.current) galleryInputRef.current.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleRemoveMedia = (mediaId: string) => {
@@ -317,15 +345,15 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
                     <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
                       <i className="ri-gallery-upload-line text-gray-400 text-lg" />
                     </div>
-                    <p className="text-xs font-semibold text-gray-500">Click to upload images or videos</p>
-                    <p className="text-xs text-gray-400">PNG, JPG, MP4, MOV and more</p>
+                    <p className="text-xs font-semibold text-gray-500">Click to upload images</p>
+                    <p className="text-xs text-gray-400">PNG, JPG recommended</p>
                   </div>
                 )}
               </div>
               <input
                 ref={galleryInputRef}
                 type="file"
-                accept="image/*,video/*"
+                accept="image/*"
                 multiple
                 className="hidden"
                 onChange={handleMediaChange}
