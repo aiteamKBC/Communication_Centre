@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import audit_logs, coach_profile_detail, coach_profiles, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, health, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_add_module_for_tutor, training_plan_archive_cohort, training_plan_archive_module, training_plan_cohort_detail, training_plan_create_cohort, training_plan_holiday_types, training_plan_holidays, training_plan_linked_module_rows, training_plan_linked_programme_rows, training_plan_module_detail, training_plan_modules, training_plan_program_configs, training_plan_reorder_cohorts, training_plan_reorder_programmes, training_plan_restore_cohort, training_plan_restore_module, training_plan_session_coverage, training_plan_session_detail, training_plan_session_ksb, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
+from .views import audit_logs, coach_profile_detail, coach_profiles, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, health, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_add_module_for_tutor, training_plan_archive_cohort, training_plan_archive_module, training_plan_cohort_detail, training_plan_create_cohort, training_plan_holiday_detail, training_plan_holiday_types, training_plan_holidays, training_plan_linked_module_rows, training_plan_linked_programme_rows, training_plan_module_definition_detail, training_plan_module_detail, training_plan_modules, training_plan_program_config_detail, training_plan_program_configs, training_plan_reorder_cohorts, training_plan_reorder_programmes, training_plan_restore_cohort, training_plan_restore_module, training_plan_session_coverage, training_plan_session_detail, training_plan_session_ksb, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
 urlpatterns = [
     path('employees/', employees, name='employees'),
@@ -34,9 +34,12 @@ urlpatterns = [
     path('training-plan/cohorts/<str:cohort_id>/restore/', training_plan_restore_cohort, name='training-plan-restore-cohort'),
     path('training-plan/modules/restore/', training_plan_restore_module, name='training-plan-restore-module'),
     path('training-plan-holidays/', training_plan_holidays, name='training-plan-holidays'),
+    path('training-plan-holidays/<int:holiday_id>/', training_plan_holiday_detail, name='training-plan-holiday-detail'),
     path('training-plan-holiday-types/', training_plan_holiday_types, name='training-plan-holiday-types'),
     path('training-plan-modules/', training_plan_modules, name='training-plan-modules'),
+    path('training-plan-modules/<str:module_id>/', training_plan_module_definition_detail, name='training-plan-module-definition-detail'),
     path('training-plan-program-configs/', training_plan_program_configs, name='training-plan-program-configs'),
+    path('training-plan-program-configs/<str:config_id>/', training_plan_program_config_detail, name='training-plan-program-config-detail'),
     path('tutor-profiles/', tutor_profiles, name='tutor-profiles'),
     path('tutor-profiles/duplicates/', tutor_profile_duplicates, name='tutor-profile-duplicates'),
     path('tutor-profiles/<int:profile_id>/', tutor_profile_detail, name='tutor-profile-detail'),

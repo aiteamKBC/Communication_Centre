@@ -1907,6 +1907,8 @@ export default function ApprenticeshipTimeline() {
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [holidayVersion, setHolidayVersion] = useState<string | undefined>(undefined);
+  const [moduleDefinitionsVersion, setModuleDefinitionsVersion] = useState<string | undefined>(undefined);
+  const [programConfigsVersion, setProgramConfigsVersion] = useState<string | undefined>(undefined);
   const [modal,    setModal]    = useState<ModalState>({ open: false });
   const [showHolidayMgr, setShowHolidayMgr] = useState(false);
   const [showAddModule,  setShowAddModule]  = useState(false);
@@ -2095,6 +2097,7 @@ export default function ApprenticeshipTimeline() {
     ]);
 
     if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
+      const moduleVersion = moduleDefinitionsResult.value.headers.get('X-KBC-Training-Plan-Modules-Version') || undefined;
       const items = (await moduleDefinitionsResult.value.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
       if (Array.isArray(items)) {
         setCustomModules(items.map(item => ({
@@ -2104,13 +2107,16 @@ export default function ApprenticeshipTimeline() {
           bg: item.bg,
           tx: item.tx,
         })));
+        setModuleDefinitionsVersion(moduleVersion);
       }
     }
 
     if (programConfigsResult.status === 'fulfilled' && programConfigsResult.value.ok) {
+      const programVersion = programConfigsResult.value.headers.get('X-KBC-Training-Plan-Program-Configs-Version') || undefined;
       const items = (await programConfigsResult.value.json()) as TrainingPlanProgramConfigPayload[];
       if (Array.isArray(items)) {
         setCustomPrograms(items);
+        setProgramConfigsVersion(programVersion);
       }
       setHasLoadedProgramConfigs(true);
     }
@@ -2352,6 +2358,39 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const parseHolidayMutation = async (response: Response): Promise<{ item?: Holiday; items?: Holiday[]; version?: string; deleted?: boolean }> => {
+    if (!response.ok) {
+      if (response.status === 409) {
+        let detail = 'The holiday list was updated by someone else while you were editing. Please refresh before saving again.';
+        try {
+          const conflict = await response.json() as { detail?: string; currentVersion?: string; items?: Holiday[] };
+          if (conflict.currentVersion) {
+            setHolidayVersion(conflict.currentVersion);
+          }
+          if (Array.isArray(conflict.items)) {
+            setHolidays(conflict.items);
+          }
+          if (conflict.detail) {
+            detail = `${conflict.detail} Please refresh before saving again.`;
+          }
+        } catch {
+          // Use the default conflict message.
+        }
+        throw new Error(detail);
+      }
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+
+    const result = await response.json() as { item?: Holiday; items?: Holiday[]; version?: string; deleted?: boolean };
+    const responseVersion = response.headers.get('X-KBC-Training-Plan-Holidays-Version') || result.version;
+    if (responseVersion) {
+      setHolidayVersion(responseVersion);
+      result.version = responseVersion;
+    }
+    return result;
+  };
+
   const persistHolidays = async (nextHolidays: Holiday[]) => {
     if (!holidayVersion) {
       const reloaded = await reloadTrainingPlanHolidays();
@@ -2366,98 +2405,77 @@ export default function ApprenticeshipTimeline() {
       return false;
     }
 
-    const payload = { items: nextHolidays, version: holidayVersion };
-
     try {
-      const response = await fetch('/api/training-plan-holidays/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let workingVersion = holidayVersion;
+      let persistedItems: Holiday[] | undefined;
+      const originalById = new Map(holidays.map(holiday => [holiday.id, holiday]));
+      const nextById = new Map(nextHolidays.map(holiday => [holiday.id, holiday]));
+      const changed = (left: Holiday, right: Holiday) => (
+        left.label !== right.label ||
+        left.startDate !== right.startDate ||
+        left.endDate !== right.endDate ||
+        left.type !== right.type ||
+        left.color !== right.color
+      );
 
-      if (!response.ok) {
-        if (response.status === 409) {
-          let detail = 'The holiday list was updated by someone else while you were editing. Please reload the latest version before saving to avoid overwriting their changes.';
-          try {
-            const conflict = await response.json() as { detail?: string; currentVersion?: string };
-            if (conflict.detail) {
-              detail = conflict.detail;
-            }
-          } catch {
-            // Use the default conflict message.
-          }
-
-          const result = await kbcSwal.fire({
-            title: 'Holiday List Changed',
-            html: `${detail}<br /><br />Reload the latest holidays before saving again.`,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: 'Reload latest holidays',
-            cancelButtonText: 'Keep editing',
-          });
-
-          if (result.isConfirmed) {
-            const reloaded = await reloadTrainingPlanHolidays();
-            await kbcSwal.fire({
-              title: reloaded ? 'Latest Holidays Loaded' : 'Reload Failed',
-              html: reloaded
-                ? 'The current holiday list has been loaded. Please review your changes before saving again.'
-                : 'The latest holiday list could not be loaded. Please refresh the page and try again.',
-              icon: reloaded ? 'success' : 'error',
-              confirmButtonText: 'OK',
-            });
-          }
-
-          return false;
+      const applyMutation = async (request: () => Promise<Response>) => {
+        const result = await parseHolidayMutation(await request());
+        if (result.version) {
+          workingVersion = result.version;
         }
-        const errorText = (await response.text()).trim();
-        throw new Error(errorText || `Request failed with status ${response.status}`);
+        if (Array.isArray(result.items)) {
+          persistedItems = result.items;
+        }
+        return result;
+      };
+
+      for (const holiday of holidays) {
+        if (!nextById.has(holiday.id)) {
+          await applyMutation(() => fetch(`/api/training-plan-holidays/${encodeURIComponent(holiday.id)}/`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version: workingVersion }),
+          }));
+        }
       }
 
-      const result = await response.json() as { saved?: number; items?: Holiday[]; version?: string };
-      const persistedItems = Array.isArray(result.items) ? result.items : [];
-
-      if (typeof result.saved !== 'number') {
-        throw new Error('The server did not confirm how many holiday periods were saved.');
+      for (const holiday of nextHolidays) {
+        const original = originalById.get(holiday.id);
+        if (!original) {
+          await applyMutation(() => fetch('/api/training-plan-holidays/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              version: workingVersion,
+              label: holiday.label,
+              startDate: holiday.startDate,
+              endDate: holiday.endDate,
+              type: holiday.type,
+              color: holiday.color,
+            }),
+          }));
+        } else if (changed(original, holiday)) {
+          await applyMutation(() => fetch(`/api/training-plan-holidays/${encodeURIComponent(holiday.id)}/`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              version: workingVersion,
+              label: holiday.label,
+              startDate: holiday.startDate,
+              endDate: holiday.endDate,
+              type: holiday.type,
+              color: holiday.color,
+            }),
+          }));
+        }
       }
 
-      if (result.saved !== nextHolidays.length) {
-        throw new Error(`Saved ${result.saved} of ${nextHolidays.length} holiday periods.`);
+      if (persistedItems) {
+        setHolidays(persistedItems);
+      } else {
+        setHolidays(nextHolidays);
       }
-
-      if (persistedItems.length !== nextHolidays.length) {
-        throw new Error(`The database returned ${persistedItems.length} of ${nextHolidays.length} holiday periods.`);
-      }
-
-      const expectedSnapshot = JSON.stringify(
-        nextHolidays
-          .map(item => ({
-            label: item.label,
-            startDate: item.startDate,
-            endDate: item.endDate,
-            type: item.type,
-            color: item.color,
-          }))
-          .sort((a, b) => `${a.startDate}-${a.endDate}-${a.label}`.localeCompare(`${b.startDate}-${b.endDate}-${b.label}`)),
-      );
-      const persistedSnapshot = JSON.stringify(
-        persistedItems
-          .map(item => ({
-            label: item.label,
-            startDate: item.startDate,
-            endDate: item.endDate,
-            type: item.type,
-            color: item.color,
-          }))
-          .sort((a, b) => `${a.startDate}-${a.endDate}-${a.label}`.localeCompare(`${b.startDate}-${b.endDate}-${b.label}`)),
-      );
-
-      if (persistedSnapshot !== expectedSnapshot) {
-        throw new Error('The saved holiday periods returned from the database did not match the submitted values.');
-      }
-
-      setHolidays(persistedItems);
-      setHolidayVersion(result.version);
+      setHolidayVersion(workingVersion);
       await kbcSuccessSwal.fire({
         icon: 'success',
         title: 'Holiday periods saved successfully',
@@ -2466,6 +2484,29 @@ export default function ApprenticeshipTimeline() {
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown save error';
+      if (message.toLowerCase().includes('refresh before saving') || message.toLowerCase().includes('reload the latest holidays')) {
+        const result = await kbcSwal.fire({
+          title: 'Holiday List Changed',
+          html: `${message}<br /><br />Reload the latest holidays before saving again.`,
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonText: 'Reload latest holidays',
+          cancelButtonText: 'Keep editing',
+        });
+
+        if (result.isConfirmed) {
+          const reloaded = await reloadTrainingPlanHolidays();
+          await kbcSwal.fire({
+            title: reloaded ? 'Latest Holidays Loaded' : 'Reload Failed',
+            html: reloaded
+              ? 'The current holiday list has been loaded. Please review your changes before saving again.'
+              : 'The latest holiday list could not be loaded. Please refresh the page and try again.',
+            icon: reloaded ? 'success' : 'error',
+            confirmButtonText: 'OK',
+          });
+        }
+        return false;
+      }
       await kbcSwal.fire({
         title: 'Holiday Periods Not Saved',
         html: `The latest holiday changes were not saved to the database.<br /><br /><strong>Details:</strong> ${message}`,
@@ -2476,59 +2517,175 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
-  const persistCustomModules = async (nextModules: CustomModule[]) => {
-    const payload = {
-      items: nextModules.map(module => ({
-        id: module.id,
+  const parseModuleDefinitionMutation = async (response: Response): Promise<CustomModule> => {
+    if (!response.ok) {
+      if (response.status === 409) {
+        let detail = 'The module definitions were updated by another user. Reload latest data before saving again.';
+        try {
+          const conflict = await response.json() as { detail?: string; currentVersion?: string };
+          if (conflict.currentVersion) {
+            setModuleDefinitionsVersion(conflict.currentVersion);
+          }
+          if (conflict.detail) {
+            detail = `${conflict.detail} Reload latest data before saving again.`;
+          }
+        } catch {
+          // Use the default conflict message.
+        }
+        throw new Error(detail);
+      }
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+
+    const result = await response.json() as { item?: CustomModule; version?: string };
+    const responseVersion = response.headers.get('X-KBC-Training-Plan-Modules-Version') || result.version;
+    if (responseVersion) {
+      setModuleDefinitionsVersion(responseVersion);
+    }
+    if (!result.item) {
+      throw new Error('The server did not return the saved module definition.');
+    }
+    return result.item;
+  };
+
+  const createCustomModuleDefinition = async (module: CustomModule): Promise<CustomModule> => {
+    if (!moduleDefinitionsVersion) {
+      throw new Error('Reload latest data before saving module definitions.');
+    }
+    const response = await fetch('/api/training-plan-modules/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...module, version: moduleDefinitionsVersion }),
+    });
+    return parseModuleDefinitionMutation(response);
+  };
+
+  const updateCustomModuleDefinition = async (module: CustomModule): Promise<CustomModule> => {
+    if (!moduleDefinitionsVersion) {
+      throw new Error('Reload latest data before saving module definitions.');
+    }
+    const response = await fetch(`/api/training-plan-modules/${encodeURIComponent(module.id)}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: moduleDefinitionsVersion,
         name: module.name,
         defaultSessions: module.defaultSessions,
         bg: module.bg,
         tx: module.tx,
-      })),
-    };
-
-    const response = await fetch('/api/training-plan-modules/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      }),
     });
+    return parseModuleDefinitionMutation(response);
+  };
 
+  const deleteCustomModuleDefinition = async (id: string): Promise<boolean> => {
+    if (!moduleDefinitionsVersion) {
+      throw new Error('Reload latest data before deleting module definitions.');
+    }
+    const response = await fetch(`/api/training-plan-modules/${encodeURIComponent(id)}/`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: moduleDefinitionsVersion }),
+    });
     if (!response.ok) {
+      if (response.status === 409) {
+        throw new Error('The module definitions were updated by another user. Reload latest data before deleting.');
+      }
+      const errorText = (await response.text()).trim();
+      throw new Error(errorText || `Request failed with status ${response.status}`);
+    }
+    const result = await response.json() as { deleted?: boolean; version?: string };
+    const responseVersion = response.headers.get('X-KBC-Training-Plan-Modules-Version') || result.version;
+    if (responseVersion) {
+      setModuleDefinitionsVersion(responseVersion);
+    }
+    return result.deleted === true;
+  };
+
+  const parseProgramConfigMutation = async (response: Response): Promise<CustomProgram> => {
+    if (!response.ok) {
+      if (response.status === 409) {
+        let detail = 'The programme configs were updated by another user. Reload latest data before saving again.';
+        try {
+          const conflict = await response.json() as { detail?: string; currentVersion?: string };
+          if (conflict.currentVersion) {
+            setProgramConfigsVersion(conflict.currentVersion);
+          }
+          if (conflict.detail) {
+            detail = `${conflict.detail} Reload latest data before saving again.`;
+          }
+        } catch {
+          // Use the default conflict message.
+        }
+        throw new Error(detail);
+      }
       const errorText = (await response.text()).trim();
       throw new Error(errorText || `Request failed with status ${response.status}`);
     }
 
-    const result = await response.json() as { items?: Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }> };
-    return Array.isArray(result.items)
-      ? result.items.map(item => ({
-          id: item.id,
-          name: item.name,
-          defaultSessions: item.defaultSessions,
-          bg: item.bg,
-          tx: item.tx,
-        }))
-      : nextModules;
+    const result = await response.json() as { item?: CustomProgram; version?: string };
+    const responseVersion = response.headers.get('X-KBC-Training-Plan-Program-Configs-Version') || result.version;
+    if (responseVersion) {
+      setProgramConfigsVersion(responseVersion);
+    }
+    if (!result.item) {
+      throw new Error('The server did not return the saved programme config.');
+    }
+    return result.item;
   };
 
-  const persistProgramConfigs = async (
-    nextCustomPrograms: CustomProgram[],
-  ) => {
-    const payload = {
-      items: nextCustomPrograms,
-    };
+  const createProgramConfig = async (program: CustomProgram): Promise<CustomProgram> => {
+    if (!programConfigsVersion) {
+      throw new Error('Reload latest data before saving programme configs.');
+    }
     const response = await fetch('/api/training-plan-program-configs/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...program, version: programConfigsVersion }),
     });
+    return parseProgramConfigMutation(response);
+  };
 
+  const updateProgramConfig = async (program: CustomProgram): Promise<CustomProgram> => {
+    if (!programConfigsVersion) {
+      throw new Error('Reload latest data before saving programme configs.');
+    }
+    const response = await fetch(`/api/training-plan-program-configs/${encodeURIComponent(program.id)}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: programConfigsVersion,
+        name: program.name,
+        sub: program.sub,
+        color: program.color,
+      }),
+    });
+    return parseProgramConfigMutation(response);
+  };
+
+  const deleteProgramConfig = async (id: string): Promise<boolean> => {
+    if (!programConfigsVersion) {
+      throw new Error('Reload latest data before deleting programme configs.');
+    }
+    const response = await fetch(`/api/training-plan-program-configs/${encodeURIComponent(id)}/`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: programConfigsVersion }),
+    });
     if (!response.ok) {
+      if (response.status === 409) {
+        throw new Error('The programme configs were updated by another user. Reload latest data before deleting.');
+      }
       const errorText = (await response.text()).trim();
       throw new Error(errorText || `Request failed with status ${response.status}`);
     }
-
-    const result = await response.json() as { items?: TrainingPlanProgramConfigPayload[] };
-    return Array.isArray(result.items) ? result.items : payload.items;
+    const result = await response.json() as { deleted?: boolean; version?: string };
+    const responseVersion = response.headers.get('X-KBC-Training-Plan-Program-Configs-Version') || result.version;
+    if (responseVersion) {
+      setProgramConfigsVersion(responseVersion);
+    }
+    return result.deleted === true;
   };
 
   const createKsbProfile = async (profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
@@ -2587,18 +2744,22 @@ export default function ApprenticeshipTimeline() {
 
   const deleteTutorProfile = async (id: string): Promise<boolean> => {
     try {
-      const response = await fetch(`/api/tutor-profiles/${id}/?force=1`, { method: 'DELETE' });
+      const response = await fetch(`/api/tutor-profiles/${id}/`, { method: 'DELETE' });
       if (!response.ok) {
         const errorText = (await response.text()).trim();
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
-      const result = await response.json() as { deleted?: boolean; unlinkedRows?: number };
-      setTutorProfiles(prev => prev.filter(item => item.id !== id));
-      await reloadTrainingPlan();
+      const result = await response.json() as { deleted?: boolean; deactivated?: boolean; item?: TutorProfile };
+      if (result.item) {
+        setTutorProfiles(prev => prev.map(item => item.id === id ? result.item! : item));
+      } else {
+        setTutorProfiles(prev => prev.filter(item => item.id !== id));
+      }
+      void reloadTutorProfiles();
       await kbcSwal.fire({
-        title: 'Tutor Deleted',
-        html: result.unlinkedRows
-          ? `The tutor profile was deleted and unlinked from ${result.unlinkedRows} Training Plan record${result.unlinkedRows === 1 ? '' : 's'}.`
+        title: result.deactivated ? 'Tutor Deactivated' : 'Tutor Deleted',
+        html: result.deactivated
+          ? 'The tutor profile was deactivated and hidden from normal selection. Existing Training Plan references remain unchanged.'
           : 'The tutor profile was deleted.',
         icon: 'success',
         confirmButtonText: 'OK',
@@ -2654,18 +2815,22 @@ export default function ApprenticeshipTimeline() {
 
   const deleteCoachProfile = async (id: string): Promise<boolean> => {
     try {
-      const response = await fetch(`/api/coach-profiles/${id}/?force=1`, { method: 'DELETE' });
+      const response = await fetch(`/api/coach-profiles/${id}/`, { method: 'DELETE' });
       if (!response.ok) {
         const errorText = (await response.text()).trim();
         throw new Error(errorText || `Request failed with status ${response.status}`);
       }
-      const result = await response.json() as { deleted?: boolean; unlinkedRows?: number };
-      setCoachProfiles(prev => prev.filter(item => item.id !== id));
-      await reloadTrainingPlan();
+      const result = await response.json() as { deleted?: boolean; deactivated?: boolean; item?: CoachProfile };
+      if (result.item) {
+        setCoachProfiles(prev => prev.map(item => item.id === id ? result.item! : item));
+      } else {
+        setCoachProfiles(prev => prev.filter(item => item.id !== id));
+      }
+      void reloadCoachProfiles();
       await kbcSwal.fire({
-        title: 'Coach Deleted',
-        html: result.unlinkedRows
-          ? `The coach profile was deleted and unlinked from ${result.unlinkedRows} Training Plan coverage record${result.unlinkedRows === 1 ? '' : 's'}.`
+        title: result.deactivated ? 'Coach Deactivated' : 'Coach Deleted',
+        html: result.deactivated
+          ? 'The coach profile was deactivated and hidden from normal selection. Existing Training Plan and coverage references remain unchanged.'
           : 'The coach profile was deleted.',
         icon: 'success',
         confirmButtonText: 'OK',
@@ -3937,9 +4102,10 @@ export default function ApprenticeshipTimeline() {
 
   const handleAddModule = async (mod: CustomModule) => {
     try {
-      const next = [...customModules.filter(m => m.id !== mod.id), mod];
-      const persistedModules = await persistCustomModules(next);
-      setCustomModules(persistedModules);
+      const saved = customModules.some(item => item.id === mod.id)
+        ? await updateCustomModuleDefinition(mod)
+        : await createCustomModuleDefinition(mod);
+      setCustomModules(prev => [...prev.filter(item => item.id !== saved.id), saved]);
       setShowAddModule(false);
       void kbcSuccessSwal.fire({
         icon: 'success',
@@ -4132,7 +4298,6 @@ export default function ApprenticeshipTimeline() {
 
   const handleAddProgram = async (prog: CustomProgram) => {
     const existingCustom = customPrograms.some(program => program.id === prog.id);
-    const nextCustomPrograms = [...customPrograms.filter(program => program.id !== prog.id), prog];
     const nextGroups = existingCustom
       ? groups.map(group => group.id === prog.id ? { ...group, name: prog.name, sub: prog.sub, color: prog.color } : group)
       : groups;
@@ -4153,7 +4318,9 @@ export default function ApprenticeshipTimeline() {
           throw new Error('Linked Training Plan rows for this programme cannot be updated safely until all row IDs have loaded. Reload latest data and try again.');
         }
       }
-      const persistedItems = await persistProgramConfigs(nextCustomPrograms);
+      const savedProgram = existingCustom
+        ? await updateProgramConfig(prog)
+        : await createProgramConfig(prog);
       if (shouldPersistTimeline) {
         const targetGroup = nextGroups.find(group => group.id === prog.id);
         const timelineResult = await updateTrainingPlanLinkedProgrammeRows(prog.id, targetGroup ? toProgrammeLabel(targetGroup) : prog.name.replace('\n', ' '), linkedTrainingPlanIds);
@@ -4164,7 +4331,7 @@ export default function ApprenticeshipTimeline() {
           setTrainingPlanItems(timelineResult.items);
         }
       }
-      setCustomPrograms(persistedItems);
+      setCustomPrograms(prev => [...prev.filter(program => program.id !== savedProgram.id), savedProgram]);
       if (shouldPersistTimeline) {
         setGroups(nextGroups);
       }
@@ -4229,9 +4396,8 @@ export default function ApprenticeshipTimeline() {
     }
 
     try {
-      const nextPrograms = customPrograms.filter(program => program.id !== programId);
-      const persistedItems = await persistProgramConfigs(nextPrograms);
-      setCustomPrograms(persistedItems);
+      await deleteProgramConfig(programId);
+      setCustomPrograms(prev => prev.filter(program => program.id !== programId));
       void kbcSuccessSwal.fire({
         icon: 'success',
         title: `Programme "${group.name.replace('\n', ' ')}" deleted`,
@@ -4303,14 +4469,17 @@ export default function ApprenticeshipTimeline() {
 
       let latestPrograms = customPrograms;
       if (programConfigsResult.status === 'fulfilled' && programConfigsResult.value.ok) {
+        const programVersion = programConfigsResult.value.headers.get('X-KBC-Training-Plan-Program-Configs-Version') || undefined;
         const items = (await programConfigsResult.value.json()) as TrainingPlanProgramConfigPayload[];
         if (Array.isArray(items)) {
           latestPrograms = items;
           setCustomPrograms(items);
+          setProgramConfigsVersion(programVersion);
         }
       }
 
       if (moduleDefinitionsResult.status === 'fulfilled' && moduleDefinitionsResult.value.ok) {
+        const moduleVersion = moduleDefinitionsResult.value.headers.get('X-KBC-Training-Plan-Modules-Version') || undefined;
         const items = (await moduleDefinitionsResult.value.json()) as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
         if (Array.isArray(items)) {
           exportCustomModules = items.map(item => ({
@@ -4321,6 +4490,7 @@ export default function ApprenticeshipTimeline() {
             tx: item.tx,
           }));
           setCustomModules(exportCustomModules);
+          setModuleDefinitionsVersion(moduleVersion);
         }
       }
 

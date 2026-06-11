@@ -8,12 +8,16 @@ from django.utils import timezone
 
 from django.db import connection
 
-from .models import AuditLog, TrainingPlan, TrainingPlanHoliday, TutorProfile
+from .models import AuditLog, CoachProfile, Employee, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
 from .views import (
 	LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE,
 	MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES,
+	PROFILE_FORCE_DELETE_CONFIRM_VALUE,
 	_session_display_login_at,
 	is_probable_tutor_profile_match,
+	training_plan_holiday_types_version,
+	training_plan_module_definitions_version,
+	training_plan_program_configs_version,
 	training_plan_holidays_version,
 	training_plan_version,
 )
@@ -83,42 +87,800 @@ class TutorProfileMatchingTests(SimpleTestCase):
 		self.assertTrue(is_probable_tutor_profile_match('Mohamed Ali', 'Mohammad Ali'))
 
 
+class EmployeeDeleteSafetyTests(TestCase):
+	_created_employee_table = False
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		existing_tables = connection.introspection.table_names()
+		if Employee._meta.db_table not in existing_tables:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.create_model(Employee)
+			cls._created_employee_table = True
+
+	@classmethod
+	def tearDownClass(cls):
+		if cls._created_employee_table:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.delete_model(Employee)
+		super().tearDownClass()
+
+	def setUp(self):
+		Employee.objects.all().delete()
+		AuditLog.objects.all().delete()
+		self.client = Client()
+
+	def create_employee(self, name, reports_to=None):
+		return Employee.objects.create(
+			full_name=name,
+			job_title='',
+			department='Ops',
+			reports_to=reports_to,
+			email='',
+			phone='',
+		)
+
+	def test_delete_employee_reparents_direct_reports_to_manager_and_audits(self):
+		manager = self.create_employee('Manager')
+		target = self.create_employee('Lead', reports_to=str(manager.pk))
+		report = self.create_employee('Report', reports_to=str(target.pk))
+
+		response = self.client.delete(f'/api/employees/{target.pk}/')
+
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(Employee.objects.filter(pk=target.pk).exists())
+		report.refresh_from_db()
+		self.assertEqual(report.reports_to, str(manager.pk))
+		self.assertTrue(AuditLog.objects.filter(
+			entity='Employee',
+			action='delete',
+			object_id=str(target.pk),
+			metadata__directReportsReparented=1,
+			metadata__previousManagerId=str(manager.pk),
+			metadata__newManagerId=str(manager.pk),
+		).exists())
+
+	def test_delete_employee_clears_direct_reports_when_manager_is_missing(self):
+		target = self.create_employee('Lead', reports_to='999999')
+		report = self.create_employee('Report', reports_to=str(target.pk))
+
+		response = self.client.delete(f'/api/employees/{target.pk}/')
+
+		self.assertEqual(response.status_code, 200)
+		report.refresh_from_db()
+		self.assertIsNone(report.reports_to)
+		self.assertTrue(AuditLog.objects.filter(
+			entity='Employee',
+			action='delete',
+			object_id=str(target.pk),
+			metadata__directReportsReparented=1,
+			metadata__previousManagerId='999999',
+			metadata__newManagerId=None,
+		).exists())
+
+
+class TutorCoachProfileDeleteSafetyTests(TestCase):
+	_created_training_plan_table = False
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		existing_tables = connection.introspection.table_names()
+		if TrainingPlan._meta.db_table not in existing_tables:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.create_model(TrainingPlan)
+			cls._created_training_plan_table = True
+
+	@classmethod
+	def tearDownClass(cls):
+		if cls._created_training_plan_table:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.delete_model(TrainingPlan)
+		super().tearDownClass()
+
+	def setUp(self):
+		TrainingPlan.objects.all().delete()
+		TutorProfile.objects.all().delete()
+		CoachProfile.objects.all().delete()
+		AuditLog.objects.all().delete()
+		self.client = Client()
+
+	def create_training_plan_row(self, **overrides):
+		values = {
+			'cohort_name': 'Cohort 1',
+			'program': 'Programme',
+			'starting_date_lable': '2026-01-01',
+			'module_name': 'Module',
+			'group_name': 'Group',
+			'coach_name': '',
+			'tutor_name': '',
+			'tutor_profile_id': None,
+			'start_date': '2026-01-05',
+			'end_date': '2026-01-19',
+			'sessions_number': '3',
+			'session_week_day': 'monday',
+			'session_start_time': '09:00',
+			'session_end_time': '11:00',
+			'session_ksb_json': '',
+			'session_coverage_json': '',
+			'ksb_profile_id': None,
+			'programme_display_order': 0,
+			'cohort_display_order': 0,
+			'is_archived': False,
+			'archived_at': None,
+			'archived_by': '',
+			'archive_reason': '',
+			'notes': '',
+		}
+		values.update(overrides)
+		return TrainingPlan.objects.create(**values)
+
+	def create_tutor(self):
+		return TutorProfile.objects.create(name='Tutor One', normalized_name='tutor one')
+
+	def create_coach(self):
+		return CoachProfile.objects.create(name='Coach One', normalized_name='coach one')
+
+	def force_delete_headers(self):
+		return {'HTTP_X_KBC_PROFILE_FORCE_DELETE': PROFILE_FORCE_DELETE_CONFIRM_VALUE}
+
+	def test_tutor_default_delete_deactivates_and_preserves_training_plan_references(self):
+		tutor = self.create_tutor()
+		coverage = [{'sessionNumber': 1, 'assignedTutorProfileId': str(tutor.id), 'coverageStatus': 'none', 'tutorUnavailable': False}]
+		row = self.create_training_plan_row(tutor_name=tutor.name, tutor_profile_id=tutor.id, session_coverage_json=json.dumps(coverage))
+
+		response = self.client.delete(f'/api/tutor-profiles/{tutor.id}/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertFalse(payload['deleted'])
+		self.assertTrue(payload['deactivated'])
+		tutor.refresh_from_db()
+		row.refresh_from_db()
+		self.assertFalse(tutor.is_active)
+		self.assertEqual(row.tutor_profile_id, tutor.id)
+		self.assertEqual(row.tutor_name, 'Tutor One')
+		self.assertEqual(json.loads(row.session_coverage_json), coverage)
+
+	def test_tutor_force_delete_without_confirmation_returns_forbidden(self):
+		tutor = self.create_tutor()
+		row = self.create_training_plan_row(tutor_name=tutor.name, tutor_profile_id=tutor.id)
+
+		with self.assertLogs('api.views', level='WARNING') as captured:
+			response = self.client.delete(f'/api/tutor-profiles/{tutor.id}/?force=1')
+
+		self.assertEqual(response.status_code, 403)
+		self.assertTrue(any('TUTOR_PROFILE_FORCE_DELETE_ATTEMPTED' in message for message in captured.output))
+		tutor.refresh_from_db()
+		row.refresh_from_db()
+		self.assertTrue(tutor.is_active)
+		self.assertEqual(row.tutor_profile_id, tutor.id)
+
+	def test_tutor_force_delete_with_confirmation_unlinks_and_audits(self):
+		tutor = self.create_tutor()
+		row = self.create_training_plan_row(tutor_name=tutor.name, tutor_profile_id=tutor.id)
+
+		with self.assertLogs('api.views', level='WARNING') as captured:
+			response = self.client.delete(
+				f'/api/tutor-profiles/{tutor.id}/?force=1',
+				data=json.dumps({'confirmForceDelete': True}),
+				content_type='application/json',
+				**self.force_delete_headers(),
+			)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTrue(response.json()['deleted'])
+		self.assertTrue(any('TUTOR_PROFILE_FORCE_DELETE_ATTEMPTED' in message and '"accepted": true' in message for message in captured.output))
+		self.assertFalse(TutorProfile.objects.filter(pk=tutor.id).exists())
+		row.refresh_from_db()
+		self.assertIsNone(row.tutor_profile_id)
+		self.assertEqual(row.tutor_name, '')
+		self.assertTrue(AuditLog.objects.filter(entity='TutorProfile', action='delete', object_id=str(tutor.id), metadata__force=True).exists())
+
+	def test_coach_default_delete_deactivates_and_preserves_coverage_references(self):
+		coach = self.create_coach()
+		coverage = [{'sessionNumber': 1, 'coverageCoachProfileId': str(coach.id), 'coverageStatus': 'covered', 'tutorUnavailable': True, 'coverageReason': 'Cover needed'}]
+		row = self.create_training_plan_row(coach_name=coach.name, session_coverage_json=json.dumps(coverage))
+
+		response = self.client.delete(f'/api/coach-profiles/{coach.id}/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertFalse(payload['deleted'])
+		self.assertTrue(payload['deactivated'])
+		coach.refresh_from_db()
+		row.refresh_from_db()
+		self.assertFalse(coach.is_active)
+		self.assertEqual(row.coach_name, 'Coach One')
+		self.assertEqual(json.loads(row.session_coverage_json), coverage)
+
+	def test_coach_force_delete_without_confirmation_returns_forbidden(self):
+		coach = self.create_coach()
+		coverage = [{'sessionNumber': 1, 'coverageCoachProfileId': str(coach.id), 'coverageStatus': 'covered', 'tutorUnavailable': True, 'coverageReason': 'Cover needed'}]
+		row = self.create_training_plan_row(coach_name=coach.name, session_coverage_json=json.dumps(coverage))
+
+		with self.assertLogs('api.views', level='WARNING') as captured:
+			response = self.client.delete(f'/api/coach-profiles/{coach.id}/?force=1')
+
+		self.assertEqual(response.status_code, 403)
+		self.assertTrue(any('COACH_PROFILE_FORCE_DELETE_ATTEMPTED' in message for message in captured.output))
+		coach.refresh_from_db()
+		row.refresh_from_db()
+		self.assertTrue(coach.is_active)
+		self.assertEqual(json.loads(row.session_coverage_json), coverage)
+
+	def test_coach_force_delete_with_confirmation_unlinks_coverage_and_audits(self):
+		coach = self.create_coach()
+		coverage = [{'sessionNumber': 1, 'coverageCoachProfileId': str(coach.id), 'coverageStatus': 'covered', 'tutorUnavailable': True, 'coverageReason': 'Cover needed'}]
+		row = self.create_training_plan_row(coach_name=coach.name, session_coverage_json=json.dumps(coverage))
+
+		with self.assertLogs('api.views', level='WARNING') as captured:
+			response = self.client.delete(
+				f'/api/coach-profiles/{coach.id}/?force=1',
+				data=json.dumps({'confirmForceDelete': True}),
+				content_type='application/json',
+				**self.force_delete_headers(),
+			)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTrue(response.json()['deleted'])
+		self.assertTrue(any('COACH_PROFILE_FORCE_DELETE_ATTEMPTED' in message and '"accepted": true' in message for message in captured.output))
+		self.assertFalse(CoachProfile.objects.filter(pk=coach.id).exists())
+		row.refresh_from_db()
+		next_coverage = json.loads(row.session_coverage_json)
+		self.assertEqual(next_coverage[0].get('coverageCoachProfileId', ''), '')
+		self.assertEqual(next_coverage[0].get('coverageStatus'), 'required')
+		self.assertEqual(row.coach_name, 'Coach One')
+		self.assertTrue(AuditLog.objects.filter(entity='CoachProfile', action='delete', object_id=str(coach.id), metadata__force=True).exists())
+
+	def test_unknown_tutor_and_coach_ids_return_not_found(self):
+		tutor_response = self.client.delete('/api/tutor-profiles/999999/')
+		coach_response = self.client.delete('/api/coach-profiles/999999/')
+
+		self.assertEqual(tutor_response.status_code, 404)
+		self.assertEqual(coach_response.status_code, 404)
+
+	def test_profile_get_lists_handle_inactive_profiles_as_before(self):
+		tutor = self.create_tutor()
+		coach = self.create_coach()
+		tutor.is_active = False
+		tutor.save(update_fields=['is_active'])
+		coach.is_active = False
+		coach.save(update_fields=['is_active'])
+
+		self.assertEqual(self.client.get('/api/tutor-profiles/').json(), [])
+		self.assertEqual(self.client.get('/api/coach-profiles/').json(), [])
+		self.assertEqual(len(self.client.get('/api/tutor-profiles/?includeInactive=1').json()), 1)
+		self.assertEqual(len(self.client.get('/api/coach-profiles/?includeInactive=1').json()), 1)
+
+
 class TrainingPlanHolidaySaveTests(TestCase):
-	def test_editing_existing_holiday_preserves_id(self):
-		holiday = TrainingPlanHoliday.objects.create(
+	def setUp(self):
+		TrainingPlanHoliday.objects.all().delete()
+		self.client = Client()
+
+	def create_holiday(self, label='Christmas 25', start_date=date(2025, 12, 22), end_date=date(2025, 12, 28), holiday_type='bank-holiday', color='#ECFDF5'):
+		return TrainingPlanHoliday.objects.create(
+			label=label,
+			start_date=start_date,
+			end_date=end_date,
+			type=holiday_type,
+			color=color,
+		)
+
+	def post_json(self, path, payload):
+		return self.client.post(path, data=json.dumps(payload), content_type='application/json')
+
+	def patch_json(self, path, payload):
+		return self.client.patch(path, data=json.dumps(payload), content_type='application/json')
+
+	def delete_json(self, path, payload):
+		return self.client.delete(path, data=json.dumps(payload), content_type='application/json')
+
+	def test_get_holidays_still_returns_items_and_version(self):
+		holiday = self.create_holiday()
+
+		response = self.client.get('/api/training-plan-holidays/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual(payload['items'][0]['id'], str(holiday.id))
+		self.assertTrue(payload['version'])
+
+	def test_create_one_holiday_does_not_delete_existing_holidays(self):
+		existing = self.create_holiday()
+
+		response = self.post_json('/api/training-plan-holidays/', {
+			'version': training_plan_holidays_version(),
+			'label': 'Spring Break',
+			'startDate': '2026-04-01',
+			'endDate': '2026-04-05',
+			'type': 'term-break',
+			'color': '#E8F4FD',
+		})
+
+		self.assertEqual(response.status_code, 201)
+		self.assertEqual(TrainingPlanHoliday.objects.count(), 2)
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=existing.pk).exists())
+		self.assertTrue(TrainingPlanHoliday.objects.filter(label='Spring Break').exists())
+		self.assertIn('version', response.json())
+
+	def test_update_one_holiday_only_changes_that_record(self):
+		target = self.create_holiday()
+		other = self.create_holiday(
+			label='Spring Break',
+			start_date=date(2026, 4, 1),
+			end_date=date(2026, 4, 5),
+			holiday_type='term-break',
+			color='#E8F4FD',
+		)
+
+		response = self.patch_json(f'/api/training-plan-holidays/{target.id}/', {
+			'version': training_plan_holidays_version(),
+			'label': 'Christmas Break 25',
+			'startDate': '2025-12-22',
+			'endDate': '2025-12-29',
+			'type': 'bank-holiday',
+			'color': '#ECFDF5',
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.label, 'Christmas Break 25')
+		self.assertEqual(target.end_date, date(2025, 12, 29))
+		self.assertEqual(other.label, 'Spring Break')
+		self.assertEqual(other.end_date, date(2026, 4, 5))
+
+	def test_delete_one_holiday_does_not_delete_unrelated_holidays(self):
+		target = self.create_holiday()
+		other = self.create_holiday(
+			label='Spring Break',
+			start_date=date(2026, 4, 1),
+			end_date=date(2026, 4, 5),
+			holiday_type='term-break',
+			color='#E8F4FD',
+		)
+
+		response = self.delete_json(f'/api/training-plan-holidays/{target.id}/', {
+			'version': training_plan_holidays_version(),
+		})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(TrainingPlanHoliday.objects.filter(pk=target.pk).exists())
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=other.pk).exists())
+
+	def test_stale_write_returns_conflict(self):
+		target = self.create_holiday()
+		stale_version = training_plan_holidays_version()
+		self.create_holiday(
+			label='Spring Break',
+			start_date=date(2026, 4, 1),
+			end_date=date(2026, 4, 5),
+			holiday_type='term-break',
+			color='#E8F4FD',
+		)
+
+		response = self.patch_json(f'/api/training-plan-holidays/{target.id}/', {
+			'version': stale_version,
+			'label': 'Stale Update',
+		})
+
+		self.assertEqual(response.status_code, 409)
+		target.refresh_from_db()
+		self.assertEqual(target.label, 'Christmas 25')
+
+	def test_unknown_fields_are_rejected(self):
+		response = self.post_json('/api/training-plan-holidays/', {
+			'version': training_plan_holidays_version(),
+			'label': 'Christmas Break',
+			'startDate': '2025-12-22',
+			'endDate': '2025-12-28',
+			'type': 'bank-holiday',
+			'color': '#ECFDF5',
+			'unexpected': True,
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(TrainingPlanHoliday.objects.count(), 0)
+
+		holiday = self.create_holiday()
+		response = self.patch_json(f'/api/training-plan-holidays/{holiday.id}/', {
+			'version': training_plan_holidays_version(),
+			'label': 'Christmas Break',
+			'unexpected': True,
+		})
+		self.assertEqual(response.status_code, 400)
+
+	def test_missing_items_from_submitted_payload_are_not_silently_deleted(self):
+		existing = self.create_holiday()
+
+		response = self.post_json('/api/training-plan-holidays/', {
+			'version': training_plan_holidays_version(),
+			'label': 'Spring Break',
+			'startDate': '2026-04-01',
+			'endDate': '2026-04-05',
+			'type': 'term-break',
+			'color': '#E8F4FD',
+		})
+
+		self.assertEqual(response.status_code, 201)
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=existing.pk).exists())
+
+	def test_full_list_replace_style_payload_is_blocked(self):
+		holiday = self.create_holiday()
+
+		response = self.post_json('/api/training-plan-holidays/', {
+			'version': training_plan_holidays_version(),
+			'items': [{
+				'id': str(holiday.id),
+				'label': 'Christmas Break 25',
+				'startDate': '2025-12-22',
+				'endDate': '2025-12-28',
+				'type': 'bank-holiday',
+				'color': '#ECFDF5',
+			}],
+		})
+
+		self.assertEqual(response.status_code, 403)
+		self.assertEqual(TrainingPlanHoliday.objects.count(), 1)
+		holiday.refresh_from_db()
+		self.assertEqual(holiday.label, 'Christmas 25')
+
+
+class TrainingPlanHolidayTypeSafetyTests(TestCase):
+	def setUp(self):
+		TrainingPlanHoliday.objects.all().delete()
+		AuditLog.objects.all().delete()
+		self.client = Client()
+
+	def create_type_marker(self, value='bank-holiday', label='Bank Holiday', color='#ECFDF5'):
+		return TrainingPlanHoliday.objects.create(
+			label=f'__holiday_type__:{label}',
+			start_date=date(2099, 1, 1),
+			end_date=date(2099, 1, 1),
+			type=value,
+			color=color,
+		)
+
+	def delete_json(self, path, payload):
+		return self.client.delete(path, data=json.dumps(payload), content_type='application/json')
+
+	def test_get_holiday_types_returns_version_header(self):
+		self.create_type_marker()
+
+		response = self.client.get('/api/training-plan-holiday-types/')
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTrue(response.headers.get('X-KBC-Training-Plan-Holiday-Types-Version'))
+		self.assertEqual(response.json()[0]['value'], 'bank-holiday')
+
+	def test_delete_holiday_type_deletes_only_one_marker_and_audits(self):
+		target = self.create_type_marker(value='bank-holiday', label='Bank Holiday')
+		other = self.create_type_marker(value='term-break', label='Term Break')
+		real_holiday = TrainingPlanHoliday.objects.create(
 			label='Christmas 25',
 			start_date=date(2025, 12, 22),
 			end_date=date(2025, 12, 28),
 			type='bank-holiday',
 			color='#ECFDF5',
 		)
-		holiday_id = holiday.id
 
-		response = Client().post(
-			'/api/training-plan-holidays/',
-			data=json.dumps({
-				'version': training_plan_holidays_version(),
-				'items': [{
-					'id': str(holiday.id),
-					'label': 'Christmas Break 25',
-					'startDate': '2025-12-22',
-					'endDate': '2025-12-28',
-					'type': 'bank-holiday',
-					'color': '#ECFDF5',
-				}],
-			}),
-			content_type='application/json',
-		)
+		response = self.delete_json('/api/training-plan-holiday-types/', {
+			'id': str(target.id),
+			'value': 'bank-holiday',
+			'version': training_plan_holiday_types_version(),
+		})
 
 		self.assertEqual(response.status_code, 200)
-		self.assertEqual(TrainingPlanHoliday.objects.count(), 1)
-		holiday.refresh_from_db()
-		self.assertEqual(holiday.id, holiday_id)
-		self.assertEqual(holiday.label, 'Christmas Break 25')
+		self.assertFalse(TrainingPlanHoliday.objects.filter(pk=target.pk).exists())
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=other.pk).exists())
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=real_holiday.pk).exists())
+		self.assertTrue(AuditLog.objects.filter(entity='TrainingPlanHolidayType', action='delete', object_id=str(target.id), metadata__matchedCount=1).exists())
 
+	def test_delete_holiday_type_rejects_ambiguous_marker_rows(self):
+		first = self.create_type_marker(value='bank-holiday', label='Bank Holiday')
+		second = self.create_type_marker(value='bank-holiday', label='Bank Holiday Copy')
+
+		response = self.delete_json('/api/training-plan-holiday-types/', {
+			'value': 'bank-holiday',
+		})
+
+		self.assertEqual(response.status_code, 409)
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=first.pk).exists())
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=second.pk).exists())
+		self.assertTrue(AuditLog.objects.filter(entity='TrainingPlanHolidayType', action='reject', metadata__matchedCount=2).exists())
+
+	def test_holiday_type_full_replace_payload_is_blocked(self):
+		self.create_type_marker()
+
+		response = self.delete_json('/api/training-plan-holiday-types/', {
+			'items': [],
+			'value': 'bank-holiday',
+		})
+
+		self.assertEqual(response.status_code, 403)
+		self.assertEqual(TrainingPlanHoliday.objects.count(), 1)
+
+	def test_holiday_type_stale_optional_version_is_rejected(self):
+		target = self.create_type_marker(value='bank-holiday', label='Bank Holiday')
+		stale_version = training_plan_holiday_types_version()
+		self.create_type_marker(value='term-break', label='Term Break')
+
+		response = self.delete_json('/api/training-plan-holiday-types/', {
+			'id': str(target.id),
+			'value': 'bank-holiday',
+			'version': stale_version,
+		})
+
+		self.assertEqual(response.status_code, 409)
+		self.assertTrue(TrainingPlanHoliday.objects.filter(pk=target.pk).exists())
+
+
+class TrainingPlanModuleDefinitionScopedTests(TestCase):
+	def setUp(self):
+		TrainingPlanModuleDefinition.objects.all().delete()
+		self.client = Client()
+
+	def create_definition(self, module_id='module-a', name='Module A', default_sessions=3, bg='#111111', tx='#ffffff'):
+		return TrainingPlanModuleDefinition.objects.create(
+			module_id=module_id,
+			name=name,
+			default_sessions=default_sessions,
+			bg=bg,
+			tx=tx,
+		)
+
+	def post_json(self, path, payload):
+		return self.client.post(path, data=json.dumps(payload), content_type='application/json')
+
+	def patch_json(self, path, payload):
+		return self.client.patch(path, data=json.dumps(payload), content_type='application/json')
+
+	def delete_json(self, path, payload):
+		return self.client.delete(path, data=json.dumps(payload), content_type='application/json')
+
+	def test_get_module_definitions_still_returns_array_with_version_header(self):
+		self.create_definition()
+
+		response = self.client.get('/api/training-plan-modules/')
+
+		self.assertEqual(response.status_code, 200)
 		payload = response.json()
-		self.assertEqual(payload['saved'], 1)
-		self.assertEqual(payload['items'][0]['id'], str(holiday_id))
+		self.assertIsInstance(payload, list)
+		self.assertEqual(payload[0]['id'], 'module-a')
+		self.assertTrue(response.headers.get('X-KBC-Training-Plan-Modules-Version'))
+
+	def test_create_one_module_definition_does_not_delete_existing_definitions(self):
+		self.create_definition()
+
+		response = self.post_json('/api/training-plan-modules/', {
+			'version': training_plan_module_definitions_version(),
+			'id': 'module-b',
+			'name': 'Module B',
+			'defaultSessions': 5,
+			'bg': '#222222',
+			'tx': '#ffffff',
+		})
+
+		self.assertEqual(response.status_code, 201)
+		self.assertEqual(TrainingPlanModuleDefinition.objects.count(), 2)
+		self.assertTrue(TrainingPlanModuleDefinition.objects.filter(module_id='module-a').exists())
+		self.assertTrue(TrainingPlanModuleDefinition.objects.filter(module_id='module-b').exists())
+
+	def test_update_one_module_definition_only_changes_that_record(self):
+		target = self.create_definition()
+		other = self.create_definition('module-b', 'Module B', 7, '#222222', '#000000')
+
+		response = self.patch_json(f'/api/training-plan-modules/{target.module_id}/', {
+			'version': training_plan_module_definitions_version(),
+			'name': 'Module A Updated',
+			'defaultSessions': 9,
+			'bg': '#333333',
+			'tx': '#ffffff',
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.name, 'Module A Updated')
+		self.assertEqual(target.default_sessions, 9)
+		self.assertEqual(other.name, 'Module B')
+		self.assertEqual(other.default_sessions, 7)
+
+	def test_delete_one_module_definition_does_not_delete_unrelated_records(self):
+		target = self.create_definition()
+		self.create_definition('module-b', 'Module B')
+
+		response = self.delete_json(f'/api/training-plan-modules/{target.module_id}/', {
+			'version': training_plan_module_definitions_version(),
+		})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(TrainingPlanModuleDefinition.objects.filter(module_id='module-a').exists())
+		self.assertTrue(TrainingPlanModuleDefinition.objects.filter(module_id='module-b').exists())
+
+	def test_stale_write_returns_conflict(self):
+		target = self.create_definition()
+		stale_version = training_plan_module_definitions_version()
+		self.create_definition('module-b', 'Module B')
+
+		response = self.patch_json(f'/api/training-plan-modules/{target.module_id}/', {
+			'version': stale_version,
+			'name': 'Stale Update',
+		})
+
+		self.assertEqual(response.status_code, 409)
+		target.refresh_from_db()
+		self.assertEqual(target.name, 'Module A')
+
+	def test_unknown_fields_are_rejected(self):
+		response = self.post_json('/api/training-plan-modules/', {
+			'version': training_plan_module_definitions_version(),
+			'id': 'module-a',
+			'name': 'Module A',
+			'defaultSessions': 3,
+			'unexpected': True,
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(TrainingPlanModuleDefinition.objects.count(), 0)
+
+		self.create_definition()
+		response = self.patch_json('/api/training-plan-modules/module-a/', {
+			'version': training_plan_module_definitions_version(),
+			'name': 'Module A',
+			'unexpected': True,
+		})
+		self.assertEqual(response.status_code, 400)
+
+	def test_old_full_replace_payload_is_blocked(self):
+		self.create_definition()
+
+		response = self.post_json('/api/training-plan-modules/', {
+			'items': [{
+				'id': 'module-b',
+				'name': 'Module B',
+				'defaultSessions': 4,
+				'bg': '#222222',
+				'tx': '#ffffff',
+			}],
+		})
+
+		self.assertEqual(response.status_code, 403)
+		self.assertEqual(TrainingPlanModuleDefinition.objects.count(), 1)
+		self.assertTrue(TrainingPlanModuleDefinition.objects.filter(module_id='module-a').exists())
+
+
+class TrainingPlanProgramConfigScopedTests(TestCase):
+	def setUp(self):
+		TrainingPlanProgramConfig.objects.all().delete()
+		self.client = Client()
+
+	def create_config(self, program_id='prog-a', name='Programme A', sub='Sub A', color='#111111'):
+		return TrainingPlanProgramConfig.objects.create(
+			program_id=program_id,
+			name=name,
+			sub=sub,
+			color=color,
+		)
+
+	def post_json(self, path, payload):
+		return self.client.post(path, data=json.dumps(payload), content_type='application/json')
+
+	def patch_json(self, path, payload):
+		return self.client.patch(path, data=json.dumps(payload), content_type='application/json')
+
+	def delete_json(self, path, payload):
+		return self.client.delete(path, data=json.dumps(payload), content_type='application/json')
+
+	def test_get_programme_configs_still_returns_array_with_version_header(self):
+		self.create_config()
+
+		response = self.client.get('/api/training-plan-program-configs/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertIsInstance(payload, list)
+		self.assertEqual(payload[0]['id'], 'prog-a')
+		self.assertTrue(response.headers.get('X-KBC-Training-Plan-Program-Configs-Version'))
+
+	def test_create_one_programme_config_does_not_delete_existing_configs(self):
+		self.create_config()
+
+		response = self.post_json('/api/training-plan-program-configs/', {
+			'version': training_plan_program_configs_version(),
+			'id': 'prog-b',
+			'name': 'Programme B',
+			'sub': 'Sub B',
+			'color': '#222222',
+		})
+
+		self.assertEqual(response.status_code, 201)
+		self.assertEqual(TrainingPlanProgramConfig.objects.count(), 2)
+		self.assertTrue(TrainingPlanProgramConfig.objects.filter(program_id='prog-a').exists())
+		self.assertTrue(TrainingPlanProgramConfig.objects.filter(program_id='prog-b').exists())
+
+	def test_update_one_programme_config_only_changes_that_record(self):
+		target = self.create_config()
+		other = self.create_config('prog-b', 'Programme B', 'Sub B', '#222222')
+
+		response = self.patch_json(f'/api/training-plan-program-configs/{target.program_id}/', {
+			'version': training_plan_program_configs_version(),
+			'name': 'Programme A Updated',
+			'sub': 'Updated Sub',
+			'color': '#333333',
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.name, 'Programme A Updated')
+		self.assertEqual(target.sub, 'Updated Sub')
+		self.assertEqual(other.name, 'Programme B')
+		self.assertEqual(other.sub, 'Sub B')
+
+	def test_delete_one_programme_config_does_not_delete_unrelated_records(self):
+		target = self.create_config()
+		self.create_config('prog-b', 'Programme B')
+
+		response = self.delete_json(f'/api/training-plan-program-configs/{target.program_id}/', {
+			'version': training_plan_program_configs_version(),
+		})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(TrainingPlanProgramConfig.objects.filter(program_id='prog-a').exists())
+		self.assertTrue(TrainingPlanProgramConfig.objects.filter(program_id='prog-b').exists())
+
+	def test_stale_write_returns_conflict(self):
+		target = self.create_config()
+		stale_version = training_plan_program_configs_version()
+		self.create_config('prog-b', 'Programme B')
+
+		response = self.patch_json(f'/api/training-plan-program-configs/{target.program_id}/', {
+			'version': stale_version,
+			'name': 'Stale Update',
+		})
+
+		self.assertEqual(response.status_code, 409)
+		target.refresh_from_db()
+		self.assertEqual(target.name, 'Programme A')
+
+	def test_unknown_fields_are_rejected(self):
+		response = self.post_json('/api/training-plan-program-configs/', {
+			'version': training_plan_program_configs_version(),
+			'id': 'prog-a',
+			'name': 'Programme A',
+			'unexpected': True,
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(TrainingPlanProgramConfig.objects.count(), 0)
+
+		self.create_config()
+		response = self.patch_json('/api/training-plan-program-configs/prog-a/', {
+			'version': training_plan_program_configs_version(),
+			'name': 'Programme A',
+			'unexpected': True,
+		})
+		self.assertEqual(response.status_code, 400)
+
+	def test_old_full_replace_payload_is_blocked(self):
+		self.create_config()
+
+		response = self.post_json('/api/training-plan-program-configs/', {
+			'items': [{
+				'id': 'prog-b',
+				'name': 'Programme B',
+				'sub': 'Sub B',
+				'color': '#222222',
+			}],
+		})
+
+		self.assertEqual(response.status_code, 403)
+		self.assertEqual(TrainingPlanProgramConfig.objects.count(), 1)
+		self.assertTrue(TrainingPlanProgramConfig.objects.filter(program_id='prog-a').exists())
 
 
 class TrainingPlanPartialUpdateTests(TestCase):

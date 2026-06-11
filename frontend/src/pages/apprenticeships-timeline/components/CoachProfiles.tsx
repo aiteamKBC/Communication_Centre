@@ -4,6 +4,7 @@ import { getModuleMeta } from '../data';
 import { buildCoachProfilesFromGroups } from '../coachProfiles';
 import { normalizeTutorName } from '../tutorProfiles';
 import { buildHolidayAdjustedSessionPlan } from '../utils';
+import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
   groups: ProgrammeGroup[];
@@ -328,6 +329,42 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
     }
   };
 
+  const deleteActiveProfile = async () => {
+    if (!activeProfile || activeProfile.id.startsWith('legacy:') || !onDeleteCoachProfile) return;
+    const result = await kbcSwal.fire({
+      title: 'Deactivate Coach Profile?',
+      html: `
+        <div style="text-align:left;line-height:1.55">
+          <p>This will deactivate <strong>${activeProfile.name}</strong> and hide the profile from normal selection.</p>
+          <p style="margin-top:8px;color:#64748b">Existing Training Plan and coverage references will remain unchanged.</p>
+        </div>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Deactivate Profile',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+      confirmButtonColor: '#DC2626',
+      cancelButtonColor: '#1B2A4A',
+    });
+    if (!result.isConfirmed) return;
+    void kbcSwal.fire({
+      title: 'Deactivating coach...',
+      html: `Deactivating <strong>${activeProfile.name}</strong>. Existing Training Plan and coverage references will remain unchanged.`,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
+    const deleted = await onDeleteCoachProfile(activeProfile.id);
+    if (deleted) {
+      setSelectedId('');
+    }
+  };
+
   return (
     <section className="grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-w-0 rounded-xl border border-gray-200 bg-white">
@@ -407,7 +444,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
                 {canEdit && !activeProfile.id.startsWith('legacy:') && (
                   <div className="flex gap-2">
                     {onUpdateCoachProfile && <button type="button" onClick={() => startEdit(activeProfile)} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">Edit Profile</button>}
-                    {onDeleteCoachProfile && <button type="button" onClick={() => void onDeleteCoachProfile(activeProfile.id)} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Delete</button>}
+                    {onDeleteCoachProfile && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
                   </div>
                 )}
               </div>

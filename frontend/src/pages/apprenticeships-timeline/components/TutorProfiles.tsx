@@ -573,16 +573,16 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
   const deleteActiveProfile = async () => {
     if (!activeTutorProfile || activeTutorProfile.id.startsWith('legacy:') || !onDeleteTutorProfile) return;
     const result = await kbcSwal.fire({
-      title: 'Delete Tutor Permanently?',
+      title: 'Deactivate Tutor Profile?',
       html: `
         <div style="text-align:left;line-height:1.55">
-          <p>You are about to permanently delete <strong>${activeTutorProfile.name}</strong>.</p>
-          <p style="margin-top:8px;color:#64748b">Linked modules and sessions will stay in the Training Plan, but their tutor assignment/coverage reference to this profile will be cleared.</p>
+          <p>This will deactivate <strong>${activeTutorProfile.name}</strong> and hide the profile from normal selection.</p>
+          <p style="margin-top:8px;color:#64748b">Existing Training Plan references will remain unchanged.</p>
         </div>
       `,
       icon: 'warning',
       showCancelButton: true,
-      confirmButtonText: 'Delete Permanently',
+      confirmButtonText: 'Deactivate Profile',
       cancelButtonText: 'Cancel',
       reverseButtons: true,
       focusCancel: true,
@@ -591,8 +591,8 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
     });
     if (!result.isConfirmed) return;
     void kbcSwal.fire({
-      title: 'Deleting tutor...',
-      html: `Removing <strong>${activeTutorProfile.name}</strong> and updating linked Training Plan records.`,
+      title: 'Deactivating tutor...',
+      html: `Deactivating <strong>${activeTutorProfile.name}</strong>. Existing Training Plan references will remain unchanged.`,
       allowOutsideClick: false,
       allowEscapeKey: false,
       showConfirmButton: false,

@@ -39,6 +39,8 @@ MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES = {
 }
 LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_HEADER = 'X-KBC-Legacy-Training-Plan-Full-Save'
 LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE = 'internal-admin-debug'
+PROFILE_FORCE_DELETE_CONFIRM_HEADER = 'X-KBC-Profile-Force-Delete'
+PROFILE_FORCE_DELETE_CONFIRM_VALUE = 'internal-admin-debug'
 
 
 REALTIME_RESOURCE_ENTITIES = {
@@ -1836,6 +1838,28 @@ def remove_coach_profile_references(profile_id: int) -> int:
 	return changed_rows
 
 
+def profile_force_delete_confirmed(request, payload: dict) -> bool:
+	return (
+		payload.get('confirmForceDelete') is True
+		and _header_text(request, PROFILE_FORCE_DELETE_CONFIRM_HEADER) == PROFILE_FORCE_DELETE_CONFIRM_VALUE
+	)
+
+
+def log_profile_force_delete_attempt(request, *, label: str, profile_id: int, accepted: bool, rejection_reason: str = '') -> None:
+	logger.warning(
+		'%s %s',
+		label,
+		json.dumps({
+			'path': request.get_full_path(),
+			'method': request.method,
+			'profileId': profile_id,
+			'accepted': accepted,
+			'rejectionReason': rejection_reason,
+			'timestamp': timezone.now().isoformat(),
+		}, sort_keys=True),
+	)
+
+
 def normalize_nullable_int(value) -> int | None:
 	if value in {None, ''}:
 		return None
@@ -1965,6 +1989,66 @@ def training_plan_holidays_version() -> str:
 	return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
+def training_plan_holidays_snapshot() -> list[dict]:
+	return [
+		serialize_training_plan_holiday(item)
+		for item in training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+	]
+
+
+def training_plan_holidays_response(payload, *, status: int = 200):
+	response = JsonResponse(payload, safe=not isinstance(payload, list), status=status)
+	response['X-KBC-Training-Plan-Holidays-Version'] = training_plan_holidays_version()
+	return response
+
+
+def require_training_plan_holidays_version(payload: dict, current_version: str, current_items: list[dict]) -> JsonResponse | None:
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if not submitted_version:
+		return JsonResponse(
+			{
+				'detail': 'Reload the latest holiday list before saving. This prevents an older page from overwriting newer holiday periods.',
+				'currentVersion': current_version,
+				'items': current_items,
+			},
+			status=409,
+		)
+	if submitted_version != current_version:
+		return JsonResponse(
+			{
+				'detail': 'The holiday list was updated by another user. Reload the latest holidays before saving.',
+				'currentVersion': current_version,
+				'items': current_items,
+			},
+			status=409,
+		)
+	return None
+
+
+def training_plan_holiday_values_from_payload(payload: dict) -> tuple[dict, str]:
+	label = str(payload.get('label', '')).strip()
+	start_date = parse_date(str(payload.get('startDate', '')).strip())
+	end_date = parse_date(str(payload.get('endDate', '')).strip())
+	holiday_type = str(payload.get('type', 'holiday')).strip() or 'holiday'
+	color = str(payload.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(holiday_type, '#FFFBEB')
+
+	if not label:
+		return {}, 'label is required.'
+	if start_date is None:
+		return {}, 'startDate is required.'
+	if end_date is None:
+		return {}, 'endDate is required.'
+	if end_date < start_date:
+		return {}, 'endDate must be on or after startDate.'
+	return {
+		'label': label,
+		'start_date': start_date,
+		'end_date': end_date,
+		'type': holiday_type,
+		'color': color,
+	}, ''
+
+
 def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
 	label = item.label[len(TRAINING_PLAN_HOLIDAY_TYPE_MARKER):].strip() if item.label.startswith(TRAINING_PLAN_HOLIDAY_TYPE_MARKER) else (item.type or 'holiday')
 	return {
@@ -1973,6 +2057,51 @@ def serialize_training_plan_holiday_type(item: TrainingPlanHoliday) -> dict:
 		'label': label,
 		'color': item.color or TRAINING_PLAN_HOLIDAY_COLORS.get(item.type or 'holiday', '#FFFBEB'),
 	}
+
+
+def training_plan_holiday_types_queryset():
+	return TrainingPlanHoliday.objects.filter(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
+
+
+def training_plan_holiday_types_snapshot() -> list[dict]:
+	return [
+		serialize_training_plan_holiday_type(item)
+		for item in training_plan_holiday_types_queryset().order_by('type', 'id')
+	]
+
+
+def training_plan_holiday_types_version(items: list[dict] | None = None) -> str:
+	items = items if items is not None else training_plan_holiday_types_snapshot()
+	version_payload = [
+		{
+			'id': item.get('id', ''),
+			'value': item.get('value', ''),
+			'label': item.get('label', ''),
+			'color': item.get('color', ''),
+		}
+		for item in items
+	]
+	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def training_plan_holiday_types_response(payload, *, status: int = 200):
+	response = JsonResponse(payload, safe=not isinstance(payload, list), status=status)
+	response['X-KBC-Training-Plan-Holiday-Types-Version'] = training_plan_holiday_types_version()
+	return response
+
+
+def require_optional_training_plan_holiday_types_version(payload: dict, current_version: str, current_items: list[dict]) -> JsonResponse | None:
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if submitted_version and submitted_version != current_version:
+		return JsonResponse(
+			{
+				'detail': 'The holiday types were updated by another user. Reload the latest holiday types before saving.',
+				'currentVersion': current_version,
+				'items': current_items,
+			},
+			status=409,
+		)
+	return None
 
 
 def serialize_training_plan_module_definition(item: TrainingPlanModuleDefinition) -> dict:
@@ -1985,6 +2114,73 @@ def serialize_training_plan_module_definition(item: TrainingPlanModuleDefinition
 	}
 
 
+def training_plan_module_definitions_snapshot() -> list[dict]:
+	return [
+		serialize_training_plan_module_definition(item)
+		for item in TrainingPlanModuleDefinition.objects.all().order_by('module_id', 'id')
+	]
+
+
+def training_plan_module_definitions_version(items: list[dict] | None = None) -> str:
+	items = items if items is not None else training_plan_module_definitions_snapshot()
+	version_payload = [
+		{
+			'id': item.get('id', ''),
+			'name': item.get('name', ''),
+			'defaultSessions': item.get('defaultSessions', ''),
+			'bg': item.get('bg', ''),
+			'tx': item.get('tx', ''),
+		}
+		for item in items
+	]
+	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def training_plan_module_definitions_response(payload, *, status: int = 200):
+	response = JsonResponse(payload, safe=not isinstance(payload, list), status=status)
+	response['X-KBC-Training-Plan-Modules-Version'] = training_plan_module_definitions_version()
+	return response
+
+
+def require_training_plan_module_definitions_version(payload: dict, current_version: str, current_items: list[dict]) -> JsonResponse | None:
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if not submitted_version:
+		return JsonResponse({
+			'detail': 'Reload the latest module definitions before saving. This prevents an older page from overwriting newer module data.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	if submitted_version != current_version:
+		return JsonResponse({
+			'detail': 'The module definitions were updated by another user. Reload the latest modules before saving.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	return None
+
+
+def training_plan_module_definition_values_from_payload(payload: dict, *, require_id: bool = True) -> tuple[dict, str]:
+	module_id = str(payload.get('id', '')).strip()
+	name = str(payload.get('name', '')).strip()
+	bg = str(payload.get('bg', '')).strip() or '#4A6DB0'
+	tx = str(payload.get('tx', '')).strip() or '#ffffff'
+	try:
+		default_sessions = max(1, int(payload.get('defaultSessions', 1) or 1))
+	except (TypeError, ValueError):
+		return {}, 'defaultSessions must be a positive integer.'
+	if require_id and not module_id:
+		return {}, 'id is required.'
+	if not name:
+		return {}, 'name is required.'
+	return {
+		'module_id': module_id,
+		'name': name,
+		'default_sessions': default_sessions,
+		'bg': bg,
+		'tx': tx,
+	}, ''
+
+
 def serialize_training_plan_program_config(item: TrainingPlanProgramConfig) -> dict:
 	return {
 		'id': item.program_id,
@@ -1992,6 +2188,65 @@ def serialize_training_plan_program_config(item: TrainingPlanProgramConfig) -> d
 		'sub': item.sub,
 		'color': item.color,
 	}
+
+
+def training_plan_program_configs_snapshot() -> list[dict]:
+	return [
+		serialize_training_plan_program_config(item)
+		for item in TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
+	]
+
+
+def training_plan_program_configs_version(items: list[dict] | None = None) -> str:
+	items = items if items is not None else training_plan_program_configs_snapshot()
+	version_payload = [
+		{
+			'id': item.get('id', ''),
+			'name': item.get('name', ''),
+			'sub': item.get('sub', ''),
+			'color': item.get('color', ''),
+		}
+		for item in items
+	]
+	return hashlib.sha256(json.dumps(version_payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def training_plan_program_configs_response(payload, *, status: int = 200):
+	response = JsonResponse(payload, safe=not isinstance(payload, list), status=status)
+	response['X-KBC-Training-Plan-Program-Configs-Version'] = training_plan_program_configs_version()
+	return response
+
+
+def require_training_plan_program_configs_version(payload: dict, current_version: str, current_items: list[dict]) -> JsonResponse | None:
+	submitted_version = str(payload.get('version', '') or '').strip()
+	if not submitted_version:
+		return JsonResponse({
+			'detail': 'Reload the latest programme configs before saving. This prevents an older page from overwriting newer programme data.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	if submitted_version != current_version:
+		return JsonResponse({
+			'detail': 'The programme configs were updated by another user. Reload the latest programmes before saving.',
+			'currentVersion': current_version,
+			'items': current_items,
+		}, status=409)
+	return None
+
+
+def training_plan_program_config_values_from_payload(payload: dict, *, require_id: bool = True) -> tuple[dict, str]:
+	program_id = str(payload.get('id', '')).strip()
+	name = str(payload.get('name', '')).strip()
+	if require_id and not program_id:
+		return {}, 'id is required.'
+	if not name:
+		return {}, 'name is required.'
+	return {
+		'program_id': program_id,
+		'name': name,
+		'sub': str(payload.get('sub', '')).strip(),
+		'color': str(payload.get('color', '')).strip() or '#1B2A4A',
+	}, ''
 
 
 FEEDBACK_METADATA_HEADER = '--- Submission metadata ---'
@@ -3829,6 +4084,14 @@ def tutor_profile_detail(request, profile_id: int):
 		before = serialize_tutor_profile(record, tutor_profile_session_counts())
 		force_delete = str(request.GET.get('force', '')).strip().lower() in {'1', 'true', 'yes'}
 		if force_delete:
+			payload, error_response = parse_json_payload(request)
+			if error_response is not None:
+				return error_response
+			if not profile_force_delete_confirmed(request, payload):
+				reason = 'Force deleting a tutor profile requires confirmForceDelete=true and the internal profile force-delete header.'
+				log_profile_force_delete_attempt(request, label='TUTOR_PROFILE_FORCE_DELETE_ATTEMPTED', profile_id=profile_id, accepted=False, rejection_reason=reason)
+				return JsonResponse({'detail': reason}, status=403)
+			log_profile_force_delete_attempt(request, label='TUTOR_PROFILE_FORCE_DELETE_ATTEMPTED', profile_id=profile_id, accepted=True)
 			with transaction.atomic():
 				unlinked_rows = remove_tutor_profile_references(record.id)
 				record.delete()
@@ -3842,16 +4105,13 @@ def tutor_profile_detail(request, profile_id: int):
 				metadata={'force': True, 'unlinkedRows': unlinked_rows},
 			)
 			return JsonResponse({'deleted': True, 'force': True, 'unlinkedRows': unlinked_rows})
-		in_use = TrainingPlan.objects.filter(tutor_profile_id=record.id).exists()
-		if in_use:
+		with transaction.atomic():
+			record = TutorProfile.objects.select_for_update().get(pk=profile_id)
 			record.is_active = False
 			record.save(update_fields=['is_active', 'updated_at'])
-			serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
-			_audit_log(request, action='deactivate', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized)
-			return JsonResponse(serialized)
-		record.delete()
-		_audit_log(request, action='delete', entity='TutorProfile', object_id=profile_id, object_label=before.get('name', ''), before=before)
-		return JsonResponse({'deleted': True})
+		serialized = serialize_tutor_profile(record, tutor_profile_session_counts())
+		_audit_log(request, action='deactivate', entity='TutorProfile', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'defaultDelete': True, 'referencesPreserved': True})
+		return JsonResponse({'deleted': False, 'deactivated': True, 'item': serialized})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
@@ -3955,17 +4215,27 @@ def coach_profile_detail(request, profile_id: int):
 	if request.method == 'DELETE':
 		before = serialize_coach_profile(record, coach_profile_session_counts())
 		force_delete = str(request.GET.get('force', '')).strip().lower() in {'1', 'true', 'yes'}
-		with transaction.atomic():
-			unlinked_rows = remove_coach_profile_references(record.id)
-			if force_delete or unlinked_rows == 0:
+		if force_delete:
+			payload, error_response = parse_json_payload(request)
+			if error_response is not None:
+				return error_response
+			if not profile_force_delete_confirmed(request, payload):
+				reason = 'Force deleting a coach profile requires confirmForceDelete=true and the internal profile force-delete header.'
+				log_profile_force_delete_attempt(request, label='COACH_PROFILE_FORCE_DELETE_ATTEMPTED', profile_id=profile_id, accepted=False, rejection_reason=reason)
+				return JsonResponse({'detail': reason}, status=403)
+			log_profile_force_delete_attempt(request, label='COACH_PROFILE_FORCE_DELETE_ATTEMPTED', profile_id=profile_id, accepted=True)
+			with transaction.atomic():
+				unlinked_rows = remove_coach_profile_references(record.id)
 				record.delete()
-				_audit_log(request, action='delete', entity='CoachProfile', object_id=profile_id, object_label=before.get('name', ''), before=before, metadata={'force': force_delete, 'unlinkedRows': unlinked_rows})
-				return JsonResponse({'deleted': True, 'force': force_delete, 'unlinkedRows': unlinked_rows})
+			_audit_log(request, action='delete', entity='CoachProfile', object_id=profile_id, object_label=before.get('name', ''), before=before, metadata={'force': True, 'unlinkedRows': unlinked_rows})
+			return JsonResponse({'deleted': True, 'force': True, 'unlinkedRows': unlinked_rows})
+		with transaction.atomic():
+			record = CoachProfile.objects.select_for_update().get(pk=profile_id)
 			record.is_active = False
 			record.save(update_fields=['is_active', 'updated_at'])
 		serialized = serialize_coach_profile(record, coach_profile_session_counts())
-		_audit_log(request, action='deactivate', entity='CoachProfile', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'unlinkedRows': unlinked_rows})
-		return JsonResponse(serialized)
+		_audit_log(request, action='deactivate', entity='CoachProfile', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'defaultDelete': True, 'referencesPreserved': True})
+		return JsonResponse({'deleted': False, 'deactivated': True, 'item': serialized})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
@@ -4050,132 +4320,119 @@ def training_plan_holidays(request):
 		except json.JSONDecodeError:
 			return HttpResponseBadRequest('Invalid JSON payload.')
 
-		items = payload.get('items') if isinstance(payload, dict) else None
-		if not isinstance(items, list):
-			return HttpResponseBadRequest('Payload must include an items array.')
-		submitted_version = str(payload.get('version', '') or '').strip() if isinstance(payload, dict) else ''
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
 
-		validated_items = []
-		invalid_count = 0
-		for row in items:
-			if not isinstance(row, dict):
-				invalid_count += 1
-				continue
-
-			row_id_raw = str(row.get('id', '')).strip()
-			row_id = None
-			if row_id_raw:
-				try:
-					row_id = int(row_id_raw)
-				except (TypeError, ValueError):
-					row_id = None
-			label = str(row.get('label', '')).strip()
-			start_date = parse_date(str(row.get('startDate', '')).strip())
-			end_date = parse_date(str(row.get('endDate', '')).strip())
-			holiday_type = str(row.get('type', 'holiday')).strip() or 'holiday'
-			color = str(row.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(holiday_type, '#FFFBEB')
-
-			if not label or start_date is None or end_date is None:
-				invalid_count += 1
-				continue
-
-			if end_date < start_date:
-				invalid_count += 1
-				continue
-
-			validated_items.append({
-				'id': row_id,
-				'label': label,
-				'start_date': start_date,
-				'end_date': end_date,
-				'type': holiday_type,
-				'color': color,
-			})
-
-		if invalid_count:
-			return JsonResponse(
-				{
-					'detail': 'Some holiday periods were invalid and were not saved.',
-					'saved': 0,
-					'received': len(items),
-				},
-				status=400,
+		if 'items' in payload:
+			logger.warning(
+				'LEGACY_TRAINING_PLAN_HOLIDAYS_REPLACE_SAVE_TRIGGERED %s',
+				json.dumps({
+					'path': request.get_full_path(),
+					'method': request.method,
+					'incomingItemCount': len(payload.get('items')) if isinstance(payload.get('items'), list) else None,
+					'accepted': False,
+					'rejectionReason': 'Full holiday replace is disabled for normal UI flows.',
+					'timestamp': timezone.now().isoformat(),
+				}, sort_keys=True),
 			)
+			return JsonResponse({'detail': 'Full holiday replace is disabled. Use scoped holiday endpoints.'}, status=403)
+
+		allowed_keys = {'version', 'label', 'startDate', 'endDate', 'type', 'color'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 
 		current_version = training_plan_holidays_version()
-		current_items = [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('id')]
-		if not submitted_version:
-			return JsonResponse(
-				{
-					'detail': 'Reload the latest holiday list before saving. This prevents an older page from overwriting newer holiday periods.',
-					'currentVersion': current_version,
-					'items': current_items,
-				},
-				status=409,
-			)
-		if submitted_version != current_version:
-			return JsonResponse(
-				{
-					'detail': 'The holiday list was updated by another user. Reload the latest holidays before saving.',
-					'currentVersion': current_version,
-					'items': current_items,
-				},
-				status=409,
-			)
+		current_items = training_plan_holidays_snapshot()
+		conflict = require_training_plan_holidays_version(payload, current_version, current_items)
+		if conflict is not None:
+			return conflict
 
-		before = current_items
+		values, error = training_plan_holiday_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+
 		with transaction.atomic():
-			existing_records = {
-				record.id: record
-				for record in TrainingPlanHoliday.objects.select_for_update().exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER)
-			}
-			kept_ids = set()
-			for item in validated_items:
-				record = existing_records.get(item['id']) if item['id'] else None
-				if record is None:
-					record = TrainingPlanHoliday.objects.create(
-						label=item['label'],
-						start_date=item['start_date'],
-						end_date=item['end_date'],
-						type=item['type'],
-						color=item['color'],
-					)
-				else:
-					changed = (
-						record.label != item['label'] or
-						record.start_date != item['start_date'] or
-						record.end_date != item['end_date'] or
-						record.type != item['type'] or
-						record.color != item['color']
-					)
-					if changed:
-						record.label = item['label']
-						record.start_date = item['start_date']
-						record.end_date = item['end_date']
-						record.type = item['type']
-						record.color = item['color']
-						record.save(update_fields=['label', 'start_date', 'end_date', 'type', 'color', 'updated_at'])
-				kept_ids.add(record.id)
+			locked_items = [
+				serialize_training_plan_holiday(item)
+				for item in training_plan_holidays_queryset().select_for_update().order_by('start_date', 'end_date', 'id')
+			]
+			locked_version = training_plan_holidays_version()
+			conflict = require_training_plan_holidays_version(payload, locked_version, locked_items)
+			if conflict is not None:
+				return conflict
+			record = TrainingPlanHoliday.objects.create(**values)
+			serialized = serialize_training_plan_holiday(record)
+			_audit_log(request, action='create', entity='TrainingPlanHoliday', object_id=record.id, object_label=record.label, after=serialized, metadata={'partialUpdate': True})
 
-			TrainingPlanHoliday.objects.exclude(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).exclude(pk__in=kept_ids).delete()
-
-		after_records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
-		after = [serialize_training_plan_holiday(item) for item in after_records]
-		_audit_log(request, action='upsert', entity='TrainingPlanHoliday', object_label='Training Plan holidays', before=before, after=after, metadata={'received': len(items)})
-		return JsonResponse({
-			'saved': len(after),
-			'items': after,
-			'version': training_plan_holidays_version(),
-		})
+		return training_plan_holidays_response({'item': serialized, 'items': training_plan_holidays_snapshot(), 'version': training_plan_holidays_version()}, status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
 @csrf_exempt
+def training_plan_holiday_detail(request, holiday_id: int):
+	if request.method not in {'PATCH', 'DELETE'}:
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload: dict = {}
+	if request.method == 'PATCH' or request.body:
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+	allowed_keys = {'version', 'label', 'startDate', 'endDate', 'type', 'color'} if request.method == 'PATCH' else {'version'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+	current_items = training_plan_holidays_snapshot()
+	current_version = training_plan_holidays_version()
+	conflict = require_training_plan_holidays_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		locked_records = list(training_plan_holidays_queryset().select_for_update().order_by('start_date', 'end_date', 'id'))
+		locked_items = [serialize_training_plan_holiday(item) for item in locked_records]
+		locked_version = training_plan_holidays_version()
+		conflict = require_training_plan_holidays_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+		try:
+			record = next(item for item in locked_records if item.id == holiday_id)
+		except StopIteration:
+			return JsonResponse({'detail': 'Holiday period not found.'}, status=404)
+
+		before = serialize_training_plan_holiday(record)
+		if request.method == 'DELETE':
+			record_id = record.id
+			object_label = record.label
+			record.delete()
+			_audit_log(request, action='delete', entity='TrainingPlanHoliday', object_id=record_id, object_label=object_label, before=before, metadata={'partialUpdate': True})
+			return training_plan_holidays_response({'deleted': True, 'id': str(holiday_id), 'items': training_plan_holidays_snapshot(), 'version': training_plan_holidays_version()})
+
+		values, error = training_plan_holiday_values_from_payload({**before, **payload})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		record.label = values['label']
+		record.start_date = values['start_date']
+		record.end_date = values['end_date']
+		record.type = values['type']
+		record.color = values['color']
+		record.save(update_fields=['label', 'start_date', 'end_date', 'type', 'color', 'updated_at'])
+		serialized = serialize_training_plan_holiday(record)
+		_audit_log(request, action='update', entity='TrainingPlanHoliday', object_id=record.id, object_label=record.label, before=before, after=serialized, metadata={'partialUpdate': True})
+		return training_plan_holidays_response({'item': serialized, 'items': training_plan_holidays_snapshot(), 'version': training_plan_holidays_version()})
+
+
+@csrf_exempt
 def training_plan_holiday_types(request):
 	if request.method == 'GET':
-		records = TrainingPlanHoliday.objects.filter(label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER).order_by('type', 'id')
-		return JsonResponse([serialize_training_plan_holiday_type(item) for item in records], safe=False)
+		return training_plan_holiday_types_response(training_plan_holiday_types_snapshot())
 
 	if request.method == 'POST':
 		try:
@@ -4186,6 +4443,26 @@ def training_plan_holiday_types(request):
 		if not isinstance(payload, dict):
 			return HttpResponseBadRequest('Payload must be an object.')
 
+		if 'items' in payload:
+			logger.warning(
+				'LEGACY_TRAINING_PLAN_HOLIDAY_TYPES_REPLACE_SAVE_TRIGGERED %s',
+				json.dumps({
+					'path': request.get_full_path(),
+					'method': request.method,
+					'incomingItemCount': len(payload.get('items')) if isinstance(payload.get('items'), list) else None,
+					'accepted': False,
+					'rejectionReason': 'Full holiday type replace is disabled.',
+					'timestamp': timezone.now().isoformat(),
+				}, sort_keys=True),
+			)
+			_audit_log(request, action='reject', entity='TrainingPlanHolidayType', object_label='full-replace', metadata={'reason': 'Full holiday type replace is disabled.', 'partialUpdate': True})
+			return JsonResponse({'detail': 'Full holiday type replace is disabled. Use scoped holiday type endpoints.'}, status=403)
+
+		allowed_keys = {'version', 'value', 'label', 'color'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
 		type_value = str(payload.get('value', '')).strip()
 		label = str(payload.get('label', '')).strip()
 		color = str(payload.get('color', '')).strip() or TRAINING_PLAN_HOLIDAY_COLORS.get(type_value, '#FFFBEB')
@@ -4193,17 +4470,32 @@ def training_plan_holiday_types(request):
 		if not type_value or not label:
 			return HttpResponseBadRequest('Both value and label are required.')
 
-		record, _ = TrainingPlanHoliday.objects.update_or_create(
-			type=type_value,
-			label=f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}',
-			defaults={
-				'start_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
-				'end_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
-				'color': color,
-			},
-		)
-		_audit_log(request, action='create', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, after=serialize_training_plan_holiday_type(record))
-		return JsonResponse(serialize_training_plan_holiday_type(record), status=201)
+		current_items = training_plan_holiday_types_snapshot()
+		conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(current_items), current_items)
+		if conflict is not None:
+			return conflict
+
+		with transaction.atomic():
+			locked_items = [
+				serialize_training_plan_holiday_type(item)
+				for item in training_plan_holiday_types_queryset().select_for_update().order_by('type', 'id')
+			]
+			conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(locked_items), locked_items)
+			if conflict is not None:
+				return conflict
+
+			record, created = TrainingPlanHoliday.objects.update_or_create(
+				type=type_value,
+				label=f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}',
+				defaults={
+					'start_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
+					'end_date': TRAINING_PLAN_HOLIDAY_TYPE_DATE,
+					'color': color,
+				},
+			)
+			serialized = serialize_training_plan_holiday_type(record)
+			_audit_log(request, action='create' if created else 'update', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, after=serialized, metadata={'partialUpdate': True})
+		return training_plan_holiday_types_response(serialized, status=201)
 
 	if request.method == 'PATCH':
 		try:
@@ -4214,6 +4506,16 @@ def training_plan_holiday_types(request):
 		if not isinstance(payload, dict):
 			return HttpResponseBadRequest('Payload must be an object.')
 
+		if 'items' in payload:
+			_audit_log(request, action='reject', entity='TrainingPlanHolidayType', object_label='full-replace', metadata={'reason': 'Full holiday type replace is disabled.', 'partialUpdate': True})
+			return JsonResponse({'detail': 'Full holiday type replace is disabled. Use scoped holiday type endpoints.'}, status=403)
+
+		allowed_keys = {'version', 'id', 'value', 'label', 'color'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+		record_id = str(payload.get('id', '') or '').strip()
 		type_value = str(payload.get('value', '')).strip()
 		label = str(payload.get('label', '')).strip()
 		color = str(payload.get('color', '')).strip()
@@ -4221,21 +4523,39 @@ def training_plan_holiday_types(request):
 		if not type_value or not label:
 			return HttpResponseBadRequest('Both value and label are required.')
 
-		try:
-			record = TrainingPlanHoliday.objects.get(
-				type=type_value,
-				label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER,
-			)
-		except TrainingPlanHoliday.DoesNotExist:
-			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+		current_items = training_plan_holiday_types_snapshot()
+		conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(current_items), current_items)
+		if conflict is not None:
+			return conflict
 
-		before = serialize_training_plan_holiday_type(record)
-		record.label = f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}'
-		if color:
-			record.color = color
-		record.save(update_fields=['label', 'color'])
-		_audit_log(request, action='update', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, before=before, after=serialize_training_plan_holiday_type(record))
-		return JsonResponse(serialize_training_plan_holiday_type(record))
+		with transaction.atomic():
+			queryset = training_plan_holiday_types_queryset().select_for_update().filter(type=type_value)
+			if record_id:
+				queryset = queryset.filter(pk=record_id)
+			records = list(queryset.order_by('id'))
+			if not records:
+				return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+			if len(records) > 1:
+				_audit_log(request, action='reject', entity='TrainingPlanHolidayType', object_label=type_value, metadata={'reason': 'Ambiguous holiday type marker rows.', 'matchedCount': len(records), 'partialUpdate': True})
+				return JsonResponse({'detail': 'Holiday type is ambiguous. Reload before editing.'}, status=409)
+
+			locked_items = [
+				serialize_training_plan_holiday_type(item)
+				for item in training_plan_holiday_types_queryset().order_by('type', 'id')
+			]
+			conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(locked_items), locked_items)
+			if conflict is not None:
+				return conflict
+
+			record = records[0]
+			before = serialize_training_plan_holiday_type(record)
+			record.label = f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}'
+			if color:
+				record.color = color
+			record.save(update_fields=['label', 'color', 'updated_at'])
+			serialized = serialize_training_plan_holiday_type(record)
+			_audit_log(request, action='update', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, before=before, after=serialized, metadata={'partialUpdate': True})
+		return training_plan_holiday_types_response(serialized)
 
 	if request.method == 'DELETE':
 		try:
@@ -4246,20 +4566,50 @@ def training_plan_holiday_types(request):
 		if not isinstance(payload, dict):
 			return HttpResponseBadRequest('Payload must be an object.')
 
+		if 'items' in payload:
+			_audit_log(request, action='reject', entity='TrainingPlanHolidayType', object_label='full-replace', metadata={'reason': 'Full holiday type replace is disabled.', 'partialUpdate': True})
+			return JsonResponse({'detail': 'Full holiday type replace is disabled. Use scoped holiday type endpoints.'}, status=403)
+
+		allowed_keys = {'version', 'id', 'value'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+		record_id = str(payload.get('id', '') or '').strip()
 		type_value = str(payload.get('value', '')).strip()
 		if not type_value:
 			return HttpResponseBadRequest('value is required.')
 
-		records = list(TrainingPlanHoliday.objects.filter(
-			type=type_value,
-			label__startswith=TRAINING_PLAN_HOLIDAY_TYPE_MARKER,
-		))
-		before = [serialize_training_plan_holiday_type(record) for record in records]
-		deleted, _ = TrainingPlanHoliday.objects.filter(pk__in=[record.pk for record in records]).delete()
-		if not deleted:
-			return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
-		_audit_log(request, action='delete', entity='TrainingPlanHolidayType', object_label=type_value, before=before)
-		return JsonResponse({'deleted': True})
+		current_items = training_plan_holiday_types_snapshot()
+		conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(current_items), current_items)
+		if conflict is not None:
+			return conflict
+
+		with transaction.atomic():
+			queryset = training_plan_holiday_types_queryset().select_for_update().filter(type=type_value)
+			if record_id:
+				queryset = queryset.filter(pk=record_id)
+			records = list(queryset.order_by('id'))
+			if not records:
+				return JsonResponse({'detail': 'Holiday type not found.'}, status=404)
+			if len(records) > 1:
+				_audit_log(request, action='reject', entity='TrainingPlanHolidayType', object_label=type_value, before=[serialize_training_plan_holiday_type(record) for record in records], metadata={'reason': 'Ambiguous holiday type marker rows.', 'matchedCount': len(records), 'partialUpdate': True})
+				return JsonResponse({'detail': 'Holiday type is ambiguous. Reload before deleting.'}, status=409)
+
+			locked_items = [
+				serialize_training_plan_holiday_type(item)
+				for item in training_plan_holiday_types_queryset().order_by('type', 'id')
+			]
+			conflict = require_optional_training_plan_holiday_types_version(payload, training_plan_holiday_types_version(locked_items), locked_items)
+			if conflict is not None:
+				return conflict
+
+			record = records[0]
+			before = serialize_training_plan_holiday_type(record)
+			record_id = record.id
+			record.delete()
+			_audit_log(request, action='delete', entity='TrainingPlanHolidayType', object_id=record_id, object_label=type_value, before=before, metadata={'partialUpdate': True, 'matchedCount': 1})
+		return training_plan_holiday_types_response({'deleted': True})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
@@ -4268,7 +4618,9 @@ def training_plan_holiday_types(request):
 def training_plan_modules(request):
 	if request.method == 'GET':
 		records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
-		return JsonResponse([serialize_training_plan_module_definition(item) for item in records], safe=False)
+		response = JsonResponse([serialize_training_plan_module_definition(item) for item in records], safe=False)
+		response['X-KBC-Training-Plan-Modules-Version'] = training_plan_module_definitions_version()
+		return response
 
 	if request.method == 'POST':
 		try:
@@ -4276,58 +4628,127 @@ def training_plan_modules(request):
 		except json.JSONDecodeError:
 			return HttpResponseBadRequest('Invalid JSON payload.')
 
-		items = payload.get('items') if isinstance(payload, dict) else None
-		if not isinstance(items, list):
-			return HttpResponseBadRequest('Payload must include an items array.')
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
 
-		validated_items = []
-		for row in items:
-			if not isinstance(row, dict):
-				continue
+		if 'items' in payload:
+			logger.warning(
+				'LEGACY_TRAINING_PLAN_MODULES_FULL_REPLACE_TRIGGERED %s',
+				json.dumps({
+					'path': request.get_full_path(),
+					'method': request.method,
+					'incomingItemCount': len(payload.get('items')) if isinstance(payload.get('items'), list) else None,
+					'accepted': False,
+					'rejectionReason': 'Full module definition replace is disabled for normal UI flows.',
+					'timestamp': timezone.now().isoformat(),
+				}, sort_keys=True),
+			)
+			return JsonResponse({'detail': 'Full module definition replace is disabled. Use scoped module definition endpoints.'}, status=403)
 
-			module_id = str(row.get('id', '')).strip()
-			name = str(row.get('name', '')).strip()
-			bg = str(row.get('bg', '')).strip() or '#4A6DB0'
-			tx = str(row.get('tx', '')).strip() or '#ffffff'
-			try:
-				default_sessions = max(1, int(row.get('defaultSessions', 1) or 1))
-			except (TypeError, ValueError):
-				default_sessions = 1
+		allowed_keys = {'version', 'id', 'name', 'defaultSessions', 'bg', 'tx'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 
-			if not module_id or not name:
-				continue
+		current_items = training_plan_module_definitions_snapshot()
+		current_version = training_plan_module_definitions_version(current_items)
+		conflict = require_training_plan_module_definitions_version(payload, current_version, current_items)
+		if conflict is not None:
+			return conflict
 
-			validated_items.append({
-				'module_id': module_id,
-				'name': name,
-				'default_sessions': default_sessions,
-				'bg': bg,
-				'tx': tx,
-			})
+		values, error = training_plan_module_definition_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
 
-		before = [serialize_training_plan_module_definition(item) for item in TrainingPlanModuleDefinition.objects.all().order_by('id')]
 		with transaction.atomic():
-			TrainingPlanModuleDefinition.objects.all().delete()
-			created = [
-				TrainingPlanModuleDefinition.objects.create(**item)
-				for item in validated_items
+			locked_items = [
+				serialize_training_plan_module_definition(item)
+				for item in TrainingPlanModuleDefinition.objects.select_for_update().order_by('module_id', 'id')
 			]
+			locked_version = training_plan_module_definitions_version(locked_items)
+			conflict = require_training_plan_module_definitions_version(payload, locked_version, locked_items)
+			if conflict is not None:
+				return conflict
+			if TrainingPlanModuleDefinition.objects.filter(module_id=values['module_id']).exists():
+				return JsonResponse({'detail': 'A module definition with this id already exists.'}, status=409)
+			record = TrainingPlanModuleDefinition.objects.create(**values)
+			serialized = serialize_training_plan_module_definition(record)
+			_audit_log(request, action='create', entity='TrainingPlanModuleDefinition', object_id=record.id, object_label=record.name, after=serialized, metadata={'partialUpdate': True})
 
-		after = [serialize_training_plan_module_definition(item) for item in created]
-		_audit_log(request, action='replace', entity='TrainingPlanModuleDefinition', object_label='Training Plan module catalogue', before=before, after=after, metadata={'received': len(items)})
-		return JsonResponse({
-			'saved': len(created),
-			'items': after,
-		})
+		return training_plan_module_definitions_response({'item': serialized, 'version': training_plan_module_definitions_version()}, status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_module_definition_detail(request, module_id: str):
+	module_id = str(module_id or '').strip()
+	if not module_id:
+		return JsonResponse({'detail': 'Module definition id is required.'}, status=400)
+
+	if request.method not in {'PATCH', 'DELETE'}:
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload: dict = {}
+	if request.method == 'PATCH' or request.body:
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+	allowed_keys = {'version', 'name', 'defaultSessions', 'bg', 'tx'} if request.method == 'PATCH' else {'version'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+	current_items = training_plan_module_definitions_snapshot()
+	current_version = training_plan_module_definitions_version(current_items)
+	conflict = require_training_plan_module_definitions_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		locked_records = list(TrainingPlanModuleDefinition.objects.select_for_update().order_by('module_id', 'id'))
+		locked_items = [serialize_training_plan_module_definition(item) for item in locked_records]
+		locked_version = training_plan_module_definitions_version(locked_items)
+		conflict = require_training_plan_module_definitions_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+		try:
+			record = next(item for item in locked_records if item.module_id == module_id)
+		except StopIteration:
+			return JsonResponse({'detail': 'Module definition not found.'}, status=404)
+
+		before = serialize_training_plan_module_definition(record)
+		if request.method == 'DELETE':
+			record_id = record.id
+			object_label = record.name
+			record.delete()
+			_audit_log(request, action='delete', entity='TrainingPlanModuleDefinition', object_id=record_id, object_label=object_label, before=before, metadata={'partialUpdate': True})
+			return training_plan_module_definitions_response({'deleted': True, 'id': module_id, 'version': training_plan_module_definitions_version()})
+
+		values, error = training_plan_module_definition_values_from_payload({**before, **payload, 'id': module_id})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		record.name = values['name']
+		record.default_sessions = values['default_sessions']
+		record.bg = values['bg']
+		record.tx = values['tx']
+		record.save(update_fields=['name', 'default_sessions', 'bg', 'tx', 'updated_at'])
+		serialized = serialize_training_plan_module_definition(record)
+		_audit_log(request, action='update', entity='TrainingPlanModuleDefinition', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'partialUpdate': True})
+		return training_plan_module_definitions_response({'item': serialized, 'version': training_plan_module_definitions_version()})
 
 
 @csrf_exempt
 def training_plan_program_configs(request):
 	if request.method == 'GET':
 		records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
-		return JsonResponse([serialize_training_plan_program_config(item) for item in records], safe=False)
+		response = JsonResponse([serialize_training_plan_program_config(item) for item in records], safe=False)
+		response['X-KBC-Training-Plan-Program-Configs-Version'] = training_plan_program_configs_version()
+		return response
 
 	if request.method == 'POST':
 		try:
@@ -4335,43 +4756,117 @@ def training_plan_program_configs(request):
 		except json.JSONDecodeError:
 			return HttpResponseBadRequest('Invalid JSON payload.')
 
-		items = payload.get('items') if isinstance(payload, dict) else None
-		if not isinstance(items, list):
-			return HttpResponseBadRequest('Payload must include an items array.')
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
 
-		validated_items = []
-		for row in items:
-			if not isinstance(row, dict):
-				continue
+		if 'items' in payload:
+			logger.warning(
+				'LEGACY_TRAINING_PLAN_PROGRAM_CONFIGS_FULL_REPLACE_TRIGGERED %s',
+				json.dumps({
+					'path': request.get_full_path(),
+					'method': request.method,
+					'incomingItemCount': len(payload.get('items')) if isinstance(payload.get('items'), list) else None,
+					'accepted': False,
+					'rejectionReason': 'Full programme config replace is disabled for normal UI flows.',
+					'timestamp': timezone.now().isoformat(),
+				}, sort_keys=True),
+			)
+			return JsonResponse({'detail': 'Full programme config replace is disabled. Use scoped programme config endpoints.'}, status=403)
 
-			program_id = str(row.get('id', '')).strip()
-			name = str(row.get('name', '')).strip()
-			if not program_id or not name:
-				continue
+		allowed_keys = {'version', 'id', 'name', 'sub', 'color'}
+		unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+		if unknown_keys:
+			return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 
-			validated_items.append({
-				'program_id': program_id,
-				'name': name,
-				'sub': str(row.get('sub', '')).strip(),
-				'color': str(row.get('color', '')).strip() or '#1B2A4A',
-			})
+		current_items = training_plan_program_configs_snapshot()
+		current_version = training_plan_program_configs_version(current_items)
+		conflict = require_training_plan_program_configs_version(payload, current_version, current_items)
+		if conflict is not None:
+			return conflict
 
-		before = [serialize_training_plan_program_config(item) for item in TrainingPlanProgramConfig.objects.all().order_by('id')]
+		values, error = training_plan_program_config_values_from_payload(payload)
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+
 		with transaction.atomic():
-			TrainingPlanProgramConfig.objects.all().delete()
-			created = [
-				TrainingPlanProgramConfig.objects.create(**item)
-				for item in validated_items
+			locked_items = [
+				serialize_training_plan_program_config(item)
+				for item in TrainingPlanProgramConfig.objects.select_for_update().order_by('program_id', 'id')
 			]
+			locked_version = training_plan_program_configs_version(locked_items)
+			conflict = require_training_plan_program_configs_version(payload, locked_version, locked_items)
+			if conflict is not None:
+				return conflict
+			if TrainingPlanProgramConfig.objects.filter(program_id=values['program_id']).exists():
+				return JsonResponse({'detail': 'A programme config with this id already exists.'}, status=409)
+			record = TrainingPlanProgramConfig.objects.create(**values)
+			serialized = serialize_training_plan_program_config(record)
+			_audit_log(request, action='create', entity='TrainingPlanProgramConfig', object_id=record.id, object_label=record.name, after=serialized, metadata={'partialUpdate': True})
 
-		after = [serialize_training_plan_program_config(item) for item in created]
-		_audit_log(request, action='replace', entity='TrainingPlanProgramConfig', object_label='Training Plan programme config', before=before, after=after, metadata={'received': len(items)})
-		return JsonResponse({
-			'saved': len(created),
-			'items': after,
-		})
+		return training_plan_program_configs_response({'item': serialized, 'version': training_plan_program_configs_version()}, status=201)
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_program_config_detail(request, config_id: str):
+	config_id = str(config_id or '').strip()
+	if not config_id:
+		return JsonResponse({'detail': 'Programme config id is required.'}, status=400)
+
+	if request.method not in {'PATCH', 'DELETE'}:
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload: dict = {}
+	if request.method == 'PATCH' or request.body:
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+		if not isinstance(payload, dict):
+			return HttpResponseBadRequest('Payload must be an object.')
+
+	allowed_keys = {'version', 'name', 'sub', 'color'} if request.method == 'PATCH' else {'version'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+
+	current_items = training_plan_program_configs_snapshot()
+	current_version = training_plan_program_configs_version(current_items)
+	conflict = require_training_plan_program_configs_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		locked_records = list(TrainingPlanProgramConfig.objects.select_for_update().order_by('program_id', 'id'))
+		locked_items = [serialize_training_plan_program_config(item) for item in locked_records]
+		locked_version = training_plan_program_configs_version(locked_items)
+		conflict = require_training_plan_program_configs_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+		try:
+			record = next(item for item in locked_records if item.program_id == config_id)
+		except StopIteration:
+			return JsonResponse({'detail': 'Programme config not found.'}, status=404)
+
+		before = serialize_training_plan_program_config(record)
+		if request.method == 'DELETE':
+			record_id = record.id
+			object_label = record.name
+			record.delete()
+			_audit_log(request, action='delete', entity='TrainingPlanProgramConfig', object_id=record_id, object_label=object_label, before=before, metadata={'partialUpdate': True})
+			return training_plan_program_configs_response({'deleted': True, 'id': config_id, 'version': training_plan_program_configs_version()})
+
+		values, error = training_plan_program_config_values_from_payload({**before, **payload, 'id': config_id})
+		if error:
+			return JsonResponse({'detail': error}, status=400)
+		record.name = values['name']
+		record.sub = values['sub']
+		record.color = values['color']
+		record.save(update_fields=['name', 'sub', 'color', 'updated_at'])
+		serialized = serialize_training_plan_program_config(record)
+		_audit_log(request, action='update', entity='TrainingPlanProgramConfig', object_id=record.id, object_label=record.name, before=before, after=serialized, metadata={'partialUpdate': True})
+		return training_plan_program_configs_response({'item': serialized, 'version': training_plan_program_configs_version()})
 
 
 _LEGACY_MODULE_SESSION_FIELDS = 30
@@ -4994,14 +5489,37 @@ def employee_detail(request, employee_id: int):
 		return JsonResponse(serialize_employee(emp))
 
 	if request.method == 'DELETE':
-		before = serialize_employee(emp)
-		object_label = emp.full_name
-		# Re-parent direct reports to this employee's manager
-		Employee.objects.filter(reports_to=str(employee_id)).update(
-			reports_to=emp.reports_to
-		)
-		emp.delete()
-		_audit_log(request, action='delete', entity='Employee', object_id=employee_id, object_label=object_label, before=before)
+		with transaction.atomic():
+			emp = Employee.objects.select_for_update().get(pk=employee_id)
+			before = serialize_employee(emp)
+			object_label = emp.full_name
+			manager_id = str(emp.reports_to or '').strip() or None
+			if manager_id == str(employee_id):
+				manager_id = None
+			elif manager_id and not Employee.objects.filter(pk=manager_id).exists():
+				manager_id = None
+
+			direct_reports = list(Employee.objects.select_for_update().filter(reports_to=str(employee_id)).order_by('pk'))
+			direct_report_before = [serialize_employee(report) for report in direct_reports]
+			reparented_count = Employee.objects.filter(pk__in=[report.pk for report in direct_reports]).update(
+				reports_to=manager_id
+			)
+			emp.delete()
+			_audit_log(
+				request,
+				action='delete',
+				entity='Employee',
+				object_id=employee_id,
+				object_label=object_label,
+				before=before,
+				metadata={
+					'directReportsReparented': reparented_count,
+					'previousManagerId': before.get('reportsTo'),
+					'newManagerId': manager_id,
+					'directReportsBefore': direct_report_before,
+					'hardDelete': True,
+				},
+			)
 		return JsonResponse({'detail': 'Deleted.'})
 
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)

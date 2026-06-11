@@ -23,3 +23,5 @@ backend/login/.env.login.local
 # Logs and OS files
 *.log
 .DS_Store
+
+testsprite_tests\tmp\config.json
