@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
-import { CalendarEvent, EventMedia } from '../../../mocks/events';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CalendarEvent } from '../../../mocks/events';
 import ModernDatePicker from '../../../components/feature/ModernDatePicker';
+import { kbcSuccessSwal, kbcSwal } from '../../../components/feature/sweetAlert';
+import EventMediaUploadPreview from './EventMediaUploadPreview';
+import {
+  EVENT_GALLERY_UPLOAD_CONCURRENCY,
+  MAX_EVENT_IMAGE_SIZE_MB,
+  useEventMediaUploads,
+  type EventMediaBatchKind,
+} from './eventMediaUpload';
 
 interface Props {
   open: boolean;
@@ -24,9 +32,16 @@ const emptyForm = {
   registrationLink: '',
   type: 'online',
   description: '',
-  cover: null as EventMedia | null,
-  media: [] as EventMedia[],
 };
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -35,9 +50,28 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<{ title?: string; date?: string }>({});
   const [saveError, setSaveError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+
+  const handleBatchUploaded = useCallback((batch: { kind: EventMediaBatchKind; total: number }) => {
+    const isCover = batch.kind === 'cover';
+    void kbcSuccessSwal.fire({
+      title: isCover ? 'Cover Image Uploaded' : 'Additional Media Uploaded',
+      html: isCover
+        ? 'The cover image is ready. You can now save the event.'
+        : `${batch.total} image${batch.total === 1 ? '' : 's'} uploaded successfully. You can now save the event.`,
+      icon: 'success',
+      confirmButtonText: 'OK',
+    });
+  }, []);
+
+  const coverUploads = useEventMediaUploads({ concurrency: 1, onBatchUploaded: handleBatchUploaded });
+  const galleryUploads = useEventMediaUploads({ concurrency: EVENT_GALLERY_UPLOAD_CONCURRENCY, onBatchUploaded: handleBatchUploaded });
+
+  const uploadRemaining = coverUploads.queuedOrUploadingCount + galleryUploads.queuedOrUploadingCount;
+  const failedUploads = coverUploads.failedCount + galleryUploads.failedCount;
+  const unsafeUploads = coverUploads.unsafeCount + galleryUploads.unsafeCount;
+  const mediaBlocksSave = coverUploads.blocksSave || galleryUploads.blocksSave;
 
   useEffect(() => {
     if (!open) return;
@@ -61,9 +95,11 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     const dayNum = dateObj.getDate();
     const monthIdx = dateObj.getMonth();
     const yearNum = dateObj.getFullYear();
-    const allMedia: EventMedia[] = [];
-    if (form.cover) allMedia.push({ ...form.cover, isCover: true });
-    allMedia.push(...form.media);
+    const cover = coverUploads.uploadedMedia[0];
+    const allMedia = [
+      ...(cover ? [{ ...cover, isCover: true }] : []),
+      ...galleryUploads.uploadedMedia,
+    ];
     return {
       id: `evt-${Date.now()}`,
       title: form.title.trim(),
@@ -74,73 +110,40 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
       time: form.time.trim() || undefined,
       location: form.location.trim() || undefined,
       registrationLink: form.registrationLink.trim() || undefined,
-      description: form.description.trim() || undefined,
+      description: form.description || undefined,
       media: allMedia.length ? allMedia : undefined,
-      image: form.cover?.url,
+      image: cover?.url,
     };
   };
 
-  const uploadEventImage = async (file: File): Promise<EventMedia> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('folder', 'events');
-
-    const response = await fetch('/api/upload-image/', {
-      method: 'POST',
-      body: formData,
+  const showRejectedMessages = async (messages: string[]) => {
+    if (messages.length === 0) return;
+    await kbcSwal.fire({
+      title: messages.length === 1 ? 'Image Not Uploaded' : 'Some Images Were Not Uploaded',
+      html: messages.length === 1
+        ? escapeHtml(messages[0])
+        : `The following images were not uploaded:<br><br>${messages.map(message => `&bull; ${escapeHtml(message)}`).join('<br>')}`,
+      icon: 'warning',
+      confirmButtonText: 'OK',
     });
-
-    if (!response.ok) {
-      const detail = (await response.text()).trim();
-      throw new Error(detail || `Upload failed with status ${response.status}`);
-    }
-
-    const payload = await response.json() as { url?: string };
-    if (!payload.url) throw new Error('Upload response did not include a file URL.');
-
-    return {
-      id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
-      kind: 'image',
-      url: payload.url,
-      name: file.name,
-    };
   };
 
   const handleCoverChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      setSaving(true);
-      setSaveError(null);
-      const media = await uploadEventImage(file);
-      setForm(prev => ({ ...prev, cover: media }));
-    } catch {
-      setSaveError('Could not upload the selected cover image. Please try again.');
-    } finally {
-      setSaving(false);
-      if (coverInputRef.current) coverInputRef.current.value = '';
-    }
+    setSaveError(null);
+    const result = coverUploads.selectFiles([file], { replace: true, batchKind: 'cover' });
+    await showRejectedMessages(result.rejectedMessages);
+    if (coverInputRef.current) coverInputRef.current.value = '';
   };
 
   const handleMediaChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    try {
-      setSaving(true);
-      setSaveError(null);
-      const nextMedia = await Promise.all(files.map(uploadEventImage));
-      setForm(prev => ({ ...prev, media: [...prev.media, ...nextMedia] }));
-    } catch {
-      setSaveError('Could not upload one or more selected images. Please try again.');
-    } finally {
-      setSaving(false);
-      if (galleryInputRef.current) galleryInputRef.current.value = '';
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const handleRemoveMedia = (mediaId: string) => {
-    setForm(prev => ({ ...prev, media: prev.media.filter(item => item.id !== mediaId) }));
+    setSaveError(null);
+    const result = galleryUploads.selectFiles(files, { replace: false, batchKind: 'gallery' });
+    await showRejectedMessages(result.rejectedMessages);
+    if (galleryInputRef.current) galleryInputRef.current.value = '';
   };
 
   const handleSubmit = async () => {
@@ -148,6 +151,12 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     if (Object.keys(errs).length > 0) { setErrors(errs); return; }
     setErrors({});
     setSaveError(null);
+    if (mediaBlocksSave) {
+      if (uploadRemaining > 0) setSaveError(`Uploading images... ${uploadRemaining} remaining.`);
+      else if (failedUploads > 0) setSaveError('Remove or retry failed image uploads before saving.');
+      else if (unsafeUploads > 0) setSaveError('Unsafe image payload detected. Remove or retry affected images before saving.');
+      return;
+    }
     const newEvent = buildEvent();
 
     try {
@@ -157,6 +166,8 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
       setForm(emptyForm);
       setTimeout(() => {
         setSubmitted(false);
+        coverUploads.clear();
+        galleryUploads.clear();
         onClose();
       }, 2200);
     } catch {
@@ -172,7 +183,8 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
     setSaveError(null);
     setSubmitted(false);
     setSaving(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    coverUploads.clear();
+    galleryUploads.clear();
     if (coverInputRef.current) coverInputRef.current.value = '';
     if (galleryInputRef.current) galleryInputRef.current.value = '';
     onClose();
@@ -247,42 +259,15 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
               <label className="block text-xs font-semibold text-kbc-navy mb-1.5">
                 Cover Image <span className="text-gray-400 font-normal">(optional) — shown on the event card</span>
               </label>
-              {form.cover ? (
-                <div className="relative w-full h-40 rounded-xl overflow-hidden border border-gray-200">
-                  <img src={form.cover.url} alt={form.cover.name} className="w-full h-full object-cover object-top" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-                  <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-white truncate">{form.cover.name}</span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => coverInputRef.current?.click()}
-                        className="text-[11px] font-semibold text-kbc-navy bg-white/90 hover:bg-white px-2.5 py-1 rounded-full transition-colors whitespace-nowrap"
-                      >
-                        Change
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setForm(prev => ({ ...prev, cover: null }))}
-                        className="w-6 h-6 flex items-center justify-center rounded-full bg-white/90 hover:bg-white text-kbc-navy transition-colors"
-                      >
-                        <i className="ri-close-line text-xs" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  className="w-full h-28 rounded-xl border-2 border-dashed border-gray-200 flex flex-col items-center justify-center gap-1.5 cursor-pointer hover:border-kbc-navy hover:bg-gray-50 transition-all"
-                  onClick={() => coverInputRef.current?.click()}
-                >
-                  <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
-                    <i className="ri-image-add-line text-gray-400 text-lg" />
-                  </div>
-                  <p className="text-xs font-semibold text-gray-500">Click to upload a cover image</p>
-                  <p className="text-xs text-gray-400">PNG, JPG recommended</p>
-                </div>
-              )}
+              <EventMediaUploadPreview
+                items={coverUploads.items}
+                emptyTitle="Click to upload a cover image"
+                emptyHint={`Images only, max ${MAX_EVENT_IMAGE_SIZE_MB}MB`}
+                onPick={() => coverInputRef.current?.click()}
+                onRemove={coverUploads.remove}
+                onRetry={coverUploads.retry}
+                cover
+              />
               <input
                 ref={coverInputRef}
                 type="file"
@@ -297,59 +282,14 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
               <label className="block text-xs font-semibold text-kbc-navy mb-1.5">
                 Additional Media <span className="text-gray-400 font-normal">(optional) — shown in event details</span>
               </label>
-              <div
-                className="w-full min-h-28 rounded-xl border-2 border-dashed border-gray-200 p-4 flex flex-col gap-3 cursor-pointer hover:border-kbc-navy hover:bg-gray-50 transition-all"
-                onClick={() => galleryInputRef.current?.click()}
-              >
-                {form.media.length > 0 ? (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold text-kbc-navy">{form.media.length} file{form.media.length > 1 ? 's' : ''} selected</p>
-                        <p className="text-xs text-gray-400">Images and videos. Click anywhere to add more.</p>
-                      </div>
-                      <span className="text-[11px] font-semibold text-kbc-navy bg-white border border-gray-200 px-2.5 py-1 rounded-full whitespace-nowrap">
-                        Add More
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {form.media.map(item => (
-                        <div
-                          key={item.id}
-                          className="relative h-28 rounded-xl overflow-hidden border border-gray-200 bg-white"
-                          onClick={e => e.stopPropagation()}
-                        >
-                          {item.kind === 'video' ? (
-                            <video src={item.url} className="w-full h-full object-cover" muted playsInline />
-                          ) : (
-                            <img src={item.url} alt={item.name} className="w-full h-full object-cover object-top" />
-                          )}
-                          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11px] font-semibold text-white truncate">{item.kind === 'video' ? 'Video' : 'Image'}</span>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveMedia(item.id)}
-                                className="w-6 h-6 flex items-center justify-center rounded-full bg-white/90 hover:bg-white text-kbc-navy transition-colors"
-                              >
-                                <i className="ri-close-line text-xs" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <div className="h-20 flex flex-col items-center justify-center gap-1.5">
-                    <div className="w-9 h-9 flex items-center justify-center bg-gray-100 rounded-full">
-                      <i className="ri-gallery-upload-line text-gray-400 text-lg" />
-                    </div>
-                    <p className="text-xs font-semibold text-gray-500">Click to upload images</p>
-                    <p className="text-xs text-gray-400">PNG, JPG recommended</p>
-                  </div>
-                )}
-              </div>
+              <EventMediaUploadPreview
+                items={galleryUploads.items}
+                emptyTitle="Click to upload images"
+                emptyHint={`Images only, max ${MAX_EVENT_IMAGE_SIZE_MB}MB each`}
+                onPick={() => galleryInputRef.current?.click()}
+                onRemove={galleryUploads.remove}
+                onRetry={galleryUploads.retry}
+              />
               <input
                 ref={galleryInputRef}
                 type="file"
@@ -451,7 +391,17 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl">
+          <p className="min-h-4 text-xs font-semibold text-gray-500">
+            {uploadRemaining > 0
+              ? `Uploading images... ${uploadRemaining} remaining`
+              : failedUploads > 0
+                ? 'Remove or retry failed uploads before saving.'
+                : unsafeUploads > 0
+                  ? 'Unsafe image data detected. Remove or retry affected images.'
+                  : ''}
+          </p>
+          <div className="flex items-center justify-end gap-3">
           <button
             onClick={handleClose}
             className="text-xs font-semibold text-gray-500 hover:text-kbc-navy cursor-pointer whitespace-nowrap transition-colors px-3 py-2"
@@ -460,12 +410,15 @@ export default function AddEventModal({ open, onClose, onEventAdded }: Props) {
           </button>
           <button
             onClick={handleSubmit}
-            disabled={saving}
-            className="flex items-center gap-1.5 bg-kbc-navy text-white text-xs font-bold px-5 py-2.5 rounded-lg cursor-pointer hover:bg-kbc-navy-light transition-colors whitespace-nowrap"
+            disabled={saving || mediaBlocksSave}
+            className={`flex items-center gap-1.5 text-white text-xs font-bold px-5 py-2.5 rounded-lg transition-colors whitespace-nowrap ${
+              saving || mediaBlocksSave ? 'bg-kbc-navy/70 cursor-not-allowed' : 'bg-kbc-navy cursor-pointer hover:bg-kbc-navy-light'
+            }`}
           >
             <i className="ri-calendar-check-line text-xs" />
-            {saving ? 'Saving...' : 'Add to Calendar'}
+            {uploadRemaining > 0 ? `Uploading images... ${uploadRemaining} remaining` : saving ? 'Saving...' : 'Add to Calendar'}
           </button>
+          </div>
         </div>
       </div>
     </div>

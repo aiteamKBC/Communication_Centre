@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { CalendarEvent, EventMedia, sortCalendarEvents } from '../mocks/events';
 import { useRealtimeResource } from '../hooks/useRealtimeUpdates';
+import { containsUnsafeDataImage } from '../pages/events/components/eventMediaUpload';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,49 +75,6 @@ function normalizeApiEvent(event: ApiEvent): CalendarEvent {
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
-function isImageDataUrl(value: string | undefined): value is string {
-  return Boolean(value?.startsWith('data:image/'));
-}
-
-function dataUrlToFile(value: string, fallbackName: string): File {
-  const [header = '', data = ''] = value.split(',');
-  const mime = header.match(/data:([^;]+)/)?.[1] || 'image/jpeg';
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  const extension = mime.split('/')[1] || 'jpg';
-  return new File([bytes], `${fallbackName}.${extension}`, { type: mime });
-}
-
-async function uploadEventImageDataUrl(value: string, fallbackName: string): Promise<string> {
-  const formData = new FormData();
-  formData.append('file', dataUrlToFile(value, fallbackName));
-  formData.append('folder', 'events');
-
-  const response = await fetch('/api/upload-image/', {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) throw new Error('Failed to upload event image.');
-  const payload = await response.json() as { url?: string };
-  if (!payload.url) throw new Error('Upload response did not include a file URL.');
-  return payload.url;
-}
-
-async function persistEventMedia(media: EventMedia, fallbackName: string): Promise<EventMedia> {
-  if (!isImageDataUrl(media.url)) return media;
-  return {
-    ...media,
-    kind: 'image',
-    url: await uploadEventImageDataUrl(media.url, fallbackName),
-  };
-}
-
 type EventsContextValue = {
   events: CalendarEvent[];
   loading: boolean;
@@ -154,17 +112,14 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { void fetchEvents(); }, [fetchEvents]);
   useRealtimeResource('events', () => fetchEvents(false));
 
-  const serializePayload = async (event: CalendarEvent) => {
+  const serializePayload = (event: CalendarEvent) => {
     const coverItem = event.media?.find(m => m.isCover);
     const galleryItems = event.media?.filter(m => !m.isCover) ?? [];
-    const persistedCover = coverItem
-      ? await persistEventMedia(coverItem, `${event.id || 'event'}-cover`)
-      : isImageDataUrl(event.image)
-        ? { url: await uploadEventImageDataUrl(event.image, `${event.id || 'event'}-cover`) }
-        : null;
-    const persistedGallery = await Promise.all(
-      galleryItems.map((item, index) => persistEventMedia(item, `${event.id || 'event'}-gallery-${index + 1}`)),
-    );
+    const coverImage = coverItem?.url ?? event.image ?? '';
+
+    if (containsUnsafeDataImage(coverImage) || galleryItems.some(item => containsUnsafeDataImage(item.url))) {
+      throw new Error('Unsafe image payload detected. Please wait for all images to finish uploading before saving.');
+    }
 
     return {
       title: event.title,
@@ -174,9 +129,9 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
       registrationLink: event.registrationLink,
       description: event.description,
       type: event.type,
-      coverImage: persistedCover?.url ?? event.image ?? '',
-      moreImages: persistedGallery.length
-        ? JSON.stringify(persistedGallery.map(m => ({ id: m.id, kind: m.kind, url: m.url, name: m.name })))
+      coverImage,
+      moreImages: galleryItems.length
+        ? JSON.stringify(galleryItems.map(m => ({ id: m.id, kind: m.kind, url: m.url, name: m.name })))
         : '',
     };
   };
@@ -185,7 +140,7 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
     const response = await fetch('/api/events/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(await serializePayload(event)),
+      body: JSON.stringify(serializePayload(event)),
     });
     if (!response.ok) throw new Error('Failed to save event.');
     const saved = normalizeApiEvent((await response.json()) as ApiEvent);
@@ -196,7 +151,7 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
     const response = await fetch(`/api/events/${event.id}/`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(await serializePayload(event)),
+      body: JSON.stringify(serializePayload(event)),
     });
     if (!response.ok) throw new Error('Failed to update event.');
     const updated = normalizeApiEvent((await response.json()) as ApiEvent);

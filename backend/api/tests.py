@@ -1,9 +1,13 @@
 import json
+import shutil
+import tempfile
 from types import SimpleNamespace
 from datetime import date, timedelta
 from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, TestCase
+from django.test.utils import override_settings
 from django.utils import timezone
 
 from django.db import connection
@@ -11,6 +15,8 @@ from django.db import connection
 from .models import AuditLog, CoachProfile, Employee, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
 from .views import (
 	LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE,
+	MAX_UPLOAD_IMAGE_SIZE_BYTES,
+	MAX_UPLOAD_IMAGE_SIZE_MB,
 	MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES,
 	PROFILE_FORCE_DELETE_CONFIRM_VALUE,
 	_session_display_login_at,
@@ -85,6 +91,62 @@ class TutorProfileMatchingTests(SimpleTestCase):
 
 	def test_close_long_tutor_name_is_duplicate_warning(self):
 		self.assertTrue(is_probable_tutor_profile_match('Mohamed Ali', 'Mohammad Ali'))
+
+
+class UploadImageEndpointTests(TestCase):
+	def setUp(self):
+		self.client = Client()
+		self.media_root = tempfile.mkdtemp()
+		self.override = override_settings(MEDIA_ROOT=self.media_root)
+		self.override.enable()
+		AuditLog.objects.all().delete()
+
+	def tearDown(self):
+		self.override.disable()
+		shutil.rmtree(self.media_root, ignore_errors=True)
+
+	def test_upload_image_accepts_valid_image_under_limit(self):
+		file = SimpleUploadedFile(
+			'event-photo.jpg',
+			b'\xff\xd8\xff' + b'a' * 1024,
+			content_type='image/jpeg',
+		)
+
+		response = self.client.post('/api/upload-image/', {'file': file, 'folder': 'events'})
+
+		self.assertEqual(response.status_code, 201)
+		payload = response.json()
+		self.assertTrue(payload['url'].startswith('/media/uploads/events/'))
+		self.assertTrue(AuditLog.objects.filter(entity='Image', action='upload', after__folder='events').exists())
+
+	def test_upload_image_rejects_image_over_limit_without_saving(self):
+		file = SimpleUploadedFile(
+			'too-large.jpg',
+			b'\xff\xd8\xff' + b'a' * (MAX_UPLOAD_IMAGE_SIZE_BYTES + 1),
+			content_type='image/jpeg',
+		)
+
+		response = self.client.post('/api/upload-image/', {'file': file, 'folder': 'events'})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(response.json(), {
+			'detail': f'Image is too large. Maximum allowed size is {MAX_UPLOAD_IMAGE_SIZE_MB}MB.',
+			'maxSizeBytes': MAX_UPLOAD_IMAGE_SIZE_BYTES,
+			'maxSizeMb': MAX_UPLOAD_IMAGE_SIZE_MB,
+		})
+		self.assertFalse(AuditLog.objects.filter(entity='Image', action='upload', object_label='too-large.jpg').exists())
+
+	def test_upload_image_rejects_non_image_file(self):
+		file = SimpleUploadedFile(
+			'document.pdf',
+			b'%PDF-1.4',
+			content_type='application/pdf',
+		)
+
+		response = self.client.post('/api/upload-image/', {'file': file, 'folder': 'events'})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(response.content.decode(), 'Only image uploads are allowed.')
 
 
 class EmployeeDeleteSafetyTests(TestCase):

@@ -134,7 +134,7 @@ export default function EventDetailModal({ event, onClose, onEdit, onDelete, can
           {event.description && (
             <div className="mb-5">
               <h3 className="text-xs font-bold text-kbc-navy uppercase tracking-wide mb-2">About This Event</h3>
-              <p className="text-sm text-gray-600 leading-relaxed">{event.description}</p>
+              <p className="whitespace-pre-wrap text-sm text-gray-600 leading-relaxed">{event.description}</p>
             </div>
           )}
 

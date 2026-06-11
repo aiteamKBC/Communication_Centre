@@ -41,6 +41,8 @@ LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_HEADER = 'X-KBC-Legacy-Training-Plan-Full-Sa
 LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE = 'internal-admin-debug'
 PROFILE_FORCE_DELETE_CONFIRM_HEADER = 'X-KBC-Profile-Force-Delete'
 PROFILE_FORCE_DELETE_CONFIRM_VALUE = 'internal-admin-debug'
+MAX_UPLOAD_IMAGE_SIZE_MB = 10
+MAX_UPLOAD_IMAGE_SIZE_BYTES = MAX_UPLOAD_IMAGE_SIZE_MB * 1024 * 1024
 
 
 REALTIME_RESOURCE_ENTITIES = {
@@ -715,6 +717,16 @@ def upload_image(request):
 
 	if not str(getattr(uploaded_file, 'content_type', '')).startswith('image/'):
 		return HttpResponseBadRequest('Only image uploads are allowed.')
+
+	if int(getattr(uploaded_file, 'size', 0) or 0) > MAX_UPLOAD_IMAGE_SIZE_BYTES:
+		return JsonResponse(
+			{
+				'detail': f'Image is too large. Maximum allowed size is {MAX_UPLOAD_IMAGE_SIZE_MB}MB.',
+				'maxSizeBytes': MAX_UPLOAD_IMAGE_SIZE_BYTES,
+				'maxSizeMb': MAX_UPLOAD_IMAGE_SIZE_MB,
+			},
+			status=400,
+		)
 
 	file_url = _save_uploaded_image(uploaded_file, folder)
 	_audit_log(request, action='upload', entity='Image', object_label=str(getattr(uploaded_file, 'name', '') or 'upload'), after={'url': file_url, 'folder': folder})
