@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import { useSharedEvents } from '../../hooks/useSharedEvents';
-import { CalendarEvent } from '../../mocks/events';
+import { CalendarEvent, parseCalendarEventDate } from '../../mocks/events';
 import EventDetailModal from './components/EventDetailModal';
 import AddEventModal from './components/AddEventModal';
 import EditEventModal from './components/EditEventModal';
@@ -18,6 +18,13 @@ function getCoverMedia(event: CalendarEvent) {
   return event.image
     ? { id: 'legacy-image', kind: 'image' as const, url: event.image, name: event.title }
     : null;
+}
+
+function isFinishedEvent(event: CalendarEvent): boolean {
+  const eventDate = parseCalendarEventDate(event);
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return eventDate.getTime() < todayStart.getTime();
 }
 
 export default function EventsPage() {
@@ -138,6 +145,10 @@ export default function EventsPage() {
                 const badge = badgeMap[event.type];
                 const typeLabel = event.type.charAt(0).toUpperCase() + event.type.slice(1);
                 const coverMedia = getCoverMedia(event);
+                const finished = isFinishedEvent(event);
+                const statusBadge = finished
+                  ? 'border-slate-200 bg-slate-100 text-slate-600'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-700';
 
                 return (
                   <div
@@ -164,11 +175,17 @@ export default function EventsPage() {
                     </div>
 
                     <div className="p-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${badge}`}>
-                          <i className={`${icon} text-xs`} />
-                          {typeLabel}
-                        </span>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${badge}`}>
+                            <i className={`${icon} text-xs`} />
+                            {typeLabel}
+                          </span>
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold whitespace-nowrap ${statusBadge}`}>
+                            <i className={finished ? 'ri-checkbox-circle-line text-xs' : 'ri-calendar-schedule-line text-xs'} />
+                            {finished ? 'Finished' : 'Upcoming'}
+                          </span>
+                        </div>
                         <div className="flex flex-col items-center justify-center w-10 h-10 bg-kbc-navy rounded-lg shrink-0">
                           <span className="text-kbc-amber text-sm font-extrabold leading-none">{event.day}</span>
                           <span className="text-white/70 text-xs leading-none">{event.month}</span>
@@ -205,7 +222,7 @@ export default function EventsPage() {
                       </div>
 
                       <div className="flex items-center gap-2 pt-3 border-t border-gray-50">
-                        <span className="text-xs text-gray-400 flex-1">{event.type === 'online' ? 'Online event' : 'Offline event'}</span>
+                        <span className="text-xs text-gray-400 flex-1">{finished ? 'Finished event' : 'Upcoming event'}</span>
                         {canManageEvents && (
                           <>
                             <button
