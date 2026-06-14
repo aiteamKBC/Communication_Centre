@@ -510,11 +510,11 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
   const counts = normalizeItems(profileItems).length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-[3px]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-2 backdrop-blur-[3px] sm:p-4">
       <button type="button" aria-label="Close KSB profiles" className="absolute inset-0 cursor-default" onClick={() => { if (!deleting) void handleClose(); }} />
-      <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="w-72 shrink-0 border-r border-gray-200 bg-gray-50">
-          <div className="border-b border-gray-200 p-4">
+      <div className="relative flex min-h-0 max-h-[calc(100vh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl md:max-h-[calc(100vh-2rem)] md:flex-row">
+        <div className="max-h-[38vh] w-full shrink-0 border-b border-gray-200 bg-gray-50 md:max-h-none md:w-72 md:border-b-0 md:border-r">
+          <div className="border-b border-gray-200 p-3 sm:p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-extrabold text-kbc-navy">KSB Profiles</h2>
@@ -526,7 +526,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
             </div>
             <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search profiles" className="mt-3 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold focus:outline-none" />
           </div>
-          <div className="max-h-[calc(100vh-10rem)] overflow-y-auto p-2">
+          <div className="max-h-[calc(38vh-5.5rem)] overflow-auto overscroll-contain p-2 md:max-h-[calc(100vh-10rem)]">
             {filtered.map(profile => (
               <div key={profile.id} className="mb-1 rounded-lg border px-3 py-2 transition-all" style={{ borderColor: selectedId === profile.id ? '#1B2A4A' : '#E5E7EB', background: selectedId === profile.id ? '#F8FAFC' : '#fff' }}>
                 <button type="button" onClick={() => void selectProfile(profile)} disabled={deleting} className="w-full text-left disabled:cursor-not-allowed">
@@ -558,8 +558,8 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
             {!filtered.length && <p className="p-4 text-center text-xs font-semibold text-gray-400">No profiles found.</p>}
           </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-kbc-navy px-5 py-4">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-kbc-navy px-4 py-3 sm:px-5 sm:py-4">
             <div className="min-w-0">
               <p className="text-xs font-bold text-white/60">{selectedId ? 'Edit profile' : 'New profile'}</p>
               <h3 className="truncate text-base font-extrabold text-white">{draft.name || 'KSB Profile'}</h3>
@@ -568,7 +568,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
               <i className="ri-close-line text-lg" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 p-5">
+          <div className="min-h-0 flex-1 space-y-4 overflow-auto overscroll-contain bg-gray-50 p-3 sm:p-5">
             <div className="rounded-xl border border-gray-200 bg-white">
               <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-3">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-kbc-navy text-xs font-extrabold text-white">1</span>
@@ -605,12 +605,12 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
               </div>
             </div>
             <div className={`rounded-xl border bg-white ${profileReady ? 'border-gray-200' : 'border-dashed border-gray-300 opacity-75'}`}>
-              <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
                 <div className="flex items-center gap-3">
                   <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-extrabold ${profileReady ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-400'}`}>2</span>
                   <h4 className="text-xs font-extrabold uppercase tracking-wider text-gray-700">KSB definitions</h4>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <input ref={templateInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleTemplateFileChange} />
                   <button type="button" onClick={openTemplateUpload} disabled={!profileReady || importingTemplate} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm hover:border-kbc-navy/20 hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:text-gray-300 disabled:shadow-none">
                     <i className="ri-upload-2-line" />
@@ -665,7 +665,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
                     )}
                     {!sectionCollapsed && !parentCollapsed && (
                     <>
-                    <div className={`relative grid gap-2 rounded-lg border p-2 ${rowTone} md:grid-cols-[92px_110px_minmax(0,1fr)_104px_32px_34px]`} style={{ marginLeft: isChild ? `${Math.min(depth, 3) * 22}px` : 0 }}>
+                    <div className={`relative grid gap-2 rounded-lg border p-2 ${rowTone} sm:grid-cols-[76px_minmax(110px,0.65fr)_minmax(0,1fr)_auto_auto] md:grid-cols-[92px_110px_minmax(0,1fr)_104px_32px_34px]`} style={{ marginLeft: isChild ? `${Math.min(depth, 3) * 12}px` : 0 }}>
                       {isChild && (
                         <span className="absolute -left-4 top-1/2 h-px w-3 bg-gray-300" aria-hidden="true" />
                       )}
@@ -711,7 +711,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
                       ) : (
                         <span className="hidden md:block" />
                       )}
-                      <button type="button" onClick={() => void removeItem(index)} className="flex h-10 w-8 items-center justify-center rounded-lg text-gray-300 hover:bg-red-50 hover:text-red-500">
+                      <button type="button" onClick={() => void removeItem(index)} className="flex h-10 w-10 items-center justify-center rounded-lg text-gray-300 hover:bg-red-50 hover:text-red-500 md:w-8">
                         <i className="ri-delete-bin-line" />
                       </button>
                       {hasChildren ? (
@@ -720,7 +720,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
                           aria-label={`${headerCollapsed ? 'Expand' : 'Collapse'} ${item.code}`}
                           title={`${headerCollapsed ? 'Expand' : 'Collapse'} ${item.code}`}
                           onClick={() => toggleHeader(item.code)}
-                          className="flex h-10 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white text-kbc-navy hover:border-kbc-navy/25 hover:bg-gray-50"
+                          className="flex h-10 w-10 items-center justify-center rounded-lg border border-gray-200 bg-white text-kbc-navy hover:border-kbc-navy/25 hover:bg-gray-50 md:w-8"
                         >
                           <i className={`ri-arrow-down-s-line text-lg transition-transform ${headerCollapsed ? '-rotate-90' : ''}`} />
                         </button>
@@ -742,7 +742,7 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
               </div>
             </div>
           </div>
-          <div className="flex items-center justify-between border-t border-gray-200 bg-white px-5 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-white px-4 py-3 sm:px-5">
             <span className="text-xs font-bold text-gray-400">{counts} required KSB code{counts === 1 ? '' : 's'}</span>
             <div className="flex items-center gap-2">
               {selectedId && <button type="button" onClick={deleteSelected} disabled={deleting} className="rounded-lg px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">Delete</button>}

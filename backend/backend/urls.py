@@ -20,9 +20,12 @@ from django.conf.urls.static import static
 from django.urls import include, path
 
 from login.views import microsoft_popup_bridge
+from .swagger import swagger_schema, swagger_ui
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/swagger/', swagger_ui, name='swagger-ui'),
+    path('api/swagger.json', swagger_schema, name='swagger-schema'),
     path('api/', include('api.urls')),
     path('api/auth/', include('login.urls')),
     path('', include('login.urls')),

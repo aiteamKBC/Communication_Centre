@@ -136,41 +136,43 @@ export default function HeroSection({
   }, [upcomingEvents]);
 
   const total = allCards.length;
+  const trackRef = useRef<HTMLDivElement>(null);
+  const containerDivRef = useRef<HTMLDivElement | null>(null);
+  const [containerW, setContainerW] = useState(0);
+  const cardsPerView = containerW < 640 ? 1 : containerW < 1024 ? 2 : 3;
+  const cardGap = 12;
 
   const initializedRef = useRef(false);
   useEffect(() => {
-    if (initializedRef.current || total <= 3) return;
+    if (initializedRef.current || total <= cardsPerView) return;
     initializedRef.current = true;
     setSlideIdx(total);
-  }, [total]);
+  }, [cardsPerView, total]);
 
   useEffect(() => {
     if (total <= 0) return;
     setSlideIdx(current => {
-      if (total <= 3) {
+      if (total <= cardsPerView) {
         return Math.min(current, Math.max(0, total - 1));
       }
       const normalized = ((current % total) + total) % total;
       const next = total + normalized;
       return current === next ? current : next;
     });
-  }, [total]);
+  }, [cardsPerView, total]);
 
   const activeIndex = total > 0 ? ((slideIdx % total) + total) % total : 0;
-  const trackRef = useRef<HTMLDivElement>(null);
-  const containerDivRef = useRef<HTMLDivElement | null>(null);
-  const [containerW, setContainerW] = useState(0);
   const isTransitioning = useRef(false);
   const [noTransition, setNoTransition] = useState(false);
 
   const normalizeTrackPosition = useCallback((current: number) => {
-    if (total <= 3) {
+    if (total <= cardsPerView) {
       return Math.min(current, Math.max(0, total - 1));
     }
 
     const normalized = ((current % total) + total) % total;
     return total + normalized;
-  }, [total]);
+  }, [cardsPerView, total]);
 
   useEffect(() => {
     const el = containerDivRef.current;
@@ -182,16 +184,16 @@ export default function HeroSection({
   }, []);
 
   useEffect(() => {
-    if (paused || total <= 3) return;
+    if (paused || total <= cardsPerView) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     autoPlayRef.current = setInterval(() => {
       setSlideIdx(prev => prev + 1);
     }, 4000);
     return () => { if (autoPlayRef.current) clearInterval(autoPlayRef.current); };
-  }, [paused, total]);
+  }, [cardsPerView, paused, total]);
 
   useEffect(() => {
-    if (total <= 3) return;
+    if (total <= cardsPerView) return;
     const track = trackRef.current;
     if (!track) return;
 
@@ -216,10 +218,10 @@ export default function HeroSection({
       window.clearTimeout(fallbackTimer);
       track.removeEventListener('transitionend', onEnd);
     };
-  }, [slideIdx, total, normalizeTrackPosition]);
+  }, [cardsPerView, slideIdx, total, normalizeTrackPosition]);
 
   useEffect(() => {
-    if (total <= 3) return;
+    if (total <= cardsPerView) return;
 
     const recoverHeroTrack = () => {
       if (document.visibilityState === 'hidden') {
@@ -245,7 +247,7 @@ export default function HeroSection({
       document.removeEventListener('visibilitychange', recoverHeroTrack);
       window.removeEventListener('focus', recoverHeroTrack);
     };
-  }, [total, normalizeTrackPosition]);
+  }, [cardsPerView, total, normalizeTrackPosition]);
 
   useEffect(() => {
     if (!noTransition) return;
@@ -282,7 +284,7 @@ export default function HeroSection({
       >
         <div className="relative">
           {/* Left arrow */}
-          {total > 3 && (
+          {total > cardsPerView && (
             <button
               onClick={() => goTo(-1)}
               className="absolute -left-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 flex items-center justify-center bg-white border border-gray-200 hover:bg-gray-50 shadow-sm rounded-full text-kbc-navy transition-colors"
@@ -292,7 +294,7 @@ export default function HeroSection({
           )}
 
           {/* Right arrow */}
-          {total > 3 && (
+          {total > cardsPerView && (
             <button
               onClick={() => goTo(1)}
               className="absolute -right-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 flex items-center justify-center bg-white border border-gray-200 hover:bg-gray-50 shadow-sm rounded-full text-kbc-navy transition-colors"
@@ -312,14 +314,14 @@ export default function HeroSection({
               ref={trackRef}
               className="flex gap-3"
               style={{
-                transform: `translateX(calc(${slideIdx} * ${-(containerW / 3 + 4)}px))`,
+                transform: `translateX(calc(${slideIdx} * ${-(containerW ? ((containerW - (cardGap * (cardsPerView - 1))) / cardsPerView) + cardGap : 0)}px))`,
                 transition: noTransition ? 'none' : 'transform 500ms ease-in-out',
               }}
             >
               {[0, 1, 2].flatMap(copy => allCards.map((card) => {
                 const key = `${copy}-${card.kind === 'event' ? card.event.id : card.kind}`;
-                const cardW = containerW ? Math.floor((containerW - 24) / 3) : 0;
-                const cardClass = `flex-none min-h-[200px]`;
+                const cardW = containerW ? Math.floor((containerW - (cardGap * (cardsPerView - 1))) / cardsPerView) : 0;
+                const cardClass = `flex-none min-h-[260px] sm:min-h-[220px] lg:min-h-[200px]`;
                 const cardStyle = { width: cardW || undefined };
 
                 if (card.kind === 'urgent') return (
@@ -369,7 +371,7 @@ export default function HeroSection({
                       fallback={<div className="absolute inset-0 bg-[linear-gradient(135deg,#1e3a8a_0%,#0f172a_55%,#1e293b_100%)]" aria-hidden="true" />}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/90 via-kbc-navy/40 to-black/20" />
-                    <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
+                    <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[260px] sm:min-h-[220px] lg:min-h-[200px]">
                       <p className="text-white/80 text-xs font-medium mb-1 uppercase tracking-wide">Message from the Principal</p>
                       {leadershipMessage ? (
                         <>
@@ -413,7 +415,7 @@ export default function HeroSection({
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-kbc-navy/80 via-transparent to-transparent" />
                     <div className="absolute inset-0 bg-kbc-navy/25" />
-                    <div className="relative z-10 p-5 h-full flex flex-col justify-between min-h-[200px]">
+                    <div className="relative z-10 p-5 h-full flex flex-col justify-between min-h-[260px] sm:min-h-[220px] lg:min-h-[200px]">
                       <div>
                         <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest mb-3">
                           <i className="ri-seedling-line text-xs" /> Spring Campaign
@@ -446,7 +448,7 @@ export default function HeroSection({
                         : <div className="absolute inset-0 bg-gradient-to-br from-kbc-navy to-kbc-navy/80" />
                       }
                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-                      <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[200px]">
+                      <div className="relative z-10 p-5 h-full flex flex-col justify-end min-h-[260px] sm:min-h-[220px] lg:min-h-[200px]">
                         <span className="inline-flex items-center gap-1.5 bg-kbc-amber/90 text-kbc-navy text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-widest mb-2 w-fit">
                           <i className="ri-calendar-event-line text-xs" /> Upcoming Event
                         </span>
@@ -472,7 +474,7 @@ export default function HeroSection({
           </div>
 
           {/* Dot indicators - show position within the real card set */}
-          {total > 3 && (
+          {total > cardsPerView && (
             <div className="flex items-center justify-center gap-1.5 mt-3">
               {allCards.map((_, i) => (
                 <button

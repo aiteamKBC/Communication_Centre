@@ -1039,6 +1039,88 @@ function TrainingPlanAuditCard({ item, tone }: { item: Record<string, unknown>; 
   );
 }
 
+function recordId(item: Record<string, unknown>): string {
+  const value = item.id ?? item.trainingPlanId ?? item.moduleId ?? item.module_id;
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function TrainingPlanAuditDetails({ log }: { log: AuditLog }) {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const added = asRecordArray(after.added);
+  const removed = asRecordArray(before.removed);
+  const beforeRows = asRecordArray(before.rows);
+  const afterRows = asRecordArray(after.rows);
+  const createdRows = asRecordArray(after.createdRows);
+  const afterRowIds = new Set(afterRows.map(recordId).filter(Boolean));
+  const archivedRows = beforeRows.filter(row => {
+    const id = recordId(row);
+    return id && !afterRowIds.has(id);
+  });
+  const updatedRows = afterRows.filter(row => {
+    const id = recordId(row);
+    return !createdRows.some(createdRow => recordId(createdRow) === id);
+  });
+  const hasDetails = added.length > 0 || removed.length > 0 || createdRows.length > 0 || archivedRows.length > 0 || updatedRows.length > 0;
+
+  if (!hasDetails) {
+    return (
+      <p className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+        This log did not store row-level details. New Training Plan logs will show the exact modules added, changed, or removed.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-3">
+      {added.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Added</p>
+          <div className="mt-2 space-y-2">
+            {added.map((item, index) => <TrainingPlanAuditCard key={`added-${index}`} item={item} tone="added" />)}
+          </div>
+        </div>
+      )}
+
+      {createdRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Created rows</p>
+          <div className="mt-2 space-y-2">
+            {createdRows.map((item, index) => <TrainingPlanAuditCard key={`created-${index}`} item={item} tone="added" />)}
+          </div>
+        </div>
+      )}
+
+      {updatedRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-kbc-navy">Updated rows</p>
+          <div className="mt-2 space-y-2">
+            {updatedRows.map((item, index) => <TrainingPlanAuditCard key={`updated-${index}`} item={item} tone="added" />)}
+          </div>
+        </div>
+      )}
+
+      {removed.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Removed</p>
+          <div className="mt-2 space-y-2">
+            {removed.map((item, index) => <TrainingPlanAuditCard key={`removed-${index}`} item={item} tone="removed" />)}
+          </div>
+        </div>
+      )}
+
+      {archivedRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Archived rows</p>
+          <div className="mt-2 space-y-2">
+            {archivedRows.map((item, index) => <TrainingPlanAuditCard key={`archived-${index}`} item={item} tone="removed" />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UserActivityPage() {
   const access = useAccessControl();
   const canView = access.adminAccess || access.itAccess;
@@ -1584,7 +1666,7 @@ export default function UserActivityPage() {
 
           {error && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{error}</div>}
 
-          <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="mt-4 overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gradient-to-r from-white to-slate-50 px-4 py-4">
               <div>
                 <p className="text-sm font-extrabold text-kbc-navy">Sessions</p>
@@ -1596,7 +1678,7 @@ export default function UserActivityPage() {
                 {sessionFilter === 'all' ? 'All sessions' : sessionFilter === 'active' ? 'Active sessions' : 'Not active sessions'}
               </p>
             </div>
-            <div className="grid grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
+            <div className="grid min-w-[900px] grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
               <SortHeader label="User" sortKey="user" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Login" sortKey="login" currentSort={sessionSort} onSort={toggleSessionSort} />
               <SortHeader label="Status" sortKey="status" currentSort={sessionSort} onSort={toggleSessionSort} />
@@ -1624,7 +1706,7 @@ export default function UserActivityPage() {
                       <button
                         type="button"
                         onClick={() => setExpandedId(expandedId === session.id ? null : session.id)}
-                        className="grid w-full grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] items-center px-4 py-3 text-left transition-colors hover:bg-slate-50"
+                        className="grid w-full min-w-[900px] grid-cols-[minmax(260px,1.45fr)_90px_minmax(220px,1fr)_minmax(170px,0.9fr)_95px_76px_36px] items-center px-4 py-3 text-left transition-colors hover:bg-slate-50"
                       >
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-extrabold text-kbc-navy">{userLabel(session)}</span>
@@ -1658,13 +1740,13 @@ export default function UserActivityPage() {
                       </button>
 
                       {expandedId === session.id && (
-                        <div className="bg-slate-50 px-4 pb-4">
+                        <div className="min-w-[900px] bg-slate-50 px-4 pb-4">
                           <div className="mb-3 flex flex-wrap gap-2 text-[11px] font-semibold text-gray-500">
                             <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Signed in with {session.authProvider || 'password'}</span>
                             <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">{sessionStatusDetail(session)}</span>
                           </div>
-                          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-                            <div className="grid grid-cols-[1fr_110px_90px_120px] bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">
+                          <div className="overflow-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+                            <div className="grid min-w-[560px] grid-cols-[1fr_110px_90px_120px] bg-gray-50 px-3 py-2 text-[11px] font-extrabold uppercase tracking-wide text-gray-400">
                               <SortHeader label="Page" sortKey="page" currentSort={pageVisitSort} onSort={togglePageVisitSort} />
                               <SortHeader label="Period" sortKey="time" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="right" />
                               <SortHeader label="Views" sortKey="views" currentSort={pageVisitSort} onSort={togglePageVisitSort} align="center" />
@@ -1674,7 +1756,7 @@ export default function UserActivityPage() {
                               <div className="px-3 py-4 text-xs font-semibold text-gray-400">No page visits recorded.</div>
                             ) : (
                               sortedPageVisits(session.pageVisits, pageVisitSort).map(visit => (
-                                <div key={visit.id} className="grid grid-cols-[1fr_110px_90px_120px] border-t border-gray-100 px-3 py-2 text-xs hover:bg-slate-50">
+                                <div key={visit.id} className="grid min-w-[560px] grid-cols-[1fr_110px_90px_120px] border-t border-gray-100 px-3 py-2 text-xs hover:bg-slate-50">
                                   <span className="truncate font-semibold text-gray-700" title={visit.path}>{pageVisitLabel(visit.path)}</span>
                                   <span className="text-right font-bold text-gray-700">{formatDuration(visit.durationSeconds, true)}</span>
                                   <span className="text-center text-gray-500">{visit.viewCount}</span>
@@ -1712,8 +1794,8 @@ export default function UserActivityPage() {
 
             {auditError && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{auditError}</div>}
 
-            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-              <div className="grid grid-cols-[120px_170px_1.5fr_1fr_180px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
+            <div className="overflow-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+              <div className="grid min-w-[820px] grid-cols-[120px_170px_1.5fr_1fr_180px_44px] border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-gray-500">
                 <SortHeader label="Action" sortKey="action" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
                 <SortHeader label="Entity" sortKey="entity" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
                 <SortHeader label="Change" sortKey="change" currentSort={auditLogSort} onSort={toggleAuditLogSort} />
@@ -1745,7 +1827,7 @@ export default function UserActivityPage() {
                         <button
                           type="button"
                           onClick={() => setExpandedAuditId(expandedAuditId === log.id ? null : log.id)}
-                          className="grid w-full grid-cols-[120px_170px_1.5fr_1fr_180px_44px] items-center px-4 py-3 text-left hover:bg-gray-50"
+                          className="grid w-full min-w-[820px] grid-cols-[120px_170px_1.5fr_1fr_180px_44px] items-center px-4 py-3 text-left hover:bg-gray-50"
                         >
                           <span className="inline-flex w-fit rounded bg-kbc-navy/10 px-2 py-1 text-[11px] font-extrabold uppercase text-kbc-navy">{actionLabel(log.action)}</span>
                           <span className="truncate text-xs font-bold text-gray-600">{log.entity}</span>
@@ -1758,54 +1840,16 @@ export default function UserActivityPage() {
                         </button>
 
                         {expandedAuditId === log.id && (
-                          <div className="bg-slate-50 px-4 pb-4">
+                          <div className="min-w-[820px] bg-slate-50 px-4 pb-4">
                             <div className="rounded-lg border border-gray-200 bg-white p-3">
                               <p className="text-xs font-extrabold text-kbc-navy">{auditSummary(log)}</p>
                               {changeSummary(log) !== auditSummary(log) && (
                                 <p className="mt-1 text-xs font-semibold text-gray-500">{changeSummary(log)}</p>
                               )}
 
-                              {asRecordArray(asRecord(log.after).added).length > 0 && (
-                                <div className="mt-3">
-                                  <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Added</p>
-                                  <div className="mt-2 space-y-2">
-                                    {asRecordArray(asRecord(log.after).added).map((item, index) => (
-                                      log.entity === 'TrainingPlan' ? (
-                                        <TrainingPlanAuditCard key={`added-${index}`} item={item} tone="added" />
-                                      ) : (
-                                        <div key={`added-${index}`} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
-                                          {JSON.stringify(item)}
-                                        </div>
-                                      )
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              {asRecordArray(asRecord(log.before).removed).length > 0 && (
-                                <div className="mt-3">
-                                  <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Removed</p>
-                                  <div className="mt-2 space-y-2">
-                                    {asRecordArray(asRecord(log.before).removed).map((item, index) => (
-                                      log.entity === 'TrainingPlan' ? (
-                                        <TrainingPlanAuditCard key={`removed-${index}`} item={item} tone="removed" />
-                                      ) : (
-                                        <div key={`removed-${index}`} className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900">
-                                          {JSON.stringify(item)}
-                                        </div>
-                                      )
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              {asRecordArray(asRecord(log.after).added).length === 0 && asRecordArray(asRecord(log.before).removed).length === 0 && log.entity === 'TrainingPlan' && (
-                                <p className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-                                  This older log only stored record counts. New Training Plan logs will show the exact modules added or removed.
-                                </p>
-                              )}
-
-                              {asRecordArray(asRecord(log.after).added).length === 0 && asRecordArray(asRecord(log.before).removed).length === 0 && log.entity !== 'TrainingPlan' && (
+                              {log.entity === 'TrainingPlan' ? (
+                                <TrainingPlanAuditDetails log={log} />
+                              ) : (
                                 <GenericAuditDetails log={log} />
                               )}
                             </div>
