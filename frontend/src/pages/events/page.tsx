@@ -160,14 +160,14 @@ export default function EventsPage() {
                         coverMedia.kind === 'video' ? (
                           <video
                             src={coverMedia.url}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain"
                             muted
                             loop
                             autoPlay
                             playsInline
                           />
                         ) : (
-                          <img src={coverMedia.url} alt={event.title} className="w-full h-full object-cover object-top" />
+                          <img src={coverMedia.url} alt={event.title} className="w-full h-full object-contain" />
                         )
                       ) : (
                         <i className={`${icon} text-4xl`} style={{ color }} />
@@ -221,8 +221,7 @@ export default function EventsPage() {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 pt-3 border-t border-gray-50">
-                        <span className="text-xs text-gray-400 flex-1">{finished ? 'Finished event' : 'Upcoming event'}</span>
+                      <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-50">
                         {canManageEvents && (
                           <>
                             <button
