@@ -9,6 +9,7 @@ import AddEventModal from './components/AddEventModal';
 import EditEventModal from './components/EditEventModal';
 import CalendarView from './components/CalendarView';
 import useAccessControl from '../../hooks/useAccessControl';
+import { confirmDeleteEvent, kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 
 function getCoverMedia(event: CalendarEvent) {
   if (event.media?.length) {
@@ -57,10 +58,27 @@ export default function EventsPage() {
 
   const handleDeleteEvent = async (id: string) => {
     if (!canManageEvents) return;
+    const event = allEvents.find(item => item.id === id);
+    const confirmed = await confirmDeleteEvent(event?.title ?? 'this event');
+    if (!confirmed) return;
+
     setDeletingId(id);
     try {
       await deleteEvent(id);
       if (selectedEvent?.id === id) setSelectedEvent(null);
+      await kbcSuccessSwal.fire({
+        title: 'Event Deleted',
+        html: 'The event has been removed from the calendar and event cards.',
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Event Not Deleted',
+        html: error instanceof Error ? error.message : 'Something went wrong while deleting this event.',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
     } finally {
       setDeletingId(null);
     }
@@ -126,7 +144,7 @@ export default function EventsPage() {
               <p className="text-xs text-gray-400">Fetching events from the database.</p>
             </div>
           ) : allEvents.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 gap-7 lg:grid-cols-2">
               {allEvents.map(event => {
                 const iconMap: Record<CalendarEvent['type'], string> = {
                   online: 'ri-wifi-line',
@@ -153,80 +171,78 @@ export default function EventsPage() {
                 return (
                   <div
                     key={event.id}
-                    className="bg-white rounded-xl border border-gray-100 overflow-hidden group cursor-pointer hover:shadow-sm transition-shadow"
+                    className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200/70 bg-white shadow-[0_10px_30px_rgba(27,42,74,0.06)] transition-all duration-300 hover:-translate-y-0.5 hover:border-kbc-amber/40 hover:shadow-[0_18px_42px_rgba(27,42,74,0.12)]"
                   >
-                    <div className="w-full h-44 bg-kbc-navy/10 flex items-center justify-center overflow-hidden">
+                    <div className="relative flex h-72 w-full items-center justify-center overflow-hidden bg-kbc-navy xl:h-80">
                       {coverMedia ? (
                         coverMedia.kind === 'video' ? (
                           <video
                             src={coverMedia.url}
-                            className="h-full w-full object-fill"
+                            className="h-full w-full object-cover brightness-105 saturate-125 transition-transform duration-500 group-hover:scale-105"
                             muted
                             loop
                             autoPlay
                             playsInline
                           />
                         ) : (
-                          <img src={coverMedia.url} alt={event.title} className="h-full w-full object-fill" />
+                          <img src={coverMedia.url} alt={event.title} className="h-full w-full object-cover brightness-105 saturate-125 transition-transform duration-500 group-hover:scale-105" />
                         )
                       ) : (
                         <i className={`${icon} text-4xl`} style={{ color }} />
                       )}
+                      <div className="absolute right-3 top-3 flex h-11 w-11 flex-col items-center justify-center rounded-xl bg-kbc-navy shadow-[0_8px_18px_rgba(0,0,0,0.22)] ring-1 ring-white/20">
+                        <span className="text-sm font-extrabold leading-none text-kbc-amber">{event.day}</span>
+                        <span className="mt-0.5 text-[10px] font-bold leading-none text-white/75">{event.month}</span>
+                      </div>
                     </div>
 
-                    <div className="p-4">
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className={`flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${badge}`}>
+                    <div className="flex flex-1 flex-col p-4">
+                      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                          <span className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap ring-1 ring-inset ${badge} ${event.type === 'online' ? 'ring-green-200' : 'ring-slate-200'}`}>
                             <i className={`${icon} text-xs`} />
                             {typeLabel}
                           </span>
-                          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold whitespace-nowrap ${statusBadge}`}>
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-bold whitespace-nowrap ${statusBadge}`}>
                             <i className={finished ? 'ri-checkbox-circle-line text-xs' : 'ri-calendar-schedule-line text-xs'} />
                             {finished ? 'Finished' : 'Upcoming'}
                           </span>
-                        </div>
-                        <div className="flex flex-col items-center justify-center w-10 h-10 bg-kbc-navy rounded-lg shrink-0">
-                          <span className="text-kbc-amber text-sm font-extrabold leading-none">{event.day}</span>
-                          <span className="text-white/70 text-xs leading-none">{event.month}</span>
-                        </div>
                       </div>
 
-                      <h3 className="text-sm font-bold text-kbc-navy leading-snug mb-2">{event.title}</h3>
+                      <h3 className="mb-2 text-[15px] font-extrabold leading-snug text-kbc-navy transition-colors group-hover:text-kbc-navy-light">{event.title}</h3>
 
                       {event.description && (
-                        <p className="text-xs text-gray-500 leading-relaxed mb-3 line-clamp-2">
+                        <p className="mb-3 line-clamp-2 text-xs leading-relaxed text-slate-500">
                           {event.description}
                         </p>
                       )}
 
-                      <div className="flex flex-col gap-1 mb-4">
+                      <div className="mb-4 flex flex-col gap-1.5">
                         {event.time && (
-                          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                            <i className="ri-time-line text-xs text-gray-400 shrink-0" />
+                          <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                            <i className="ri-time-line text-xs text-kbc-amber shrink-0" />
                             {event.time}
                           </div>
                         )}
                         {event.location && (
-                          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                            <i className="ri-map-pin-line text-xs text-gray-400 shrink-0" />
+                          <div className="flex items-start gap-1.5 text-xs leading-snug text-slate-600">
+                            <i className="ri-map-pin-line mt-0.5 text-xs text-kbc-amber shrink-0" />
                             {event.location}
                           </div>
                         )}
                         {event.registrationLink && (
-                          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                            <i className="ri-links-line text-xs text-gray-400 shrink-0" />
+                          <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                            <i className="ri-links-line text-xs text-kbc-amber shrink-0" />
                             Registration available
                           </div>
                         )}
                       </div>
 
-                      <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-50">
+                      <div className="mt-auto flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
                         {canManageEvents && (
                           <>
                             <button
                               onClick={e => { e.stopPropagation(); setEditingEvent(event); }}
-                              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 hover:text-kbc-navy transition-colors"
+                              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-kbc-navy/20 hover:bg-slate-50 hover:text-kbc-navy"
                               title="Edit event"
                             >
                               <i className="ri-edit-line text-xs" />
@@ -234,7 +250,7 @@ export default function EventsPage() {
                             <button
                               onClick={e => { e.stopPropagation(); void handleDeleteEvent(event.id); }}
                               disabled={deletingId === event.id}
-                              className="w-7 h-7 flex items-center justify-center rounded-lg border border-red-100 bg-white hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                              className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-100 bg-white text-red-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
                               title="Delete event"
                             >
                               <i className="ri-delete-bin-line text-xs" />
@@ -243,7 +259,7 @@ export default function EventsPage() {
                         )}
                         <button
                           onClick={() => setSelectedEvent(event)}
-                          className="flex items-center gap-1.5 bg-kbc-navy text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer hover:bg-kbc-navy-light transition-colors whitespace-nowrap"
+                          className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg bg-kbc-navy px-3.5 py-2 text-xs font-bold text-white shadow-[0_8px_16px_rgba(27,42,74,0.16)] transition-colors hover:bg-kbc-navy-light"
                         >
                           <i className="ri-arrow-right-circle-line text-xs" />
                           View Details
