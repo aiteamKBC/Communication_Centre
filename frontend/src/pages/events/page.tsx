@@ -155,33 +155,19 @@ export default function EventsPage() {
                     key={event.id}
                     className="bg-white rounded-xl border border-gray-100 overflow-hidden group cursor-pointer hover:shadow-sm transition-shadow"
                   >
-                    <div className="relative w-full h-44 bg-kbc-navy/10 flex items-center justify-center overflow-hidden">
+                    <div className="w-full h-44 bg-kbc-navy/10 flex items-center justify-center overflow-hidden">
                       {coverMedia ? (
                         coverMedia.kind === 'video' ? (
-                          <>
-                            <video
-                              src={coverMedia.url}
-                              className="absolute inset-0 h-full w-full scale-110 object-cover opacity-45 blur-md"
-                              muted
-                              loop
-                              autoPlay
-                              playsInline
-                              aria-hidden="true"
-                            />
-                            <video
-                              src={coverMedia.url}
-                              className="relative h-full w-full object-contain"
-                              muted
-                              loop
-                              autoPlay
-                              playsInline
-                            />
-                          </>
+                          <video
+                            src={coverMedia.url}
+                            className="h-full w-full object-fill"
+                            muted
+                            loop
+                            autoPlay
+                            playsInline
+                          />
                         ) : (
-                          <>
-                            <img src={coverMedia.url} alt="" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-45 blur-md" aria-hidden="true" />
-                            <img src={coverMedia.url} alt={event.title} className="relative h-full w-full object-contain" />
-                          </>
+                          <img src={coverMedia.url} alt={event.title} className="h-full w-full object-fill" />
                         )
                       ) : (
                         <i className={`${icon} text-4xl`} style={{ color }} />
