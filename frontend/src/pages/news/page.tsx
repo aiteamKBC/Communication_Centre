@@ -85,7 +85,6 @@ function NewsGridSkeleton() {
 export default function NewsPage() {
   const { items, loading, error, addNews, updateNews, deleteNews } = useNews();
   const { canManageNews } = useAccessControl();
-  const [priority, setPriority] = useState<string>('all');
   const [dept, setDept] = useState('');
   const [search, setSearch] = useState('');
   const [adminOpen, setAdminOpen] = useState(false);
@@ -93,10 +92,15 @@ export default function NewsPage() {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [selectedItem, setSelectedItem] = useState<NewsItem | null>(null);
 
+  const criticalItems = useMemo(
+    () => items.filter(item => item.priority === 'critical'),
+    [items],
+  );
+
   const departmentOptions = useMemo(() => {
     const departments = Array.from(
       new Set(
-        items
+        criticalItems
           .map(item => item.department?.trim())
           .filter((department): department is string => Boolean(department)),
       ),
@@ -106,7 +110,7 @@ export default function NewsPage() {
       { value: '', label: DEPARTMENT_PLACEHOLDER },
       ...departments.map((department) => ({ value: department, label: department })),
     ];
-  }, [items]);
+  }, [criticalItems]);
 
   const newsDepartmentOptions = useMemo(() => {
     const selectableOptions = departmentOptions.filter(option => option.value);
@@ -121,11 +125,10 @@ export default function NewsPage() {
     }
   }, [departmentOptions, dept]);
 
-  const filtered = items.filter(item => {
-    const matchPriority = priority === 'all' || item.priority === priority;
+  const filtered = criticalItems.filter(item => {
     const matchDept = !dept || item.department === dept;
     const matchSearch = !search || item.title.toLowerCase().includes(search.toLowerCase()) || item.excerpt.toLowerCase().includes(search.toLowerCase());
-    return matchPriority && matchDept && matchSearch;
+    return matchDept && matchSearch;
   });
 
   const closeAdminModal = () => {
@@ -224,7 +227,7 @@ export default function NewsPage() {
               </div>
               <div>
                 <h1 className="text-lg font-bold text-kbc-navy">News &amp; Announcements</h1>
-                <p className="text-gray-400 text-xs mt-0.5">All institutional communications, alerts, and updates for KBC staff.</p>
+                <p className="text-gray-400 text-xs mt-0.5">Critical institutional alerts and updates for KBC staff.</p>
               </div>
             </div>
             {canManageNews && (
@@ -263,22 +266,6 @@ export default function NewsPage() {
                 className="w-full bg-transparent text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400"
               />
             </div>
-            <div className="w-px h-5 bg-gray-200 hidden sm:block" />
-            <div className="flex items-center gap-1 flex-wrap">
-              {(['all', 'critical', 'important', 'general'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setPriority(value)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium capitalize cursor-pointer whitespace-nowrap transition-all ${
-                    priority === value ? 'bg-kbc-navy text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
-                  {value === 'all' ? 'All Priority' : value.charAt(0).toUpperCase() + value.slice(1)}
-                </button>
-              ))}
-            </div>
-            <div className="w-px h-5 bg-gray-200 hidden sm:block" />
             <ModernSelect
               value={dept}
               onChange={setDept}
@@ -387,7 +374,7 @@ export default function NewsPage() {
               {!loading && filtered.length === 0 && (
                 <div className="text-center py-16 text-gray-400">
                   <i className="ri-newspaper-line text-4xl mb-3 block" />
-                  <p className="text-sm font-medium">No announcements match your filters</p>
+                  <p className="text-sm font-medium">No critical announcements match your search</p>
                 </div>
               )}
             </div>
@@ -474,7 +461,7 @@ export default function NewsPage() {
               {!loading && filtered.length === 0 && (
                 <div className="col-span-3 text-center py-16 text-gray-400">
                   <i className="ri-newspaper-line text-4xl mb-3 block" />
-                  <p className="text-sm font-medium">No announcements match your filters</p>
+                  <p className="text-sm font-medium">No critical announcements match your search</p>
                 </div>
               )}
             </div>
