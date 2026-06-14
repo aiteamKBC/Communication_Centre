@@ -1470,6 +1470,91 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertTrue(AuditLog.objects.filter(object_label='COHORT_EDIT_PARTIAL_UPDATE').exists())
 		self.assertFalse(AuditLog.objects.filter(action='replace', object_label='Training Plan timeline').exists())
 
+	def test_cohort_edit_can_update_add_and_archive_modules_without_replace_all(self):
+		TrainingPlan.objects.all().delete()
+		target_a = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\nExisting A', module_name='Module A', group_name='Old G1', coach_name='Old Coach', start_date='2026-01-05', end_date='2026-01-12', sessions_number='2', session_start_time='09:00', programme_display_order=0, cohort_display_order=2)
+		target_b = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\nExisting B', module_name='Module B', group_name='Old G2', coach_name='Old Coach 2', start_date='2026-02-05', programme_display_order=0, cohort_display_order=2)
+		other = self.create_training_plan_row(program='Programme One', cohort_name='Cohort B', notes='__program_id:p1\n__cohort_id:c2\nOther', module_name='Module C', group_name='Other G', coach_name='Other Coach', programme_display_order=0, cohort_display_order=3)
+		before_other = serialize_training_plan_for_test(other)
+
+		response = self.patch_json('/api/training-plan/cohorts/c1/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+			'cohortName': 'Cohort A Updated',
+			'startingDateLabel': '2026-01-10',
+			'cohortColor': '#123456',
+			'cohortEndDate': '2026-07-31',
+			'holidayIds': ['h1'],
+			'ksbProfileId': '',
+			'allowBlockMembershipChanges': True,
+			'blocks': [
+				{
+					'trainingPlanId': str(target_a.id),
+					'blockId': 'b1',
+					'groupId': 'g1',
+					'groupName': 'New G1',
+					'coachName': 'New Coach',
+					'moduleName': 'Module A Updated',
+					'moduleColor': '#654321',
+					'tutorName': 'Tutor Updated',
+					'startDate': '2026-01-12',
+					'endDate': '2026-01-26',
+					'sessionsNumber': '3',
+					'sessionWeekDay': 'monday',
+					'sessionStartTime': '10:00',
+					'sessionEndTime': '12:00',
+					'sessionKsbMappings': [{'knowledgeCodes': ['K1'], 'skillCodes': ['S1'], 'behaviourCodes': []}],
+					'sessionCoverage': [{'sessionNumber': 1, 'coverageStatus': 'required'}],
+					'notes': 'Updated notes',
+				},
+				{
+					'blockId': 'b-new',
+					'groupId': 'g1',
+					'groupName': 'New G1',
+					'coachName': 'New Coach',
+					'moduleName': 'Module New',
+					'moduleColor': '#112233',
+					'tutorName': 'Tutor New',
+					'startDate': '2026-03-02',
+					'endDate': '2026-03-16',
+					'sessionsNumber': '2',
+					'sessionWeekDay': 'monday',
+					'sessionStartTime': '13:00',
+					'sessionEndTime': '15:00',
+					'sessionKsbMappings': [],
+					'sessionCoverage': [],
+					'notes': 'New notes',
+				},
+			],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target_a.refresh_from_db()
+		target_b.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target_a.module_name, 'Module A Updated')
+		self.assertEqual(target_a.group_name, 'New G1')
+		self.assertEqual(target_a.coach_name, 'New Coach')
+		self.assertEqual(target_a.tutor_name, 'Tutor Updated')
+		self.assertEqual(target_a.start_date, '2026-01-12')
+		self.assertEqual(target_a.end_date, '2026-01-26')
+		self.assertEqual(target_a.sessions_number, '3')
+		self.assertEqual(target_a.session_start_time, '10:00')
+		self.assertIn('__module_color:#654321', target_a.notes)
+		self.assertEqual(json.loads(target_a.session_ksb_json)[0]['knowledgeCodes'], ['K1'])
+		self.assertTrue(target_b.is_archived)
+		created = TrainingPlan.objects.get(notes__contains='__block_id:b-new')
+		self.assertEqual(created.module_name, 'Module New')
+		self.assertEqual(created.cohort_name, 'Cohort A Updated')
+		self.assertEqual(created.programme_display_order, target_a.programme_display_order)
+		self.assertEqual(created.cohort_display_order, target_a.cohort_display_order)
+		self.assertEqual(serialize_training_plan_for_test(other), before_other)
+		payload = response.json()
+		self.assertEqual(payload['updated_count'], 1)
+		self.assertEqual(payload['created_count'], 1)
+		self.assertEqual(payload['archived_count'], 1)
+		self.assertFalse(AuditLog.objects.filter(action='replace', object_label='Training Plan timeline').exists())
+
 	def test_cohort_edit_rejects_unsafe_scope_and_stale_version(self):
 		TrainingPlan.objects.all().delete()
 		target_a = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\nP1 C1', module_name='Module A')
@@ -1628,6 +1713,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		response = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
 			'version': self.current_version(),
 			'programmeId': 'p1',
+			'cohortId': 'c1',
 			'trainingPlanIds': [str(c1_row.id), str(c1_row_2.id)],
 		})
 
@@ -2160,9 +2246,33 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		c1_row_2 = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\nP1 C1 extra', module_name='Module B')
 		c2_row = self.create_training_plan_row(program='Programme One', cohort_name='Cohort B', notes='__program_id:p1\n__cohort_id:c2\nP1 C2', module_name='Module A')
 
+		programme_only = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+		})
+		self.assertEqual(programme_only.status_code, 400)
+		self.assertIn('cohortId', programme_only.json()['detail'])
+
+		mismatched_cohort = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+			'cohortId': 'c2',
+			'trainingPlanIds': [str(c1_row.id), str(c1_row_2.id)],
+		})
+		self.assertEqual(mismatched_cohort.status_code, 400)
+
+		missing_row_ids = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+			'cohortId': 'c1',
+		})
+		self.assertEqual(missing_row_ids.status_code, 400)
+		self.assertIn('trainingPlanIds', missing_row_ids.json()['detail'])
+
 		missing = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
 			'version': self.current_version(),
 			'programmeId': 'p1',
+			'cohortId': 'c1',
 			'trainingPlanIds': [str(c1_row.id)],
 		})
 		self.assertEqual(missing.status_code, 400)
@@ -2171,6 +2281,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		unknown = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
 			'version': self.current_version(),
 			'programmeId': 'p1',
+			'cohortId': 'c1',
 			'trainingPlanIds': [str(c1_row.id), str(c1_row_2.id), '999999'],
 		})
 		self.assertEqual(unknown.status_code, 400)
@@ -2179,6 +2290,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		cross_scope = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
 			'version': self.current_version(),
 			'programmeId': 'p1',
+			'cohortId': 'c1',
 			'trainingPlanIds': [str(c1_row.id), str(c1_row_2.id), str(c2_row.id)],
 		})
 		self.assertEqual(cross_scope.status_code, 400)
@@ -2197,9 +2309,40 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		stale = self.patch_json('/api/training-plan/cohorts/c1/archive/', {
 			'version': stale_version,
 			'programmeId': 'p1',
+			'cohortId': 'c1',
 			'trainingPlanIds': [str(c1_row.id), str(c1_row_2.id)],
 		})
 		self.assertEqual(stale.status_code, 409)
+
+	def test_cohort_archive_allows_row_style_ids_only_when_exact_scope_exists(self):
+		TrainingPlan.objects.all().delete()
+		target = self.create_training_plan_row(program='Programme One', cohort_name='Generated Cohort', notes='__program_id:p1\n__cohort_id:row-123\nGenerated exact scope', module_name='Module A')
+		sibling = self.create_training_plan_row(program='Programme One', cohort_name='Sibling Cohort', notes='__program_id:p1\n__cohort_id:c2\nSibling', module_name='Module B')
+
+		missing_scope = self.patch_json('/api/training-plan/cohorts/db-row-999/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+			'cohortId': 'db-row-999',
+			'trainingPlanIds': [str(target.id)],
+		})
+		self.assertEqual(missing_scope.status_code, 400)
+		target.refresh_from_db()
+		sibling.refresh_from_db()
+		self.assertFalse(target.is_archived)
+		self.assertFalse(sibling.is_archived)
+
+		response = self.patch_json('/api/training-plan/cohorts/row-123/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'p1',
+			'cohortId': 'row-123',
+			'trainingPlanIds': [str(target.id)],
+		})
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		sibling.refresh_from_db()
+		self.assertTrue(target.is_archived)
+		self.assertFalse(sibling.is_archived)
+		self.assertEqual(response.json()['cohortId'], 'row-123')
 
 	def test_invalid_id_returns_404(self):
 		response = self.patch_json('/api/training-plan/sessions/999999/', {

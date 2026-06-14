@@ -2683,7 +2683,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'programmeId', 'cohortName', 'startingDateLabel', 'cohortColor', 'cohortEndDate', 'holidayIds', 'ksbProfileId', 'blocks'}
+	allowed_keys = {'version', 'programmeId', 'cohortName', 'startingDateLabel', 'cohortColor', 'cohortEndDate', 'holidayIds', 'ksbProfileId', 'blocks', 'allowBlockMembershipChanges'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
@@ -2691,7 +2691,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 	target_cohort_id = str(cohort_id or '').strip()
 	if not programme_id:
 		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
-	if not target_cohort_id or target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
+	if not target_cohort_id:
 		return JsonResponse({'detail': 'A stable cohort id is required.'}, status=400)
 
 	cohort_name = str(payload.get('cohortName') or '').strip()
@@ -2717,21 +2717,80 @@ def training_plan_cohort_detail(request, cohort_id: str):
 	blocks_value = payload.get('blocks')
 	if not isinstance(blocks_value, list) or not blocks_value:
 		return JsonResponse({'detail': 'blocks must be a non-empty list.'}, status=400)
+	allow_block_membership_changes = bool(payload.get('allowBlockMembershipChanges'))
 	block_payload_by_id = {}
-	for block in blocks_value:
+	new_block_payloads = []
+	for index, block in enumerate(blocks_value):
 		if not isinstance(block, dict):
 			return JsonResponse({'detail': 'blocks must contain objects.'}, status=400)
 		row_id = normalize_nullable_int(block.get('trainingPlanId'))
-		if row_id is None:
+		if row_id is None and not allow_block_membership_changes:
 			return JsonResponse({'detail': 'Cohort edit block is missing a Training Plan row id.'}, status=400)
 		if row_id in block_payload_by_id:
 			return JsonResponse({'detail': 'Cohort edit contains duplicate Training Plan row ids.'}, status=400)
-		block_payload_by_id[row_id] = {
+		module_color = str(block.get('moduleColor') or '').strip()
+		if module_color:
+			try:
+				module_color = normalize_training_plan_color(module_color)
+			except ValueError as exc:
+				return JsonResponse({'detail': f'blocks[{index}].moduleColor {str(exc)}'}, status=400)
+		start_date = str(block.get('startDate') or '').strip()
+		if start_date and parse_date(start_date) is None:
+			return JsonResponse({'detail': f'blocks[{index}].startDate must be a valid YYYY-MM-DD date.'}, status=400)
+		end_date = str(block.get('endDate') or '').strip()
+		if end_date and parse_date(end_date) is None:
+			return JsonResponse({'detail': f'blocks[{index}].endDate must be a valid YYYY-MM-DD date.'}, status=400)
+		if start_date and end_date and end_date < start_date:
+			return JsonResponse({'detail': f'blocks[{index}].endDate cannot be before startDate.'}, status=400)
+		sessions_number = str(block.get('sessionsNumber') or '').strip()
+		if sessions_number:
+			try:
+				if int(sessions_number) < 1:
+					return JsonResponse({'detail': f'blocks[{index}].sessionsNumber must be at least 1.'}, status=400)
+			except (TypeError, ValueError):
+				return JsonResponse({'detail': f'blocks[{index}].sessionsNumber must be a number.'}, status=400)
+		tutor_profile_id = normalize_nullable_int(block.get('tutorProfileId', None))
+		tutor_name = str(block.get('tutorName') or '').strip()
+		if tutor_profile_id is not None:
+			try:
+				tutor_profile = TutorProfile.objects.get(pk=tutor_profile_id, is_active=True)
+			except TutorProfile.DoesNotExist:
+				return JsonResponse({'detail': f'blocks[{index}].tutorProfileId references an unknown active tutor profile.'}, status=400)
+			tutor_name = tutor_profile.name
+		block_payload = {
 			'groupId': str(block.get('groupId') or '').strip(),
 			'blockId': str(block.get('blockId') or '').strip(),
 			'groupName': str(block.get('groupName') or '').strip(),
 			'coachName': str(block.get('coachName') or '').strip(),
+			'moduleName': str(block.get('moduleName') or '').strip(),
+			'moduleColor': module_color,
+			'tutorName': tutor_name,
+			'tutorProfileId': tutor_profile_id,
+			'startDate': start_date,
+			'endDate': end_date,
+			'sessionsNumber': sessions_number,
+			'sessionWeekDayProvided': 'sessionWeekDay' in block,
+			'sessionWeekDay': str(block.get('sessionWeekDay') or '').strip(),
+			'sessionStartTime': str(block.get('sessionStartTime') or '').strip(),
+			'sessionEndTime': str(block.get('sessionEndTime') or '').strip(),
+			'sessionKsbMappings': block.get('sessionKsbMappings') if 'sessionKsbMappings' in block else None,
+			'sessionCoverage': block.get('sessionCoverage') if 'sessionCoverage' in block else None,
+			'notes': str(block.get('notes') or '').strip() if 'notes' in block else None,
 		}
+		if not block_payload['groupId'] or not block_payload['blockId']:
+			return JsonResponse({'detail': f'blocks[{index}] is missing groupId or blockId.'}, status=400)
+		if row_id is None:
+			if not block_payload['moduleName']:
+				return JsonResponse({'detail': f'blocks[{index}].moduleName is required for new modules.'}, status=400)
+			if not block_payload['startDate']:
+				return JsonResponse({'detail': f'blocks[{index}].startDate is required for new modules.'}, status=400)
+			if not block_payload['endDate']:
+				return JsonResponse({'detail': f'blocks[{index}].endDate is required for new modules.'}, status=400)
+			if not block_payload['sessionsNumber']:
+				return JsonResponse({'detail': f'blocks[{index}].sessionsNumber is required for new modules.'}, status=400)
+			new_block_payloads.append(block_payload)
+		else:
+			block_payload_by_id[row_id] = block_payload
 
 	current_items = training_plan_items_snapshot()
 	current_version = training_plan_version(current_items)
@@ -2753,6 +2812,8 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
 		]
 		if not scope_rows:
+			if target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
+				return JsonResponse({'detail': 'A stable cohort id is required.'}, status=400)
 			return JsonResponse({'detail': 'Training Plan cohort edit scope not found.'}, status=404)
 		scope_ids = {int(row.id) for row in scope_rows}
 		submitted_ids = set(block_payload_by_id.keys())
@@ -2764,29 +2825,74 @@ def training_plan_cohort_detail(request, cohort_id: str):
 		if cross_scope_ids:
 			return JsonResponse({'detail': 'Cohort edit contains row ids outside the requested cohort scope.', 'crossScopeIds': cross_scope_ids}, status=400)
 		missing_ids = sorted(scope_ids - submitted_ids)
-		if missing_ids:
+		if missing_ids and not allow_block_membership_changes:
 			return JsonResponse({'detail': 'Cohort edit is missing rows from the requested cohort scope.', 'missingIds': missing_ids}, status=400)
 
+		missing_id_set = set(missing_ids)
 		before = [
 			{
 				'id': row.id,
 				'cohortName': row.cohort_name,
 				'startingDateLabel': row.starting_date_lable,
+				'moduleName': row.module_name,
 				'groupName': row.group_name,
 				'coachName': row.coach_name,
+				'tutorName': row.tutor_name,
+				'startDate': row.start_date,
+				'endDate': row.end_date,
+				'sessionsNumber': row.sessions_number,
 				'ksbProfileId': row.ksb_profile_id,
 				'cohortDisplayOrder': row.cohort_display_order,
 			}
 			for row in scope_rows
 		]
 		for row in scope_rows:
+			if int(row.id) in missing_id_set:
+				row.is_archived = True
+				row.archived_at = timezone.now()
+				row.archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+				row.archive_reason = 'Module removed from cohort editor'
+				row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
+				continue
 			block_payload = block_payload_by_id[int(row.id)]
+			update_fields = ['cohort_name', 'starting_date_lable', 'group_name', 'coach_name', 'ksb_profile_id', 'notes']
 			row.cohort_name = cohort_name
 			row.starting_date_lable = starting_date_label
 			row.group_name = block_payload['groupName']
 			row.coach_name = block_payload['coachName']
 			row.ksb_profile_id = ksb_profile_id
-			row.notes = set_training_plan_metadata_markers(row.notes, {
+			if block_payload['moduleName']:
+				row.module_name = block_payload['moduleName']
+				update_fields.append('module_name')
+			if block_payload['tutorName'] or block_payload['tutorProfileId'] is not None:
+				row.tutor_name = block_payload['tutorName']
+				row.tutor_profile_id = block_payload['tutorProfileId']
+				update_fields.extend(['tutor_name', 'tutor_profile_id'])
+			if block_payload['startDate']:
+				row.start_date = block_payload['startDate']
+				update_fields.append('start_date')
+			if block_payload['endDate']:
+				row.end_date = block_payload['endDate']
+				update_fields.append('end_date')
+			if block_payload['sessionsNumber']:
+				row.sessions_number = block_payload['sessionsNumber']
+				update_fields.append('sessions_number')
+			if block_payload['sessionWeekDayProvided']:
+				row.session_week_day = block_payload['sessionWeekDay']
+				update_fields.append('session_week_day')
+			if block_payload['sessionStartTime']:
+				row.session_start_time = block_payload['sessionStartTime']
+				update_fields.append('session_start_time')
+			if block_payload['sessionEndTime']:
+				row.session_end_time = block_payload['sessionEndTime']
+				update_fields.append('session_end_time')
+			if block_payload['sessionKsbMappings'] is not None:
+				row.session_ksb_json = json.dumps(normalize_session_ksb_mappings(block_payload['sessionKsbMappings']), ensure_ascii=False)
+				update_fields.append('session_ksb_json')
+			if block_payload['sessionCoverage'] is not None:
+				row.session_coverage_json = json.dumps(normalize_session_coverage(block_payload['sessionCoverage']), ensure_ascii=False)
+				update_fields.append('session_coverage_json')
+			marker_values = {
 				TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX: programme_id,
 				TRAINING_PLAN_COHORT_ID_MARKER_PREFIX: target_cohort_id,
 				'__group_id:': block_payload['groupId'],
@@ -2796,15 +2902,61 @@ def training_plan_cohort_detail(request, cohort_id: str):
 				'__cohort_end_date:': cohort_end_date,
 				'__group_name:': block_payload['groupName'],
 				'__coach_name:': block_payload['coachName'],
-			})
-			row.save(update_fields=['cohort_name', 'starting_date_lable', 'group_name', 'coach_name', 'ksb_profile_id', 'notes'])
+			}
+			if block_payload['moduleColor']:
+				marker_values[TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX] = block_payload['moduleColor']
+			row.notes = set_training_plan_metadata_markers(block_payload['notes'] if block_payload['notes'] is not None else row.notes, marker_values)
+			row.save(update_fields=sorted(set(update_fields)))
+		created_rows = []
+		for block_payload in new_block_payloads:
+			module_color = block_payload['moduleColor']
+			values = {
+				'cohort_name': cohort_name,
+				'program': scope_rows[0].program,
+				'starting_date_lable': starting_date_label,
+				'module_name': block_payload['moduleName'],
+				'group_name': block_payload['groupName'],
+				'coach_name': block_payload['coachName'],
+				'tutor_name': block_payload['tutorName'],
+				'tutor_profile_id': block_payload['tutorProfileId'],
+				'start_date': block_payload['startDate'],
+				'end_date': block_payload['endDate'],
+				'sessions_number': block_payload['sessionsNumber'],
+				'session_week_day': block_payload['sessionWeekDay'],
+				'session_start_time': block_payload['sessionStartTime'],
+				'session_end_time': block_payload['sessionEndTime'],
+				'session_ksb_json': json.dumps(normalize_session_ksb_mappings(block_payload['sessionKsbMappings'] or []), ensure_ascii=False),
+				'session_coverage_json': json.dumps(normalize_session_coverage(block_payload['sessionCoverage'] or []), ensure_ascii=False),
+				'ksb_profile_id': ksb_profile_id,
+				'programme_display_order': scope_rows[0].programme_display_order,
+				'cohort_display_order': scope_rows[0].cohort_display_order,
+				'notes': set_training_plan_metadata_markers(block_payload['notes'] or '', {
+					TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX: programme_id,
+					TRAINING_PLAN_COHORT_ID_MARKER_PREFIX: target_cohort_id,
+					'__group_id:': block_payload['groupId'],
+					'__block_id:': block_payload['blockId'],
+					'__holiday_ids:': '|'.join(holiday_ids),
+					'__cohort_color:': cohort_color,
+					TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX: module_color,
+					'__cohort_end_date:': cohort_end_date,
+					'__group_name:': block_payload['groupName'],
+					'__coach_name:': block_payload['coachName'],
+				}),
+			}
+			created_rows.append(TrainingPlan.objects.create(**values))
 		after = [
 			{
 				'id': row.id,
 				'cohortName': row.cohort_name,
 				'startingDateLabel': row.starting_date_lable,
+				'moduleName': row.module_name,
 				'groupName': row.group_name,
 				'coachName': row.coach_name,
+				'tutorName': row.tutor_name,
+				'startDate': row.start_date,
+				'endDate': row.end_date,
+				'sessionsNumber': row.sessions_number,
+				'isArchived': row.is_archived,
 				'ksbProfileId': row.ksb_profile_id,
 				'cohortDisplayOrder': row.cohort_display_order,
 			}
@@ -2816,7 +2968,9 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			'changedFields': ['cohortName', 'startingDateLabel', 'groupName', 'coachName', 'ksbProfileId', 'notesMetadata'],
 			'programmeId': programme_id,
 			'cohortId': target_cohort_id,
-			'updatedCount': len(scope_rows),
+			'updatedCount': len(scope_rows) - len(missing_ids),
+			'createdCount': len(created_rows),
+			'archivedCount': len(missing_ids),
 			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
@@ -2827,11 +2981,17 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			entity='TrainingPlan',
 			object_label='COHORT_EDIT_PARTIAL_UPDATE',
 			before={'rows': before, 'version': locked_version},
-			after={'rows': after, 'programmeId': programme_id, 'cohortId': target_cohort_id},
+			after={'rows': after, 'createdRows': [serialize_training_plan(row) for row in created_rows], 'programmeId': programme_id, 'cohortId': target_cohort_id},
 			metadata=metadata,
 		)
 
-	return JsonResponse(training_plan_order_response({'cohort_id': target_cohort_id, 'updated_count': len(scope_rows), 'programmeId': programme_id}))
+	return JsonResponse(training_plan_order_response({
+		'cohort_id': target_cohort_id,
+		'updated_count': len(scope_rows) - len(missing_ids),
+		'created_count': len(created_rows),
+		'archived_count': len(missing_ids),
+		'programmeId': programme_id,
+	}))
 
 
 @csrf_exempt
@@ -2979,16 +3139,21 @@ def training_plan_archive_cohort(request, cohort_id: str):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'programmeId', 'trainingPlanIds', 'archiveReason'}
+	allowed_keys = {'version', 'programmeId', 'cohortId', 'trainingPlanIds', 'archiveReason'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 	programme_id = str(payload.get('programmeId') or '').strip()
+	payload_cohort_id = str(payload.get('cohortId') or '').strip()
 	target_cohort_id = str(cohort_id or '').strip()
 	if not programme_id:
 		return JsonResponse({'detail': 'programmeId is required.'}, status=400)
+	if not payload_cohort_id:
+		return JsonResponse({'detail': 'cohortId is required.'}, status=400)
 	if not target_cohort_id:
 		return JsonResponse({'detail': 'cohort id is required.'}, status=400)
+	if payload_cohort_id != target_cohort_id:
+		return JsonResponse({'detail': 'cohortId must match the archive URL cohort id.'}, status=400)
 	row_ids, validation_error = validate_training_plan_row_ids(payload, 'trainingPlanIds', 'Cohort')
 	if validation_error is not None:
 		return validation_error
@@ -3013,6 +3178,8 @@ def training_plan_archive_cohort(request, cohort_id: str):
 			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
 		]
 		if not scope_rows:
+			if target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
+				return JsonResponse({'detail': 'A stable cohort scope is required for archive.'}, status=400)
 			return JsonResponse({'detail': 'Training Plan cohort archive scope not found.'}, status=404)
 		scope_ids = {int(row.id) for row in scope_rows}
 		submitted_ids = set(row_ids)

@@ -92,6 +92,9 @@ interface TrainingPlanMutationResult {
   updated_count?: number;
   created_count?: number;
   skipped_count?: number;
+  archived?: number;
+  programmeId?: string;
+  cohortId?: string;
 }
 
 const TEMPORARY_SERVER_STATUSES = new Set([502, 503, 504]);
@@ -548,6 +551,9 @@ function buildGroupsFromTrainingRows(
     if (item.ksbProfileId && !cohort.ksbProfileId) {
       cohort.ksbProfileId = item.ksbProfileId;
     }
+    if (!item.id) {
+      console.warn('TRAINING_PLAN_ITEM_MISSING_ID', { index, cohortId: cohort.id, moduleName: item.moduleName, rawId: item.id, notes: item.notes?.slice(0, 120) });
+    }
     cohort.blks.push({
       id: parsedNotes.blockId || `db-blk-${index + 1}`,
       trainingPlanId: item.id ? String(item.id) : undefined,
@@ -591,6 +597,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
   return groups.flatMap((group, groupIndex) =>
     group.rows.flatMap((row, rowIndex) =>
       row.blks.map(block => ({
+        id: block.trainingPlanId ? Number(block.trainingPlanId) : undefined,
         programmeId: group.id,
         cohortId: row.id,
         cohortName: row.label,
@@ -650,6 +657,52 @@ function hasOnlyCohortMetadataChanges(before: CohortRow, after: CohortRow): bool
       stableJson(normalizeSessionCoverage(previous.sessionCoverage, previous.sessions, previous.tutorProfileId)) === stableJson(normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId))
     );
   });
+}
+
+function hydrateCohortRowTrainingPlanIds(row: CohortRow, latestItems: TrainingPlanItem[]): CohortRow {
+  if (row.blks.every(block => block.trainingPlanId)) return row;
+
+  const itemsByBlockId = new Map<string, TrainingPlanItem>();
+  latestItems
+    .filter(item => item.cohortId === row.id)
+    .forEach(item => {
+      const parsedNotes = splitPersistedNotes(item.notes || '');
+      if (parsedNotes.blockId && item.id) {
+        itemsByBlockId.set(parsedNotes.blockId, item);
+      }
+    });
+
+  if (!itemsByBlockId.size) return row;
+
+  return {
+    ...row,
+    blks: row.blks.map(block => {
+      if (block.trainingPlanId) return block;
+      const item = itemsByBlockId.get(block.id);
+      return item?.id ? { ...block, trainingPlanId: String(item.id) } : block;
+    }),
+  };
+}
+
+function trainingPlanItemProgrammeId(item: TrainingPlanItem): string {
+  const parsedNotes = splitPersistedNotes(item.notes || '');
+  return parsedNotes.programId || item.programmeId || '';
+}
+
+function trainingPlanItemCohortId(item: TrainingPlanItem): string {
+  const parsedNotes = splitPersistedNotes(item.notes || '');
+  return parsedNotes.cohortId || item.cohortId || '';
+}
+
+function missingSiblingCohortIds(items: TrainingPlanItem[], programmeId: string, siblingCohortIds: string[]): string[] {
+  if (!siblingCohortIds.length) return [];
+  const activeCohorts = new Set(
+    items
+      .filter(item => trainingPlanItemProgrammeId(item) === programmeId)
+      .map(trainingPlanItemCohortId)
+      .filter(Boolean),
+  );
+  return siblingCohortIds.filter(cohortId => !activeCohorts.has(cohortId));
 }
 
 function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]): Array<Record<string, string | number>> {
@@ -2019,6 +2072,21 @@ export default function ApprenticeshipTimeline() {
     }
   }, []);
 
+  const fetchLatestTrainingPlanItems = useCallback(async (): Promise<TrainingPlanItem[] | null> => {
+    try {
+      const response = await fetch('/api/training-plan/', { cache: 'no-store' });
+      if (!response.ok) return null;
+      const payload = parseTrainingPlanPayload(await response.json());
+      if (!payload || !Array.isArray(payload.items)) return null;
+      setTrainingPlanItems(payload.items);
+      setTrainingPlanVersion(payload.version);
+      setHasLoadedTrainingPlan(true);
+      return payload.items;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const reloadTrainingPlanHolidays = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch('/api/training-plan-holidays/');
@@ -2891,12 +2959,14 @@ export default function ApprenticeshipTimeline() {
 
     // Build next state synchronously so we can persist immediately and ensure UI updates.
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
-    let savedRow = row;
+    let savedRow = modal.open && modal.mode === 'edit'
+      ? hydrateCohortRowTrainingPlanIds(row, trainingPlanItems)
+      : row;
     if (modal.open && modal.mode === 'edit') {
       const pgi = prevGroupIdx ?? groupIdx;
       next[pgi].rows.splice(modal.rowIdx, 1);
       const insertAt = groupIdx === pgi ? modal.rowIdx : next[groupIdx].rows.length;
-      next[groupIdx].rows.splice(insertAt, 0, row);
+      next[groupIdx].rows.splice(insertAt, 0, savedRow);
       savedRow = next[groupIdx].rows[insertAt];
     } else {
       next[groupIdx].rows.push(row);
@@ -2906,9 +2976,18 @@ export default function ApprenticeshipTimeline() {
     if (modal.open && modal.mode === 'edit') {
       const previousGroupIdx = prevGroupIdx ?? groupIdx;
       const previousGroup = groups[previousGroupIdx];
-      const previousRow = modal.row;
-      const blockTrainingPlanIds = savedRow.blks.map(block => block.trainingPlanId).filter(Boolean);
-      if (!previousGroup?.id || !savedRow.id || savedRow.id.startsWith('db-row-') || savedRow.id.startsWith('row-') || blockTrainingPlanIds.length !== savedRow.blks.length) {
+      let latestItems = trainingPlanItems;
+      let blockTrainingPlanIds = savedRow.blks.map(block => block.trainingPlanId).filter(Boolean);
+      if (savedRow.id && savedRow.blks.some(block => !block.trainingPlanId && !block.id.startsWith('mod-'))) {
+        const reloadedItems = await fetchLatestTrainingPlanItems();
+        if (reloadedItems) {
+          latestItems = reloadedItems;
+          savedRow = hydrateCohortRowTrainingPlanIds(savedRow, latestItems);
+          next[groupIdx].rows = next[groupIdx].rows.map(item => item.id === savedRow.id ? savedRow : item);
+          blockTrainingPlanIds = savedRow.blks.map(block => block.trainingPlanId).filter(Boolean);
+        }
+      }
+      if (!previousGroup?.id || !savedRow.id) {
         console.warn('COHORT_EDIT_PARTIAL_BLOCKED_MISSING_ID', {
           reason: 'missing stable programme, cohort, or Training Plan row id',
           programmeId: previousGroup?.id,
@@ -2927,12 +3006,12 @@ export default function ApprenticeshipTimeline() {
         });
         return false;
       }
-      if (groupIdx !== previousGroupIdx || !hasOnlyCohortMetadataChanges(previousRow, savedRow)) {
+      if (groupIdx !== previousGroupIdx) {
         setTrainingPlanSaveState('error');
-        setTrainingPlanSaveMessage('Cohort was not saved because this edit requires a dedicated module or programme save.');
+        setTrainingPlanSaveMessage('Cohort was not saved because moving cohorts between programmes is not supported here.');
         await kbcSwal.fire({
           title: 'Cohort Not Saved',
-          html: 'This edit includes module, session, or programme changes that cannot be saved by the cohort metadata save. Save the specific module/session change first, then try again.',
+          html: 'Moving a cohort between programmes changes programme membership. Keep the cohort in the same programme, then save again.',
           icon: 'warning',
           confirmButtonText: 'OK',
         });
@@ -2952,6 +3031,12 @@ export default function ApprenticeshipTimeline() {
         },
       });
       try {
+        const nextItemsForSave = flattenGroupsForApi(next, tutorProfiles);
+        const itemsByTrainingPlanId = new Map(
+          nextItemsForSave
+            .filter(item => item.id)
+            .map(item => [String(item.id), item]),
+        );
         const result = await updateTrainingPlanCohort(savedRow.id, {
           programmeId: previousGroup.id,
           cohortName: savedRow.label,
@@ -2966,11 +3051,30 @@ export default function ApprenticeshipTimeline() {
             groupId: block.groupId || '',
             groupName: block.groupName || '',
             coachName: block.coachName || '',
+            moduleName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.moduleName || getModuleMeta(block.mod).lbl,
+            tutorName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorName || block.tutor || '',
+            tutorProfileId: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorProfileId || block.tutorProfileId || '',
+            startDate: block.startDate,
+            endDate: block.endDate,
+            sessionsNumber: String(block.sessions),
+            sessionWeekDay: (block.days || []).join(', '),
+            sessionStartTime: block.sessionStartTime || '09:00',
+            sessionEndTime: block.sessionEndTime || '11:00',
+            sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
+            sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
+            moduleColor: block.color || '',
+            notes: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.notes || block.notes || '',
           })),
+          allowBlockMembershipChanges: true,
         });
         if (result.version) setTrainingPlanVersion(result.version);
-        setTrainingPlanItems(Array.isArray(result.items) ? result.items : flattenGroupsForApi(next, tutorProfiles));
-        setGroups(next);
+        if (Array.isArray(result.items)) {
+          setTrainingPlanItems(result.items);
+          setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+        } else {
+          setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
+          setGroups(next);
+        }
         setModal({ open: false });
         setTrainingPlanSaveState('saved');
         setTrainingPlanSaveMessage(`Saved to database at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
@@ -3303,6 +3407,7 @@ export default function ApprenticeshipTimeline() {
       },
       body: JSON.stringify({
         programmeId,
+        cohortId,
         trainingPlanIds,
         archiveReason: 'Cohort archived from Training Plan UI',
         version: trainingPlanVersion,
@@ -3747,6 +3852,10 @@ export default function ApprenticeshipTimeline() {
 
     const targetGroup = groups[groupIdx];
     const trainingPlanIds = target.blks.map(block => block.trainingPlanId).filter((id): id is string => Boolean(id));
+    const siblingCohortIds = targetGroup?.rows
+      .filter((_, index) => index !== rowIdx)
+      .map(row => row.id)
+      .filter((id): id is string => Boolean(id)) || [];
     if (!targetGroup?.id || !target.id || trainingPlanIds.length !== target.blks.length) {
       console.warn('COHORT_ARCHIVE_BLOCKED_MISSING_ID', {
         reason: 'missing stable cohort or Training Plan row ids',
@@ -3760,15 +3869,36 @@ export default function ApprenticeshipTimeline() {
     setTrainingPlanSaveState('saving');
     setTrainingPlanSaveMessage('Archiving cohort...');
     try {
+      const next = groups.map((g, gi) =>
+        gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
+      );
       const result = await archiveTrainingPlanCohort(targetGroup.id, target.id, trainingPlanIds);
+      if (result.programmeId && result.programmeId !== targetGroup.id) {
+        throw new Error('Cohort archive response programme did not match the selected programme. Reload latest data and check the cohort before trying again.');
+      }
+      if (result.cohortId && result.cohortId !== target.id) {
+        throw new Error('Cohort archive response cohort did not match the selected cohort. Reload latest data and check the cohort before trying again.');
+      }
+      if (typeof result.archived === 'number' && result.archived !== trainingPlanIds.length) {
+        throw new Error('Cohort archive response did not confirm the expected archived row count. Reload latest data and check the cohort before trying again.');
+      }
       if (result.version) setTrainingPlanVersion(result.version);
       if (result.items) {
+        const missingSiblings = missingSiblingCohortIds(result.items, targetGroup.id, siblingCohortIds);
+        if (missingSiblings.length) {
+          const latestItems = await fetchLatestTrainingPlanItems();
+          const stillMissing = latestItems ? missingSiblingCohortIds(latestItems, targetGroup.id, siblingCohortIds) : missingSiblings;
+          if (latestItems && !stillMissing.length) {
+            setGroups(next);
+            setTrainingPlanSaveState('saved');
+            setTrainingPlanSaveMessage(`Cohort archived at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+            return;
+          }
+          throw new Error(`Cohort archive returned an unsafe result because sibling cohort(s) disappeared: ${stillMissing.join(', ')}. Reload latest data before making more changes.`);
+        }
         setTrainingPlanItems(result.items);
-        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+        setGroups(next);
       } else {
-        const next = groups.map((g, gi) =>
-          gi === groupIdx ? { ...g, rows: g.rows.filter((_, ri) => ri !== rowIdx) } : { ...g, rows: [...g.rows] }
-        );
         setTrainingPlanItems(flattenGroupsForApi(next, tutorProfiles));
         setGroups(next);
       }
@@ -3791,7 +3921,7 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
-  const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => {
+  const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position: 'before' | 'after' = 'before') => {
     if (!canManageCohorts) return;
     if (fromGroupIdx !== toGroupIdx) {
       console.warn('COHORT_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
@@ -3809,7 +3939,8 @@ export default function ApprenticeshipTimeline() {
     }
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
     const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
-    const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < toRowIdx ? toRowIdx - 1 : toRowIdx;
+    const rawInsertAt = position === 'after' ? toRowIdx + 1 : toRowIdx;
+    const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < rawInsertAt ? rawInsertAt - 1 : rawInsertAt;
     next[toGroupIdx].rows.splice(insertAt, 0, moved);
     const targetGroup = next[toGroupIdx];
     const cohortIds = targetGroup.rows.map(row => row.id).filter(Boolean);

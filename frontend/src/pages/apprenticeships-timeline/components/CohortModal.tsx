@@ -1895,6 +1895,7 @@ export default function CohortModal({
       blks: normalizedGroups.flatMap(group =>
         group.modules.map(moduleItem => ({
           id: moduleItem.id,
+          trainingPlanId: moduleItem.trainingPlanId,
           groupId: group.id,
           mod: moduleItem.mod,
           groupName: group.groupName.trim() || undefined,

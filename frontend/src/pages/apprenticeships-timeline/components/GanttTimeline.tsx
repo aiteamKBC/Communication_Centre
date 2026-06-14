@@ -412,7 +412,7 @@ interface Props {
   onDeleteRow: (groupIdx: number, rowIdx: number) => void | Promise<void>;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
-  onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number) => void;
+  onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position?: 'before' | 'after') => void;
   onReorderGroup?: (fromGroupIdx: number, toGroupIdx: number) => void;
   onExportExcel?: () => void;
   exportExcelDisabled?: boolean;
@@ -935,7 +935,10 @@ export default function GanttTimeline({
 
   // Drag-and-drop state
   type DragItem = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
-  type DragOverTarget = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
+  type CohortDropPosition = 'before' | 'after';
+  type DragOverTarget =
+    | { type: 'cohort'; groupIdx: number; rowIdx: number; position: CohortDropPosition }
+    | { type: 'group'; groupIdx: number };
   const dragItem    = useRef<DragItem | null>(null);
   const [dragOver, setDragOver] = useState<DragOverTarget | null>(null);
 
@@ -994,6 +997,11 @@ export default function GanttTimeline({
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDragOver(target);
+  }, []);
+
+  const getCohortDropPosition = useCallback((e: React.DragEvent<Element>): CohortDropPosition => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
   }, []);
 
   const handleDragLeave = useCallback(() => {
@@ -1082,10 +1090,17 @@ export default function GanttTimeline({
     setDragOver(null);
     const item = dragItem.current;
     if (!item || item.type !== 'cohort') return;
-    if (item.groupIdx === toGroupIdx && item.rowIdx === toRowIdx) return;
-    onReorderRow?.(item.groupIdx, item.rowIdx, toGroupIdx, toRowIdx);
+    const position = getCohortDropPosition(e);
+    if (
+      item.groupIdx === toGroupIdx &&
+      ((position === 'before' && item.rowIdx === toRowIdx) ||
+        (position === 'after' && item.rowIdx === toRowIdx + 1))
+    ) {
+      return;
+    }
+    onReorderRow?.(item.groupIdx, item.rowIdx, toGroupIdx, toRowIdx, position);
     dragItem.current = null;
-  }, [onReorderRow]);
+  }, [getCohortDropPosition, onReorderRow]);
 
   const handleGroupDrop = useCallback((e: React.DragEvent, toGroupIdx: number) => {
     e.preventDefault();
@@ -2935,6 +2950,11 @@ export default function GanttTimeline({
                 })();
 
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
+                const cohortDropShadow = isCohortDragOver
+                  ? dragOver.position === 'after'
+                    ? `inset 0 -2px 0 ${rowColor}`
+                    : `inset 0 2px 0 ${rowColor}`
+                  : undefined;
                 const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
 
                 return (
@@ -2943,9 +2963,9 @@ export default function GanttTimeline({
                     data-row-target={rowTargetKey}
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
-                      ...(isCohortDragOver ? { boxShadow: `inset 0 2px 0 ${rowColor}` } : {}),
+                      ...(cohortDropShadow ? { boxShadow: cohortDropShadow } : {}),
                     }}
-                    onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri }) : undefined}
+                    onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri, position: getCohortDropPosition(e) }) : undefined}
                     onDragLeave={canManageCohorts ? handleDragLeave : undefined}
                     onDrop={canManageCohorts ? (e) => handleCohortDrop(e, gi, ri) : undefined}
                   >
