@@ -459,7 +459,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
   const activeTutor = activeTutorProfile?.name || '';
   const moduleOptions = useMemo(() => {
     const catalogOptions = catalogModules.map(module => ({
-      value: module.name,
+      value: String(module.id),
       label: module.name,
       description: `${module.sessions || 0} session${module.sessions === '1' ? '' : 's'}`,
       color: module.colour || '#4A6DB0',

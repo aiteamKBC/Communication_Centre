@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from django.db import connection
 
-from .models import AuditLog, CoachProfile, Employee, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
+from .models import AuditLog, CoachProfile, Employee, Module, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
 from .views import (
 	LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE,
 	MAX_UPLOAD_IMAGE_SIZE_BYTES,
@@ -966,6 +966,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 
 	def setUp(self):
 		TrainingPlan.objects.all().delete()
+		Module.objects.all().delete()
 		self.tutor = TutorProfile.objects.create(name='Tutor One', normalized_name='tutor one')
 		self.coverage_tutor = TutorProfile.objects.create(name='Tutor Two', normalized_name='tutor two')
 		self.row = self.create_training_plan_row(module_name='Module A', tutor_profile_id=self.tutor.id, tutor_name=self.tutor.name)
@@ -1738,6 +1739,51 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		include_archived = Client().get('/api/training-plan/?includeArchived=1').json()
 		self.assertEqual(len(include_archived['items']), 3)
 
+	def test_cohort_archive_does_not_scope_by_legacy_name_identity(self):
+		TrainingPlan.objects.all().delete()
+		legacy = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', starting_date_lable='2026-01-01', notes='Legacy row without markers', module_name='Module A')
+		before = serialize_training_plan_for_test(legacy)
+
+		response = self.patch_json('/api/training-plan/cohorts/cohort%20a::2026-01-01/archive/', {
+			'version': self.current_version(),
+			'programmeId': 'programme one',
+			'cohortId': 'cohort a::2026-01-01',
+			'trainingPlanIds': [str(legacy.id)],
+		})
+
+		self.assertEqual(response.status_code, 404)
+		legacy.refresh_from_db()
+		self.assertEqual(serialize_training_plan_for_test(legacy), before)
+		self.assertFalse(AuditLog.objects.filter(object_label='COHORT_ARCHIVE_PARTIAL_UPDATE').exists())
+
+	def test_cohort_edit_does_not_scope_by_legacy_name_identity(self):
+		TrainingPlan.objects.all().delete()
+		legacy = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', starting_date_lable='2026-01-01', notes='Legacy row without markers', module_name='Module A')
+		before = serialize_training_plan_for_test(legacy)
+
+		response = self.patch_json('/api/training-plan/cohorts/cohort%20a::2026-01-01/', {
+			'version': self.current_version(),
+			'programmeId': 'programme one',
+			'cohortName': 'Renamed Cohort',
+			'startingDateLabel': '2026-01-01',
+			'blocks': [{
+				'trainingPlanId': legacy.id,
+				'groupId': 'g1',
+				'blockId': 'b1',
+				'groupName': 'Group',
+				'coachName': 'Coach',
+				'moduleName': 'Module A',
+				'startDate': '2026-01-05',
+				'endDate': '2026-01-19',
+				'sessionsNumber': '3',
+			}],
+		})
+
+		self.assertEqual(response.status_code, 404)
+		legacy.refresh_from_db()
+		self.assertEqual(serialize_training_plan_for_test(legacy), before)
+		self.assertFalse(AuditLog.objects.filter(object_label='COHORT_EDIT_PARTIAL_UPDATE').exists())
+
 	def test_module_archive_marks_only_matching_module_scope(self):
 		TrainingPlan.objects.all().delete()
 		target_a = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\nTarget A', module_name='Shared Module', programme_display_order=0, cohort_display_order=0)
@@ -1806,6 +1852,8 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		after_b = serialize_training_plan_for_test(target_b)
 		preserved_a['module_name'] = 'Renamed Shared Module'
 		preserved_b['module_name'] = 'Renamed Shared Module'
+		preserved_a['notes'] = '__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_color:#4A6DB0\n__module_catalogue_id:42\nTarget A'
+		preserved_b['notes'] = '__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_color:#4A6DB0\n__module_catalogue_id:42\nTarget B'
 		self.assertEqual(after_a, preserved_a)
 		self.assertEqual(after_b, preserved_b)
 		self.assertEqual(serialize_training_plan_for_test(other_module), before_other_module)
@@ -1859,6 +1907,335 @@ class TrainingPlanPartialUpdateTests(TestCase):
 
 		self.assertEqual(serialize_training_plan_for_test(target_a), before_a)
 		self.assertEqual(serialize_training_plan_for_test(target_b), before_b)
+
+	def test_module_linked_rows_update_uses_catalogue_id_when_names_are_duplicated(self):
+		TrainingPlan.objects.all().delete()
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_catalogue_id:42\nFirst PPC',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		same_name_other_catalogue = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_catalogue_id:99\nSecond PPC',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		before_other = serialize_training_plan_for_test(same_name_other_catalogue)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'Renamed PPC',
+			'linkedRows': [
+				{'trainingPlanId': str(target.id), 'programmeId': 'p1', 'cohortId': 'c1', 'groupId': 'g1', 'blockId': 'b1'},
+			],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		same_name_other_catalogue.refresh_from_db()
+		self.assertEqual(target.module_name, 'Renamed PPC')
+		self.assertEqual(serialize_training_plan_for_test(same_name_other_catalogue), before_other)
+
+	def test_duplicate_module_rename_catalogue_42_updates_only_marker_42(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_catalogue_id:42\nFirst PPC',
+			module_name='PPC',
+		)
+		other = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_catalogue_id:99\nSecond PPC',
+			module_name='PPC',
+		)
+		before_other = serialize_training_plan_for_test(other)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC3',
+			'linkedRows': [],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.module_name, 'PPC3')
+		self.assertEqual(serialize_training_plan_for_test(other), before_other)
+		payload = response.json()
+		self.assertEqual(payload['updatedRows'], [target.id])
+		self.assertEqual(payload['skippedAmbiguousRows'], [])
+
+	def test_duplicate_module_rename_catalogue_99_updates_only_marker_99(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		other = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_catalogue_id:42\nFirst PPC',
+			module_name='PPC',
+		)
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_catalogue_id:99\nSecond PPC',
+			module_name='PPC',
+		)
+		before_other = serialize_training_plan_for_test(other)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '99',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC99',
+			'linkedRows': [],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.module_name, 'PPC99')
+		self.assertEqual(serialize_training_plan_for_test(other), before_other)
+		payload = response.json()
+		self.assertEqual(payload['updatedRows'], [target.id])
+		self.assertEqual(payload['skippedAmbiguousRows'], [])
+
+	def test_duplicate_module_rename_does_not_update_legacy_rows_by_name_alone(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		legacy = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\nLegacy PPC without stable module id',
+			module_name='PPC',
+		)
+		before = serialize_training_plan_for_test(legacy)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC3',
+			'linkedRows': [],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		legacy.refresh_from_db()
+		self.assertEqual(serialize_training_plan_for_test(legacy), before)
+		self.assertEqual(response.json()['updatedRows'], [])
+		self.assertEqual(response.json()['skippedAmbiguousRows'], [legacy.id])
+
+	def test_duplicate_module_rename_safely_repairs_legacy_row_with_unique_colour_match(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_color:#111111\nLegacy PPC colour match',
+			module_name='PPC',
+		)
+		other = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_color:#884400\nOther legacy PPC colour match',
+			module_name='PPC',
+		)
+		before_other = serialize_training_plan_for_test(other)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC3',
+			'linkedRows': [],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(target.module_name, 'PPC3')
+		self.assertIn('__module_catalogue_id:42', target.notes)
+		self.assertEqual(serialize_training_plan_for_test(other), before_other)
+		self.assertEqual(response.json()['updatedRows'], [target.id])
+		self.assertEqual(response.json()['skippedAmbiguousRows'], [other.id])
+
+	def test_module_linked_rows_update_can_resolve_rows_without_client_ids(self):
+		TrainingPlan.objects.all().delete()
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_catalogue_id:42\nPPC row',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		other_same_name = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_catalogue_id:99\nOther PPC row',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		before_other = serialize_training_plan_for_test(other_same_name)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC From Server Scope',
+			'linkedRows': [],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other_same_name.refresh_from_db()
+		self.assertEqual(target.module_name, 'PPC From Server Scope')
+		self.assertEqual(serialize_training_plan_for_test(other_same_name), before_other)
+		payload = response.json()
+		self.assertEqual(payload['updated_count'], 1)
+		self.assertEqual(payload['identifiers']['linkedRows'][0]['trainingPlanId'], target.id)
+
+	def test_catalogue_module_rename_updates_linked_timeline_rows_end_to_end(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.all().delete()
+		catalogue_module = Module.objects.create(
+			module_name='PPC',
+			module_colour='#585e6a',
+			number_of_sessions='15',
+			notes='Catalogue note',
+		)
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes=f'__program_id:p1\n__cohort_id:c1\n__group_id:g1\n__block_id:b1\n__module_catalogue_id:{catalogue_module.module_id}\nTimeline PPC row',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		other = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g2\n__block_id:b2\n__module_catalogue_id:999999\nOther PPC row',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+		before_other = serialize_training_plan_for_test(other)
+
+		catalogue_response = self.patch_json(f'/api/modules/{catalogue_module.module_id}/', {
+			'id': catalogue_module.module_id,
+			'name': 'PPC End To End',
+			'colour': '#585e6a',
+			'sessions': '15',
+			'notes': 'Catalogue note updated',
+			'sessionNames': [],
+			'sessionDescriptions': [],
+			'sessionKsbMappings': [],
+		})
+		self.assertEqual(catalogue_response.status_code, 200)
+
+		timeline_response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': str(catalogue_module.module_id),
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC End To End',
+			'linkedRows': [],
+		})
+		self.assertEqual(timeline_response.status_code, 200)
+
+		catalogue_module.refresh_from_db()
+		target.refresh_from_db()
+		other.refresh_from_db()
+		self.assertEqual(catalogue_module.module_name, 'PPC End To End')
+		self.assertEqual(catalogue_module.notes, 'Catalogue note updated')
+		self.assertEqual(target.module_name, 'PPC End To End')
+		self.assertEqual(serialize_training_plan_for_test(other), before_other)
+		self.assertEqual(timeline_response.json()['updated_count'], 1)
+		self.assertEqual(timeline_response.json()['items'][0]['moduleName'], 'PPC End To End')
+		get_payload = Client().get('/api/training-plan/').json()
+		modules_by_id = {item['id']: item['moduleName'] for item in get_payload['items']}
+		self.assertEqual(modules_by_id[target.id], 'PPC End To End')
+		self.assertEqual(modules_by_id[other.id], 'PPC')
+
+	def test_module_linked_rows_update_backfills_missing_block_and_catalogue_markers(self):
+		TrainingPlan.objects.all().delete()
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__group_id:g1\nLegacy PPC without block or catalogue id',
+			module_name='PPC',
+			programme_display_order=0,
+			cohort_display_order=0,
+		)
+
+		response = self.patch_json('/api/training-plan/modules/linked-rows/', {
+			'version': self.current_version(),
+			'moduleCatalogueId': '42',
+			'previousModuleName': 'PPC',
+			'moduleName': 'PPC Renamed',
+			'linkedRows': [
+				{'trainingPlanId': str(target.id), 'programmeId': 'p1', 'cohortId': 'c1', 'groupId': 'g1', 'blockId': f'tp-{target.id}'},
+			],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		self.assertEqual(target.module_name, 'PPC Renamed')
+		self.assertIn(f'__block_id:tp-{target.id}', target.notes)
+		self.assertIn('__module_catalogue_id:42', target.notes)
+
+	def test_module_archive_rejects_ambiguous_name_scope_with_multiple_catalogue_ids(self):
+		TrainingPlan.objects.all().delete()
+		target = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\n__module_catalogue_id:42\nFirst PPC', module_name='PPC')
+		other_same_name = self.create_training_plan_row(program='Programme Two', cohort_name='Cohort B', notes='__program_id:p2\n__cohort_id:c2\n__module_catalogue_id:99\nSecond PPC', module_name='PPC')
+
+		response = self.patch_json('/api/training-plan/modules/archive/', {
+			'version': self.current_version(),
+			'moduleName': 'PPC',
+			'trainingPlanIds': [str(target.id), str(other_same_name.id)],
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertIn('moduleCatalogueIds', response.json())
+
+	def test_module_archive_rejects_name_only_duplicate_catalogue_with_unmarked_legacy_rows(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		target = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\nLegacy first PPC', module_name='PPC')
+		other_same_name = self.create_training_plan_row(program='Programme Two', cohort_name='Cohort B', notes='__program_id:p2\n__cohort_id:c2\nLegacy second PPC', module_name='PPC')
+		before_target = serialize_training_plan_for_test(target)
+		before_other = serialize_training_plan_for_test(other_same_name)
+
+		response = self.patch_json('/api/training-plan/modules/archive/', {
+			'version': self.current_version(),
+			'moduleName': 'PPC',
+			'trainingPlanIds': [str(target.id), str(other_same_name.id)],
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertIn('ambiguous', response.json()['detail'])
+		target.refresh_from_db()
+		other_same_name.refresh_from_db()
+		self.assertEqual(serialize_training_plan_for_test(target), before_target)
+		self.assertEqual(serialize_training_plan_for_test(other_same_name), before_other)
 
 	def test_module_linked_rows_partial_update_rejects_stale_version(self):
 		TrainingPlan.objects.all().delete()
@@ -2169,6 +2546,101 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertIsNone(audit.before)
 		self.assertIsNone(audit.after)
 		self.assertEqual(audit.metadata['restoredCount'], 2)
+
+	def test_module_restore_uses_catalogue_id_when_names_are_duplicated(self):
+		TrainingPlan.objects.all().delete()
+		now = timezone.now()
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\n__module_catalogue_id:42\nFirst archived PPC',
+			module_name='PPC',
+			is_archived=True,
+			archived_at=now,
+			archived_by='admin@example.com',
+			archive_reason='Recovery test',
+		)
+		other_same_name = self.create_training_plan_row(
+			program='Programme Two',
+			cohort_name='Cohort B',
+			notes='__program_id:p2\n__cohort_id:c2\n__module_catalogue_id:99\nSecond archived PPC',
+			module_name='PPC',
+			is_archived=True,
+			archived_at=now,
+			archived_by='admin@example.com',
+			archive_reason='Stay archived',
+		)
+
+		response = self.patch_json('/api/training-plan/modules/restore/', {
+			'version': self.current_version(),
+			'moduleName': 'PPC',
+			'moduleCatalogueId': '42',
+			'trainingPlanIds': [str(target.id)],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		target.refresh_from_db()
+		other_same_name.refresh_from_db()
+		self.assertFalse(target.is_archived)
+		self.assertTrue(other_same_name.is_archived)
+		self.assertEqual(other_same_name.archive_reason, 'Stay archived')
+		self.assertEqual(response.json()['moduleCatalogueId'], '42')
+
+	def test_module_restore_rejects_ambiguous_name_scope_with_multiple_catalogue_ids(self):
+		TrainingPlan.objects.all().delete()
+		now = timezone.now()
+		target = self.create_training_plan_row(program='Programme One', cohort_name='Cohort A', notes='__program_id:p1\n__cohort_id:c1\n__module_catalogue_id:42\nFirst archived PPC', module_name='PPC', is_archived=True, archived_at=now, archived_by='admin@example.com', archive_reason='Recovery test')
+		other_same_name = self.create_training_plan_row(program='Programme Two', cohort_name='Cohort B', notes='__program_id:p2\n__cohort_id:c2\n__module_catalogue_id:99\nSecond archived PPC', module_name='PPC', is_archived=True, archived_at=now, archived_by='admin@example.com', archive_reason='Stay archived')
+
+		response = self.patch_json('/api/training-plan/modules/restore/', {
+			'version': self.current_version(),
+			'moduleName': 'PPC',
+			'trainingPlanIds': [str(target.id), str(other_same_name.id)],
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertIn('moduleCatalogueIds', response.json())
+
+	def test_module_restore_rejects_name_only_duplicate_catalogue_with_unmarked_legacy_rows(self):
+		TrainingPlan.objects.all().delete()
+		Module.objects.create(module_id=42, module_name='PPC', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=99, module_name='PPC', module_colour='#884400', number_of_sessions='3')
+		now = timezone.now()
+		target = self.create_training_plan_row(
+			program='Programme One',
+			cohort_name='Cohort A',
+			notes='__program_id:p1\n__cohort_id:c1\nLegacy first archived PPC',
+			module_name='PPC',
+			is_archived=True,
+			archived_at=now,
+			archived_by='admin@example.com',
+			archive_reason='Recovery test',
+		)
+		other_same_name = self.create_training_plan_row(
+			program='Programme Two',
+			cohort_name='Cohort B',
+			notes='__program_id:p2\n__cohort_id:c2\nLegacy second archived PPC',
+			module_name='PPC',
+			is_archived=True,
+			archived_at=now,
+			archived_by='admin@example.com',
+			archive_reason='Stay archived',
+		)
+		before_target = serialize_training_plan_for_test(target)
+		before_other = serialize_training_plan_for_test(other_same_name)
+
+		response = self.patch_json('/api/training-plan/modules/restore/', {
+			'version': self.current_version(),
+			'moduleName': 'PPC',
+			'trainingPlanIds': [str(target.id), str(other_same_name.id)],
+		})
+
+		self.assertEqual(response.status_code, 400)
+		self.assertIn('ambiguous', response.json()['detail'])
+		target.refresh_from_db()
+		other_same_name.refresh_from_db()
+		self.assertEqual(serialize_training_plan_for_test(target), before_target)
+		self.assertEqual(serialize_training_plan_for_test(other_same_name), before_other)
 
 	def test_restore_rejects_missing_or_unsafe_scope_and_no_match_is_safe(self):
 		TrainingPlan.objects.all().delete()

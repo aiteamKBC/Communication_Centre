@@ -1047,11 +1047,13 @@ def validate_training_plan_row_ids(payload: dict, key: str, label: str) -> tuple
 
 
 def validate_training_plan_linked_module_rows(payload: dict) -> tuple[list[dict], JsonResponse | None]:
+	if 'linkedRows' not in payload:
+		return [], None
 	value = payload.get('linkedRows')
 	if not isinstance(value, list):
 		return [], JsonResponse({'detail': 'linkedRows must be a list.'}, status=400)
 	if not value:
-		return [], JsonResponse({'detail': 'linkedRows requires at least one row.'}, status=400)
+		return [], None
 
 	rows = []
 	row_ids = []
@@ -1083,6 +1085,66 @@ def validate_training_plan_linked_module_rows(payload: dict) -> tuple[list[dict]
 	if len(identity_keys) != len(set(identity_keys)):
 		return [], JsonResponse({'detail': 'linkedRows contains ambiguous duplicate module identifiers.'}, status=400)
 	return rows, None
+
+
+def server_resolved_training_plan_linked_module_rows(rows: list[TrainingPlan], module_catalogue_id: str, previous_module_name: str) -> tuple[list[dict], list[int], JsonResponse | None]:
+	catalogue_matches = [
+		row for row in rows
+		if training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX) == module_catalogue_id
+	]
+	name_matches = [row for row in rows if str(row.module_name or '').strip() == previous_module_name]
+	legacy_name_matches = [
+		row for row in name_matches
+		if not training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
+	]
+	duplicate_modules = list(Module.objects.filter(module_name=previous_module_name).order_by('module_id'))
+	selected_module = next((item for item in duplicate_modules if str(item.module_id) == module_catalogue_id), None)
+	selected_colour = str(getattr(selected_module, 'module_colour', '') or '').strip().lower()
+	duplicate_name_exists = len(duplicate_modules) > 1 or len(module_scope_catalogue_ids(name_matches)) > 1
+	selected_colour_is_unique = bool(selected_colour) and sum(
+		1 for item in duplicate_modules
+		if str(getattr(item, 'module_colour', '') or '').strip().lower() == selected_colour
+	) == 1
+
+	scope_rows = list(catalogue_matches)
+	skipped_ambiguous_rows = []
+	for row in legacy_name_matches:
+		if not duplicate_name_exists:
+			scope_rows.append(row)
+			continue
+		row_colour = training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX).strip().lower()
+		if selected_colour_is_unique and row_colour and row_colour == selected_colour:
+			scope_rows.append(row)
+			continue
+		skipped_ambiguous_rows.append(int(row.id))
+
+	if not scope_rows and not module_catalogue_id:
+		scope_catalogue_ids = module_scope_catalogue_ids(name_matches)
+		if len(scope_catalogue_ids) > 1:
+			return [], [], JsonResponse({
+				'detail': 'Linked module update scope is ambiguous because multiple catalogue module ids share this name.',
+				'moduleCatalogueIds': sorted(scope_catalogue_ids),
+			}, status=400)
+		scope_rows = name_matches
+
+	linked_rows = []
+	seen_keys = set()
+	for row in scope_rows:
+		identity = training_plan_row_identity(row)
+		block_id = training_plan_marker_value(row.notes, '__block_id:') or f'tp-{row.id}'
+		group_id = training_plan_marker_value(row.notes, '__group_id:')
+		key = (identity['programmeId'], identity['cohortId'], group_id, block_id)
+		if key in seen_keys:
+			return [], [], JsonResponse({'detail': 'Server-resolved linked rows contain ambiguous duplicate module identifiers.'}, status=400)
+		seen_keys.add(key)
+		linked_rows.append({
+			'trainingPlanId': int(row.id),
+			'programmeId': identity['programmeId'],
+			'cohortId': identity['cohortId'],
+			'groupId': group_id,
+			'blockId': block_id,
+		})
+	return linked_rows, skipped_ambiguous_rows, None
 
 
 def validate_training_plan_programme_linked_rows(payload: dict, programme_id: str) -> tuple[list[int], str, JsonResponse | None]:
@@ -1144,6 +1206,7 @@ def validate_training_plan_add_for_tutor_payload(payload: dict) -> tuple[dict, J
 		return {}, JsonResponse({'detail': 'Submitted row does not match the requested tutor assignment.'}, status=400)
 
 	notes = str(row.get('notes') or '')
+	row_module_identity = training_plan_marker_value(notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
 	if (
 		training_plan_marker_value(notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX) != programme_id
 		or training_plan_marker_value(notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX) != cohort_id
@@ -1151,6 +1214,8 @@ def validate_training_plan_add_for_tutor_payload(payload: dict) -> tuple[dict, J
 		or training_plan_marker_value(notes, '__block_id:') != block_id
 	):
 		return {}, JsonResponse({'detail': 'Submitted row is missing matching Training Plan metadata markers.'}, status=400)
+	if row_module_identity and row_module_identity != module_identity:
+		return {}, JsonResponse({'detail': 'Submitted row module identity does not match moduleCatalogueId/moduleStableId.'}, status=400)
 
 	values, error = training_plan_values_from_payload_row(row, 0)
 	if error:
@@ -1196,8 +1261,7 @@ def training_plan_row_matches_values(row: TrainingPlan, values: dict) -> bool:
 def find_module_add_for_tutor_duplicates(rows: list[TrainingPlan], validated: dict) -> list[TrainingPlan]:
 	return [
 		row for row in rows
-		if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
-		and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+		if training_plan_row_has_stable_scope(row, validated['programmeId'], validated['cohortId'])
 		and training_plan_marker_value(row.notes, '__group_id:') == validated['groupId']
 		and training_plan_marker_value(row.notes, '__block_id:') == validated['blockId']
 	]
@@ -1256,7 +1320,7 @@ def validate_training_plan_cohort_create_payload(payload: dict) -> tuple[dict, J
 
 
 def training_plan_programme_scope_exists(programme_id: str, active_rows: list[TrainingPlan]) -> bool:
-	if any(training_plan_row_identity(row)['programmeId'] == programme_id for row in active_rows):
+	if any(training_plan_row_has_stable_scope(row, programme_id) for row in active_rows):
 		return True
 	return TrainingPlanProgramConfig.objects.filter(program_id=programme_id).exists()
 
@@ -1313,6 +1377,26 @@ def validate_optional_training_plan_row_ids(payload: dict, key: str, label: str)
 	if len(ids) != len(set(ids)):
 		return [], JsonResponse({'detail': f'{label} restore contains duplicate ids.'}, status=400)
 	return ids, None
+
+
+def module_scope_catalogue_ids(rows: list[TrainingPlan]) -> set[str]:
+	return {
+		training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
+		for row in rows
+		if training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
+	}
+
+
+def module_name_only_scope_is_ambiguous(module_name: str, rows: list[TrainingPlan]) -> bool:
+	if Module.objects.filter(module_name=module_name).count() <= 1:
+		return False
+	scope_catalogue_ids = module_scope_catalogue_ids(rows)
+	if len(scope_catalogue_ids) > 1:
+		return True
+	return any(
+		not training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
+		for row in rows
+	)
 
 
 def training_plan_recovery_confirmed(request, payload: dict) -> bool:
@@ -1451,6 +1535,7 @@ KSB_CODE_PATTERNS = {
 }
 
 TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX = '__module_color:'
+TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:'
 TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX = '__program_id:'
 TRAINING_PLAN_COHORT_ID_MARKER_PREFIX = '__cohort_id:'
 TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
@@ -1461,6 +1546,7 @@ TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
 	'__holiday_ids:',
 	'__cohort_color:',
 	TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
+	TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX,
 	'__cohort_end_date:',
 	'__group_name:',
 	'__coach_name:',
@@ -1516,6 +1602,26 @@ def training_plan_row_identity(row: TrainingPlan) -> dict:
 	if not cohort_id:
 		cohort_id = f'{normalize_training_plan_identity(row.cohort_name)}::{normalize_training_plan_identity(row.starting_date_lable)}'
 	return {'programmeId': programme_id, 'cohortId': cohort_id}
+
+
+def training_plan_row_has_stable_scope(row: TrainingPlan, programme_id: str, cohort_id: str | None = None) -> bool:
+	row_programme_id = training_plan_marker_value(row.notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX)
+	if row_programme_id != str(programme_id or '').strip():
+		return False
+	if cohort_id is None:
+		return True
+	return training_plan_marker_value(row.notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX) == str(cohort_id or '').strip()
+
+
+def training_plan_rows_missing_stable_scope(rows: list[TrainingPlan], *, require_cohort: bool = False) -> list[int]:
+	unsafe_ids = []
+	for row in rows:
+		if not training_plan_marker_value(row.notes, TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX):
+			unsafe_ids.append(int(row.id))
+			continue
+		if require_cohort and not training_plan_marker_value(row.notes, TRAINING_PLAN_COHORT_ID_MARKER_PREFIX):
+			unsafe_ids.append(int(row.id))
+	return unsafe_ids
 TRAINING_PLAN_COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 
@@ -1611,6 +1717,7 @@ def set_training_plan_metadata_markers(notes: str, marker_values: dict[str, str]
 		'__holiday_ids:',
 		'__cohort_color:',
 		TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
+		TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX,
 		'__cohort_end_date:',
 		'__group_name:',
 		'__coach_name:',
@@ -2532,6 +2639,9 @@ def training_plan_reorder_programmes(request):
 		if conflict is not None:
 			return conflict
 
+		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows)
+		if unsafe_row_ids:
+			return JsonResponse({'detail': 'Programme reorder cannot safely run because some rows are missing stable programme ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
 		existing_ids = []
 		for row in rows:
 			programme_id = training_plan_row_identity(row)['programmeId']
@@ -2609,6 +2719,9 @@ def training_plan_reorder_cohorts(request):
 		if conflict is not None:
 			return conflict
 
+		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows, require_cohort=True)
+		if unsafe_row_ids:
+			return JsonResponse({'detail': 'Cohort reorder cannot safely run because some rows are missing stable programme/cohort ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
 		cohorts_by_programme: dict[str, list[str]] = {}
 		cohort_programmes: dict[str, set[str]] = {}
 		for row in rows:
@@ -2764,6 +2877,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			'coachName': str(block.get('coachName') or '').strip(),
 			'moduleName': str(block.get('moduleName') or '').strip(),
 			'moduleColor': module_color,
+			'moduleCatalogueId': str(block.get('moduleCatalogueId') or '').strip(),
 			'tutorName': tutor_name,
 			'tutorProfileId': tutor_profile_id,
 			'startDate': start_date,
@@ -2808,8 +2922,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 
 		scope_rows = [
 			row for row in rows
-			if training_plan_row_identity(row)['programmeId'] == programme_id
-			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+			if training_plan_row_has_stable_scope(row, programme_id, target_cohort_id)
 		]
 		if not scope_rows:
 			if target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
@@ -2905,6 +3018,8 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			}
 			if block_payload['moduleColor']:
 				marker_values[TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX] = block_payload['moduleColor']
+			if block_payload['moduleCatalogueId']:
+				marker_values[TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX] = block_payload['moduleCatalogueId']
 			row.notes = set_training_plan_metadata_markers(block_payload['notes'] if block_payload['notes'] is not None else row.notes, marker_values)
 			row.save(update_fields=sorted(set(update_fields)))
 		created_rows = []
@@ -2938,6 +3053,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 					'__holiday_ids:': '|'.join(holiday_ids),
 					'__cohort_color:': cohort_color,
 					TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX: module_color,
+					TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX: block_payload['moduleCatalogueId'],
 					'__cohort_end_date:': cohort_end_date,
 					'__group_name:': block_payload['groupName'],
 					'__coach_name:': block_payload['coachName'],
@@ -3021,8 +3137,7 @@ def training_plan_create_cohort(request):
 		active_rows = list(TrainingPlan.objects.filter(active_training_plan_filter()).order_by('id'))
 		duplicate_rows = [
 			row for row in active_rows
-			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
-			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+			if training_plan_row_has_stable_scope(row, validated['programmeId'], validated['cohortId'])
 		]
 		if duplicate_rows and training_plan_rows_match_values_by_identity(duplicate_rows, validated['rows']):
 			identifiers = {
@@ -3066,8 +3181,7 @@ def training_plan_create_cohort(request):
 			return JsonResponse({'detail': 'Training Plan programme scope not found for cohort add.'}, status=404)
 		scope_rows = [
 			row for row in rows
-			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
-			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+			if training_plan_row_has_stable_scope(row, validated['programmeId'], validated['cohortId'])
 		]
 		identifiers = {
 			'programmeId': validated['programmeId'],
@@ -3174,8 +3288,7 @@ def training_plan_archive_cohort(request, cohort_id: str):
 
 		scope_rows = [
 			row for row in rows
-			if training_plan_row_identity(row)['programmeId'] == programme_id
-			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+			if training_plan_row_has_stable_scope(row, programme_id, target_cohort_id)
 		]
 		if not scope_rows:
 			if target_cohort_id.startswith('db-row-') or target_cohort_id.startswith('row-'):
@@ -3226,11 +3339,12 @@ def training_plan_archive_module(request):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'moduleName', 'trainingPlanIds', 'archiveReason'}
+	allowed_keys = {'version', 'moduleName', 'moduleCatalogueId', 'trainingPlanIds', 'archiveReason'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 	module_name = str(payload.get('moduleName') or '').strip()
+	module_catalogue_id = str(payload.get('moduleCatalogueId') or '').strip()
 	if not module_name:
 		return JsonResponse({'detail': 'moduleName is required.'}, status=400)
 	row_ids, validation_error = validate_training_plan_row_ids(payload, 'trainingPlanIds', 'Module')
@@ -3251,7 +3365,16 @@ def training_plan_archive_module(request):
 		if conflict is not None:
 			return conflict
 
-		scope_rows = [row for row in rows if str(row.module_name or '').strip() == module_name]
+		if module_catalogue_id:
+			scope_rows = [
+				row for row in rows
+				if training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX) == module_catalogue_id
+			]
+		else:
+			scope_rows = [row for row in rows if str(row.module_name or '').strip() == module_name]
+			scope_catalogue_ids = module_scope_catalogue_ids(scope_rows)
+			if len(scope_catalogue_ids) > 1 or module_name_only_scope_is_ambiguous(module_name, scope_rows):
+				return JsonResponse({'detail': 'Module archive scope is ambiguous because multiple catalogue module ids share this name.', 'moduleCatalogueIds': sorted(scope_catalogue_ids)}, status=400)
 		if not scope_rows:
 			return JsonResponse({'detail': 'Training Plan module archive scope not found.'}, status=404)
 		scope_ids = {int(row.id) for row in scope_rows}
@@ -3283,11 +3406,11 @@ def training_plan_archive_module(request):
 			entity='TrainingPlan',
 			object_label='MODULE_ARCHIVE_PARTIAL_UPDATE',
 			before={'rows': before, 'version': locked_version},
-			after={'rows': after, 'moduleName': module_name},
+			after={'rows': after, 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id},
 			metadata={'partialUpdate': True, 'section': 'module-archive', 'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason']},
 		)
 
-	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'moduleName': module_name}))
+	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id}))
 
 
 @csrf_exempt
@@ -3327,8 +3450,7 @@ def training_plan_restore_cohort(request, cohort_id: str):
 		scope_rows = [
 			row for row in rows
 			if row.is_archived
-			and training_plan_row_identity(row)['programmeId'] == programme_id
-			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+			and training_plan_row_has_stable_scope(row, programme_id, target_cohort_id)
 		]
 		restore_archived_training_plan_rows(scope_rows)
 		_audit_log(
@@ -3361,11 +3483,12 @@ def training_plan_restore_module(request):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'moduleName', 'trainingPlanIds'}
+	allowed_keys = {'version', 'moduleName', 'moduleCatalogueId', 'trainingPlanIds'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
 	module_name = str(payload.get('moduleName') or '').strip()
+	module_catalogue_id = str(payload.get('moduleCatalogueId') or '').strip()
 	if not module_name:
 		return JsonResponse({'detail': 'moduleName is required.'}, status=400)
 	row_ids, validation_error = validate_optional_training_plan_row_ids(payload, 'trainingPlanIds', 'Module')
@@ -3386,10 +3509,20 @@ def training_plan_restore_module(request):
 		if conflict is not None:
 			return conflict
 
-		scope_rows = [
-			row for row in rows
-			if row.is_archived and str(row.module_name or '').strip() == module_name
-		]
+		if module_catalogue_id:
+			scope_rows = [
+				row for row in rows
+				if row.is_archived
+				and training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX) == module_catalogue_id
+			]
+		else:
+			scope_rows = [
+				row for row in rows
+				if row.is_archived and str(row.module_name or '').strip() == module_name
+			]
+			scope_catalogue_ids = module_scope_catalogue_ids(scope_rows)
+			if len(scope_catalogue_ids) > 1 or module_name_only_scope_is_ambiguous(module_name, scope_rows):
+				return JsonResponse({'detail': 'Module restore scope is ambiguous because multiple catalogue module ids share this name.', 'moduleCatalogueIds': sorted(scope_catalogue_ids)}, status=400)
 		if row_ids:
 			submitted_ids = set(row_ids)
 			all_ids = {int(row.id) for row in rows}
@@ -3419,13 +3552,14 @@ def training_plan_restore_module(request):
 				'section': 'module-restore',
 				'changedFields': ['isArchived', 'archivedAt', 'archivedBy', 'archiveReason'],
 				'moduleName': module_name,
+				'moduleCatalogueId': module_catalogue_id,
 				'trainingPlanIds': row_ids,
 				'restoredCount': len(scope_rows),
 				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
 			},
 		)
 
-	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'moduleName': module_name, 'trainingPlanIds': row_ids}))
+	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id, 'trainingPlanIds': row_ids}))
 
 
 @csrf_exempt
@@ -3668,6 +3802,11 @@ def training_plan_linked_module_rows(request):
 			return conflict
 
 		rows_by_id = {int(row.id): row for row in rows}
+		skipped_ambiguous_rows = []
+		if not linked_rows:
+			linked_rows, skipped_ambiguous_rows, resolve_error = server_resolved_training_plan_linked_module_rows(rows, module_catalogue_id, previous_module_name)
+			if resolve_error is not None:
+				return resolve_error
 		submitted_ids = {item['trainingPlanId'] for item in linked_rows}
 		unknown_ids = sorted(submitted_ids - set(rows_by_id.keys()))
 		if unknown_ids:
@@ -3679,12 +3818,14 @@ def training_plan_linked_module_rows(request):
 			identity = training_plan_row_identity(row)
 			row_block_id = training_plan_marker_value(row.notes, '__block_id:')
 			row_group_id = training_plan_marker_value(row.notes, '__group_id:')
+			row_module_catalogue_id = training_plan_marker_value(row.notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX)
 			if (
-				str(row.module_name or '').strip() != previous_module_name
+				(row_module_catalogue_id and row_module_catalogue_id != module_catalogue_id)
+				or (not row_module_catalogue_id and str(row.module_name or '').strip() != previous_module_name)
 				or identity['programmeId'] != item['programmeId']
 				or identity['cohortId'] != item['cohortId']
-				or row_block_id != item['blockId']
-				or (item['groupId'] and row_group_id != item['groupId'])
+				or (row_block_id and row_block_id != item['blockId'])
+				or (item['groupId'] and row_group_id and row_group_id != item['groupId'])
 			):
 				cross_scope_ids.append(item['trainingPlanId'])
 				continue
@@ -3695,8 +3836,16 @@ def training_plan_linked_module_rows(request):
 		update_rows = [rows_by_id[item['trainingPlanId']] for item in linked_rows]
 		before = [serialize_training_plan(row) for row in update_rows]
 		for row in update_rows:
+			item = next(item for item in linked_rows if item['trainingPlanId'] == row.id)
 			row.module_name = module_name
-			row.save(update_fields=['module_name'])
+			marker_values = {
+				TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX: module_catalogue_id,
+				'__block_id:': item['blockId'],
+			}
+			if item['groupId']:
+				marker_values['__group_id:'] = item['groupId']
+			row.notes = set_training_plan_metadata_markers(row.notes, marker_values)
+			row.save(update_fields=['module_name', 'notes'])
 			row.refresh_from_db()
 		updated_rows = update_rows
 		after = [serialize_training_plan(row) for row in updated_rows]
@@ -3705,6 +3854,7 @@ def training_plan_linked_module_rows(request):
 			'previousModuleName': previous_module_name,
 			'moduleName': module_name,
 			'linkedRows': linked_rows,
+			'skippedAmbiguousRows': skipped_ambiguous_rows,
 		}
 		logger.info(
 			'module_edit_linked_timeline_rows_partial_update %s',
@@ -3712,6 +3862,7 @@ def training_plan_linked_module_rows(request):
 				'action': 'module_edit_linked_timeline_rows_partial_update',
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
+				'skippedAmbiguousRows': skipped_ambiguous_rows,
 				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
@@ -3730,6 +3881,7 @@ def training_plan_linked_module_rows(request):
 				'changedFields': ['moduleName'],
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
+				'skippedAmbiguousRows': skipped_ambiguous_rows,
 				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
@@ -3737,6 +3889,8 @@ def training_plan_linked_module_rows(request):
 
 	response = training_plan_order_response({
 		'updated_count': len(updated_rows),
+		'updatedRows': [int(row.id) for row in updated_rows],
+		'skippedAmbiguousRows': skipped_ambiguous_rows,
 		'identifiers': identifiers,
 		'moduleName': module_name,
 		'previousModuleName': previous_module_name,
@@ -3917,8 +4071,7 @@ def training_plan_add_module_for_tutor(request):
 
 		scope_rows = [
 			row for row in rows
-			if training_plan_row_identity(row)['programmeId'] == validated['programmeId']
-			and training_plan_row_identity(row)['cohortId'] == validated['cohortId']
+			if training_plan_row_has_stable_scope(row, validated['programmeId'], validated['cohortId'])
 		]
 		if not scope_rows:
 			return JsonResponse({'detail': 'Training Plan cohort scope not found for module add.'}, status=404)

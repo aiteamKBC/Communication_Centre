@@ -90,12 +90,22 @@ interface TrainingPlanMutationResult {
   rowVersion?: string;
   count?: number;
   updated_count?: number;
+  updatedRows?: unknown[];
+  skippedAmbiguousRows?: unknown[];
   created_count?: number;
   skipped_count?: number;
   archived?: number;
   programmeId?: string;
   cohortId?: string;
 }
+
+type LinkedModuleRow = {
+  trainingPlanId: string;
+  programmeId: string;
+  cohortId: string;
+  groupId?: string;
+  blockId: string;
+};
 
 const TEMPORARY_SERVER_STATUSES = new Set([502, 503, 504]);
 
@@ -166,6 +176,7 @@ type KsbCodeSets = {
 const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
+const MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
@@ -277,10 +288,10 @@ function filterSessionKsbMappingForProfile(mapping: SessionKsbMapping | undefine
   };
 }
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; moduleCatalogueId?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
-    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, cohortId: undefined, groupId: undefined, blockId: undefined, notes: raw || '' };
+  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
+    return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, moduleCatalogueId: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, cohortId: undefined, groupId: undefined, blockId: undefined, notes: raw || '' };
   }
 
   const lines = value.split('\n');
@@ -288,6 +299,7 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   const holidayIds = new Set<string>();
   let cohortColor: string | undefined;
   let moduleColor: string | undefined;
+  let moduleCatalogueId: string | undefined;
   let cohortEndDate: string | undefined;
   let groupName: string | undefined;
   let coachName: string | undefined;
@@ -317,6 +329,12 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
     if (readingMarkers && line.startsWith(MODULE_COLOR_MARKER_PREFIX)) {
       const nextColor = line.slice(MODULE_COLOR_MARKER_PREFIX.length).trim();
       moduleColor = nextColor || undefined;
+      return;
+    }
+
+    if (readingMarkers && line.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX)) {
+      const nextModuleCatalogueId = line.slice(MODULE_CATALOGUE_ID_MARKER_PREFIX.length).trim();
+      moduleCatalogueId = nextModuleCatalogueId || undefined;
       return;
     }
 
@@ -366,10 +384,10 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, moduleCatalogueId, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string, moduleCatalogueId?: string): string {
   const markers: string[] = [];
   if (programId) {
     markers.push(`${PROGRAM_ID_MARKER_PREFIX}${programId}`);
@@ -391,6 +409,9 @@ function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: s
   }
   if (moduleColor) {
     markers.push(`${MODULE_COLOR_MARKER_PREFIX}${moduleColor}`);
+  }
+  if (moduleCatalogueId) {
+    markers.push(`${MODULE_CATALOGUE_ID_MARKER_PREFIX}${moduleCatalogueId}`);
   }
   if (cohortEndDate) {
     markers.push(`${COHORT_END_DATE_MARKER_PREFIX}${cohortEndDate}`);
@@ -558,6 +579,7 @@ function buildGroupsFromTrainingRows(
       id: parsedNotes.blockId || `db-blk-${index + 1}`,
       trainingPlanId: item.id ? String(item.id) : undefined,
       groupId: parsedNotes.groupId,
+      moduleCatalogueId: parsedNotes.moduleCatalogueId,
       mod: modKey,
       groupName: item.groupName || parsedNotes.groupName,
       coachName: item.coachName || parsedNotes.coachName,
@@ -619,7 +641,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
         ksbProfileId: row.ksbProfileId || '',
         programmeDisplayOrder: groupIndex,
         cohortDisplayOrder: rowIndex,
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id, block.moduleCatalogueId),
       })),
     ),
   );
@@ -920,6 +942,13 @@ function resolveCatalogModuleForBlock(block: { mod: MKey | string }, moduleName:
     const normalizedName = normalizeModuleLookup(module.name);
     return String(module.id) === rawValue || lookupVariants.has(normalizedName);
   });
+}
+
+function resolveCatalogModuleByValue(value: ModuleValue, catalogModules: CatalogModule[]): CatalogModule | undefined {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return undefined;
+  const normalizedValue = normalizeModuleLookup(rawValue);
+  return catalogModules.find(module => String(module.id) === rawValue || normalizeModuleLookup(module.name) === normalizedValue);
 }
 
 function escapeAlertHtml(value: string): string {
@@ -3047,6 +3076,7 @@ export default function ApprenticeshipTimeline() {
           ksbProfileId: savedRow.ksbProfileId || '',
           blocks: savedRow.blks.map(block => ({
             trainingPlanId: block.trainingPlanId,
+            moduleCatalogueId: block.moduleCatalogueId,
             blockId: block.id,
             groupId: block.groupId || '',
             groupName: block.groupName || '',
@@ -3307,7 +3337,8 @@ export default function ApprenticeshipTimeline() {
     moduleCatalogueId: number,
     previousModuleName: string,
     moduleName: string,
-    linkedRows: Array<{ trainingPlanId: string; programmeId: string; cohortId: string; groupId?: string; blockId: string }>,
+    linkedRows: LinkedModuleRow[],
+    versionOverride?: string,
   ): Promise<TrainingPlanMutationResult> => {
     const response = await fetch('/api/training-plan/modules/linked-rows/', {
       method: 'PATCH',
@@ -3320,10 +3351,16 @@ export default function ApprenticeshipTimeline() {
         previousModuleName,
         moduleName,
         linkedRows,
-        version: trainingPlanVersion,
+        version: versionOverride || trainingPlanVersion,
       }),
     });
     return handleTrainingPlanPartialResponse(response);
+  };
+
+  const stableLinkedModuleBlockId = (block: ModuleBlock): string => {
+    if (block.id && !block.id.startsWith('db-blk-')) return block.id;
+    const trainingPlanId = String(block.trainingPlanId || '').trim();
+    return trainingPlanId ? `tp-${trainingPlanId}` : block.id;
   };
 
   const updateTrainingPlanLinkedProgrammeRows = async (
@@ -3416,7 +3453,7 @@ export default function ApprenticeshipTimeline() {
     return handleTrainingPlanPartialResponse(response);
   };
 
-  const archiveTrainingPlanModule = async (moduleName: string, trainingPlanIds: string[]): Promise<TrainingPlanMutationResult> => {
+  const archiveTrainingPlanModule = async (moduleName: string, trainingPlanIds: string[], moduleCatalogueId?: string): Promise<TrainingPlanMutationResult> => {
     const response = await fetch('/api/training-plan/modules/archive/', {
       method: 'PATCH',
       headers: {
@@ -3425,6 +3462,7 @@ export default function ApprenticeshipTimeline() {
       },
       body: JSON.stringify({
         moduleName,
+        moduleCatalogueId,
         trainingPlanIds,
         archiveReason: 'Linked module archived from Training Plan UI',
         version: trainingPlanVersion,
@@ -4110,7 +4148,7 @@ export default function ApprenticeshipTimeline() {
       return;
     }
 
-    const catalogModule = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue);
+    const catalogModule = resolveCatalogModuleByValue(pendingTutorModuleAdd.moduleValue, catalogModules);
     const customModule = customModules.find(item => item.name === pendingTutorModuleAdd.moduleValue || item.id === pendingTutorModuleAdd.moduleValue);
     const moduleMeta = getModuleMeta(pendingTutorModuleAdd.moduleValue);
     const sessionCount = Math.max(1, parseInt(catalogModule?.sessions || String(customModule?.defaultSessions || 1), 10) || 1);
@@ -4124,7 +4162,8 @@ export default function ApprenticeshipTimeline() {
     const nextBlock: ModuleBlock = {
       id: nextBlockId,
       groupId: nextGroupId,
-      mod: pendingTutorModuleAdd.moduleValue,
+      moduleCatalogueId: catalogModule?.id ? String(catalogModule.id) : undefined,
+      mod: catalogModule?.name || pendingTutorModuleAdd.moduleValue,
       groupName: shouldCreateGroup ? pendingTutorModuleGroupDraft.name.trim() : selectedGroupBlock?.groupName,
       coachName: shouldCreateGroup ? pendingTutorModuleGroupDraft.coach.trim() || undefined : selectedGroupBlock?.coachName,
       color: catalogModule?.colour || customModule?.bg || moduleMeta.bg,
@@ -4288,6 +4327,80 @@ export default function ApprenticeshipTimeline() {
 
   const handleUpdateCatalogModule = async (mod: CatalogModule) => {
     const previousModule = catalogModules.find(item => item.id === mod.id);
+    const previousName = previousModule?.name?.trim();
+    const requestedName = mod.name.trim();
+    const previousColour = (previousModule?.colour || '').trim().toLowerCase();
+    let renameLinkedRows: LinkedModuleRow[] = [];
+    let renameSourceGroups: ProgrammeGroup[] = groups;
+    let renameVersion = trainingPlanVersion;
+
+    const linkedRowMissingStableIdentity = (row: LinkedModuleRow): boolean => (
+      !row.trainingPlanId ||
+      !row.programmeId ||
+      !row.cohortId ||
+      row.cohortId.startsWith('db-row-') ||
+      !row.blockId
+    );
+
+    const buildRenameLinkedRows = (sourceGroups: ProgrammeGroup[], moduleCatalogueId: string, targetPreviousName: string): LinkedModuleRow[] => {
+      const hasStableLinkedBlocks = sourceGroups.some(group =>
+        group.rows.some(row =>
+          row.blks.some(block => block.moduleCatalogueId === moduleCatalogueId)
+        )
+      );
+      const duplicateNameCount = catalogModules.filter(item => item.name.trim() === targetPreviousName).length;
+      const isTargetBlock = (block: ModuleBlock) => (
+        hasStableLinkedBlocks
+          ? block.moduleCatalogueId === moduleCatalogueId
+          : duplicateNameCount > 1
+            ? !block.moduleCatalogueId && String(block.mod).trim() === targetPreviousName && previousColour && (block.color || '').trim().toLowerCase() === previousColour
+            : !block.moduleCatalogueId && String(block.mod).trim() === targetPreviousName
+      );
+      return sourceGroups.flatMap(group =>
+        group.rows.flatMap(row =>
+          row.blks
+            .filter(isTargetBlock)
+            .map(block => ({
+              trainingPlanId: block.trainingPlanId || '',
+              programmeId: group.id,
+              cohortId: row.id,
+              groupId: block.groupId,
+              blockId: stableLinkedModuleBlockId(block),
+            })),
+        ),
+      );
+    };
+
+    if (previousName && requestedName && previousName !== requestedName) {
+      const moduleCatalogueId = String(mod.id);
+      renameLinkedRows = buildRenameLinkedRows(groups, moduleCatalogueId, previousName);
+      if (renameLinkedRows.length && renameLinkedRows.some(linkedRowMissingStableIdentity)) {
+        const response = await fetch('/api/training-plan/', { cache: 'no-store' });
+        const payload = response.ok ? parseTrainingPlanPayload(await response.json()) : null;
+        if (payload?.items) {
+          const latestGroups = buildGroupsFromTrainingRows(payload.items, customPrograms, tutorProfiles);
+          const latestLinkedRows = buildRenameLinkedRows(latestGroups, moduleCatalogueId, previousName);
+          if (latestLinkedRows.length && !latestLinkedRows.some(linkedRowMissingStableIdentity)) {
+            setTrainingPlanItems(payload.items);
+            setTrainingPlanVersion(payload.version);
+            setHasLoadedTrainingPlan(true);
+            renameSourceGroups = latestGroups;
+            renameVersion = payload.version;
+            renameLinkedRows = latestLinkedRows;
+          }
+        }
+      }
+      if (renameLinkedRows.length && renameLinkedRows.some(linkedRowMissingStableIdentity)) {
+        console.warn('MODULE_EDIT_LINKED_ROWS_PARTIAL_BLOCKED_MISSING_ID', {
+          reason: 'missing stable identifiers for linked module timeline rows before catalogue update; server-side scope resolution will be used',
+          moduleCatalogueId: mod.id,
+          previousModuleName: previousName,
+          moduleName: requestedName,
+          linkedRows: renameLinkedRows,
+        });
+        renameLinkedRows = [];
+      }
+    }
     const response = await fetch(`/api/modules/${mod.id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -4299,68 +4412,72 @@ export default function ApprenticeshipTimeline() {
     }
     const updated = (await response.json()) as CatalogModule;
 
-    const previousName = previousModule?.name?.trim();
     const nextName = updated.name.trim();
     if (previousName && nextName && previousName !== nextName) {
-      const nextGroups = groups.map(group => ({
+      const moduleCatalogueId = String(mod.id);
+      const sourceGroups = renameSourceGroups;
+      const hasStableLinkedBlocks = sourceGroups.some(group =>
+        group.rows.some(row =>
+          row.blks.some(block => block.moduleCatalogueId === moduleCatalogueId)
+        )
+      );
+      const duplicateNameCount = catalogModules.filter(item => item.name.trim() === previousName).length;
+      const isTargetBlock = (block: ModuleBlock) => (
+        hasStableLinkedBlocks
+          ? block.moduleCatalogueId === moduleCatalogueId
+          : duplicateNameCount > 1
+            ? !block.moduleCatalogueId && String(block.mod).trim() === previousName && previousColour && (block.color || '').trim().toLowerCase() === previousColour
+            : !block.moduleCatalogueId && String(block.mod).trim() === previousName
+      );
+      const nextGroups = sourceGroups.map(group => ({
         ...group,
         rows: group.rows.map(row => ({
           ...row,
           blks: row.blks.map(block => (
-            String(block.mod).trim() === previousName
-              ? { ...block, mod: nextName }
+            isTargetBlock(block)
+              ? { ...block, mod: nextName, moduleCatalogueId }
               : block
           )),
         })),
       }));
-      const hasLinkedBlocks = nextGroups.some((group, groupIndex) =>
+      const hasLocalLinkedBlocks = nextGroups.some((group, groupIndex) =>
         group.rows.some((row, rowIndex) =>
-          row.blks.some((block, blockIndex) => block.mod !== groups[groupIndex]?.rows[rowIndex]?.blks[blockIndex]?.mod)
+          row.blks.some((block, blockIndex) => block.mod !== sourceGroups[groupIndex]?.rows[rowIndex]?.blks[blockIndex]?.mod)
         )
       );
-      if (hasLinkedBlocks) {
-        const linkedRows = groups.flatMap(group =>
-          group.rows.flatMap(row =>
-            row.blks
-              .filter(block => String(block.mod).trim() === previousName)
-              .map(block => ({
-                trainingPlanId: block.trainingPlanId || '',
-                programmeId: group.id,
-                cohortId: row.id,
-                groupId: block.groupId,
-                blockId: block.id,
-              })),
-          ),
-        );
-        const missingLinkedRowId = linkedRows.some(row => (
-          !row.trainingPlanId ||
-          !row.programmeId ||
-          !row.cohortId ||
-          row.cohortId.startsWith('db-row-') ||
-          !row.blockId ||
-          row.blockId.startsWith('db-blk-')
-        ));
-        if (!linkedRows.length || missingLinkedRowId) {
-          console.warn('MODULE_EDIT_LINKED_ROWS_PARTIAL_BLOCKED_MISSING_ID', {
-            reason: 'missing stable identifiers for linked module timeline rows',
-            moduleCatalogueId: mod.id,
-            previousModuleName: previousName,
-            moduleName: nextName,
-            linkedRows,
-          });
-          throw new Error('Linked Training Plan rows for this module cannot be updated safely until all row IDs have loaded. Reload latest data and try again.');
-        }
-        const result = await updateTrainingPlanLinkedModuleRows(mod.id, previousName, nextName, linkedRows);
-        if (result.version) {
-          setTrainingPlanVersion(result.version);
-        }
-        if (result.items) {
-          setTrainingPlanItems(result.items);
-          setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
-        } else {
-          setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
-          setGroups(nextGroups);
-        }
+      const linkedRows = renameLinkedRows.length
+          ? renameLinkedRows
+          : buildRenameLinkedRows(sourceGroups, moduleCatalogueId, previousName);
+      const missingLinkedRowId = linkedRows.some(linkedRowMissingStableIdentity);
+      if (missingLinkedRowId) {
+        console.warn('MODULE_EDIT_LINKED_ROWS_PARTIAL_BLOCKED_MISSING_ID', {
+          reason: 'missing stable identifiers for linked module timeline rows; server-side scope resolution will be used',
+          moduleCatalogueId: mod.id,
+          previousModuleName: previousName,
+          moduleName: nextName,
+          linkedRows,
+        });
+      }
+      const result = await updateTrainingPlanLinkedModuleRows(mod.id, previousName, nextName, missingLinkedRowId ? [] : linkedRows, renameVersion);
+      if (result.version) {
+        setTrainingPlanVersion(result.version);
+      }
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else if (hasLocalLinkedBlocks) {
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+        setGroups(nextGroups);
+      }
+      if (Array.isArray(result.skippedAmbiguousRows) && result.skippedAmbiguousRows.length > 0) {
+        setTrainingPlanSaveState('saved');
+        setTrainingPlanSaveMessage('Module saved, but some old timeline rows could not be safely linked.');
+        await kbcSwal.fire({
+          title: 'Module Saved',
+          html: 'Module saved, but some old timeline rows could not be safely linked. Open the affected timeline rows and save once to attach their stable ID.',
+          icon: 'warning',
+          confirmButtonText: 'OK',
+        });
       }
     }
 
@@ -4370,12 +4487,34 @@ export default function ApprenticeshipTimeline() {
   const handleDeleteCatalogModule = async (id: number) => {
     const moduleName = catalogModules.find(m => m.id === id)?.name;
     let archiveReturnedItems = false;
+    let isTargetBlockForDelete: ((block: ModuleBlock) => boolean) | null = null;
 
     if (moduleName) {
+      const moduleCatalogueId = String(id);
+      const hasStableLinkedBlocks = groups.some(group =>
+        group.rows.some(row =>
+          row.blks.some(block => block.moduleCatalogueId === moduleCatalogueId)
+        )
+      );
+      const isTargetBlock = (block: ModuleBlock) => (
+        hasStableLinkedBlocks
+          ? block.moduleCatalogueId === moduleCatalogueId
+          : String(block.mod).trim() === moduleName
+      );
+      isTargetBlockForDelete = isTargetBlock;
+      const hasLegacyNameLinkedBlocks = groups.some(group =>
+        group.rows.some(row =>
+          row.blks.some(block => !block.moduleCatalogueId && String(block.mod).trim() === moduleName)
+        )
+      );
+      const duplicateNameCount = catalogModules.filter(item => item.name.trim() === moduleName.trim()).length;
+      if (!hasStableLinkedBlocks && hasLegacyNameLinkedBlocks && duplicateNameCount > 1) {
+        throw new Error(`Cannot safely delete "${moduleName}" because multiple catalogue modules share this name and linked timeline rows do not yet have stable module IDs.`);
+      }
       const linkedBlocks = groups.flatMap(group =>
         group.rows.flatMap(row =>
           row.blks
-            .filter(blk => blk.mod === moduleName)
+            .filter(isTargetBlock)
             .map(blk => ({ blockId: blk.id, trainingPlanId: blk.trainingPlanId })),
         ),
       );
@@ -4389,7 +4528,7 @@ export default function ApprenticeshipTimeline() {
           });
           throw new Error('Linked Training Plan rows for this module cannot be archived safely until all row IDs have loaded. Reload latest data and try again.');
         }
-        const archiveResult = await archiveTrainingPlanModule(moduleName, trainingPlanIds);
+        const archiveResult = await archiveTrainingPlanModule(moduleName, trainingPlanIds, moduleCatalogueId);
         if (archiveResult.version) setTrainingPlanVersion(archiveResult.version);
         if (archiveResult.items) {
           archiveReturnedItems = true;
@@ -4408,12 +4547,12 @@ export default function ApprenticeshipTimeline() {
     setCatalogModules(prev => prev.filter(m => m.id !== id));
 
     // Keep local state consistent with the archive response when one was not returned.
-    if (moduleName && !archiveReturnedItems) {
+    if (moduleName && !archiveReturnedItems && isTargetBlockForDelete) {
       const nextGroups = groups.map(g => ({
         ...g,
         rows: g.rows.map(row => ({
           ...row,
-          blks: row.blks.filter(blk => blk.mod !== moduleName),
+          blks: row.blks.filter(blk => !isTargetBlockForDelete?.(blk)),
         })).filter(row => row.blks.length > 0),
       }));
       const hasChanges = nextGroups.some((g, gi) =>
@@ -4681,7 +4820,10 @@ export default function ApprenticeshipTimeline() {
     const rawValue = String(block.mod || '');
     const displayName = rawValue in MS ? getModuleMeta(block.mod as MKey).lbl : rawValue;
     const lookupVariants = new Set([...moduleLookupVariants(rawValue), ...moduleLookupVariants(displayName)]);
-    const catalogModule = catalogModules.find(module => {
+    const catalogModuleById = block.moduleCatalogueId
+      ? catalogModules.find(module => String(module.id) === String(block.moduleCatalogueId))
+      : undefined;
+    const catalogModule = catalogModuleById || catalogModules.find(module => {
       const normalizedName = normalizeModuleLookup(module.name);
       return String(module.id) === rawValue || lookupVariants.has(normalizedName);
     });
@@ -5306,7 +5448,7 @@ export default function ApprenticeshipTimeline() {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               {(() => {
-                const catalogModule = catalogModules.find(item => item.name === pendingTutorModuleAdd.moduleValue);
+                const catalogModule = resolveCatalogModuleByValue(pendingTutorModuleAdd.moduleValue, catalogModules);
                 const customModule = customModules.find(item => item.name === pendingTutorModuleAdd.moduleValue || item.id === pendingTutorModuleAdd.moduleValue);
                 const moduleName = catalogModule?.name
                   || (pendingTutorModuleAdd.moduleValue in MS ? getModuleMeta(pendingTutorModuleAdd.moduleValue as MKey).lbl : String(pendingTutorModuleAdd.moduleValue));

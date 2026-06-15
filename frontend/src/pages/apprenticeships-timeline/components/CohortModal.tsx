@@ -44,6 +44,7 @@ export interface ModulePartialUpdatePayload {
 interface FormModule {
   id: string;
   trainingPlanId?: string;
+  moduleCatalogueId?: string;
   mod: ModuleValue;
   color: string;
   startDate: string;
@@ -472,7 +473,7 @@ const resolveModuleMeta = (moduleValue: ModuleValue, customModules: CustomModule
   const normalizedModuleValue = resolveModuleValue(getModuleInputValue(moduleValue), customModules);
   const standardMeta = normalizedModuleValue in MS ? getModuleMeta(normalizedModuleValue) : null;
   const customMeta = customModules.find(c => c.id === normalizedModuleValue || c.name === normalizedModuleValue);
-  const catalogMeta = catalogModules.find(c => c.name === normalizedModuleValue || c.name === moduleValue);
+  const catalogMeta = catalogModules.find(c => String(c.id) === String(moduleValue) || c.name === normalizedModuleValue || c.name === moduleValue);
   if (standardMeta) return standardMeta;
   if (customMeta) return { lbl: customMeta.name, bg: customMeta.bg, tx: customMeta.tx };
   if (catalogMeta) return { lbl: catalogMeta.name, bg: catalogMeta.colour || '#4A6DB0', tx: contrastColor(catalogMeta.colour || '#4A6DB0') };
@@ -481,7 +482,11 @@ const resolveModuleMeta = (moduleValue: ModuleValue, customModules: CustomModule
 
 const normalizeModuleLookup = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-const resolveCatalogModuleForValue = (moduleValue: ModuleValue, catalogModules: CatalogModule[] = []) => {
+const resolveCatalogModuleForValue = (moduleValue: ModuleValue, catalogModules: CatalogModule[] = [], moduleCatalogueId?: string) => {
+  if (moduleCatalogueId) {
+    const byId = catalogModules.find(module => String(module.id) === String(moduleCatalogueId));
+    if (byId) return byId;
+  }
   const rawValue = typeof moduleValue === 'string' ? moduleValue : '';
   const displayValue = getModuleInputValue(moduleValue);
   const normalizedRaw = normalizeModuleLookup(rawValue);
@@ -1025,6 +1030,7 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
     grouped.get(key)!.modules.push({
       id: block.id,
       trainingPlanId: block.trainingPlanId,
+      moduleCatalogueId: block.moduleCatalogueId,
       mod: block.mod,
       color: block.color || '',
       startDate: block.startDate,
@@ -1069,7 +1075,8 @@ export default function CohortModal({
     const sessionCount = Math.max(1, parseInt(prefillCatalogModule?.sessions || '1', 10) || 1);
     return {
       ...newFormModule(),
-      mod: prefillModule || '',
+      mod: prefillCatalogModule?.name || prefillModule || '',
+      moduleCatalogueId: prefillCatalogModule?.id ? String(prefillCatalogModule.id) : undefined,
       color: prefillCatalogModule?.colour || prefillModuleMeta?.bg || '',
       sessions: sessionCount,
       sessionKsbMappings: normalizeSessionKsbMappings([], sessionCount),
@@ -1456,7 +1463,7 @@ export default function CohortModal({
     setGroupDraftDirty(false);
   };
 
-  const updateModuleDraft = (key: keyof Omit<FormModule, 'id' | 'trainingPlanId' | 'sessionKsbMappings'>, value: string | number) => {
+  const updateModuleDraft = (key: keyof Omit<FormModule, 'id' | 'trainingPlanId' | 'sessionKsbMappings'>, value: string | number | undefined) => {
     markUserEdited();
     setModuleDraftDirty(true);
     setModuleDraft(prev => {
@@ -1896,6 +1903,7 @@ export default function CohortModal({
         group.modules.map(moduleItem => ({
           id: moduleItem.id,
           trainingPlanId: moduleItem.trainingPlanId,
+          moduleCatalogueId: moduleItem.moduleCatalogueId,
           groupId: group.id,
           mod: moduleItem.mod,
           groupName: group.groupName.trim() || undefined,
@@ -2493,7 +2501,7 @@ export default function CohortModal({
 
               <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
                 {(() => {
-                  const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules);
+                  const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules, moduleDraft.module.moduleCatalogueId);
                   const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod);
                   const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
                   const accentColor = selectedCatalogModule?.colour || moduleDraft.module.color || parentGroup?.color || '#1B2A4A';
@@ -2507,7 +2515,7 @@ export default function CohortModal({
                         }]
                       : []),
                     ...catalogModules.map(m => ({
-                      value: m.name,
+                      value: String(m.id),
                       label: m.name,
                       description: `${m.sessions || 0} session${m.sessions === '1' ? '' : 's'}`,
                       color: m.colour || '#4A6DB0',
@@ -2569,14 +2577,15 @@ export default function CohortModal({
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Module</label>
                         {catalogModules.length > 0 ? (
                           <SelectField
-                            value={selectedCatalogModule ? selectedCatalogModule.name : currentModuleLabel}
+                            value={selectedCatalogModule ? String(selectedCatalogModule.id) : currentModuleLabel}
                             options={moduleOptions}
                             placeholder="Select a module"
                             accentColor={accentColor}
                             onChange={value => {
-                              const selected = catalogModules.find(m => m.name === value);
+                              const selected = catalogModules.find(m => String(m.id) === value) || catalogModules.find(m => m.name === value);
                               if (selected) {
                                 updateModuleDraft('mod', selected.name);
+                                updateModuleDraft('moduleCatalogueId', String(selected.id));
                                 const sessions = Math.max(1, parseInt(selected.sessions || '1', 10) || 1);
                                 updateModuleDraft('sessions', sessions);
                                 updateModuleDraft('color', selected.colour || '');
@@ -2589,6 +2598,7 @@ export default function CohortModal({
                                 } : prev);
                               } else {
                                 updateModuleDraft('mod', value || '');
+                                updateModuleDraft('moduleCatalogueId', undefined);
                               }
                             }}
                           />
@@ -2837,7 +2847,7 @@ export default function CohortModal({
             <button type="button" aria-label="Close KSB editor" className="absolute inset-0 cursor-default" onClick={() => setKsbEditorOpen(false)} />
             <div className="relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]">
               {(() => {
-                const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules);
+                const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules, moduleDraft.module.moduleCatalogueId);
                 const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod) || 'Selected module';
                 const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
                 const accentColor = selectedCatalogModule?.colour || moduleDraft.module.color || parentGroup?.color || '#1B2A4A';

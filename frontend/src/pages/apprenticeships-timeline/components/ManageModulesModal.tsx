@@ -568,6 +568,13 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
     setDeletingId(m.id);
     try {
       await onDelete(m.id);
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Module Not Deleted',
+        html: error instanceof Error ? error.message : 'Unknown delete error',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
     } finally {
       setDeletingId(null);
     }
@@ -576,6 +583,10 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
   const handleSave = async () => {
     if (!editing) return;
     if (!editing.name.trim()) { setError('Module name is required'); return; }
+    if (editing.id === undefined) {
+      setError('This module is missing its catalogue ID. Reload the module catalogue before saving.');
+      return;
+    }
     setSaving(true);
     const count = Math.max(0, parseInt(editing.sessions, 10) || 0);
     const names = Array.from({ length: count }, (_, i) => editing.sessionNames[i] ?? '');
@@ -589,6 +600,13 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       }
       setEditing(null);
       setKsbEditorOpen(false);
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Module Not Saved',
+        html: error instanceof Error ? error.message : 'Unknown save error',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
     } finally {
       setSaving(false);
     }
