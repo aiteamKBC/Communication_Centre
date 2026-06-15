@@ -95,6 +95,15 @@ function rowHeight(row: GanttRow): number {
   return row.laneCount === 2 ? LANE_H * 2 : MODULE_H;
 }
 
+function getDateCenter(pos: { left: number; width: number }): number {
+  return pos.left + Math.max(1, pos.width) / 2;
+}
+
+function clampMarkerCenter(left: number, width: number, radius = 8): number {
+  if (width <= radius * 2) return width / 2;
+  return Math.min(width - radius, Math.max(radius, left));
+}
+
 // Extract group label from cohort label, e.g. "Cohort 1 - G1" → "G1"
 function extractGroup(label: string): string {
   const m = label.match(/[-–]\s*([A-Za-z0-9]+)\s*$/);
@@ -141,14 +150,53 @@ function splitPeople(value: string): string[] {
     .filter(Boolean);
 }
 
-const TUTOR_CONFLICT_COLORS = ['#00A6D6', '#D81B60', '#2E7D32', '#3949AB', '#B00020', '#6A1B9A'];
+const TUTOR_CONFLICT_GOLDEN_ANGLE = 137.508;
+
+function hslToHex(hue: number, saturation: number, lightness: number): string {
+  const s = saturation / 100;
+  const l = lightness / 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (hue < 60) {
+    r = c; g = x;
+  } else if (hue < 120) {
+    r = x; g = c;
+  } else if (hue < 180) {
+    g = c; b = x;
+  } else if (hue < 240) {
+    g = x; b = c;
+  } else if (hue < 300) {
+    r = x; b = c;
+  } else {
+    r = c; b = x;
+  }
+
+  return [r, g, b]
+    .map(channel => Math.round((channel + m) * 255).toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase()
+    .padStart(6, '0')
+    .replace(/^/, '#');
+}
+
+function tutorConflictColorAt(index: number): string {
+  const hue = (index * TUTOR_CONFLICT_GOLDEN_ANGLE + 12) % 360;
+  const saturation = 72 + (index % 3) * 7;
+  const lightness = 38 + (index % 2) * 8;
+  return hslToHex(hue, saturation, lightness);
+}
 
 function tutorConflictColor(key: string): string {
   let hash = 0;
   for (let index = 0; index < key.length; index += 1) {
     hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
   }
-  return TUTOR_CONFLICT_COLORS[hash % TUTOR_CONFLICT_COLORS.length];
+  return tutorConflictColorAt(hash);
 }
 
 function normalizeModuleLookup(value: string): string {
@@ -319,6 +367,7 @@ interface TimelineTutorConflictPair {
   tutor: string;
   blockIds: [string, string];
   labels: [string, string];
+  entries: TutorConflictEntry[];
 }
 
 interface TimelineTutorConnector {
@@ -330,7 +379,8 @@ interface TimelineTutorConnector {
   date: string;
   tutor: string;
   color: string;
-  points: { y: number; label: string }[];
+  points: { y: number; entry: TutorConflictEntry }[];
+  entries: TutorConflictEntry[];
 }
 
 type BadgeTooltipData = {
@@ -360,11 +410,23 @@ type ExtensionTooltipData = {
 
 type TutorConflictTooltipData = {
   labels: string[];
+  entries: TutorConflictEntry[];
+  activeIndex: number;
   tutor: string;
   date: string;
   color: string;
   x: number;
   y: number;
+};
+
+type TutorConflictEntry = {
+  moduleName: string;
+  programmeName: string;
+  cohortName: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+  position: 'upper' | 'lower' | 'same row';
 };
 
 interface ClassSummary {
@@ -823,12 +885,22 @@ function ExtensionTooltip({ data }: { data: ExtensionTooltipData }) {
 }
 
 function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
+  const active = data.entries[data.activeIndex];
+  const otherEntries = data.entries.filter((_, index) => index !== data.activeIndex);
+  const directionText = otherEntries
+    .map(entry => {
+      if (!active) return `${entry.moduleName} is also booked at this time.`;
+      if (entry.position === active.position) return `${entry.moduleName} is on the same row.`;
+      return `${entry.moduleName} is ${entry.position === 'upper' ? 'above' : 'below'} this marker.`;
+    })
+    .join(' ');
+
   return (
     <div
       className="fixed pointer-events-none z-50"
-      style={{ left: Math.min(data.x + 12, window.innerWidth - 330), top: Math.max(data.y - 8, 8) }}
+      style={{ left: Math.min(data.x + 12, window.innerWidth - 390), top: Math.max(data.y - 8, 8) }}
     >
-      <div className="w-[310px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: data.color }}>
+      <div className="w-[370px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border bg-white shadow-lg" style={{ borderColor: data.color }}>
         <div className="flex items-center gap-2 px-3 py-2 text-white" style={{ background: data.color }}>
           <div className="flex min-w-0 items-center gap-2">
             <i className="ri-user-shared-line text-sm" />
@@ -844,12 +916,30 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
               Date: <span className="font-extrabold text-gray-900">{formatDateShort(data.date)}</span>
             </p>
           </div>
+          <p className="rounded-md px-2 py-1.5 font-extrabold" style={{ background: `${data.color}14`, color: data.color }}>
+            {directionText || 'This tutor is booked on more than one session at the same time.'}
+          </p>
           <div className="space-y-1">
-            {data.labels.map((label, index) => (
-              <p key={`${label}-${index}`} className="flex items-center gap-2 rounded-md px-2 py-1 font-extrabold text-gray-800" style={{ background: `${data.color}14` }}>
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: data.color }} />
-                <span className="truncate">{label}</span>
-              </p>
+            {data.entries.map((entry, index) => (
+              <div
+                key={`${entry.programmeName}-${entry.cohortName}-${entry.moduleName}-${index}`}
+                className="rounded-md px-2 py-1.5"
+                style={{ background: index === data.activeIndex ? `${data.color}1F` : `${data.color}0F` }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: data.color }} />
+                  <span className="min-w-0 flex-1 truncate font-extrabold text-gray-900">{entry.moduleName}</span>
+                  <span className="shrink-0 rounded bg-white/80 px-1.5 py-px font-extrabold text-gray-600">
+                    {entry.position}
+                  </span>
+                </div>
+                <p className="mt-1 truncate font-semibold text-gray-700">
+                  {entry.programmeName} / {entry.cohortName}
+                </p>
+                <p className="truncate font-semibold text-gray-500">
+                  Class: {entry.className || 'Unassigned'} / Time: {entry.startTime} - {entry.endTime}
+                </p>
+              </div>
             ))}
           </div>
         </div>
@@ -1394,6 +1484,9 @@ export default function GanttTimeline({
       endTime: string;
       tutor: string;
       label: string;
+      programmeName: string;
+      cohortName: string;
+      className: string;
     }[] = [];
 
     groups.forEach((grp, groupIdx) => {
@@ -1421,6 +1514,9 @@ export default function GanttTimeline({
                 endTime,
                 tutor,
                 label: moduleName(blk),
+                programmeName: grp.name.replace('\n', ' '),
+                cohortName: row.label,
+                className: (blk.groupName || row.label || 'Unassigned').trim(),
               });
             });
           });
@@ -1448,6 +1544,26 @@ export default function GanttTimeline({
           tutor: a.tutor,
           blockIds: [a.blockId, b.blockId],
           labels: [a.label, b.label],
+          entries: [
+            {
+              moduleName: a.label,
+              programmeName: a.programmeName,
+              cohortName: a.cohortName,
+              className: a.className,
+              startTime: a.startTime,
+              endTime: a.endTime,
+              position: 'same row',
+            },
+            {
+              moduleName: b.label,
+              programmeName: b.programmeName,
+              cohortName: b.cohortName,
+              className: b.className,
+              startTime: b.startTime,
+              endTime: b.endTime,
+              position: 'same row',
+            },
+          ],
         });
       }
     }
@@ -1498,7 +1614,7 @@ export default function GanttTimeline({
 
     const colorMap = new Map<string, string>();
     Array.from(keys).sort().forEach((key, index) => {
-      colorMap.set(key, TUTOR_CONFLICT_COLORS[index % TUTOR_CONFLICT_COLORS.length]);
+      colorMap.set(key, tutorConflictColorAt(index));
     });
     return colorMap;
   }, [catalogModules, collapsedGroups, crossRowTutorConflictPairs, customModules, groups, holidays]);
@@ -1545,10 +1661,14 @@ export default function GanttTimeline({
         const secondRect = second.getBoundingClientRect();
         const firstY = firstRect.top - surfaceRect.top + firstRect.height / 2;
         const secondY = secondRect.top - surfaceRect.top + secondRect.height / 2;
-        const x = leftW + datePos.left + Math.max(2, datePos.width) / 2;
+        const x = leftW + getDateCenter(datePos);
+        const entries = pair.entries.map((entry, entryIndex) => ({
+          ...entry,
+          position: (entryIndex === 0 ? firstY : secondY) <= (entryIndex === 0 ? secondY : firstY) ? 'upper' : 'lower',
+        } as TutorConflictEntry));
         const points = [
-          { y: firstY, label: pair.labels[0] },
-          { y: secondY, label: pair.labels[1] },
+          { y: firstY, entry: entries[0] },
+          { y: secondY, entry: entries[1] },
         ];
 
         return [{
@@ -1561,6 +1681,7 @@ export default function GanttTimeline({
           tutor: pair.tutor,
           color: tutorConflictColorMap.get(pair.key) || tutorConflictColor(pair.key),
           points,
+          entries,
         }];
       });
 
@@ -2063,10 +2184,10 @@ export default function GanttTimeline({
     const firstCoverage = coverageItems[0];
     const coverageMarkers = coverageItems.map(item => {
       const datePos = getBlockPosition(item.date, item.date, cols);
-      const left = datePos ? datePos.left - pos.left + Math.max(6, datePos.width / 2) : 8;
+      const left = datePos ? getDateCenter(datePos) - pos.left : 8;
       return {
         item,
-        left: Math.max(0, Math.min(pos.width, left)),
+        left: clampMarkerCenter(left, pos.width),
       };
     });
     const personLabel = tutorLabel || coachLabel;
@@ -2723,7 +2844,7 @@ export default function GanttTimeline({
               />
               {connector.points.map((point, pointIndex) => (
                 <span
-                  key={`${connector.key}-${point.label}-${pointIndex}`}
+                  key={`${connector.key}-${point.entry.moduleName}-${pointIndex}`}
                   className="pointer-events-auto absolute left-1/2 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border-[3px] border-white shadow"
                   style={{
                     top: point.y - connector.top,
@@ -2739,6 +2860,8 @@ export default function GanttTimeline({
                     setExtensionTip(null);
                     setTutorConflictTip({
                       labels: connector.labels,
+                      entries: connector.entries,
+                      activeIndex: pointIndex,
                       tutor: connector.tutor,
                       date: connector.date,
                       color: connector.color,
@@ -2907,7 +3030,8 @@ export default function GanttTimeline({
                     date: string;
                     tutor: string;
                     color: string;
-                    points: { y: number; label: string }[];
+                    points: { y: number; entry: TutorConflictEntry }[];
+                    entries: TutorConflictEntry[];
                   }[] = [];
                   const seenConnectors = new Set<string>();
 
@@ -2927,21 +3051,38 @@ export default function GanttTimeline({
                       const points = [a, b]
                         .map(entry => {
                           const layout = moduleLayoutById.get(entry.blk.id);
-                          return layout ? { y: layout.centerY, label: getBlockDisplayName(entry.blk, customModules) } : null;
+                          const moduleName = getBlockDisplayName(entry.blk, customModules);
+                          return layout ? {
+                            y: layout.centerY,
+                            entry: {
+                              moduleName,
+                              programmeName: grp.name.replace('\n', ' '),
+                              cohortName: row.label,
+                              className: (entry.blk.groupName || row.label || 'Unassigned').trim(),
+                              startTime: entry.startTime,
+                              endTime: entry.endTime,
+                              position: 'same row',
+                            } as TutorConflictEntry,
+                          } : null;
                         })
-                        .filter((point): point is { y: number; label: string } => Boolean(point));
+                        .filter((point): point is { y: number; entry: TutorConflictEntry } => Boolean(point));
                       if (points.length < 2) continue;
                       const ys = points.map(point => point.y);
+                      const entries = points.map(point => ({
+                        ...point.entry,
+                        position: point.y === Math.min(...ys) ? 'upper' : 'lower',
+                      } as TutorConflictEntry));
                       connectors.push({
                         key: `${rowTargetKey}-tutor-conflict-${connectorKey}`,
-                        x: datePos.left + Math.max(2, datePos.width) / 2,
+                        x: getDateCenter(datePos),
                         top: Math.min(...ys),
                         bottom: Math.max(...ys),
-                        labels: points.map(point => point.label),
+                        labels: entries.map(entry => entry.moduleName),
                         date: a.date,
                         tutor: a.tutor,
                         color: tutorConflictColorMap.get(connectorKey) || tutorConflictColor(connectorKey),
-                        points,
+                        points: points.map((point, pointIndex) => ({ ...point, entry: entries[pointIndex] })),
+                        entries,
                       });
                     }
                   }
@@ -3120,7 +3261,7 @@ export default function GanttTimeline({
                             />
                             {connector.points.map((point, pointIndex) => (
                               <span
-                                key={`${connector.key}-${point.label}-${pointIndex}`}
+                                key={`${connector.key}-${point.entry.moduleName}-${pointIndex}`}
                                 className="pointer-events-auto absolute left-1/2 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border-[3px] border-white shadow"
                                 style={{
                                   top: point.y - connector.top,
@@ -3136,6 +3277,8 @@ export default function GanttTimeline({
                                   setExtensionTip(null);
                                   setTutorConflictTip({
                                     labels: connector.labels,
+                                    entries: connector.entries,
+                                    activeIndex: pointIndex,
                                     tutor: connector.tutor,
                                     date: connector.date,
                                     color: connector.color,
