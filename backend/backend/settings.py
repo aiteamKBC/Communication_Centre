@@ -147,6 +147,10 @@ ofsted_database_url = os.getenv('ofested_command_database_url')
 if ofsted_database_url:
     DATABASES['ofsted_db'] = parse_database_url(ofsted_database_url)
 
+aptem_database_url = os.getenv('APTEM_DATABASE_URL') or os.getenv('aptem_DATABASE_URL')
+if aptem_database_url:
+    DATABASES['aptem_db'] = parse_database_url(aptem_database_url)
+
 
 DATABASE_ROUTERS = ['backend.db_routers.ExternalDbRouter', 'backend.db_routers.AuthAdminRouter']
 

@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
-from .models import AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ REALTIME_RESOURCE_ENTITIES = {
 		'Module',
 		'TutorProfile',
 		'KsbProfile',
+		'ModuleLearnerMapping',
 	},
 	'employees': {'Employee'},
 	'feedback': {'Feedback'},
@@ -2788,6 +2790,110 @@ def training_plan_reorder_cohorts(request):
 
 
 @csrf_exempt
+def training_plan_move_cohort(request, cohort_id: str):
+	if request.method != 'PATCH':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	payload, error_response = parse_json_payload(request)
+	if error_response is not None:
+		return error_response
+
+	allowed_keys = {'version', 'fromProgrammeId', 'toProgrammeId', 'toProgrammeName', 'sourceCohortIds', 'targetCohortIds'}
+	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
+	if unknown_keys:
+		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	target_cohort_id = str(cohort_id or '').strip()
+	from_programme_id = str(payload.get('fromProgrammeId') or '').strip()
+	to_programme_id = str(payload.get('toProgrammeId') or '').strip()
+	to_programme_name = str(payload.get('toProgrammeName') or '').strip()
+	if not target_cohort_id or not from_programme_id or not to_programme_id:
+		return JsonResponse({'detail': 'cohort id, fromProgrammeId, and toProgrammeId are required.'}, status=400)
+	if from_programme_id == to_programme_id:
+		return JsonResponse({'detail': 'Use cohort reorder for moves inside the same programme.'}, status=400)
+	source_cohort_ids, source_error = validate_reorder_ids(payload, 'sourceCohortIds', 'Source cohort')
+	if source_error is not None:
+		return source_error
+	target_cohort_ids, target_error = validate_reorder_ids(payload, 'targetCohortIds', 'Target cohort')
+	if target_error is not None:
+		return target_error
+	if target_cohort_id in source_cohort_ids or target_cohort_id not in target_cohort_ids:
+		return JsonResponse({'detail': 'Moved cohort must be removed from sourceCohortIds and included in targetCohortIds.'}, status=400)
+
+	current_items = training_plan_items_snapshot()
+	current_version = training_plan_version(current_items)
+	conflict = require_training_plan_version(payload, current_version, current_items)
+	if conflict is not None:
+		return conflict
+
+	with transaction.atomic():
+		rows = current_training_plan_rows_for_update()
+		locked_items = [serialize_training_plan(item) for item in training_plan_queryset()]
+		locked_version = training_plan_version(locked_items)
+		conflict = require_training_plan_version(payload, locked_version, locked_items)
+		if conflict is not None:
+			return conflict
+
+		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows, require_cohort=True)
+		if unsafe_row_ids:
+			return JsonResponse({'detail': 'Cohort move cannot safely run because some rows are missing stable programme/cohort ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
+		source_rows = [
+			row for row in rows
+			if training_plan_row_identity(row)['programmeId'] == from_programme_id
+			and training_plan_row_identity(row)['cohortId'] == target_cohort_id
+		]
+		if not source_rows:
+			return JsonResponse({'detail': 'Source cohort scope was not found.'}, status=404)
+		if not training_plan_programme_scope_exists(to_programme_id, rows):
+			return JsonResponse({'detail': 'Target programme scope was not found.'}, status=404)
+		if not to_programme_name:
+			config = TrainingPlanProgramConfig.objects.filter(program_id=to_programme_id).first()
+			to_programme_name = config.name if config else to_programme_id
+
+		cohorts_by_programme: dict[str, set[str]] = {}
+		for row in rows:
+			identity = training_plan_row_identity(row)
+			cohorts_by_programme.setdefault(identity['programmeId'], set()).add(identity['cohortId'])
+		expected_source = cohorts_by_programme.get(from_programme_id, set()) - {target_cohort_id}
+		expected_target = cohorts_by_programme.get(to_programme_id, set()) | {target_cohort_id}
+		if set(source_cohort_ids) != expected_source:
+			return JsonResponse({'detail': 'sourceCohortIds does not match the source programme after the move.'}, status=400)
+		if set(target_cohort_ids) != expected_target:
+			return JsonResponse({'detail': 'targetCohortIds does not match the target programme after the move.'}, status=400)
+
+		before = [serialize_training_plan(row) for row in source_rows]
+		source_order = {cohort_id_value: index for index, cohort_id_value in enumerate(source_cohort_ids)}
+		target_order = {cohort_id_value: index for index, cohort_id_value in enumerate(target_cohort_ids)}
+		for row in rows:
+			identity = training_plan_row_identity(row)
+			if identity['programmeId'] == from_programme_id and identity['cohortId'] in source_order:
+				row.cohort_display_order = source_order[identity['cohortId']]
+				row.save(update_fields=['cohort_display_order'])
+			elif identity['programmeId'] == to_programme_id and identity['cohortId'] in target_order:
+				row.cohort_display_order = target_order[identity['cohortId']]
+				row.save(update_fields=['cohort_display_order'])
+		for row in source_rows:
+			row.program = to_programme_name
+			row.cohort_display_order = target_order[target_cohort_id]
+			row.notes = set_training_plan_metadata_markers(row.notes, {
+				TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX: to_programme_id,
+				TRAINING_PLAN_COHORT_ID_MARKER_PREFIX: target_cohort_id,
+			})
+			row.save(update_fields=['program', 'cohort_display_order', 'notes'])
+		after = [serialize_training_plan(row) for row in source_rows]
+		_audit_log(
+			request,
+			action='update',
+			entity='TrainingPlan',
+			object_label='COHORT_MOVE_PARTIAL_UPDATE',
+			before={'rows': before, 'version': locked_version},
+			after={'rows': after, 'fromProgrammeId': from_programme_id, 'toProgrammeId': to_programme_id, 'sourceCohortIds': source_cohort_ids, 'targetCohortIds': target_cohort_ids},
+			metadata={'partialUpdate': True, 'section': 'cohort-move', 'changedFields': ['program', 'notesMetadata', 'cohortDisplayOrder']},
+		)
+
+	return JsonResponse(training_plan_order_response({'cohortId': target_cohort_id, 'fromProgrammeId': from_programme_id, 'toProgrammeId': to_programme_id}))
+
+
+@csrf_exempt
 def training_plan_cohort_detail(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -5233,6 +5339,435 @@ def _serialize_module(item) -> dict:
 		'sessionDescriptions': session_descriptions,
 		'sessionKsbMappings': normalize_session_ksb_mappings(getattr(item, 'session_ksb_json', '')),
 	}
+
+
+def normalize_aptem_text(value) -> str:
+	return re.sub(r'\s+', ' ', str(value or '').strip())
+
+
+def normalize_aptem_lookup(value) -> str:
+	return normalize_aptem_text(value).casefold()
+
+
+def normalize_aptem_scope_lookup(value) -> str:
+	clean = html.unescape(normalize_aptem_text(value))
+	clean = clean.replace('&', ' and ')
+	clean = re.sub(r'[\-–—_:;|/\\]+', ' ', clean)
+	clean = re.sub(r'[^0-9a-zA-Z]+', ' ', clean)
+	return normalize_aptem_text(clean).casefold()
+
+
+def aptem_scope_tokens(value) -> set[str]:
+	lookup = normalize_aptem_scope_lookup(value)
+	return {token for token in lookup.split(' ') if len(token) >= 3}
+
+
+def aptem_scope_matches(subprogramme: str, scope: str) -> bool:
+	sub_lookup = normalize_aptem_scope_lookup(subprogramme)
+	scope_lookup = normalize_aptem_scope_lookup(scope)
+	if not sub_lookup or not scope_lookup:
+		return False
+	if scope_lookup in sub_lookup or sub_lookup in scope_lookup:
+		return True
+	scope_tokens = aptem_scope_tokens(scope_lookup)
+	if not scope_tokens:
+		return False
+	sub_tokens = set(sub_lookup.split(' '))
+	matches = scope_tokens & sub_tokens
+	if len(scope_tokens) > 1:
+		return len(matches) >= min(2, len(scope_tokens))
+	return bool(matches)
+
+
+def learner_identity_from_values(learner_id: str, email: str, name: str) -> str:
+	learner_id = normalize_aptem_text(learner_id)
+	email = normalize_aptem_text(email).lower()
+	name = normalize_aptem_lookup(name)
+	if learner_id:
+		return f'id:{learner_id}'
+	if email:
+		return f'email:{email}'
+	return f'name:{name}'
+
+
+def serialize_aptem_learner(item: AptemAutoExtracting) -> dict:
+	learner_id = normalize_aptem_text(item.learner_id)
+	name = normalize_aptem_text(item.full_name)
+	email = normalize_aptem_text(item.email)
+	return {
+		'learnerIdentity': learner_identity_from_values(learner_id, email, name),
+		'learnerId': learner_id,
+		'name': name,
+		'email': email,
+		'programmeName': normalize_aptem_text(item.programme_name),
+		'group': normalize_aptem_text(item.group),
+		'managerName': normalize_aptem_text(item.manager_name),
+		'managerEmail': normalize_aptem_text(item.manager_email),
+		'ownerName': normalize_aptem_text(item.owner_name),
+		'ownerEmail': normalize_aptem_text(item.owner_email),
+		'status': normalize_aptem_text(item.program_status),
+		'learnerName': name,
+		'learnerEmail': email,
+		'programmeStatus': normalize_aptem_text(item.program_status),
+		'subprogramme': normalize_aptem_text(item.subprogramme),
+	}
+
+
+def serialize_module_learner_mapping(item: ModuleLearnerMapping, aptem_by_identity: dict | None = None) -> dict:
+	aptem_match = aptem_by_identity.get(item.learner_identity) if aptem_by_identity else None
+	learner_id = item.learner_id or (aptem_match.get('learnerId') if aptem_match else '')
+	learner_name = item.learner_name or (aptem_match.get('name') if aptem_match else '')
+	learner_email = item.learner_email or (aptem_match.get('email') if aptem_match else '')
+	programme_name = aptem_match.get('programmeName') if aptem_match else ''
+	group = aptem_match.get('group') if aptem_match else ''
+	manager_name = aptem_match.get('managerName') if aptem_match else ''
+	manager_email = aptem_match.get('managerEmail') if aptem_match else ''
+	owner_name = aptem_match.get('ownerName') if aptem_match else ''
+	owner_email = aptem_match.get('ownerEmail') if aptem_match else ''
+	programme_status = aptem_match.get('status') if aptem_match else ''
+	subprogramme = aptem_match.get('subprogramme') if aptem_match else item.subprogramme
+	missing_from_aptem = bool(item.selected_state and not aptem_match)
+	return {
+		'cohortId': item.cohort_id,
+		'moduleBlockId': item.module_block_id,
+		'moduleCatalogueId': item.module_catalogue_id,
+		'learnerIdentity': item.learner_identity,
+		'learnerId': learner_id,
+		'name': learner_name,
+		'email': learner_email,
+		'programmeName': programme_name,
+		'group': group,
+		'managerName': manager_name,
+		'managerEmail': manager_email,
+		'ownerName': owner_name,
+		'ownerEmail': owner_email,
+		'selected': bool(item.selected_state),
+		'sortOrder': item.sort_order,
+		'learnerName': learner_name,
+		'learnerEmail': learner_email,
+		'programmeStatus': programme_status,
+		'subprogramme': subprogramme,
+		'isSelected': bool(item.selected_state),
+		'missingFromAptem': missing_from_aptem,
+	}
+
+
+def validate_module_catalogue_id(module_catalogue_id: str):
+	if not module_catalogue_id:
+		return None, JsonResponse({'detail': 'moduleCatalogueId is required.'}, status=400)
+	try:
+		module_id = int(module_catalogue_id)
+	except ValueError:
+		return None, JsonResponse({'detail': 'moduleCatalogueId must identify an existing module catalogue record.'}, status=400)
+	try:
+		return Module.objects.get(module_id=module_id), None
+	except Module.DoesNotExist:
+		return None, JsonResponse({'detail': 'moduleCatalogueId was not found.'}, status=404)
+
+
+def validate_module_assignment_scope(cohort_id: str, module_block_id: str):
+	cohort_id = str(cohort_id or '').strip()
+	module_block_id = str(module_block_id or '').strip()
+	if not cohort_id:
+		return None, None, JsonResponse({'detail': 'cohortId is required.'}, status=400)
+	if not module_block_id:
+		return None, None, JsonResponse({'detail': 'moduleBlockId is required.'}, status=400)
+	rows = list(TrainingPlan.objects.filter(active_training_plan_filter()).order_by('id'))
+	matching_rows = [
+		row for row in rows
+		if training_plan_row_identity(row)['cohortId'] == cohort_id
+		and training_plan_marker_value(row.notes, '__block_id:') == module_block_id
+	]
+	if not matching_rows:
+		return None, None, JsonResponse({'detail': 'Training Plan module assignment was not found for this cohort.'}, status=404)
+	if len(matching_rows) > 1:
+		return None, None, JsonResponse({'detail': 'Training Plan module assignment scope is ambiguous.'}, status=409)
+	return matching_rows[0], training_plan_marker_value(matching_rows[0].notes, TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX), None
+
+
+def aptem_subprogrammes(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	programme_name = normalize_aptem_text(request.GET.get('programmeName', ''))
+	cohort_name = normalize_aptem_text(request.GET.get('cohortName', ''))
+	module_name = normalize_aptem_text(request.GET.get('moduleName', ''))
+	values_by_key: dict[str, dict] = {}
+	for raw in AptemAutoExtracting.objects.values_list('subprogramme', flat=True):
+		clean = normalize_aptem_text(raw)
+		key = normalize_aptem_lookup(clean)
+		if clean and key not in values_by_key:
+			values_by_key[key] = {'subprogramme': clean, 'learnersCount': 0}
+		if clean:
+			values_by_key[key]['learnersCount'] += 1
+
+	options = list(values_by_key.values())
+	filtered_by = ''
+	if cohort_name:
+		cohort_matches = [item for item in options if aptem_scope_matches(item['subprogramme'], cohort_name)]
+		if cohort_matches:
+			options = cohort_matches
+			filtered_by = 'cohortName'
+	if not filtered_by and programme_name:
+		programme_matches = [item for item in options if aptem_scope_matches(item['subprogramme'], programme_name)]
+		if programme_matches:
+			options = programme_matches
+			filtered_by = 'programmeName'
+	if module_name and filtered_by:
+		module_matches = [item for item in options if aptem_scope_matches(item['subprogramme'], module_name)]
+		if module_matches:
+			options = module_matches
+			filtered_by = f'{filtered_by},moduleName'
+
+	options = sorted(options, key=lambda item: item['subprogramme'].casefold())
+	return JsonResponse({
+		'items': [item['subprogramme'] for item in options],
+		'options': options,
+		'filteredBy': filtered_by,
+	})
+
+
+def aptem_learners(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	subprogramme = normalize_aptem_text(request.GET.get('subprogramme', ''))
+	if not subprogramme:
+		return JsonResponse({'detail': 'subprogramme is required.'}, status=400)
+	target = normalize_aptem_lookup(subprogramme)
+	learners = [
+		serialize_aptem_learner(item)
+		for item in AptemAutoExtracting.objects.all().order_by('full_name', 'email', 'learner_id')
+		if normalize_aptem_lookup(item.subprogramme) == target
+	]
+	return JsonResponse({'items': learners, 'subprogramme': subprogramme})
+
+
+@csrf_exempt
+def training_plan_module_assignment_learners(request, cohort_id: str, module_block_id: str):
+	row, module_catalogue_id, error = validate_module_assignment_scope(cohort_id, module_block_id)
+	if error:
+		return error
+	cohort_id = str(cohort_id or '').strip()
+	module_block_id = str(module_block_id or '').strip()
+	module_catalogue_id = str(module_catalogue_id or '').strip()
+
+	if request.method == 'GET':
+		records = list(
+			ModuleLearnerMapping.objects
+			.filter(cohort_id=cohort_id, module_block_id=module_block_id)
+			.order_by('-updated_at', 'sort_order', 'learner_name', 'id')
+		)
+		selected_subprogramme = records[0].subprogramme if records else ''
+		if selected_subprogramme:
+			records = [item for item in records if item.subprogramme == selected_subprogramme]
+		aptem_by_identity = {
+			item['learnerIdentity']: item
+			for item in (
+				serialize_aptem_learner(aptem_item)
+				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
+			)
+			if item.get('learnerIdentity')
+		}
+		return JsonResponse({
+			'cohortId': cohort_id,
+			'moduleBlockId': module_block_id,
+			'moduleCatalogueId': module_catalogue_id,
+			'trainingPlanId': str(row.id),
+			'subprogramme': selected_subprogramme,
+			'learners': [serialize_module_learner_mapping(item, aptem_by_identity) for item in sorted(records, key=lambda item: (item.sort_order, item.learner_name.casefold(), item.id))],
+		})
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		subprogramme = normalize_aptem_text(payload.get('subprogramme', ''))
+		if not subprogramme:
+			return JsonResponse({'detail': 'subprogramme is required.'}, status=400)
+		learners = payload.get('learners')
+		if not isinstance(learners, list):
+			return JsonResponse({'detail': 'learners payload must be an array.'}, status=400)
+
+		next_records = []
+		seen_identities = set()
+		for index, item in enumerate(learners):
+			if not isinstance(item, dict):
+				return JsonResponse({'detail': f'learners[{index}] must be an object.'}, status=400)
+			try:
+				sort_order = int(item.get('sortOrder', item.get('sort_order', index)))
+			except (TypeError, ValueError):
+				return JsonResponse({'detail': f'learners[{index}].sort_order must be numeric.'}, status=400)
+			name = normalize_aptem_text(item.get('name') or item.get('learnerName') or item.get('learner_name') or '')
+			email = normalize_aptem_text(item.get('email') or item.get('learnerEmail') or item.get('learner_email') or '')
+			learner_id = normalize_aptem_text(item.get('learnerId') or item.get('learner_id') or '')
+			identity = normalize_aptem_text(item.get('learnerIdentity') or item.get('learner_identity') or '')
+			if not identity:
+				identity = learner_identity_from_values(learner_id, email, name)
+			if identity == 'name:' or not identity:
+				return JsonResponse({'detail': f'learners[{index}] must include learner id, email, or name.'}, status=400)
+			if identity in seen_identities:
+				continue
+			seen_identities.add(identity)
+			next_records.append(ModuleLearnerMapping(
+				cohort_id=cohort_id,
+				module_block_id=module_block_id,
+				module_catalogue_id=module_catalogue_id,
+				subprogramme=subprogramme,
+				learner_identity=identity,
+				learner_id=learner_id,
+				learner_name=name,
+				learner_email=email,
+				selected_state=bool(item.get('selected', item.get('isSelected', True))),
+				sort_order=sort_order,
+			))
+
+		with transaction.atomic():
+			before = [
+				serialize_module_learner_mapping(item)
+				for item in ModuleLearnerMapping.objects.select_for_update().filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
+			]
+			ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).delete()
+			if next_records:
+				ModuleLearnerMapping.objects.bulk_create(next_records)
+			after = [
+				serialize_module_learner_mapping(item)
+				for item in ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
+			]
+		aptem_by_identity = {
+			item['learnerIdentity']: item
+			for item in (
+				serialize_aptem_learner(aptem_item)
+				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
+			)
+			if item.get('learnerIdentity')
+		}
+		after = [
+			serialize_module_learner_mapping(item, aptem_by_identity)
+			for item in ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
+		]
+		_audit_log(
+			request,
+			action='update',
+			entity='ModuleLearnerMapping',
+			object_id=module_block_id,
+			object_label='MODULE_LEARNER_MAPPING_UPDATE',
+			before=before,
+			after=after,
+			metadata={'cohortId': cohort_id, 'moduleBlockId': module_block_id, 'moduleCatalogueId': module_catalogue_id, 'subprogramme': subprogramme, 'selectedCount': len([item for item in after if item.get('selected')])},
+		)
+		return JsonResponse({'cohortId': cohort_id, 'moduleBlockId': module_block_id, 'moduleCatalogueId': module_catalogue_id, 'subprogramme': subprogramme, 'learners': after})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+
+@csrf_exempt
+def training_plan_module_learners(request, module_catalogue_id: str):
+	module, error = validate_module_catalogue_id(str(module_catalogue_id or '').strip())
+	if error:
+		return error
+
+	if request.method == 'GET':
+		records = list(
+			ModuleLearnerMapping.objects
+			.filter(module_catalogue_id=str(module.module_id))
+			.order_by('-updated_at', 'sort_order', 'learner_name', 'id')
+		)
+		selected_subprogramme = records[0].subprogramme if records else ''
+		if selected_subprogramme:
+			records = [item for item in records if item.subprogramme == selected_subprogramme]
+		aptem_by_identity = {
+			item['learnerIdentity']: item
+			for item in (
+				serialize_aptem_learner(aptem_item)
+				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
+			)
+			if item.get('learnerIdentity')
+		}
+		learners = [
+			serialize_module_learner_mapping(item, aptem_by_identity)
+			for item in sorted(records, key=lambda item: (item.sort_order, item.learner_name.casefold(), item.id))
+		]
+		return JsonResponse({
+			'moduleCatalogueId': str(module.module_id),
+			'moduleName': module.module_name,
+			'subprogramme': selected_subprogramme,
+			'selectedCount': len([item for item in learners if item.get('isSelected')]),
+			'learners': learners,
+		})
+
+	if request.method == 'PATCH':
+		try:
+			payload = json.loads(request.body.decode('utf-8') or '{}')
+		except json.JSONDecodeError:
+			return HttpResponseBadRequest('Invalid JSON payload.')
+
+		subprogramme = normalize_aptem_text(payload.get('subprogramme', ''))
+		if not subprogramme:
+			return JsonResponse({'detail': 'subprogramme is required.'}, status=400)
+		learners = payload.get('learners')
+		if not isinstance(learners, list):
+			return JsonResponse({'detail': 'learners payload must be an array.'}, status=400)
+
+		next_records = []
+		seen_identities = set()
+		for index, item in enumerate(learners):
+			if not isinstance(item, dict):
+				return JsonResponse({'detail': f'learners[{index}] must be an object.'}, status=400)
+			try:
+				sort_order = int(item.get('sortOrder', item.get('sort_order', index)))
+			except (TypeError, ValueError):
+				return JsonResponse({'detail': f'learners[{index}].sort_order must be numeric.'}, status=400)
+			name = normalize_aptem_text(item.get('name') or item.get('learnerName') or item.get('learner_name') or '')
+			email = normalize_aptem_text(item.get('email') or item.get('learnerEmail') or item.get('learner_email') or '')
+			learner_id = normalize_aptem_text(item.get('learnerId') or item.get('learner_id') or '')
+			identity = normalize_aptem_text(item.get('learnerIdentity') or item.get('learner_identity') or '')
+			expected_identity = learner_identity_from_values(learner_id, email, name)
+			if not identity:
+				identity = expected_identity
+			if identity == 'name:' or not identity:
+				return JsonResponse({'detail': f'learners[{index}] must include learner id, email, or name.'}, status=400)
+			if identity in seen_identities:
+				continue
+			seen_identities.add(identity)
+			next_records.append(ModuleLearnerMapping(
+				cohort_id=f'catalogue:{module.module_id}',
+				module_block_id=f'catalogue:{module.module_id}',
+				module_catalogue_id=str(module.module_id),
+				subprogramme=subprogramme,
+				learner_identity=identity,
+				learner_id=learner_id,
+				learner_name=name,
+				learner_email=email,
+				selected_state=bool(item.get('selected', item.get('isSelected', True))),
+				sort_order=sort_order,
+			))
+
+		before = [
+			serialize_module_learner_mapping(item)
+			for item in ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).order_by('sort_order', 'id')
+		]
+		with transaction.atomic():
+			ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).delete()
+			if next_records:
+				ModuleLearnerMapping.objects.bulk_create(next_records)
+		after = [
+			serialize_module_learner_mapping(item)
+			for item in ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).order_by('sort_order', 'id')
+		]
+		_audit_log(
+			request,
+			action='update',
+			entity='ModuleLearnerMapping',
+			object_id=module.module_id,
+			object_label='MODULE_LEARNER_MAPPING_UPDATE',
+			before=before,
+			after=after,
+			metadata={'moduleCatalogueId': str(module.module_id), 'subprogramme': subprogramme, 'selectedCount': len([item for item in after if item.get('selected')])},
+		)
+		return JsonResponse({'moduleCatalogueId': str(module.module_id), 'subprogramme': subprogramme, 'learners': after})
+
+	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
 def _apply_session_data(record, session_names: list, session_descriptions: list, session_ksb_mappings: list | None = None):

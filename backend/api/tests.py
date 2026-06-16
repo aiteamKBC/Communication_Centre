@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from django.db import connection
 
-from .models import AuditLog, CoachProfile, Employee, Module, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
+from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, Module, ModuleLearnerMapping, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
 from .views import (
 	LEGACY_TRAINING_PLAN_FULL_SAVE_FLAG_VALUE,
 	MAX_UPLOAD_IMAGE_SIZE_BYTES,
@@ -943,6 +943,222 @@ class TrainingPlanProgramConfigScopedTests(TestCase):
 		self.assertEqual(response.status_code, 403)
 		self.assertEqual(TrainingPlanProgramConfig.objects.count(), 1)
 		self.assertTrue(TrainingPlanProgramConfig.objects.filter(program_id='prog-a').exists())
+
+
+class AptemLearnerMappingTests(TestCase):
+	_created_module_table = False
+	_created_aptem_table = False
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		existing_tables = connection.introspection.table_names()
+		if Module._meta.db_table not in existing_tables:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.create_model(Module)
+			cls._created_module_table = True
+		if AptemAutoExtracting._meta.db_table not in existing_tables:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.create_model(AptemAutoExtracting)
+			cls._created_aptem_table = True
+
+	@classmethod
+	def tearDownClass(cls):
+		if cls._created_aptem_table:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.delete_model(AptemAutoExtracting)
+		if cls._created_module_table:
+			with connection.schema_editor() as schema_editor:
+				schema_editor.delete_model(Module)
+		super().tearDownClass()
+
+	def setUp(self):
+		self.client = Client()
+		Module.objects.all().delete()
+		AptemAutoExtracting.objects.all().delete()
+		ModuleLearnerMapping.objects.all().delete()
+		AuditLog.objects.all().delete()
+		Module.objects.create(module_id=101, module_name='Shared Module', module_colour='#111111', number_of_sessions='3')
+		Module.objects.create(module_id=202, module_name='Shared Module', module_colour='#222222', number_of_sessions='4')
+		self.create_aptem(1, 501, 'Zara Learner', 'zara@example.com', ' Active ', ' Cohort Alpha ')
+		self.create_aptem(2, 502, 'Adam Learner', 'adam@example.com', 'Active', 'cohort alpha')
+		self.create_aptem(3, 503, 'Beta Learner', 'beta@example.com', 'Withdrawn', 'Cohort Beta')
+		self.create_aptem(4, 504, 'Blank Subprogramme', 'blank@example.com', 'Active', '   ')
+
+	def create_aptem(self, row_number, learner_id, name, email, status, subprogramme):
+		return AptemAutoExtracting.objects.create(
+			row_number=row_number,
+			learner_id=learner_id,
+			full_name=name,
+			email=email,
+			program_status=status,
+			subprogramme=subprogramme,
+		)
+
+	def patch_json(self, path, payload):
+		return self.client.patch(path, data=json.dumps(payload), content_type='application/json')
+
+	def test_distinct_subprogrammes_returns_clean_sorted_values(self):
+		response = self.client.get('/api/aptem/subprogrammes/')
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.json()['items'], ['Cohort Alpha', 'Cohort Beta'])
+
+	def test_subprogrammes_endpoint_filters_by_cohort_name(self):
+		self.create_aptem(5, 505, 'Strategy Learner', 'strategy@example.com', 'Active', 'MM LVL6 - Jun 2026: Strategy & Planning')
+		self.create_aptem(6, 506, 'Unrelated Learner', 'other@example.com', 'Active', 'Cyber Security - Sep 2026')
+
+		response = self.client.get('/api/aptem/subprogrammes/?cohortName=MM%20LVL6%20-%20Jun%202026')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual(payload['items'], ['MM LVL6 - Jun 2026: Strategy & Planning'])
+		self.assertEqual(payload['options'][0]['learnersCount'], 1)
+
+	def test_subprogrammes_endpoint_falls_back_to_programme_name(self):
+		self.create_aptem(5, 505, 'Management Learner', 'management@example.com', 'Active', 'Management Level 6 - Sep 2026')
+		self.create_aptem(6, 506, 'Cyber Learner', 'cyber@example.com', 'Active', 'Cyber Security - Sep 2026')
+
+		response = self.client.get('/api/aptem/subprogrammes/?cohortName=No%20Match&programmeName=Management%20Level%206')
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.json()['items'], ['Management Level 6 - Sep 2026'])
+
+	def test_subprogrammes_endpoint_does_not_return_unrelated_when_scoped(self):
+		self.create_aptem(5, 505, 'Management Learner', 'management@example.com', 'Active', 'Management Level 6 - Sep 2026')
+		self.create_aptem(6, 506, 'Cyber Learner', 'cyber@example.com', 'Active', 'Cyber Security - Sep 2026')
+
+		response = self.client.get('/api/aptem/subprogrammes/?programmeName=Management')
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.json()['items'], ['Management Level 6 - Sep 2026'])
+
+	def test_learners_endpoint_filters_by_exact_normalized_subprogramme(self):
+		response = self.client.get('/api/aptem/learners/?subprogramme=%20COHORT%20%20ALPHA%20')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual([item['learnerId'] for item in payload['items']], ['502', '501'])
+		self.assertEqual(payload['items'][0]['name'], 'Adam Learner')
+		self.assertEqual(payload['items'][0]['email'], 'adam@example.com')
+		self.assertEqual(payload['items'][0]['status'], 'Active')
+		self.assertEqual(payload['items'][0]['learnerName'], 'Adam Learner')
+		self.assertEqual(payload['items'][0]['learnerEmail'], 'adam@example.com')
+		self.assertEqual(payload['items'][0]['programmeStatus'], 'Active')
+
+	def test_saving_learners_for_module_a_does_not_affect_module_b_with_duplicate_name(self):
+		a_response = self.patch_json('/api/training-plan/modules/101/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '501', 'name': 'Zara Learner', 'email': 'zara@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+		b_response = self.patch_json('/api/training-plan/modules/202/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '502', 'name': 'Adam Learner', 'email': 'adam@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+
+		self.assertEqual(a_response.status_code, 200)
+		self.assertEqual(b_response.status_code, 200)
+		self.assertEqual(ModuleLearnerMapping.objects.filter(module_catalogue_id='101').count(), 1)
+		self.assertEqual(ModuleLearnerMapping.objects.filter(module_catalogue_id='202').count(), 1)
+		self.assertEqual(ModuleLearnerMapping.objects.get(module_catalogue_id='101').learner_id, '501')
+		self.assertEqual(ModuleLearnerMapping.objects.get(module_catalogue_id='202').learner_id, '502')
+
+	def test_module_learners_get_returns_requested_module_only(self):
+		self.patch_json('/api/training-plan/modules/101/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '501', 'name': 'Zara Learner', 'email': 'zara@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+		self.patch_json('/api/training-plan/modules/202/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '502', 'name': 'Adam Learner', 'email': 'adam@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+
+		response = self.client.get('/api/training-plan/modules/101/learners/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual(payload['moduleCatalogueId'], '101')
+		self.assertEqual(payload['moduleName'], 'Shared Module')
+		self.assertEqual(payload['selectedCount'], 1)
+		self.assertEqual([item['learnerId'] for item in payload['learners']], ['501'])
+
+	def test_module_overview_patch_with_is_selected_uses_module_catalogue_scope(self):
+		response = self.patch_json('/api/training-plan/modules/101/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [
+				{'learnerId': '501', 'name': 'Zara Learner', 'email': 'zara@example.com', 'programmeStatus': 'Active', 'subprogramme': 'Cohort Alpha', 'isSelected': True, 'sortOrder': 0},
+			],
+		})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(ModuleLearnerMapping.objects.filter(module_catalogue_id='101').count(), 1)
+		self.assertFalse(ModuleLearnerMapping.objects.filter(module_catalogue_id='202').exists())
+		reopen = self.client.get('/api/training-plan/modules/101/learners/').json()
+		self.assertEqual(reopen['subprogramme'], 'Cohort Alpha')
+		self.assertEqual(reopen['selectedCount'], 1)
+		self.assertEqual(reopen['learners'][0]['learnerId'], '501')
+
+	def test_duplicate_module_names_remain_isolated_by_catalogue_id(self):
+		self.patch_json('/api/training-plan/modules/101/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '501', 'name': 'Zara Learner', 'email': 'zara@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+		self.patch_json('/api/training-plan/modules/202/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [{'learnerId': '502', 'name': 'Adam Learner', 'email': 'adam@example.com', 'selected': True, 'sortOrder': 0}],
+		})
+
+		a_payload = self.client.get('/api/training-plan/modules/101/learners/').json()
+		b_payload = self.client.get('/api/training-plan/modules/202/learners/').json()
+
+		self.assertEqual(a_payload['moduleName'], b_payload['moduleName'])
+		self.assertEqual([item['learnerId'] for item in a_payload['learners']], ['501'])
+		self.assertEqual([item['learnerId'] for item in b_payload['learners']], ['502'])
+
+	def test_empty_module_mapping_returns_safe_empty_response(self):
+		response = self.client.get('/api/training-plan/modules/101/learners/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual(payload['moduleCatalogueId'], '101')
+		self.assertEqual(payload['moduleName'], 'Shared Module')
+		self.assertEqual(payload['subprogramme'], '')
+		self.assertEqual(payload['selectedCount'], 0)
+		self.assertEqual(payload['learners'], [])
+
+	def test_reopening_mapping_returns_saved_learners(self):
+		self.patch_json('/api/training-plan/modules/101/learners/', {
+			'subprogramme': 'Cohort Alpha',
+			'learners': [
+				{'learnerId': '501', 'name': 'Zara Learner', 'email': 'zara@example.com', 'selected': True, 'sortOrder': 2},
+				{'name': 'Legacy Missing', 'selected': True, 'sortOrder': 1},
+			],
+		})
+
+		response = self.client.get('/api/training-plan/modules/101/learners/')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertEqual(payload['moduleCatalogueId'], '101')
+		self.assertEqual(payload['subprogramme'], 'Cohort Alpha')
+		self.assertEqual([item['name'] for item in payload['learners']], ['Legacy Missing', 'Zara Learner'])
+		self.assertEqual(payload['selectedCount'], 2)
+		self.assertTrue(payload['learners'][0]['missingFromAptem'])
+		self.assertEqual(payload['learners'][0]['programmeStatus'], '')
+		self.assertFalse(payload['learners'][1]['missingFromAptem'])
+		self.assertEqual(payload['learners'][1]['programmeStatus'], 'Active')
+
+	def test_empty_or_invalid_payload_returns_400(self):
+		missing_subprogramme = self.patch_json('/api/training-plan/modules/101/learners/', {'learners': []})
+		invalid_learners = self.patch_json('/api/training-plan/modules/101/learners/', {'subprogramme': 'Cohort Alpha', 'learners': {}})
+		invalid_sort = self.patch_json('/api/training-plan/modules/101/learners/', {'subprogramme': 'Cohort Alpha', 'learners': [{'name': 'A', 'sortOrder': 'nope'}]})
+		invalid_identity = self.patch_json('/api/training-plan/modules/101/learners/', {'subprogramme': 'Cohort Alpha', 'learners': [{'sortOrder': 1}]})
+
+		self.assertEqual(missing_subprogramme.status_code, 400)
+		self.assertEqual(invalid_learners.status_code, 400)
+		self.assertEqual(invalid_sort.status_code, 400)
+		self.assertEqual(invalid_identity.status_code, 400)
+		self.assertFalse(ModuleLearnerMapping.objects.exists())
 
 
 class TrainingPlanPartialUpdateTests(TestCase):

@@ -1,9 +1,10 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import type { ChangeEvent } from 'react';
 import type { CatalogModule, KsbProfile, SessionKsbMapping } from '../types';
 import { kbcSwal } from '@/components/feature/sweetAlert';
+import { loadAptemSubprogrammesForModule, rankAptemSubprogrammeOptions } from '../aptemLearnerMapping';
 
 interface Props {
   modules: CatalogModule[];
@@ -34,6 +35,21 @@ interface EditState {
   sessionDescriptions: string[];
   sessionKsbMappings: SessionKsbMapping[];
 }
+
+interface AptemLearner {
+  learnerIdentity: string;
+  learnerId?: string;
+  name: string;
+  email?: string;
+  status?: string;
+  selected?: boolean;
+  sortOrder?: number;
+  missingFromAptem?: boolean;
+}
+
+type LearnerSortMode = 'selected' | 'name-asc' | 'name-desc' | 'email-asc' | 'manual';
+
+const SHOW_CATALOGUE_APTEM_LEARNER_MAPPING = false;
 
 function emptyEdit(): EditState {
   return { id: null, name: '', colour: '#4A6DB0', sessions: '12', notes: '', sessionNames: [], sessionDescriptions: [], sessionKsbMappings: [] };
@@ -413,6 +429,18 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
   const [error, setError] = useState('');
   const [ksbEditorOpen, setKsbEditorOpen] = useState(false);
   const [selectedKsbProfileId, setSelectedKsbProfileId] = useState('');
+  const [aptemSubprogrammes, setAptemSubprogrammes] = useState<string[]>([]);
+  const [aptemSubprogramme, setAptemSubprogramme] = useState('');
+  const [aptemLearners, setAptemLearners] = useState<AptemLearner[]>([]);
+  const [savedAptemLearners, setSavedAptemLearners] = useState<AptemLearner[]>([]);
+  const [selectedLearnerIds, setSelectedLearnerIds] = useState<Set<string>>(new Set());
+  const [aptemLoading, setAptemLoading] = useState(false);
+  const [aptemLearnersLoading, setAptemLearnersLoading] = useState(false);
+  const [aptemError, setAptemError] = useState('');
+  const [learnerSearch, setLearnerSearch] = useState('');
+  const [learnerSort, setLearnerSort] = useState<LearnerSortMode>('selected');
+  const [subprogrammeDropdownOpen, setSubprogrammeDropdownOpen] = useState(false);
+  const [subprogrammeSearch, setSubprogrammeSearch] = useState('');
   const selectedKsbProfile = useMemo(
     () => ksbProfiles.find(profile => profile.id === selectedKsbProfileId),
     [ksbProfiles, selectedKsbProfileId],
@@ -420,12 +448,26 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
   const selectedProfileList = useMemo(() => selectedKsbProfile ? [selectedKsbProfile] : [], [selectedKsbProfile]);
   const codeDescriptions = useMemo(() => buildKsbDescriptionLookup(selectedProfileList), [selectedProfileList]);
   const profileCodes = useMemo(() => buildKsbProfileCodeOptions(selectedProfileList), [selectedProfileList]);
+  const editingModuleId = editing?.id ?? null;
+
+  const resetAptemState = () => {
+    setAptemSubprogramme('');
+    setAptemLearners([]);
+    setSavedAptemLearners([]);
+    setSelectedLearnerIds(new Set());
+    setAptemError('');
+    setLearnerSearch('');
+    setLearnerSort('selected');
+    setSubprogrammeDropdownOpen(false);
+    setSubprogrammeSearch('');
+  };
 
   const openEdit = (m: CatalogModule) => {
     const next = editStateFromModule(m);
     setEditing(next);
     setEditingSnapshot(JSON.stringify(next));
     setError('');
+    resetAptemState();
   };
 
   const closeEditing = async () => {
@@ -445,6 +487,148 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
     setEditing(null);
     setEditingSnapshot('');
     setKsbEditorOpen(false);
+    resetAptemState();
+  };
+
+  useEffect(() => {
+    if (editingModuleId === null) return;
+    let cancelled = false;
+    const loadMapping = async () => {
+      setAptemLoading(true);
+      setAptemError('');
+      try {
+        const [subResult, mappingResult] = await Promise.allSettled([
+          loadAptemSubprogrammesForModule(),
+          fetch(`/api/training-plan/modules/${editingModuleId}/learners/`),
+        ]);
+        if (subResult.status === 'rejected') throw new Error('Could not load Aptem subprogrammes.');
+        if (cancelled) return;
+        setAptemSubprogrammes(subResult.value);
+        if (mappingResult.status === 'fulfilled' && mappingResult.value.ok) {
+          const mappingPayload = await mappingResult.value.json() as { subprogramme?: string; learners?: AptemLearner[] };
+          if (cancelled) return;
+          const saved = Array.isArray(mappingPayload.learners) ? mappingPayload.learners : [];
+          setSavedAptemLearners(saved);
+          setSelectedLearnerIds(new Set(saved.filter(item => item.selected !== false).map(item => item.learnerIdentity)));
+          setAptemSubprogramme(mappingPayload.subprogramme || '');
+        } else {
+          setSavedAptemLearners([]);
+          setSelectedLearnerIds(new Set());
+          setAptemSubprogramme('');
+          if (mappingResult.status === 'fulfilled') {
+            console.warn('Aptem saved learner mapping could not be loaded', await mappingResult.value.text());
+          } else {
+            console.warn('Aptem saved learner mapping could not be loaded', mappingResult.reason);
+          }
+        }
+      } catch (error) {
+        if (!cancelled) setAptemError(error instanceof Error ? error.message : 'Could not load Aptem learner mapping.');
+      } finally {
+        if (!cancelled) setAptemLoading(false);
+      }
+    };
+    void loadMapping();
+    return () => { cancelled = true; };
+  }, [editingModuleId]);
+
+  useEffect(() => {
+    if (editingModuleId === null || !aptemSubprogramme.trim()) {
+      setAptemLearners([]);
+      return;
+    }
+    let cancelled = false;
+    const loadLearners = async () => {
+      setAptemLearnersLoading(true);
+      setAptemError('');
+      try {
+        const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(aptemSubprogramme)}`);
+        if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load Aptem learners.');
+        const payload = await response.json() as { items?: AptemLearner[] };
+        if (!cancelled) setAptemLearners(Array.isArray(payload.items) ? payload.items : []);
+      } catch (error) {
+        if (!cancelled) setAptemError(error instanceof Error ? error.message : 'Could not load Aptem learners.');
+      } finally {
+        if (!cancelled) setAptemLearnersLoading(false);
+      }
+    };
+    void loadLearners();
+    return () => { cancelled = true; };
+  }, [editingModuleId, aptemSubprogramme]);
+
+  const allMergedAptemLearners = useMemo(() => {
+    const byIdentity = new Map<string, AptemLearner>();
+    aptemLearners.forEach((learner, index) => {
+      if (!learner.learnerIdentity) return;
+      byIdentity.set(learner.learnerIdentity, { ...learner, sortOrder: learner.sortOrder ?? index, missingFromAptem: false });
+    });
+    savedAptemLearners.forEach((learner, index) => {
+      if (!learner.learnerIdentity || byIdentity.has(learner.learnerIdentity)) return;
+      byIdentity.set(learner.learnerIdentity, { ...learner, sortOrder: learner.sortOrder ?? aptemLearners.length + index, missingFromAptem: true });
+    });
+    return Array.from(byIdentity.values());
+  }, [aptemLearners, savedAptemLearners]);
+
+  const mergedAptemLearners = useMemo(() => {
+    const query = learnerSearch.trim().toLowerCase();
+    const filtered = allMergedAptemLearners.filter(learner => {
+      if (!query) return true;
+      return [learner.name, learner.email, learner.learnerId].some(value => String(value || '').toLowerCase().includes(query));
+    });
+    return filtered.sort((a, b) => {
+      if (learnerSort === 'selected') {
+        const selectedDelta = Number(selectedLearnerIds.has(b.learnerIdentity)) - Number(selectedLearnerIds.has(a.learnerIdentity));
+        if (selectedDelta) return selectedDelta;
+      }
+      if (learnerSort === 'name-desc') return (b.name || '').localeCompare(a.name || '');
+      if (learnerSort === 'email-asc') return (a.email || '').localeCompare(b.email || '') || (a.name || '').localeCompare(b.name || '');
+      if (learnerSort === 'manual') return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+      return (a.name || '').localeCompare(b.name || '') || (a.email || '').localeCompare(b.email || '');
+    });
+  }, [allMergedAptemLearners, learnerSearch, learnerSort, selectedLearnerIds]);
+
+  const selectedLearnerCount = useMemo(
+    () => Array.from(selectedLearnerIds).filter(identity => allMergedAptemLearners.some(learner => learner.learnerIdentity === identity)).length,
+    [allMergedAptemLearners, selectedLearnerIds],
+  );
+
+  const visibleSubprogrammes = useMemo(() => {
+    const query = subprogrammeSearch.trim().toLowerCase();
+    const ranked = rankAptemSubprogrammeOptions(aptemSubprogrammes, { moduleName: editing?.name || '' });
+    if (!query) return ranked;
+    return ranked.filter(item => item.value.toLowerCase().includes(query));
+  }, [aptemSubprogrammes, editing?.name, subprogrammeSearch]);
+  const suggestedSubprogrammes = useMemo(() => visibleSubprogrammes.filter(item => item.isSuggested), [visibleSubprogrammes]);
+  const normalSubprogrammes = useMemo(() => visibleSubprogrammes.filter(item => !item.isSuggested), [visibleSubprogrammes]);
+
+  const toggleAptemLearner = (learnerIdentity: string) => {
+    setSelectedLearnerIds(prev => {
+      const next = new Set(prev);
+      if (next.has(learnerIdentity)) next.delete(learnerIdentity);
+      else next.add(learnerIdentity);
+      return next;
+    });
+  };
+
+  const saveAptemMapping = async (moduleCatalogueId: number) => {
+    const subprogramme = aptemSubprogramme.trim();
+    if (!subprogramme && selectedLearnerIds.size === 0) return;
+    if (!subprogramme) throw new Error('Choose an Aptem subprogramme before saving selected learners.');
+    const selectedLearners = allMergedAptemLearners
+      .filter(learner => selectedLearnerIds.has(learner.learnerIdentity))
+      .map((learner, index) => ({
+        learnerIdentity: learner.learnerIdentity,
+        learnerId: learner.learnerId || '',
+        name: learner.name || '',
+        email: learner.email || '',
+        selected: true,
+        sortOrder: learner.sortOrder ?? index,
+      }));
+    const response = await fetch(`/api/training-plan/modules/${moduleCatalogueId}/learners/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subprogramme, learners: selectedLearners }),
+    });
+    if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
   };
 
   const sessionCount = useMemo(() => {
@@ -600,6 +784,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       }
       setEditing(null);
       setKsbEditorOpen(false);
+      resetAptemState();
     } catch (error) {
       await kbcSwal.fire({
         title: 'Module Not Saved',
@@ -832,6 +1017,204 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
                   <i className="ri-arrow-right-s-line text-base" />
                 </span>
               </button>
+
+              {SHOW_CATALOGUE_APTEM_LEARNER_MAPPING && editing.id !== null && (
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-wider text-gray-800">Aptem Learner Mapping</h4>
+                      <p className="mt-1 text-[11px] font-medium text-gray-400">
+                        Selected {selectedLearnerCount} / {allMergedAptemLearners.length}
+                      </p>
+                    </div>
+                    {(aptemLoading || aptemLearnersLoading) && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-bold text-gray-500">
+                        <i className="ri-loader-4-line animate-spin" />
+                        Loading
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-500">Subprogramme</label>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSubprogrammeDropdownOpen(prev => !prev);
+                            setSubprogrammeSearch('');
+                          }}
+                          className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 text-left text-sm font-semibold text-gray-700 focus:outline-none"
+                        >
+                          <span className={`min-w-0 flex-1 truncate ${aptemSubprogramme ? '' : 'text-gray-400'}`}>
+                            {aptemSubprogramme || 'Choose an Aptem subprogramme'}
+                          </span>
+                          <i className={`ri-arrow-down-s-line shrink-0 text-base text-gray-400 transition-transform ${subprogrammeDropdownOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                        {subprogrammeDropdownOpen && (
+                          <div className="absolute bottom-[calc(100%+6px)] left-0 right-0 z-[180] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+                            <div className="border-b border-gray-100 p-2">
+                              <input
+                                type="text"
+                                value={subprogrammeSearch}
+                                onChange={event => setSubprogrammeSearch(event.target.value)}
+                                placeholder="Search subprogrammes"
+                                className="h-9 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs font-semibold text-gray-700 focus:outline-none"
+                                autoFocus
+                              />
+                            </div>
+                            <div className="max-h-56 overflow-y-auto p-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAptemSubprogramme('');
+                                  setAptemLearners([]);
+                                  setLearnerSearch('');
+                                  setSubprogrammeDropdownOpen(false);
+                                }}
+                                className="flex w-full items-center rounded-lg px-3 py-2 text-left text-xs font-bold text-gray-500 hover:bg-gray-50"
+                              >
+                                Choose an Aptem subprogramme
+                              </button>
+                              {suggestedSubprogrammes.length > 0 && (
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                                  Suggested matches
+                                </div>
+                              )}
+                              {suggestedSubprogrammes.map(item => (
+                                <button
+                                  key={item.value}
+                                  type="button"
+                                  title={item.value}
+                                  onClick={() => {
+                                    setAptemSubprogramme(item.value);
+                                    setAptemLearners([]);
+                                    setLearnerSearch('');
+                                    setSubprogrammeDropdownOpen(false);
+                                  }}
+                                  className={`flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-gray-50 ${item.value === aptemSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                                  data-subprogramme-option={item.value}
+                                  data-suggested="true"
+                                >
+                                  <span className="block min-w-0 flex-1 truncate">{item.value}</span>
+                                  <span className="ml-auto flex max-w-[45%] shrink-0 flex-wrap justify-end gap-1">
+                                    {item.badges.map(badge => (
+                                      <span key={badge} className="rounded-full border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[9px] font-extrabold leading-none text-blue-700">
+                                        {badge}
+                                      </span>
+                                    ))}
+                                  </span>
+                                </button>
+                              ))}
+                              {normalSubprogrammes.length > 0 && (
+                                <div className="px-3 pb-1 pt-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                                  All subprogrammes
+                                </div>
+                              )}
+                              {normalSubprogrammes.map(item => (
+                                <button
+                                  key={item.value}
+                                  type="button"
+                                  title={item.value}
+                                  onClick={() => {
+                                    setAptemSubprogramme(item.value);
+                                    setAptemLearners([]);
+                                    setLearnerSearch('');
+                                    setSubprogrammeDropdownOpen(false);
+                                  }}
+                                  className={`flex w-full items-start rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-gray-50 ${item.value === aptemSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                                  data-subprogramme-option={item.value}
+                                  data-suggested="false"
+                                >
+                                  <span className="block max-w-full truncate">{item.value}</span>
+                                </button>
+                              ))}
+                              {!visibleSubprogrammes.length && (
+                                <div className="px-3 py-4 text-center text-xs font-semibold text-gray-400">
+                                  No matching subprogrammes.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {aptemSubprogramme.trim() && (
+                      <>
+                        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_160px]">
+                          <input
+                            type="text"
+                            value={learnerSearch}
+                            onChange={event => setLearnerSearch(event.target.value)}
+                            placeholder="Search learners"
+                            className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 focus:outline-none"
+                          />
+                          <select
+                            value={learnerSort}
+                            onChange={event => setLearnerSort(event.target.value as LearnerSortMode)}
+                            className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-gray-700 focus:outline-none"
+                            aria-label="Sort learners"
+                          >
+                            <option value="selected">Selected first</option>
+                            <option value="name-asc">Name A-Z</option>
+                            <option value="name-desc">Name Z-A</option>
+                            <option value="email-asc">Email A-Z</option>
+                            <option value="manual">Manual order</option>
+                          </select>
+                        </div>
+
+                        {aptemError && (
+                          <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600">
+                            {aptemError}
+                          </div>
+                        )}
+
+                        {!aptemLearnersLoading && !mergedAptemLearners.length && (
+                          <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-5 text-center text-xs font-semibold text-gray-400">
+                            No learners found for this subprogramme.
+                          </div>
+                        )}
+
+                        {mergedAptemLearners.length > 0 && (
+                          <div className="max-h-72 space-y-1.5 overflow-y-auto rounded-lg border border-gray-100 bg-gray-50 p-2">
+                            {mergedAptemLearners.map(learner => {
+                              const checked = selectedLearnerIds.has(learner.learnerIdentity);
+                              return (
+                                <label
+                                  key={learner.learnerIdentity}
+                                  className="flex cursor-pointer items-start gap-3 rounded-lg border border-gray-100 bg-white px-3 py-2 transition-colors hover:border-gray-200"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleAptemLearner(learner.learnerIdentity)}
+                                    className="mt-1 h-4 w-4 rounded border-gray-300"
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm font-bold text-gray-800">{learner.name || 'Unnamed learner'}</span>
+                                    <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-gray-400">
+                                      {learner.email && <span className="truncate">{learner.email}</span>}
+                                      {learner.learnerId && <span>ID {learner.learnerId}</span>}
+                                      {learner.status && <span>{learner.status}</span>}
+                                    </span>
+                                    {learner.missingFromAptem && (
+                                      <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-700">
+                                        Previously selected, not found in Aptem
+                                      </span>
+                                    )}
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
 
             </div>
 

@@ -247,6 +247,51 @@ class Module(models.Model):
 		managed = False
 
 
+class AptemAutoExtracting(models.Model):
+	row_number = models.BigIntegerField(db_column='row_number', null=True, blank=True)
+	learner_id = models.BigIntegerField(primary_key=True, db_column='ID')
+	full_name = models.TextField(db_column='FullName', blank=True, default='')
+	email = models.TextField(db_column='Email', blank=True, default='')
+	programme_name = models.TextField(db_column='Program Name', blank=True, default='')
+	program_status = models.TextField(db_column='Program-Status', blank=True, default='')
+	group = models.TextField(db_column='Group', blank=True, default='')
+	manager_name = models.TextField(db_column='ManagerName', blank=True, default='')
+	manager_email = models.TextField(db_column='ManagerEmail', blank=True, default='')
+	owner_name = models.TextField(db_column='OwnerName', blank=True, default='')
+	owner_email = models.TextField(db_column='OwnerEmail', blank=True, default='')
+	subprogramme = models.TextField(db_column='subprogramme', blank=True, default='')
+
+	class Meta:
+		db_table = 'aptem_auto_extracting'
+		managed = False
+
+
+class ModuleLearnerMapping(models.Model):
+	id = models.BigAutoField(primary_key=True)
+	cohort_id = models.CharField(max_length=150, blank=True, default='')
+	module_block_id = models.CharField(max_length=150, blank=True, default='')
+	module_catalogue_id = models.CharField(max_length=150)
+	subprogramme = models.TextField()
+	learner_identity = models.CharField(max_length=320)
+	learner_id = models.CharField(max_length=150, blank=True, default='')
+	learner_name = models.TextField(blank=True, default='')
+	learner_email = models.TextField(blank=True, default='')
+	selected_state = models.BooleanField(default=True)
+	sort_order = models.IntegerField(default=0)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'module_learner_mappings'
+		indexes = [
+			models.Index(fields=['cohort_id', 'module_block_id', 'subprogramme'], name='module_lear_scope_s_1d2b8c_idx'),
+			models.Index(fields=['cohort_id', 'module_block_id', 'learner_identity'], name='module_lear_scope_l_72d8b9_idx'),
+			models.Index(fields=['module_catalogue_id', 'subprogramme'], name='module_lear_module__f55f8b_idx'),
+			models.Index(fields=['module_catalogue_id', 'learner_identity'], name='module_lear_module__f3f64d_idx'),
+		]
+		unique_together = ('cohort_id', 'module_block_id', 'subprogramme', 'learner_identity')
+
+
 class UrgentNotice(models.Model):
 	id = models.BigAutoField(primary_key=True)
 	title = models.TextField(blank=True, default='')

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, DragEvent } from 'react';
 import type { CatalogModule, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
@@ -10,6 +10,7 @@ import ModernTimeField from './ModernTimeField';
 import SelectField from './SelectField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import { normalizeTutorName, profileIdForTutorName } from '../tutorProfiles';
+import { buildAptemSubprogrammeScope } from '../aptemLearnerMapping';
 
 interface Props {
   mode: 'add' | 'edit';
@@ -93,6 +94,19 @@ interface ModuleDraftState {
   module: FormModule;
   replaceId?: string;
 }
+
+interface AptemLearner {
+  learnerIdentity: string;
+  learnerId?: string;
+  name: string;
+  email?: string;
+  status?: string;
+  selected?: boolean;
+  sortOrder?: number;
+  missingFromAptem?: boolean;
+}
+
+type LearnerSortMode = 'selected' | 'name-asc' | 'name-desc' | 'email-asc' | 'manual';
 
 const WEEK_DAYS: { key: WeekDayKey; label: string }[] = [
   { key: 'saturday', label: 'Saturday' },
@@ -1148,8 +1162,20 @@ export default function CohortModal({
   const [tutorCreateSaving, setTutorCreateSaving] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [userHasEdited, setUserHasEdited] = useState(false);
+  const [aptemSubprogramme, setAptemSubprogramme] = useState('');
+  const [aptemLearners, setAptemLearners] = useState<AptemLearner[]>([]);
+  const [savedAptemLearners, setSavedAptemLearners] = useState<AptemLearner[]>([]);
+  const [selectedAptemLearnerIds, setSelectedAptemLearnerIds] = useState<Set<string>>(new Set());
+  const [aptemLoading, setAptemLoading] = useState(false);
+  const [aptemLearnersLoading, setAptemLearnersLoading] = useState(false);
+  const [aptemError, setAptemError] = useState('');
+  const [learnerSearch, setLearnerSearch] = useState('');
+  const [learnerSort, setLearnerSort] = useState<LearnerSortMode>('selected');
+  const [aptemDirty, setAptemDirty] = useState(false);
   const ksbTemplateInputRef = useRef<HTMLInputElement | null>(null);
   const initialSnapshotRef = useRef(serializeDraftState(initialFormData, null, null));
+  const groupDragItemRef = useRef<string | null>(null);
+  const [groupDragOverId, setGroupDragOverId] = useState<string | null>(null);
   const markUserEdited = () => setUserHasEdited(true);
   const hasUnsavedChanges = useMemo(
     () => userHasEdited && serializeDraftState(data, groupDraft, moduleDraft) !== initialSnapshotRef.current,
@@ -1378,6 +1404,173 @@ export default function CohortModal({
     setKsbEditorOpen(false);
     setModuleDraftDirty(false);
     setModuleDraft({ parentGroupId, module: { ...target, endDate: recalculatedEndDate || target.endDate }, replaceId: moduleId });
+  };
+
+  const resetAptemState = () => {
+    setAptemSubprogramme('');
+    setAptemLearners([]);
+    setSavedAptemLearners([]);
+    setSelectedAptemLearnerIds(new Set());
+    setAptemError('');
+    setLearnerSearch('');
+    setLearnerSort('selected');
+    setAptemDirty(false);
+  };
+
+  const aptemScope = useMemo(() => {
+    const moduleCatalogueId = String(moduleDraft?.module.moduleCatalogueId || '').trim();
+    if (!moduleDraft) return null;
+    const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
+    return buildAptemSubprogrammeScope({
+      moduleCatalogueId,
+      programmeName: selectedProgramme?.name || '',
+      cohortName: data.label || initialRow?.label || '',
+      moduleName: resolveModuleMeta(moduleDraft.module.mod, customModules, catalogModules).lbl,
+      moduleStartDate: moduleDraft.module.startDate || '',
+      moduleEndDate: moduleDraft.module.endDate || '',
+      groupName: parentGroup?.groupName || '',
+    });
+  }, [catalogModules, customModules, data.groups, data.label, initialRow?.label, moduleDraft, selectedProgramme?.name]);
+  const aptemLearnerMappingEndpoint = useMemo(() => {
+    const cohortId = String(initialRow?.id || '').trim();
+    const moduleBlockId = String(moduleDraft?.module.id || '').trim();
+    if (cohortId && moduleBlockId) {
+      return `/api/training-plan/cohorts/${encodeURIComponent(cohortId)}/modules/${encodeURIComponent(moduleBlockId)}/learners/`;
+    }
+    const moduleCatalogueId = String(moduleDraft?.module.moduleCatalogueId || '').trim();
+    return moduleCatalogueId
+      ? `/api/training-plan/modules/${encodeURIComponent(moduleCatalogueId)}/learners/`
+      : '';
+  }, [initialRow?.id, moduleDraft?.module.id, moduleDraft?.module.moduleCatalogueId]);
+  const moduleDraftOpen = Boolean(moduleDraft);
+
+  useEffect(() => {
+    if (!moduleDraftOpen) {
+      resetAptemState();
+      return;
+    }
+    if (!aptemScope) {
+      setAptemSubprogramme('');
+      setAptemLearners([]);
+      setSavedAptemLearners([]);
+      setSelectedAptemLearnerIds(new Set());
+      setAptemDirty(false);
+      return;
+    }
+    let cancelled = false;
+    const loadMapping = async () => {
+      setAptemLoading(true);
+      setAptemError('');
+      try {
+        const mappingResult = aptemLearnerMappingEndpoint
+          ? await fetch(aptemLearnerMappingEndpoint)
+          : null;
+        if (cancelled) return;
+        if (mappingResult && mappingResult.ok) {
+          const mappingPayload = await mappingResult.json() as { subprogramme?: string; learners?: AptemLearner[] };
+          if (cancelled) return;
+          const saved = Array.isArray(mappingPayload.learners) ? mappingPayload.learners : [];
+          setSavedAptemLearners(saved);
+          setSelectedAptemLearnerIds(new Set(saved.filter(item => item.selected !== false).map(item => item.learnerIdentity)));
+          setAptemSubprogramme(mappingPayload.subprogramme || '');
+        } else {
+          setSavedAptemLearners([]);
+          setSelectedAptemLearnerIds(new Set());
+          setAptemSubprogramme('');
+        }
+        setAptemDirty(false);
+      } catch (error) {
+        if (!cancelled) setAptemError(error instanceof Error ? error.message : 'Could not load Aptem learner mapping.');
+      } finally {
+        if (!cancelled) setAptemLoading(false);
+      }
+    };
+    void loadMapping();
+    return () => { cancelled = true; };
+  }, [aptemLearnerMappingEndpoint, aptemScope, moduleDraftOpen]);
+
+  useEffect(() => {
+    if (!moduleDraft || !aptemSubprogramme.trim()) {
+      setAptemLearners([]);
+      return;
+    }
+    let cancelled = false;
+    const loadLearners = async () => {
+      setAptemLearnersLoading(true);
+      setAptemError('');
+      try {
+        const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(aptemSubprogramme)}`);
+        if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load Aptem learners.');
+        const payload = await response.json() as { items?: AptemLearner[] };
+        if (!cancelled) setAptemLearners(Array.isArray(payload.items) ? payload.items : []);
+      } catch (error) {
+        if (!cancelled) setAptemError(error instanceof Error ? error.message : 'Could not load Aptem learners.');
+      } finally {
+        if (!cancelled) setAptemLearnersLoading(false);
+      }
+    };
+    void loadLearners();
+    return () => { cancelled = true; };
+  }, [moduleDraft, aptemSubprogramme]);
+
+  const allMergedAptemLearners = useMemo(() => {
+    const byIdentity = new Map<string, AptemLearner>();
+    aptemLearners.forEach((learner, index) => {
+      if (!learner.learnerIdentity) return;
+      byIdentity.set(learner.learnerIdentity, { ...learner, sortOrder: learner.sortOrder ?? index, missingFromAptem: false });
+    });
+    savedAptemLearners.forEach((learner, index) => {
+      if (!learner.learnerIdentity || byIdentity.has(learner.learnerIdentity)) return;
+      byIdentity.set(learner.learnerIdentity, { ...learner, sortOrder: learner.sortOrder ?? aptemLearners.length + index, missingFromAptem: true });
+    });
+    return Array.from(byIdentity.values());
+  }, [aptemLearners, savedAptemLearners]);
+
+  const mergedAptemLearners = useMemo(() => {
+    const query = learnerSearch.trim().toLowerCase();
+    const filtered = allMergedAptemLearners.filter(learner => {
+      if (!query) return true;
+      return [learner.name, learner.email, learner.learnerId].some(value => String(value || '').toLowerCase().includes(query));
+    });
+    return filtered.sort((a, b) => {
+      if (learnerSort === 'selected') {
+        const selectedDelta = Number(selectedAptemLearnerIds.has(b.learnerIdentity)) - Number(selectedAptemLearnerIds.has(a.learnerIdentity));
+        if (selectedDelta) return selectedDelta;
+      }
+      if (learnerSort === 'name-desc') return (b.name || '').localeCompare(a.name || '');
+      if (learnerSort === 'email-asc') return (a.email || '').localeCompare(b.email || '') || (a.name || '').localeCompare(b.name || '');
+      if (learnerSort === 'manual') return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+      return (a.name || '').localeCompare(b.name || '') || (a.email || '').localeCompare(b.email || '');
+    });
+  }, [allMergedAptemLearners, learnerSearch, learnerSort, selectedAptemLearnerIds]);
+
+  const selectedAptemLearnerCount = useMemo(
+    () => Array.from(selectedAptemLearnerIds).filter(identity => allMergedAptemLearners.some(learner => learner.learnerIdentity === identity)).length,
+    [allMergedAptemLearners, selectedAptemLearnerIds],
+  );
+
+  const saveAptemMapping = async () => {
+    if (!aptemDirty) return;
+    if (!aptemLearnerMappingEndpoint) throw new Error('Select a saved cohort module before adding Aptem learners.');
+    const subprogramme = aptemSubprogramme.trim();
+    if (!subprogramme) throw new Error('Choose an Aptem subprogramme before saving selected learners.');
+    const selectedLearners = allMergedAptemLearners
+      .filter(learner => selectedAptemLearnerIds.has(learner.learnerIdentity))
+      .map((learner, index) => ({
+        learnerIdentity: learner.learnerIdentity,
+        learnerId: learner.learnerId || '',
+        name: learner.name || '',
+        email: learner.email || '',
+        selected: true,
+        sortOrder: learner.sortOrder ?? index,
+      }));
+    const response = await fetch(aptemLearnerMappingEndpoint, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subprogramme, learners: selectedLearners }),
+    });
+    if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
+    setAptemDirty(false);
   };
 
   useEffect(() => {
@@ -1676,6 +1869,7 @@ export default function CohortModal({
       }),
     };
     setData(nextData);
+    await saveAptemMapping();
     if (partialSaved && !hadBroaderUnsavedChanges) {
       initialSnapshotRef.current = serializeDraftState(nextData, null, null);
       setUserHasEdited(false);
@@ -1685,6 +1879,7 @@ export default function CohortModal({
     setKsbEditorOpen(false);
     setModuleDraft(null);
     setModuleDraftDirty(false);
+    resetAptemState();
   };
 
   const closeGroupDraft = async () => {
@@ -1711,9 +1906,10 @@ export default function CohortModal({
   };
 
   const closeModuleDraft = async () => {
-    if (!moduleDraftDirty) {
+    if (!moduleDraftDirty && !aptemDirty) {
       setKsbEditorOpen(false);
       setModuleDraft(null);
+      resetAptemState();
       return;
     }
 
@@ -1732,6 +1928,7 @@ export default function CohortModal({
       setKsbEditorOpen(false);
       setModuleDraft(null);
       setModuleDraftDirty(false);
+      resetAptemState();
     }
   };
 
@@ -1804,6 +2001,54 @@ export default function CohortModal({
       return { ...prev, groups: next };
     });
     setExpandedGroupId(newId);
+  };
+
+  const handleFormGroupDragStart = (event: DragEvent<HTMLElement>, groupId: string) => {
+    event.stopPropagation();
+    groupDragItemRef.current = groupId;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', `cohort-group:${groupId}`);
+  };
+
+  const handleFormGroupDragOver = (event: DragEvent<HTMLElement>, groupId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (groupDragItemRef.current && groupDragItemRef.current !== groupId) {
+      event.dataTransfer.dropEffect = 'move';
+      setGroupDragOverId(groupId);
+    }
+  };
+
+  const handleFormGroupDrop = (event: DragEvent<HTMLElement>, targetGroupId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceGroupId = groupDragItemRef.current;
+    groupDragItemRef.current = null;
+    setGroupDragOverId(null);
+
+    if (!sourceGroupId || sourceGroupId === targetGroupId) {
+      return;
+    }
+
+    markUserEdited();
+    setData(prev => {
+      const fromIndex = prev.groups.findIndex(group => group.id === sourceGroupId);
+      const toIndex = prev.groups.findIndex(group => group.id === targetGroupId);
+      if (fromIndex < 0 || toIndex < 0) {
+        return prev;
+      }
+
+      const nextGroups = [...prev.groups];
+      const [movedGroup] = nextGroups.splice(fromIndex, 1);
+      nextGroups.splice(toIndex, 0, movedGroup);
+      return { ...prev, groups: nextGroups };
+    });
+    setExpandedGroupId(sourceGroupId);
+  };
+
+  const handleFormGroupDragEnd = () => {
+    groupDragItemRef.current = null;
+    setGroupDragOverId(null);
   };
 
   const removeModule = async (groupId: string, moduleId: string) => {
@@ -2275,10 +2520,29 @@ export default function CohortModal({
                   : '';
                 const moduleTutorNames = Array.from(new Set(group.modules.map(moduleItem => moduleItem.tutor.trim()).filter(Boolean)));
                 const tutorDisplay = group.tutor.trim() || moduleTutorNames.join(', ');
+                const isGroupDragOver = groupDragOverId === group.id;
 
                 return (
-                  <div key={group.id} className="rounded-xl border overflow-hidden border-gray-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+                  <div
+                    key={group.id}
+                    className={`rounded-xl border overflow-hidden bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-shadow ${isGroupDragOver ? 'border-slate-400 shadow-[0_0_0_2px_rgba(27,42,74,0.14)]' : 'border-gray-200'}`}
+                    onDragOver={(event) => handleFormGroupDragOver(event, group.id)}
+                    onDrop={(event) => handleFormGroupDrop(event, group.id)}
+                    onDragLeave={() => setGroupDragOverId(current => (current === group.id ? null : current))}
+                  >
                     <div className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}>
+                      <button
+                        type="button"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 bg-gray-100 hover:text-gray-700 hover:bg-gray-200 shrink-0 cursor-grab active:cursor-grabbing transition-colors"
+                        draggable
+                        onDragStart={(event) => handleFormGroupDragStart(event, group.id)}
+                        onDragEnd={handleFormGroupDragEnd}
+                        onClick={(event) => event.stopPropagation()}
+                        title="Drag group to reorder"
+                        aria-label="Drag group to reorder"
+                      >
+                        <i className="ri-draggable text-sm" />
+                      </button>
                       <span className="shrink-0 w-3 h-6 rounded-sm" style={{ background: groupAccent }} />
                       <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.14em]" style={{ background: `${groupAccent}14`, color: groupAccent }}>
                         Group {groupIdx + 1}
@@ -2727,6 +2991,112 @@ export default function CohortModal({
                           <i className="ri-arrow-right-s-line text-base" />
                         </span>
                       </button>
+
+                      {moduleDraft.replaceId && (
+                        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <h4 className="text-xs font-extrabold uppercase tracking-wider text-gray-800">Aptem Learner Mapping</h4>
+                              <p className="mt-1 text-[11px] font-medium text-gray-400">
+                                Selected {selectedAptemLearnerCount} / {allMergedAptemLearners.length}
+                              </p>
+                            </div>
+                            {(aptemLoading || aptemLearnersLoading) && (
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-bold text-gray-500">
+                                <i className="ri-loader-4-line animate-spin" />
+                                Loading
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="space-y-3">
+                            <div>
+                              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-500">Subprogramme</label>
+                              <div className="flex min-h-10 w-full items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm font-semibold text-gray-700">
+                                <span className={`min-w-0 flex-1 truncate ${aptemSubprogramme ? '' : 'text-gray-400'}`}>
+                                  {aptemSubprogramme || 'No subprogramme mapped'}
+                                </span>
+                                <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">
+                                  Read only
+                                </span>
+                              </div>
+                            </div>
+
+                            {aptemError && (
+                              <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600">
+                                {aptemError}
+                              </div>
+                            )}
+
+                            {aptemSubprogramme.trim() && (
+                              <>
+                                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_160px]">
+                                  <input
+                                    type="text"
+                                    value={learnerSearch}
+                                    onChange={event => setLearnerSearch(event.target.value)}
+                                    placeholder="Search learners"
+                                    className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 focus:outline-none"
+                                  />
+                                  <select
+                                    value={learnerSort}
+                                    onChange={event => setLearnerSort(event.target.value as LearnerSortMode)}
+                                    className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-gray-700 focus:outline-none"
+                                    aria-label="Sort learners"
+                                  >
+                                    <option value="selected">Selected first</option>
+                                    <option value="name-asc">Name A-Z</option>
+                                    <option value="name-desc">Name Z-A</option>
+                                    <option value="email-asc">Email A-Z</option>
+                                    <option value="manual">Manual order</option>
+                                  </select>
+                                </div>
+
+                                {!aptemLearnersLoading && !mergedAptemLearners.length && (
+                                  <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-5 text-center text-xs font-semibold text-gray-400">
+                                    No learners found for this subprogramme.
+                                  </div>
+                                )}
+
+                                {mergedAptemLearners.length > 0 && (
+                                  <div className="max-h-72 space-y-1.5 overflow-y-auto rounded-lg border border-gray-100 bg-gray-50 p-2">
+                                    {mergedAptemLearners.map(learner => {
+                                      const checked = selectedAptemLearnerIds.has(learner.learnerIdentity);
+                                      return (
+                                        <label
+                                          key={learner.learnerIdentity}
+                                          className="flex cursor-pointer items-start gap-3 rounded-lg border border-gray-100 bg-white px-3 py-2 transition-colors hover:border-gray-200"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            readOnly
+                                            disabled
+                                            className="mt-1 h-4 w-4 rounded border-gray-300 disabled:opacity-80"
+                                          />
+                                          <span className="min-w-0 flex-1">
+                                            <span className="block truncate text-sm font-bold text-gray-800">{learner.name || 'Unnamed learner'}</span>
+                                            <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-gray-400">
+                                              {learner.email && <span className="truncate">{learner.email}</span>}
+                                              {learner.learnerId && <span>ID {learner.learnerId}</span>}
+                                              {learner.status && <span>{learner.status}</span>}
+                                            </span>
+                                            {learner.missingFromAptem && (
+                                              <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-700">
+                                                Previously selected, not found in Aptem
+                                              </span>
+                                            )}
+                                          </span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </>
                   );
                 })()}

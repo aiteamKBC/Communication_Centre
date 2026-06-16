@@ -86,7 +86,7 @@ function moduleItem(id: number, colour: string): CatalogModule {
   };
 }
 
-async function mockTrainingPlanApis(page: Page, options: { legacyTimelineRows?: boolean; missingBlockMarker?: boolean; firstTimelineRowsMissingIds?: boolean } = {}) {
+async function mockTrainingPlanApis(page: Page, options: { legacyTimelineRows?: boolean; missingBlockMarker?: boolean; firstTimelineRowsMissingIds?: boolean; noScopedSubprogrammes?: boolean; noInitialLearnerMapping?: boolean; suggestedSubprogrammes?: boolean } = {}) {
   let version = 'v1';
   let trainingPlanGetCount = 0;
   let trainingPlanItems = options.legacyTimelineRows
@@ -125,6 +125,63 @@ async function mockTrainingPlanApis(page: Page, options: { legacyTimelineRows?: 
   const linkedModuleRequests: unknown[] = [];
   const archiveModuleRequests: unknown[] = [];
   const modulePatchRequests: unknown[] = [];
+  const moduleLearnerRequests: string[] = [];
+  const moduleLearnerPatchRequests: unknown[] = [];
+  const scopedSubprogrammeRequests: string[] = [];
+  const globalSubprogrammeRequests: string[] = [];
+  const aptemLearnerRequests: string[] = [];
+  let moduleLearnerMappings: Record<string, { moduleCatalogueId: string; moduleName: string; subprogramme: string; selectedCount: number; learners: unknown[] }> = options.noInitialLearnerMapping ? {} : {
+    '42': {
+      moduleCatalogueId: '42',
+      moduleName: 'PPC',
+      subprogramme: 'Cohort Alpha',
+      selectedCount: 3,
+      learners: [
+        {
+          learnerIdentity: 'id:501',
+          learnerId: '501',
+          name: 'Zara Learner',
+          email: 'zara@example.com',
+          selected: true,
+          sortOrder: 2,
+          learnerName: 'Zara Learner',
+          learnerEmail: 'zara@example.com',
+          programmeStatus: 'Active',
+          subprogramme: 'Cohort Alpha',
+          isSelected: true,
+          missingFromAptem: false,
+        },
+        {
+          learnerIdentity: 'id:502',
+          learnerId: '502',
+          name: 'Adam Learner',
+          email: 'adam@example.com',
+          selected: true,
+          sortOrder: 1,
+          learnerName: 'Adam Learner',
+          learnerEmail: 'adam@example.com',
+          programmeStatus: 'Active',
+          subprogramme: 'Cohort Alpha',
+          isSelected: true,
+          missingFromAptem: false,
+        },
+        {
+          learnerIdentity: 'name:legacy-missing',
+          learnerId: '',
+          name: 'Legacy Missing',
+          email: '',
+          selected: true,
+          sortOrder: 3,
+          learnerName: 'Legacy Missing',
+          learnerEmail: '',
+          programmeStatus: '',
+          subprogramme: 'Cohort Alpha',
+          isSelected: true,
+          missingFromAptem: true,
+        },
+      ],
+    },
+  };
 
   await page.addInitScript(() => {
     window.localStorage.setItem('kbc-auth-user', JSON.stringify({
@@ -189,6 +246,91 @@ async function mockTrainingPlanApis(page: Page, options: { legacyTimelineRows?: 
     }
     if (path === '/api/modules/' && method === 'GET') return json(catalogModules);
 
+    if (path === '/api/aptem/subprogrammes/' && method === 'GET') {
+      if (url.search) scopedSubprogrammeRequests.push(url.search);
+      else globalSubprogrammeRequests.push(path);
+      if (url.search && options.noScopedSubprogrammes) {
+        return json({ items: [], options: [], filteredBy: '' });
+      }
+      if (options.suggestedSubprogrammes) {
+        const items = [
+          'MM May 2026: AI in Marketing',
+          'PO Jan 26: PPC Practice',
+          'Cohort Alpha',
+          'ME June 2026: Social Media',
+        ];
+        return json({
+          items,
+          options: items.map(subprogramme => ({ subprogramme, learnersCount: 3 })),
+          filteredBy: '',
+        });
+      }
+      return json({
+        items: ['Cohort Alpha'],
+        options: [{ subprogramme: 'Cohort Alpha', learnersCount: 3 }],
+        filteredBy: url.search ? 'cohortName' : '',
+      });
+    }
+
+    if (path === '/api/aptem/learners/' && method === 'GET') {
+      const subprogramme = url.searchParams.get('subprogramme') || '';
+      aptemLearnerRequests.push(subprogramme);
+      return json({
+        subprogramme,
+        items: [
+          { learnerIdentity: 'id:501', learnerId: '501', name: 'Zara Learner', email: 'zara@example.com', learnerName: 'Zara Learner', learnerEmail: 'zara@example.com', group: 'G1', managerName: 'Maya Manager', managerEmail: 'maya.manager@example.com', ownerName: 'Owen Owner', ownerEmail: 'owen.owner@example.com', programmeName: 'PPC Programme', status: 'Active', programmeStatus: 'Active', subprogramme, sortOrder: 2 },
+          { learnerIdentity: 'id:502', learnerId: '502', name: 'Adam Learner', email: 'adam@example.com', learnerName: 'Adam Learner', learnerEmail: 'adam@example.com', group: 'G1', managerName: 'Maya Manager', managerEmail: 'maya.manager@example.com', ownerName: 'Owen Owner', ownerEmail: 'owen.owner@example.com', programmeName: 'PPC Programme', status: 'Active', programmeStatus: 'Active', subprogramme, sortOrder: 1 },
+          { learnerIdentity: 'id:503', learnerId: '503', name: 'Beta Learner', email: 'beta@example.com', learnerName: 'Beta Learner', learnerEmail: 'beta@example.com', group: 'G2', managerName: 'Nora Manager', managerEmail: 'nora.manager@example.com', ownerName: 'Owen Owner', ownerEmail: 'owen.owner@example.com', programmeName: 'PPC Programme', status: 'Paused', programmeStatus: 'Paused', subprogramme, sortOrder: 4 },
+        ],
+      });
+    }
+
+    const scopedModuleLearnersMatch = path.match(/^\/api\/training-plan\/cohorts\/([^/]+)\/modules\/([^/]+)\/learners\/$/);
+    if (scopedModuleLearnersMatch && method === 'GET') {
+      const [, cohortId, moduleBlockId] = scopedModuleLearnersMatch;
+      moduleLearnerRequests.push(`${cohortId}:${moduleBlockId}`);
+      return json(moduleLearnerMappings[moduleBlockId] || moduleLearnerMappings['42'] || { moduleCatalogueId: '42', moduleName: 'PPC', subprogramme: '', selectedCount: 0, learners: [] });
+    }
+    if (scopedModuleLearnersMatch && method === 'PATCH') {
+      const [, cohortId, moduleBlockId] = scopedModuleLearnersMatch;
+      const body = request.postDataJSON() as { subprogramme: string; learners: unknown[] };
+      moduleLearnerPatchRequests.push({ cohortId, moduleBlockId, ...body });
+      moduleLearnerMappings = {
+        ...moduleLearnerMappings,
+        [moduleBlockId]: {
+          moduleCatalogueId: '42',
+          moduleName: 'PPC',
+          subprogramme: body.subprogramme,
+          selectedCount: body.learners.length,
+          learners: body.learners,
+        },
+      };
+      return json(moduleLearnerMappings[moduleBlockId]);
+    }
+
+    const moduleLearnersMatch = path.match(/^\/api\/training-plan\/modules\/([^/]+)\/learners\/$/);
+    if (moduleLearnersMatch && method === 'GET') {
+      const moduleCatalogueId = moduleLearnersMatch[1];
+      moduleLearnerRequests.push(moduleCatalogueId);
+      return json(moduleLearnerMappings[moduleCatalogueId] || { moduleCatalogueId, moduleName: 'PPC', subprogramme: '', selectedCount: 0, learners: [] });
+    }
+    if (moduleLearnersMatch && method === 'PATCH') {
+      const moduleCatalogueId = moduleLearnersMatch[1];
+      const body = request.postDataJSON() as { subprogramme: string; learners: unknown[] };
+      moduleLearnerPatchRequests.push({ moduleCatalogueId, ...body });
+      moduleLearnerMappings = {
+        ...moduleLearnerMappings,
+        [moduleCatalogueId]: {
+          moduleCatalogueId,
+          moduleName: 'PPC',
+          subprogramme: body.subprogramme,
+          selectedCount: body.learners.length,
+          learners: body.learners,
+        },
+      };
+      return json(moduleLearnerMappings[moduleCatalogueId]);
+    }
+
     const moduleMatch = path.match(/^\/api\/modules\/(\d+)\/$/);
     if (moduleMatch && method === 'PATCH') {
       const body = request.postDataJSON() as CatalogModule;
@@ -237,6 +379,11 @@ async function mockTrainingPlanApis(page: Page, options: { legacyTimelineRows?: 
     linkedModuleRequests,
     archiveModuleRequests,
     modulePatchRequests,
+    moduleLearnerRequests,
+    moduleLearnerPatchRequests,
+    scopedSubprogrammeRequests,
+    globalSubprogrammeRequests,
+    aptemLearnerRequests,
     getTrainingPlanItems: () => trainingPlanItems,
   };
 }
@@ -368,4 +515,162 @@ test('deleting one duplicated catalogue module archives only rows with the match
     trainingPlanIds: ['102'],
   });
   expect(api.getTrainingPlanItems().map(item => item.id)).toEqual([101]);
+});
+
+test('module overview opens monthly breakdown by default and loads mapped subprogramme students by catalogue id', async ({ page }) => {
+  const api = await mockTrainingPlanApis(page);
+  await page.goto('/training-plan');
+  await expect(page.getByRole('heading', { name: 'Apprenticeships Training Plan' })).toBeVisible();
+  await expect(page.locator('[data-timeline-block-id="b-42"]')).toBeVisible();
+
+  await page.locator('[data-timeline-block-id="b-42"]').click();
+  await expect(page.getByText('Choose What To Edit')).toBeVisible();
+  await expect(page.getByText('Monthly Module Breakdown')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /Module Overview/i })).toBeVisible();
+  await page.getByRole('button', { name: /Module Overview/i }).click();
+
+  await expect(page.getByRole('heading', { name: 'Module Overview' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Monthly Module Breakdown' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Subprogramme Students', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Subprogramme Students', exact: true }).click();
+  await expect(page.getByLabel('Subprogramme')).toBeVisible();
+  await expect(page.getByLabel('Subprogramme')).toContainText('Cohort Alpha');
+  await expect(page.getByText('Cohort Alpha').first()).toBeVisible();
+  await expect(page.getByText('Selected learners')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Adam Learner', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Zara Learner', exact: true })).toBeVisible();
+  await expect(page.getByText('Previously selected, not found in Aptem')).toBeVisible();
+  expect(api.moduleLearnerRequests).toEqual(['c1:b-42']);
+  expect(api.scopedSubprogrammeRequests).toHaveLength(0);
+  expect(api.globalSubprogrammeRequests).toEqual(['/api/aptem/subprogrammes/']);
+  expect(api.aptemLearnerRequests).toEqual(['Cohort Alpha']);
+
+  await page.getByPlaceholder('Search learners by name, email, group, manager, programme, or status...').fill('adam');
+  await expect(page.getByRole('cell', { name: 'Adam Learner', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Zara Learner', exact: true })).toBeHidden();
+  await page.getByPlaceholder('Search learners by name, email, group, manager, programme, or status...').fill('beta');
+  await page.getByLabel('Select Beta Learner').check();
+  await expect(page.getByText('Selected 4 / 4')).toBeVisible();
+  await page.getByRole('button', { name: 'Save Learner Mapping' }).click();
+  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+  expect(api.moduleLearnerPatchRequests).toHaveLength(1);
+  expect(api.moduleLearnerPatchRequests[0]).toMatchObject({
+    cohortId: 'c1',
+    moduleBlockId: 'b-42',
+    subprogramme: 'Cohort Alpha',
+  });
+
+  expect(api.moduleLearnerRequests).toEqual(['c1:b-42']);
+});
+
+test('module overview subprogramme dropdown uses the same Aptem subprogramme options as edit module mapping', async ({ page }) => {
+  const api = await mockTrainingPlanApis(page, { noInitialLearnerMapping: true });
+  await page.goto('/training-plan');
+  await expect(page.locator('[data-timeline-block-id="b-42"]')).toBeVisible();
+
+  await page.locator('[data-timeline-block-id="b-42"]').click();
+  await page.getByRole('button', { name: /Module Overview/i }).click();
+  await page.getByRole('button', { name: 'Subprogramme Students', exact: true }).click();
+
+  await expect(page.getByText('Select a subprogramme to view and map learners to this module.')).toBeVisible();
+  expect(api.scopedSubprogrammeRequests).toHaveLength(0);
+  expect(api.globalSubprogrammeRequests).toEqual(['/api/aptem/subprogrammes/']);
+  await page.getByLabel('Subprogramme').click();
+  await expect(page.getByText('No matching subprogrammes.')).toHaveCount(0);
+  await page.getByRole('button', { name: /Cohort Alpha/i }).click();
+  await expect(page.getByRole('cell', { name: 'Adam Learner', exact: true })).toBeVisible();
+  expect(api.aptemLearnerRequests).toEqual(['Cohort Alpha']);
+});
+
+test('module overview loads unscoped subprogrammes even before a module catalogue id is available', async ({ page }) => {
+  const api = await mockTrainingPlanApis(page, { legacyTimelineRows: true, noInitialLearnerMapping: true });
+  await page.goto('/training-plan');
+  await expect(page.locator('[data-timeline-block-id="b-42"]')).toBeVisible();
+
+  await page.locator('[data-timeline-block-id="b-42"]').click();
+  await page.getByRole('button', { name: /Module Overview/i }).click();
+  await page.getByRole('button', { name: 'Subprogramme Students', exact: true }).click();
+
+  expect(api.moduleLearnerRequests).toEqual(['c1:b-42']);
+  expect(api.scopedSubprogrammeRequests).toHaveLength(0);
+  expect(api.globalSubprogrammeRequests).toEqual(['/api/aptem/subprogrammes/']);
+  await expect(page.getByText('No subprogrammes found.')).toHaveCount(0);
+
+  await page.getByLabel('Subprogramme').click();
+  await expect(page.getByText('No matching subprogrammes.')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Cohort Alpha/i })).toBeVisible();
+});
+
+test('module overview ranks suggested Aptem subprogrammes with badges without auto-selecting', async ({ page }) => {
+  const api = await mockTrainingPlanApis(page, { noInitialLearnerMapping: true, suggestedSubprogrammes: true });
+  await page.goto('/training-plan');
+  await expect(page.locator('[data-timeline-block-id="b-42"]')).toBeVisible();
+
+  await page.locator('[data-timeline-block-id="b-42"]').click();
+  await page.getByRole('button', { name: /Module Overview/i }).click();
+  await page.getByRole('button', { name: 'Subprogramme Students', exact: true }).click();
+
+  await expect(page.getByLabel('Subprogramme')).toContainText('Choose an Aptem subprogramme');
+  expect(api.aptemLearnerRequests).toEqual([]);
+
+  await page.getByLabel('Subprogramme').click();
+  await expect(page.getByText('Suggested matches')).toBeVisible();
+  await expect(page.getByText('All subprogrammes')).toBeVisible();
+
+  const options = page.locator('[data-subprogramme-option]');
+  await expect(options).toHaveCount(4);
+  await expect(options.first()).toHaveAttribute('data-subprogramme-option', 'PO Jan 26: PPC Practice');
+  await expect(options.first()).toHaveAttribute('data-suggested', 'true');
+  await expect(options.first().getByText('Programme match', { exact: true })).toBeVisible();
+  await expect(options.first().getByText('Module match', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-subprogramme-option="MM May 2026: AI in Marketing"]')).toBeVisible();
+  await expect(page.locator('[data-subprogramme-option="Cohort Alpha"]')).toBeVisible();
+
+  await options.first().click();
+  await expect(page.getByRole('cell', { name: 'Adam Learner', exact: true })).toBeVisible();
+  expect(api.aptemLearnerRequests).toEqual(['PO Jan 26: PPC Practice']);
+
+  await page.getByLabel('Select Adam Learner').check();
+  await page.getByRole('button', { name: 'Save Learner Mapping' }).click();
+  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+  expect(api.moduleLearnerPatchRequests).toHaveLength(1);
+  expect(api.moduleLearnerPatchRequests[0]).toMatchObject({
+    cohortId: 'c1',
+    moduleBlockId: 'b-42',
+    subprogramme: 'PO Jan 26: PPC Practice',
+  });
+});
+
+test('edit module Aptem mapping uses the same suggested subprogramme ranking and module-id save path', async ({ page }) => {
+  const api = await mockTrainingPlanApis(page, { noInitialLearnerMapping: true, suggestedSubprogrammes: true });
+  await page.goto('/training-plan');
+  await expect(page.locator('[data-timeline-block-id="b-42"]')).toBeVisible();
+
+  await page.locator('[data-timeline-block-id="b-42"]').click();
+  await page.getByRole('button', { name: /Edit schedule assignment/i }).click();
+  await expect(page.getByText('Aptem Learner Mapping')).toBeVisible();
+  await expect(page.getByText('Select a valid Tutor Profile.')).toHaveCount(0);
+  await expect(page.getByText('Choose an Aptem subprogramme').first()).toBeVisible();
+  expect(api.aptemLearnerRequests).toEqual([]);
+
+  await page.locator('button').filter({ hasText: 'Choose an Aptem subprogramme' }).first().click();
+  const options = page.locator('[data-subprogramme-option]');
+  await expect(options).toHaveCount(4);
+  await expect(options.first()).toHaveAttribute('data-subprogramme-option', 'PO Jan 26: PPC Practice');
+  await expect(options.first().getByText('Programme match', { exact: true })).toBeVisible();
+  await expect(options.first().getByText('Module match', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-subprogramme-option="ME June 2026: Social Media"]')).toBeVisible();
+
+  await options.first().click();
+  await expect(page.getByText('Adam Learner')).toBeVisible();
+  expect(api.aptemLearnerRequests).toEqual(['PO Jan 26: PPC Practice']);
+
+  await page.getByRole('checkbox', { name: /Adam Learner/ }).check();
+  await page.getByRole('button', { name: 'Save Module', exact: true }).click();
+  await expect(page.getByText('Aptem Learner Mapping')).toBeHidden();
+  expect(api.moduleLearnerPatchRequests).toHaveLength(1);
+  expect(api.moduleLearnerPatchRequests[0]).toMatchObject({
+    moduleCatalogueId: '42',
+    subprogramme: 'PO Jan 26: PPC Practice',
+  });
 });

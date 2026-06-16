@@ -25,6 +25,7 @@ import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
 import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 import { buildCoachProfilesFromGroups } from './coachProfiles';
+import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule } from './aptemLearnerMapping';
 
 type ModalState =
   | { open: false }
@@ -144,11 +145,17 @@ interface ModuleMonthSummary {
 
 interface ModuleMonthlySummary {
   key: string;
+  programmeId: string;
+  cohortId: string;
+  moduleBlockId: string;
   programme: string;
   programmeColor: string;
   cohort: string;
   moduleName: string;
+  moduleCatalogueId?: string;
   groupName: string;
+  moduleStartDate: string;
+  moduleEndDate: string;
   tutor: string;
   coach: string;
   dateRange: string;
@@ -165,6 +172,46 @@ interface ModuleMonthlySummary {
   affectedSessions: number;
   extensionAffectedSessions: number;
   months: ModuleMonthSummary[];
+}
+
+type ModuleOverviewMode = 'monthly' | 'students';
+
+interface ModuleOverviewChoiceDetails {
+  group: ProgrammeGroup;
+  row: CohortRow;
+  block: ModuleBlock;
+  displayName: string;
+  catalogModule?: CatalogModule;
+}
+
+interface ModuleOverviewLearner {
+  learnerIdentity?: string;
+  learnerId?: string | null;
+  learnerName?: string;
+  learnerEmail?: string | null;
+  name?: string;
+  email?: string | null;
+  programmeName?: string | null;
+  group?: string | null;
+  managerName?: string | null;
+  managerEmail?: string | null;
+  ownerName?: string | null;
+  ownerEmail?: string | null;
+  programmeStatus?: string | null;
+  status?: string | null;
+  subprogramme?: string | null;
+  sortOrder?: number;
+  selected?: boolean;
+  isSelected?: boolean;
+  missingFromAptem?: boolean;
+}
+
+interface ModuleOverviewLearnerPayload {
+  moduleCatalogueId?: string | number;
+  moduleName?: string;
+  subprogramme?: string | null;
+  selectedCount?: number;
+  learners?: ModuleOverviewLearner[];
 }
 
 type KsbCodeSets = {
@@ -1313,11 +1360,17 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
 
         return {
           key: `${group.id}-${row.id}-${block.id}`,
+          programmeId: group.id,
+          cohortId: row.id,
+          moduleBlockId: block.id,
           programme: group.name.replace('\n', ' '),
           programmeColor: group.color,
           cohort: row.label,
           moduleName: meta.lbl,
+          moduleCatalogueId: block.moduleCatalogueId,
           groupName: block.groupName || 'No group name',
+          moduleStartDate: block.startDate,
+          moduleEndDate: sessionPlan.effectiveEndDate,
           tutor: block.tutor || 'TBD',
           coach: block.coachName || 'TBD',
           dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(sessionPlan.effectiveEndDate)}`,
@@ -1343,67 +1396,96 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
   ).filter(summary => summary.months.length > 0);
 }
 
-function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthlySummary; onClose: () => void }) {
+function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack }: { summary: ModuleMonthlySummary; mode?: ModuleOverviewMode; onClose: () => void; onBack?: () => void }) {
   const selectedMonths = summary.months;
   const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
   const totalWeeks = summary.totalWeeks || summary.scheduledSessions || summary.totalSessions + totalClashedSessions;
   const originalClashCount = summary.affectedSessions;
   const replacementAttemptClashCount = summary.extensionAffectedSessions;
+  const isMonthly = mode === 'monthly';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        aria-label="Close monthly breakdown"
-        className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
-        onClick={onClose}
+        aria-label={onBack ? 'Back to module overview options' : 'Close module overview'}
+        className="absolute inset-0 bg-slate-950/50 backdrop-blur-md"
+        onClick={onBack || onClose}
       />
-      <div className="relative flex max-h-[88vh] w-full max-w-[1500px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-100 bg-white px-5 py-4" style={{ borderTop: `5px solid ${summary.color}` }}>
+      <div className="relative flex h-[calc(100vh-2rem)] max-h-[960px] w-full max-w-[1440px] flex-col overflow-hidden rounded-2xl border border-white/80 bg-slate-50 shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-sm" style={{ background: summary.color }} />
-              <h3 className="truncate text-base font-extrabold text-kbc-navy">{summary.moduleName}</h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="h-3 w-3 rounded-sm shadow-sm" style={{ background: summary.color }} />
+              <h3 className="truncate text-base font-extrabold text-kbc-navy">Module Overview</h3>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-slate-500">
+                {isMonthly ? 'Monthly Module Breakdown' : 'Subprogramme Students'}
+              </span>
             </div>
-            <p className="mt-1 text-xs text-gray-500">{summary.programme} - {summary.cohort}</p>
-            <p className="mt-0.5 text-xs text-gray-400">{summary.dateRange}</p>
+            <div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-1">
+              <p className="truncate text-2xl font-black text-gray-900">{summary.moduleName}</p>
+              <p className="pb-1 text-sm font-bold text-slate-500">{summary.dateRange}</p>
+            </div>
+            <p className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+              <span className="truncate">{summary.programme}</span>
+              <span className="h-1 w-1 rounded-full bg-slate-300" />
+              <span className="truncate">{summary.cohort}</span>
+              <span className="h-1 w-1 rounded-full bg-slate-300" />
+              <span className="truncate">{summary.groupName}</span>
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => exportMonthlySummaryToPdf(summary)}
-              className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm transition-colors hover:border-cyan-200 hover:bg-cyan-50 hover:text-cyan-800"
-              title="Export this module breakdown as a PDF"
-            >
-              <i className="ri-download-2-line text-base" />
-              <span>Export PDF</span>
-            </button>
+            {isMonthly && (
+              <button
+                type="button"
+                onClick={() => exportMonthlySummaryToPdf(summary)}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm transition-colors hover:border-cyan-200 hover:bg-cyan-50 hover:text-cyan-800"
+                title="Export this module breakdown as a PDF"
+              >
+                <i className="ri-download-2-line text-base" />
+                <span>Export PDF</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
+              className="flex h-10 w-10 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
             >
               <i className="ri-close-line text-lg" />
             </button>
           </div>
         </div>
 
-        <div className="grid gap-2 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
           {[
-            ['Group', summary.groupName],
-            ['Tutor', summary.tutor],
-            ['Coach', summary.coach],
-            ['Planned sessions', summary.totalSessions],
-            ['Skipped weeks', totalClashedSessions],
-            ['Delivery weeks', totalWeeks],
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-md border border-slate-200 bg-white px-3 py-2 shadow-sm">
-              <span className="block text-[10px] font-extrabold uppercase text-slate-400">{label}</span>
-              <span className={`mt-0.5 block font-extrabold ${label === 'Skipped weeks' && totalClashedSessions ? 'text-amber-700' : 'text-gray-800'}`}>{value}</span>
+            ['ri-group-line', 'Group', summary.groupName],
+            ['ri-user-3-line', 'Tutor', summary.tutor],
+            ['ri-user-star-line', 'Coach', summary.coach],
+            ['ri-calendar-check-line', 'Planned sessions', summary.totalSessions],
+            ['ri-alert-line', 'Skipped weeks', totalClashedSessions],
+            ['ri-route-line', 'Delivery weeks', totalWeeks],
+          ].map(([icon, label, value]) => (
+            <div key={label} className="flex min-h-[58px] items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${label === 'Skipped weeks' && totalClashedSessions ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-kbc-navy'}`}>
+                <i className={`${icon} text-base`} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10px] font-extrabold uppercase tracking-wide text-slate-400">{label}</span>
+                <span className={`mt-0.5 block truncate font-extrabold ${label === 'Skipped weeks' && totalClashedSessions ? 'text-amber-700' : 'text-gray-800'}`} title={String(value)}>{value}</span>
+              </span>
             </div>
           ))}
         </div>
-        {totalClashedSessions > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
+          <span className="inline-flex h-9 items-center gap-2 rounded-lg bg-kbc-navy px-3 text-xs font-extrabold text-white shadow-sm">
+            <i className={`${isMonthly ? 'ri-calendar-event-line' : 'ri-team-line'} text-sm`} aria-hidden="true" />
+            {isMonthly ? 'Monthly Module Breakdown' : 'Subprogramme Students'}
+          </span>
+          <span className="text-xs font-semibold text-slate-400">
+            {summary.scheduledSessions} scheduled / {summary.totalSessions} planned
+          </span>
+        </div>
+        {isMonthly && totalClashedSessions > 0 && (
           <div className="flex items-start gap-2 border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-xs font-semibold text-amber-900">
             <i className="ri-alert-line mt-0.5 text-sm text-amber-700" />
             <span>
@@ -1414,7 +1496,8 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
           </div>
         )}
 
-        <div className="overflow-auto p-5">
+        {isMonthly && (
+        <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <table className="min-w-full text-left text-xs">
               <thead className="sticky top-0 bg-slate-100 text-[11px] uppercase text-slate-500">
@@ -1511,6 +1594,592 @@ function MonthlyModuleSummaryModal({ summary, onClose }: { summary: ModuleMonthl
             </table>
           </div>
         </div>
+        )}
+        {!isMonthly && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <ModuleOverviewStudentsTab summary={summary} isActive />
+        </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonthlySummary; isActive: boolean }) {
+  const [payload, setPayload] = useState<ModuleOverviewLearnerPayload | null>(null);
+  const [subprogrammeOptions, setSubprogrammeOptions] = useState<string[]>([]);
+  const [selectedSubprogramme, setSelectedSubprogramme] = useState('');
+  const [liveLearners, setLiveLearners] = useState<ModuleOverviewLearner[]>([]);
+  const [selectedLearnerIds, setSelectedLearnerIds] = useState<Set<string>>(new Set());
+  const [mappingLoading, setMappingLoading] = useState(false);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [learnersLoading, setLearnersLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [mappingDirty, setMappingDirty] = useState(false);
+  const [error, setError] = useState('');
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [subprogrammeOpen, setSubprogrammeOpen] = useState(false);
+  const [subprogrammeSearch, setSubprogrammeSearch] = useState('');
+  const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<'selected' | 'name-asc' | 'name-desc' | 'email-asc' | 'status'>('selected');
+
+  const moduleCatalogueId = String(summary.moduleCatalogueId || '').trim();
+  const scopedMappingEndpoint = summary.cohortId && summary.moduleBlockId
+    ? `/api/training-plan/cohorts/${encodeURIComponent(summary.cohortId)}/modules/${encodeURIComponent(summary.moduleBlockId)}/learners/`
+    : '';
+  const mappingEndpoint = scopedMappingEndpoint || (moduleCatalogueId ? `/api/training-plan/modules/${encodeURIComponent(moduleCatalogueId)}/learners/` : '');
+
+  const learnerIdentity = (learner: ModuleOverviewLearner) => (
+    learner.learnerIdentity
+    || (learner.learnerId ? `id:${learner.learnerId}` : '')
+    || (learner.learnerEmail || learner.email ? `email:${String(learner.learnerEmail || learner.email).toLowerCase()}` : '')
+    || `name:${String(learner.learnerName || learner.name || '').trim().toLowerCase()}`
+  );
+  const isLearnerSelected = (learner: ModuleOverviewLearner) => learner.isSelected !== false && learner.selected !== false;
+
+  const mergeLearners = useCallback((live: ModuleOverviewLearner[], saved: ModuleOverviewLearner[]) => {
+    const byIdentity = new Map<string, ModuleOverviewLearner>();
+    live.forEach((learner, index) => {
+      const identity = learnerIdentity(learner);
+      if (!identity || identity === 'name:') return;
+      byIdentity.set(identity, {
+        ...learner,
+        learnerIdentity: identity,
+        sortOrder: learner.sortOrder ?? index,
+        missingFromAptem: false,
+      });
+    });
+    saved.forEach((learner, index) => {
+      const identity = learnerIdentity(learner);
+      if (!identity || identity === 'name:') return;
+      if (byIdentity.has(identity)) {
+        byIdentity.set(identity, {
+          ...byIdentity.get(identity)!,
+          ...learner,
+          learnerIdentity: identity,
+          missingFromAptem: false,
+        });
+      } else {
+        byIdentity.set(identity, {
+          ...learner,
+          learnerIdentity: identity,
+          sortOrder: learner.sortOrder ?? live.length + index,
+          missingFromAptem: true,
+        });
+      }
+    });
+    return Array.from(byIdentity.values());
+  }, []);
+
+  const loadLearnersForSubprogramme = useCallback(async (subprogramme: string, savedLearners: ModuleOverviewLearner[] = []) => {
+    const cleanSubprogramme = subprogramme.trim();
+    if (!cleanSubprogramme) {
+      setLiveLearners(savedLearners);
+      return;
+    }
+    setLearnersLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(cleanSubprogramme)}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error((await response.text()).trim() || `Learner load failed with status ${response.status}`);
+      const data = await response.json() as { items?: ModuleOverviewLearner[] };
+      setLiveLearners(mergeLearners(Array.isArray(data.items) ? data.items : [], savedLearners));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load Aptem learners.');
+      setLiveLearners(savedLearners);
+    } finally {
+      setLearnersLoading(false);
+    }
+  }, [mergeLearners]);
+
+  useEffect(() => {
+    if (!isActive || hasLoaded) return;
+    let cancelled = false;
+    const loadMapping = async () => {
+      setMappingLoading(true);
+      setOptionsLoading(true);
+      setError('');
+      try {
+        const [mappingResult, nextOptions] = await Promise.all([
+          mappingEndpoint
+            ? fetch(mappingEndpoint, { cache: 'no-store' })
+            : Promise.resolve(null),
+          loadAptemSubprogrammesForModule({}, { cache: 'no-store' }),
+        ]);
+        if (mappingResult && !mappingResult.ok) throw new Error((await mappingResult.text()).trim() || `Learner mapping load failed with status ${mappingResult.status}`);
+        const nextPayload = mappingResult
+          ? await mappingResult.json() as ModuleOverviewLearnerPayload
+          : { moduleName: summary.moduleName, subprogramme: '', selectedCount: 0, learners: [] };
+        if (!cancelled) {
+          const savedLearners = Array.isArray(nextPayload.learners) ? nextPayload.learners : [];
+          const savedSubprogramme = String(nextPayload.subprogramme || '').trim();
+          setPayload(nextPayload);
+          setSubprogrammeOptions(nextOptions);
+          setSelectedSubprogramme(savedSubprogramme);
+          setSelectedLearnerIds(new Set(savedLearners.filter(isLearnerSelected).map(learnerIdentity)));
+          setMappingDirty(false);
+          if (savedSubprogramme) {
+            await loadLearnersForSubprogramme(savedSubprogramme, savedLearners);
+          } else {
+            setLiveLearners([]);
+          }
+          if (!cancelled) setHasLoaded(true);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : 'Could not load mapped learners.');
+          setHasLoaded(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setMappingLoading(false);
+          setOptionsLoading(false);
+        }
+      }
+    };
+    void loadMapping();
+    return () => { cancelled = true; };
+  }, [hasLoaded, isActive, loadLearnersForSubprogramme, mappingEndpoint, summary.moduleName]);
+
+  const handleSubprogrammeChange = (value: string) => {
+    setSelectedSubprogramme(value);
+    setSubprogrammeOpen(false);
+    setSubprogrammeSearch('');
+    setSelectedLearnerIds(new Set());
+    setMappingDirty(true);
+    setPayload(prev => ({ ...(prev || {}), moduleName: prev?.moduleName || summary.moduleName, subprogramme: value, selectedCount: 0, learners: [] }));
+    void loadLearnersForSubprogramme(value, []);
+  };
+
+  const learners = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const filtered = liveLearners.filter(learner => {
+      if (!query) return true;
+      const rowText = [
+        learner.learnerName || learner.name || '',
+        learner.learnerEmail || learner.email || '',
+        learner.group || '',
+        learner.managerName || '',
+        learner.managerEmail || '',
+        learner.programmeName || '',
+        learner.programmeStatus || learner.status || '',
+      ].join(' ').toLowerCase();
+      return rowText.includes(query);
+    });
+    return [...filtered].sort((left, right) => {
+      const leftSelected = selectedLearnerIds.has(learnerIdentity(left));
+      const rightSelected = selectedLearnerIds.has(learnerIdentity(right));
+      if (sortMode === 'selected') {
+        const selectedDelta = Number(rightSelected) - Number(leftSelected);
+        if (selectedDelta) return selectedDelta;
+      }
+      const leftName = left.learnerName || left.name || '';
+      const rightName = right.learnerName || right.name || '';
+      const leftEmail = left.learnerEmail || left.email || '';
+      const rightEmail = right.learnerEmail || right.email || '';
+      const leftStatus = left.programmeStatus || left.status || '';
+      const rightStatus = right.programmeStatus || right.status || '';
+      if (sortMode === 'name-asc') return leftName.localeCompare(rightName) || leftEmail.localeCompare(rightEmail);
+      if (sortMode === 'name-desc') return rightName.localeCompare(leftName) || leftEmail.localeCompare(rightEmail);
+      if (sortMode === 'email-asc') return leftEmail.localeCompare(rightEmail) || leftName.localeCompare(rightName);
+      if (sortMode === 'status') return leftStatus.localeCompare(rightStatus) || leftName.localeCompare(rightName);
+      return (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || leftName.localeCompare(rightName);
+    });
+  }, [liveLearners, search, selectedLearnerIds, sortMode]);
+
+  const selectedCount = selectedLearnerIds.size;
+  const selectedVisibleCount = learners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner))).length;
+  const isLoading = mappingLoading || optionsLoading || learnersLoading;
+  const filteredSubprogrammeOptions = useMemo(() => {
+    const query = subprogrammeSearch.trim().toLowerCase();
+    const ranked = rankAptemSubprogrammeOptions(subprogrammeOptions, {
+      programmeName: summary.programme,
+      cohortName: summary.cohort,
+      moduleName: summary.moduleName,
+      moduleStartDate: summary.moduleStartDate,
+      moduleEndDate: summary.moduleEndDate,
+      groupName: summary.groupName,
+    });
+    if (!query) return ranked;
+    return ranked.filter(item => item.value.toLowerCase().includes(query));
+  }, [subprogrammeOptions, subprogrammeSearch, summary.cohort, summary.groupName, summary.moduleEndDate, summary.moduleName, summary.moduleStartDate, summary.programme]);
+  const suggestedSubprogrammeOptions = useMemo(() => filteredSubprogrammeOptions.filter(item => item.isSuggested), [filteredSubprogrammeOptions]);
+  const normalSubprogrammeOptions = useMemo(() => filteredSubprogrammeOptions.filter(item => !item.isSuggested), [filteredSubprogrammeOptions]);
+
+  const toggleLearner = (identity: string) => {
+    setMappingDirty(true);
+    setSelectedLearnerIds(prev => {
+      const next = new Set(prev);
+      if (next.has(identity)) next.delete(identity);
+      else next.add(identity);
+      return next;
+    });
+  };
+
+  const selectAllVisible = () => {
+    setMappingDirty(true);
+    setSelectedLearnerIds(prev => {
+      const next = new Set(prev);
+      learners.forEach(learner => next.add(learnerIdentity(learner)));
+      return next;
+    });
+  };
+
+  const clearVisible = () => {
+    setMappingDirty(true);
+    setSelectedLearnerIds(prev => {
+      const next = new Set(prev);
+      learners.forEach(learner => next.delete(learnerIdentity(learner)));
+      return next;
+    });
+  };
+
+  const saveLearnerMapping = async () => {
+    if (!mappingEndpoint) {
+      setError('This module does not have a stable learner mapping scope.');
+      return;
+    }
+    const cleanSubprogramme = selectedSubprogramme.trim();
+    if (!cleanSubprogramme) {
+      setError('Select a subprogramme before saving learner mapping.');
+      return;
+    }
+    const selectedLearners = liveLearners
+      .filter(learner => selectedLearnerIds.has(learnerIdentity(learner)))
+      .map((learner, index) => ({
+        learnerIdentity: learnerIdentity(learner),
+        learnerId: learner.learnerId || '',
+        name: learner.learnerName || learner.name || '',
+        email: learner.learnerEmail || learner.email || '',
+        programmeStatus: learner.programmeStatus || learner.status || '',
+        subprogramme: cleanSubprogramme,
+        sortOrder: learner.sortOrder ?? index,
+        isSelected: true,
+      }));
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(mappingEndpoint, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subprogramme: cleanSubprogramme, learners: selectedLearners }),
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
+      const nextPayload = await response.json() as ModuleOverviewLearnerPayload;
+      const savedLearners = Array.isArray(nextPayload.learners) ? nextPayload.learners : selectedLearners;
+      setPayload({ ...nextPayload, moduleName: nextPayload.moduleName || payload?.moduleName || summary.moduleName, selectedCount: selectedLearners.length });
+      setSelectedLearnerIds(new Set(savedLearners.filter(isLearnerSelected).map(learnerIdentity)));
+      setLiveLearners(prev => mergeLearners(prev, savedLearners));
+      setMappingDirty(false);
+      await kbcSuccessSwal.fire({
+        title: 'Learner Mapping Saved',
+        html: `<strong>${selectedLearners.length}</strong> learner${selectedLearners.length === 1 ? '' : 's'} mapped to this cohort module.`,
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Could not save learner mapping.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-slate-50 p-5">
+      <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="grid gap-3">
+        <div className="relative min-w-0">
+          <span className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-wide text-slate-400">Subprogramme</span>
+          <button
+            type="button"
+            onClick={() => {
+              setSubprogrammeOpen(prev => !prev);
+              setSubprogrammeSearch('');
+            }}
+            disabled={optionsLoading}
+            className="flex h-11 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 text-left text-sm font-semibold text-gray-700 shadow-sm transition-colors hover:border-slate-300 focus:border-kbc-navy focus:outline-none disabled:opacity-60"
+            aria-label="Subprogramme"
+          >
+            <span className={`min-w-0 flex-1 truncate ${selectedSubprogramme ? '' : 'text-gray-400'}`}>
+              {selectedSubprogramme || 'Choose an Aptem subprogramme'}
+            </span>
+            <i className={`ri-arrow-down-s-line shrink-0 text-base text-gray-400 transition-transform ${subprogrammeOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {subprogrammeOpen && (
+            <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+              <div className="border-b border-gray-100 bg-slate-50 p-2">
+                <input
+                  type="text"
+                  value={subprogrammeSearch}
+                  onChange={event => setSubprogrammeSearch(event.target.value)}
+                  placeholder="Search subprogrammes"
+                  className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 shadow-sm focus:border-kbc-navy focus:outline-none"
+                  autoFocus
+                />
+              </div>
+              <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                <span>Aptem subprogrammes</span>
+                <span>{filteredSubprogrammeOptions.length} shown</span>
+              </div>
+              <div className="max-h-72 overflow-y-auto p-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleSubprogrammeChange('')}
+                  className="mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-bold text-gray-500 hover:bg-slate-50"
+                >
+                  <span className="h-2 w-2 rounded-full border border-slate-300" />
+                  <span>Choose an Aptem subprogramme</span>
+                </button>
+                {filteredSubprogrammeOptions.length ? (
+                  <>
+                    {suggestedSubprogrammeOptions.length > 0 && (
+                      <div className="px-3 pb-1 pt-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                        Suggested matches
+                      </div>
+                    )}
+                    {suggestedSubprogrammeOptions.map(item => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        title={item.value}
+                        onClick={() => handleSubprogrammeChange(item.value)}
+                        className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${item.value === selectedSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                        data-subprogramme-option={item.value}
+                        data-suggested="true"
+                      >
+                        <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${item.value === selectedSubprogramme ? 'bg-kbc-navy' : 'bg-slate-300 group-hover:bg-slate-400'}`} />
+                        <span className="block min-w-0 flex-1 truncate leading-5">
+                          {item.value}
+                        </span>
+                        <span className="ml-auto flex max-w-[45%] shrink-0 flex-wrap justify-end gap-1">
+                          {item.badges.map(badge => (
+                            <span key={badge} className="rounded-full border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[9px] font-extrabold leading-none text-blue-700">
+                              {badge}
+                            </span>
+                          ))}
+                        </span>
+                      </button>
+                    ))}
+                    {normalSubprogrammeOptions.length > 0 && (
+                      <div className="px-3 pb-1 pt-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                        All subprogrammes
+                      </div>
+                    )}
+                    {normalSubprogrammeOptions.map(item => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      title={item.value}
+                      onClick={() => handleSubprogrammeChange(item.value)}
+                      className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${item.value === selectedSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                      data-subprogramme-option={item.value}
+                      data-suggested="false"
+                    >
+                      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${item.value === selectedSubprogramme ? 'bg-kbc-navy' : 'bg-slate-300 group-hover:bg-slate-400'}`} />
+                      <span className="block min-w-0 flex-1 whitespace-normal break-words leading-5">
+                        {item.value}
+                      </span>
+                    </button>
+                    ))}
+                  </>
+                ) : (
+                  <div className="px-3 py-4 text-center text-xs font-semibold text-gray-400">
+                    No matching subprogrammes.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        </div>
+      </div>
+
+      {subprogrammeOptions.length === 0 && !optionsLoading && !subprogrammeOpen && (
+        <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+          No subprogrammes found.
+        </div>
+      )}
+
+      <div className="mt-4 shrink-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="relative min-w-0 flex-1">
+            <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400" />
+            <input
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              placeholder="Search learners by name, email, group, manager, programme, or status..."
+              className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm font-semibold text-gray-700 outline-none transition-colors focus:border-kbc-navy"
+            />
+          </div>
+          <select
+            value={sortMode}
+            onChange={event => setSortMode(event.target.value as typeof sortMode)}
+            className="h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-extrabold text-gray-700 outline-none transition-colors focus:border-kbc-navy"
+            aria-label="Sort mapped learners"
+          >
+            <option value="selected">Selected first</option>
+            <option value="name-asc">Name A-Z</option>
+            <option value="name-desc">Name Z-A</option>
+            <option value="email-asc">Email A-Z</option>
+            <option value="status">Programme Status</option>
+          </select>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-slate-500">
+          <span className="inline-flex items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 font-extrabold text-kbc-navy">Selected {selectedCount} / {liveLearners.length}</span>
+            {learners.length !== liveLearners.length && <span>{selectedVisibleCount} visible</span>}
+          </span>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={selectAllVisible} disabled={!learners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-kbc-navy transition-colors hover:bg-slate-50 disabled:opacity-50">
+            Select all visible
+          </button>
+          <button type="button" onClick={clearVisible} disabled={!learners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-slate-500 transition-colors hover:bg-slate-50 disabled:opacity-50">
+            Clear visible
+          </button>
+        </div>
+        </div>
+      </div>
+
+      {isLoading && (
+        <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-8 text-center text-sm font-semibold text-slate-500">
+          Loading learner mapping...
+        </div>
+      )}
+      {!isLoading && error && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {error}
+        </div>
+      )}
+      {!isLoading && !error && !selectedSubprogramme && (
+        <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
+          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-kbc-navy">
+            <i className="ri-team-line text-xl" />
+          </span>
+          <p className="mt-3 text-sm font-extrabold text-kbc-navy">Select a subprogramme to view and map learners to this module.</p>
+        </div>
+      )}
+      {!isLoading && !error && selectedSubprogramme && liveLearners.length === 0 && (
+        <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
+          <p className="text-sm font-extrabold text-kbc-navy">No learners found for this subprogramme.</p>
+        </div>
+      )}
+      {!isLoading && !error && selectedSubprogramme && liveLearners.length > 0 && learners.length === 0 && (
+        <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
+          <p className="text-sm font-extrabold text-kbc-navy">No learners match your search.</p>
+        </div>
+      )}
+      {!isLoading && !error && learners.length > 0 && (
+        <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold uppercase tracking-wide text-slate-400">Learners</p>
+              <p className="mt-0.5 text-sm font-extrabold text-kbc-navy">
+                {learners.length} shown
+                {learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 text-[11px] font-extrabold">
+              <span className="rounded-full bg-kbc-navy px-2.5 py-1 text-white">{selectedCount} selected</span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">{liveLearners.length} total</span>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 p-3">
+            <div className="space-y-2" role="table" aria-label="Subprogramme learners">
+              {learners.map((learner, index) => {
+                const name = learner.learnerName || learner.name || 'Unnamed learner';
+                const email = learner.learnerEmail || learner.email || '';
+                const group = learner.group || '';
+                const managerName = learner.managerName || '';
+                const managerEmail = learner.managerEmail || '';
+                const programmeName = learner.programmeName || '';
+                const status = learner.programmeStatus || learner.status || '';
+                const identity = learnerIdentity(learner);
+                const checked = selectedLearnerIds.has(identity);
+                const statusClassName = status.toLowerCase().includes('active')
+                  ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+                  : status
+                    ? 'border-amber-100 bg-amber-50 text-amber-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-500';
+                const detailGroups = [
+                  { icon: 'ri-group-line', label: 'Group', value: group },
+                  { icon: 'ri-graduation-cap-line', label: 'Programme', value: programmeName },
+                  { icon: 'ri-user-settings-line', label: 'Manager', value: managerName, subValue: managerEmail },
+                ];
+
+                return (
+                  <div
+                    key={learner.learnerIdentity || `${name}-${email}-${index}`}
+                    role="row"
+                    className={`rounded-xl border bg-white p-3 shadow-sm transition-colors ${checked ? 'border-kbc-navy/40 ring-1 ring-kbc-navy/10' : 'border-slate-200 hover:border-slate-300'}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleLearner(identity)}
+                        className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300"
+                        aria-label={`Select ${name}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p role="cell" className="truncate text-sm font-black text-gray-900" title={name}>{name}</p>
+                            <p role="cell" className="mt-0.5 truncate text-xs font-semibold text-slate-500" title={email || undefined}>{email || 'No learner email'}</p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${statusClassName}`}>
+                              {status || 'No status'}
+                            </span>
+                            {checked && (
+                              <span className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-blue-700">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {learner.missingFromAptem && (
+                          <span className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-700">
+                            Previously selected, not found in Aptem
+                          </span>
+                        )}
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                          {detailGroups.map(item => (
+                            <div key={item.label} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                              <div className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
+                                <i className={`${item.icon} text-sm text-slate-500`} aria-hidden="true" />
+                                <span>{item.label}</span>
+                              </div>
+                              <p className="mt-1 truncate text-xs font-extrabold text-gray-800" title={item.value || undefined}>{item.value || '-'}</p>
+                              {item.subValue && (
+                                <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-500" title={item.subValue}>{item.subValue}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="shrink-0 border-t border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-500">
+            Showing {learners.length} learner{learners.length === 1 ? '' : 's'}{learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
+          </div>
+        </div>
+      )}
+      <div className="mt-3 flex shrink-0 justify-end border-t border-slate-200 pt-3">
+        <button
+          type="button"
+          onClick={() => void saveLearnerMapping()}
+          disabled={saving || !mappingDirty || !selectedSubprogramme.trim() || !mappingEndpoint}
+          className="inline-flex h-11 items-center gap-2 rounded-lg bg-kbc-navy px-4 text-xs font-extrabold text-white shadow-sm transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white/80 disabled:shadow-none"
+        >
+          <i className={saving ? 'ri-loader-4-line animate-spin' : mappingDirty ? 'ri-save-3-line' : 'ri-check-line'} />
+          {saving ? 'Saving...' : mappingDirty ? 'Save Learner Mapping' : 'Saved'}
+        </button>
       </div>
     </div>
   );
@@ -1881,7 +2550,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
       )}
 
       {selectedSummary && (
-        <MonthlyModuleSummaryModal summary={selectedSummary} onClose={() => setSelectedSummary(null)} />
+        <MonthlyModuleSummaryModal summary={selectedSummary} mode="monthly" onClose={() => setSelectedSummary(null)} />
       )}
     </>
   );
@@ -2000,6 +2669,8 @@ export default function ApprenticeshipTimeline() {
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
   const [visibleEditChoice, setVisibleEditChoice] = useState<EditChoiceState | null>(null);
+  const [pendingOverviewChoiceDetails, setPendingOverviewChoiceDetails] = useState<ModuleOverviewChoiceDetails | null>(null);
+  const [pendingOverviewReturnChoice, setPendingOverviewReturnChoice] = useState<EditChoiceState | null>(null);
   const [pendingTutorModuleAdd, setPendingTutorModuleAdd] = useState<TutorModuleAddChoice | null>(null);
   const [pendingTutorModuleCohort, setPendingTutorModuleCohort] = useState('');
   const [pendingTutorModuleGroup, setPendingTutorModuleGroup] = useState('');
@@ -2014,7 +2685,7 @@ export default function ApprenticeshipTimeline() {
   const [pendingTutorModuleStartDate, setPendingTutorModuleStartDate] = useState('');
   const [pendingTutorModuleSaving, setPendingTutorModuleSaving] = useState(false);
   const [pendingTutorModuleError, setPendingTutorModuleError] = useState('');
-  const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<ModuleMonthlySummary | null>(null);
+  const [selectedMonthlySummary, setSelectedMonthlySummary] = useState<{ summary: ModuleMonthlySummary; mode: ModuleOverviewMode; overviewChoiceDetails?: ModuleOverviewChoiceDetails } | null>(null);
   const [programModal, setProgramModal] = useState<ProgramModalState>({ open: false });
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const [activeTab, setActiveTab] = useState<'gantt' | 'schedule' | 'tutors' | 'coaches'>('gantt');
@@ -3435,6 +4106,21 @@ export default function ApprenticeshipTimeline() {
     return handleTrainingPlanPartialResponse(response);
   };
 
+  const moveTrainingPlanCohort = async (
+    cohortId: string,
+    payload: { fromProgrammeId: string; toProgrammeId: string; toProgrammeName: string; sourceCohortIds: string[]; targetCohortIds: string[] },
+  ): Promise<TrainingPlanMutationResult> => {
+    const response = await fetch(`/api/training-plan/cohorts/${encodeURIComponent(cohortId)}/move/`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-KBC-Training-Plan-Save-Source': 'move_cohort',
+      },
+      body: JSON.stringify({ ...payload, version: trainingPlanVersion }),
+    });
+    return handleTrainingPlanPartialResponse(response);
+  };
+
   const archiveTrainingPlanCohort = async (programmeId: string, cohortId: string, trainingPlanIds: string[]): Promise<TrainingPlanMutationResult> => {
     const response = await fetch(`/api/training-plan/cohorts/${encodeURIComponent(cohortId)}/archive/`, {
       method: 'PATCH',
@@ -3961,63 +4647,12 @@ export default function ApprenticeshipTimeline() {
 
   const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position: 'before' | 'after' = 'before') => {
     if (!canManageCohorts) return;
-    if (fromGroupIdx !== toGroupIdx) {
-      console.warn('COHORT_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
-        reason: 'cross-programme cohort move is not a pure reorder',
-        fromGroupIdx,
-        toGroupIdx,
-      });
-      await kbcSwal.fire({
-        title: 'Cohort Not Reordered',
-        html: 'Moving a cohort between programmes changes programme membership, so it is not included in the safe reorder save yet.',
-        icon: 'warning',
-        confirmButtonText: 'OK',
-      });
-      return;
-    }
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
     const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
     const rawInsertAt = position === 'after' ? toRowIdx + 1 : toRowIdx;
     const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < rawInsertAt ? rawInsertAt - 1 : rawInsertAt;
     next[toGroupIdx].rows.splice(insertAt, 0, moved);
-    const targetGroup = next[toGroupIdx];
-    const cohortIds = targetGroup.rows.map(row => row.id).filter(Boolean);
-    if (!targetGroup.id || cohortIds.length !== targetGroup.rows.length || cohortIds.some(id => id.startsWith('db-row-'))) {
-      console.warn('COHORT_REORDER_PARTIAL_SAVE_BLOCKED_MISSING_IDS', {
-        reason: 'missing stable cohort ids',
-        programmeId: targetGroup.id,
-        cohortIds,
-      });
-      await kbcSwal.fire({
-        title: 'Cohort Not Reordered',
-        html: 'This cohort order cannot be saved safely until the latest Training Plan row IDs have loaded. Reload latest data and try again.',
-        icon: 'warning',
-        confirmButtonText: 'OK',
-      });
-      return;
-    }
-
     setGroups(next);
-    try {
-      const result = await updateTrainingPlanCohortOrder(targetGroup.id, cohortIds);
-      if (result.version) setTrainingPlanVersion(result.version);
-      if (result.items) {
-        setTrainingPlanItems(result.items);
-        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
-        return;
-      }
-      try {
-        await handleTrainingPlanRequestFailure(error, 'Cohort Not Reordered');
-        return;
-      } catch {
-        // Continue with normal validation/server error handling.
-      }
-      const message = error instanceof Error ? error.message : 'Unknown save error';
-      await kbcSwal.fire({ title: 'Cohort Not Reordered', html: message, icon: 'error', confirmButtonText: 'OK' });
-    }
   };
 
   const handleReorderGroup = async (fromGroupIdx: number, toGroupIdx: number) => {
@@ -4807,13 +5442,13 @@ export default function ApprenticeshipTimeline() {
   const selectedProgramGroup = programModal.open && programModal.mode === 'edit'
     ? groups.find(item => item.id === programModal.programId)
     : undefined;
-  const visibleEditChoiceDetails = useMemo(() => {
-    if (!visibleEditChoice) {
+  const resolveEditChoiceDetails = useCallback((choice: EditChoiceState | null): ModuleOverviewChoiceDetails | null => {
+    if (!choice) {
       return null;
     }
-    const group = groups[visibleEditChoice.groupIdx];
-    const row = group?.rows[visibleEditChoice.rowIdx];
-    const block = row?.blks.find(item => item.id === visibleEditChoice.blockId);
+    const group = groups[choice.groupIdx];
+    const row = group?.rows[choice.rowIdx];
+    const block = row?.blks.find(item => item.id === choice.blockId);
     if (!group || !row || !block) {
       return null;
     }
@@ -4828,7 +5463,11 @@ export default function ApprenticeshipTimeline() {
       return String(module.id) === rawValue || lookupVariants.has(normalizedName);
     });
     return { group, row, block, displayName, catalogModule };
-  }, [catalogModules, groups, visibleEditChoice]);
+  }, [catalogModules, groups]);
+  const visibleEditChoiceDetails = useMemo(
+    () => resolveEditChoiceDetails(visibleEditChoice),
+    [resolveEditChoiceDetails, visibleEditChoice],
+  );
 
   const todaySessions = useMemo(() => {
     const today = new Date();
@@ -4863,11 +5502,18 @@ export default function ApprenticeshipTimeline() {
     () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
     [catalogModules, customModules, groups, holidays, ksbProfiles],
   );
-  const openMonthlySummary = (groupId: string, rowId: string, blockId: string) => {
+  const openMonthlySummary = (groupId: string, rowId: string, blockId: string, mode: ModuleOverviewMode = 'monthly', overviewChoiceDetails?: ModuleOverviewChoiceDetails) => {
     const targetKey = `${groupId}-${rowId}-${blockId}`;
     const summary = monthlyModuleSummaries.find(item => item.key === targetKey);
     if (summary) {
-      setSelectedMonthlySummary(summary);
+      setSelectedMonthlySummary({ summary, mode, overviewChoiceDetails });
+    }
+  };
+  const openOverviewChoice = (choice: EditChoiceState | null) => {
+    const details = resolveEditChoiceDetails(choice);
+    if (details) {
+      setPendingOverviewChoiceDetails({ ...details });
+      setPendingOverviewReturnChoice(choice ? { ...choice } : null);
     }
   };
 
@@ -5221,10 +5867,7 @@ export default function ApprenticeshipTimeline() {
                     setShowManageModules(true);
                   }}
                   onViewMonthlyBreakdown={(groupIdx, rowIdx, blockId) => {
-                    const group = groups[groupIdx];
-                    const row = group?.rows[rowIdx];
-                    if (!group || !row) return;
-                    openMonthlySummary(group.id, row.id, blockId);
+                    openOverviewChoice({ groupIdx, rowIdx, blockId });
                   }}
                   onDeleteRow={handleDeleteRow}
                   onEditProgram={handleEditProgram}
@@ -5337,7 +5980,7 @@ export default function ApprenticeshipTimeline() {
       <Footer />
 
       {/* Modals */}
-      {canEditTrainingPlan && visibleEditChoice && visibleEditChoiceDetails && (
+      {canEditTrainingPlan && visibleEditChoice && visibleEditChoiceDetails && !pendingOverviewChoiceDetails && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/35 backdrop-blur-[5px]" onClick={() => setVisibleEditChoice(null)} />
           <div className="relative w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
@@ -5401,20 +6044,17 @@ export default function ApprenticeshipTimeline() {
               <button
                 type="button"
                 onClick={() => {
-                  openMonthlySummary(
-                    visibleEditChoiceDetails.group.id,
-                    visibleEditChoiceDetails.row.id,
-                    visibleEditChoiceDetails.block.id,
-                  );
+                  openOverviewChoice(visibleEditChoice);
+                  setVisibleEditChoice(null);
                 }}
                 className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md"
               >
                 <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white">
                   <i className="ri-calendar-check-line" />
                 </span>
-                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Monthly Module Breakdown</span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Module Overview</span>
                 <span className="mt-1 block text-xs leading-5 text-gray-500">
-                  View monthly sessions, holiday clashes, tutors, coaches, and session totals.
+                  View monthly breakdown, mapped subprogramme students, sessions, holidays, and delivery details.
                 </span>
                 <span className="mt-3 block text-xs font-semibold text-gray-400">
                   {visibleEditChoiceDetails.block.startDate} to {visibleEditChoiceDetails.block.endDate}
@@ -5425,8 +6065,89 @@ export default function ApprenticeshipTimeline() {
         </div>
       )}
 
+      {pendingOverviewChoiceDetails && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-slate-950/35 backdrop-blur-[5px]"
+            onClick={() => {
+              setPendingOverviewChoiceDetails(null);
+              if (pendingOverviewReturnChoice) {
+                setVisibleEditChoice({ ...pendingOverviewReturnChoice });
+              }
+            }}
+          />
+          <div className="relative w-full max-w-xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white/60">{pendingOverviewChoiceDetails.group.name.replace('\n', ' ')} - {pendingOverviewChoiceDetails.row.label}</p>
+                <h3 className="mt-1 text-base font-extrabold text-white">Choose Module Overview View</h3>
+                <p className="mt-1 text-xs text-white/70">{pendingOverviewChoiceDetails.displayName}</p>
+              </div>
+              <button
+                onClick={() => {
+                  setPendingOverviewChoiceDetails(null);
+                  setPendingOverviewReturnChoice(null);
+                }}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/15 hover:text-white"
+              >
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="grid gap-3 bg-gray-50 p-4 md:grid-cols-2">
+              {[
+                {
+                  mode: 'monthly' as ModuleOverviewMode,
+                  icon: 'ri-calendar-event-line',
+                  title: 'Monthly Module Breakdown',
+                  body: 'View session dates, counted sessions, holiday clashes, and delivery weeks.',
+                  meta: `${pendingOverviewChoiceDetails.block.startDate} to ${pendingOverviewChoiceDetails.block.endDate}`,
+                },
+                {
+                  mode: 'students' as ModuleOverviewMode,
+                  icon: 'ri-team-line',
+                  title: 'Subprogramme Students',
+                  body: 'View mapped subprogramme learners with group, programme, and manager details.',
+                  meta: pendingOverviewChoiceDetails.block.groupName || 'Selected group',
+                },
+              ].map(item => (
+                <button
+                  key={item.mode}
+                  type="button"
+                  onClick={() => {
+                    openMonthlySummary(
+                      pendingOverviewChoiceDetails.group.id,
+                      pendingOverviewChoiceDetails.row.id,
+                      pendingOverviewChoiceDetails.block.id,
+                      item.mode,
+                      pendingOverviewChoiceDetails,
+                    );
+                    setPendingOverviewChoiceDetails(null);
+                  }}
+                  className="rounded-xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-kbc-navy hover:shadow-md"
+                >
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-kbc-navy text-white">
+                    <i className={item.icon} />
+                  </span>
+                  <span className="mt-3 block text-sm font-extrabold text-kbc-navy">{item.title}</span>
+                  <span className="mt-1 block text-xs leading-5 text-gray-500">{item.body}</span>
+                  <span className="mt-3 block text-xs font-semibold text-gray-400">{item.meta}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedMonthlySummary && (
-        <MonthlyModuleSummaryModal summary={selectedMonthlySummary} onClose={() => setSelectedMonthlySummary(null)} />
+        <MonthlyModuleSummaryModal
+          summary={selectedMonthlySummary.summary}
+          mode={selectedMonthlySummary.mode}
+          onClose={() => setSelectedMonthlySummary(null)}
+          onBack={selectedMonthlySummary.overviewChoiceDetails ? () => {
+            setPendingOverviewChoiceDetails(selectedMonthlySummary.overviewChoiceDetails || null);
+            setSelectedMonthlySummary(null);
+          } : undefined}
+        />
       )}
 
       {canEditTrainingPlan && pendingTutorModuleAdd && (

@@ -2917,6 +2917,16 @@ export default function GanttTimeline({
                   onDragEnd={handleDragEnd}
                 >
                   <div className="flex items-center justify-between gap-1">
+                    {canManageCohorts && (
+                      <span
+                        className="w-5 h-5 flex items-center justify-center rounded shrink-0 cursor-grab active:cursor-grabbing"
+                        title="Drag programme to reorder"
+                        aria-hidden="true"
+                        style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}
+                      >
+                        <i className="ri-draggable" style={{ fontSize: '12px' }} />
+                      </span>
+                    )}
                     <p
                       className="leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis flex-1"
                       style={{ fontSize: '11px' }}
@@ -3125,25 +3135,21 @@ export default function GanttTimeline({
                       >
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
-                        {/* Drag handle */}
-                        {canManageCohorts && (
-                          <div
-                            className="absolute right-full mr-0 w-4 h-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
-                            draggable
-                            onDragStart={(e) => handleCohortDragStart(e, gi, ri)}
-                            onDragEnd={handleDragEnd}
-                            style={{ cursor: 'grab', left: 0, right: 'auto', width: 14 }}
-                            title="Drag to reorder"
-                          >
-                            <i className="ri-draggable text-gray-300" style={{ fontSize: '10px' }} />
-                          </div>
-                        )}
                         <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1"
                           draggable={canManageCohorts}
                           onDragStart={canManageCohorts ? (e) => handleCohortDragStart(e, gi, ri) : undefined}
                           onDragEnd={handleDragEnd}
                           style={{ cursor: canManageCohorts ? 'grab' : undefined }}
                         >
+                          {canManageCohorts && (
+                            <span
+                              className="w-5 h-5 flex items-center justify-center rounded text-gray-400 bg-gray-100 shrink-0 cursor-grab active:cursor-grabbing"
+                              title="Drag cohort to reorder"
+                              aria-hidden="true"
+                            >
+                              <i className="ri-draggable" style={{ fontSize: '12px' }} />
+                            </span>
+                          )}
                           <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }}>
                             {row.label}
                           </p>
@@ -3413,6 +3419,7 @@ export default function GanttTimeline({
                 onClick={() => {
                   const target = editChoice;
                   if (!onViewMonthlyBreakdown) return;
+                  setEditChoice(null);
                   onViewMonthlyBreakdown(target.groupIdx, target.rowIdx, target.blk.id);
                 }}
                 disabled={!onViewMonthlyBreakdown}
@@ -3421,9 +3428,9 @@ export default function GanttTimeline({
                 <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white">
                   <i className="ri-calendar-check-line" />
                 </span>
-                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Monthly Module Breakdown</span>
+                <span className="mt-3 block text-sm font-extrabold text-kbc-navy">Module Overview</span>
                 <span className="mt-1 block text-xs leading-5 text-gray-500">
-                  View monthly sessions, holiday clashes, tutors, coaches, and session totals.
+                  View monthly breakdown, mapped subprogramme students, sessions, holidays, and delivery details.
                 </span>
                 <span className="mt-3 block text-xs font-semibold text-gray-400">
                   {formatDateShort(editChoice.blk.startDate)} to {formatDateShort(editChoice.blk.endDate)}
