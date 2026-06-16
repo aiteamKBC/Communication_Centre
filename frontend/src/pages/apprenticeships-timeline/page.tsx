@@ -1608,7 +1608,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
 function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonthlySummary; isActive: boolean }) {
   const [payload, setPayload] = useState<ModuleOverviewLearnerPayload | null>(null);
   const [subprogrammeOptions, setSubprogrammeOptions] = useState<string[]>([]);
-  const [selectedSubprogramme, setSelectedSubprogramme] = useState('');
+  const [selectedSubprogrammes, setSelectedSubprogrammes] = useState<string[]>([]);
   const [liveLearners, setLiveLearners] = useState<ModuleOverviewLearner[]>([]);
   const [selectedLearnerIds, setSelectedLearnerIds] = useState<Set<string>>(new Set());
   const [mappingLoading, setMappingLoading] = useState(false);
@@ -1622,12 +1622,45 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
   const [subprogrammeSearch, setSubprogrammeSearch] = useState('');
   const [search, setSearch] = useState('');
   const [sortMode, setSortMode] = useState<'selected' | 'name-asc' | 'name-desc' | 'email-asc' | 'status'>('selected');
+  const [learnerPage, setLearnerPage] = useState(1);
+  const learnerPageSize = 5;
+  const subprogrammeSelectRef = useRef<HTMLDivElement | null>(null);
 
   const moduleCatalogueId = String(summary.moduleCatalogueId || '').trim();
   const scopedMappingEndpoint = summary.cohortId && summary.moduleBlockId
     ? `/api/training-plan/cohorts/${encodeURIComponent(summary.cohortId)}/modules/${encodeURIComponent(summary.moduleBlockId)}/learners/`
     : '';
   const mappingEndpoint = scopedMappingEndpoint || (moduleCatalogueId ? `/api/training-plan/modules/${encodeURIComponent(moduleCatalogueId)}/learners/` : '');
+  const selectedSubprogrammePayload = selectedSubprogrammes.length <= 1 ? (selectedSubprogrammes[0] || '') : JSON.stringify(selectedSubprogrammes);
+  const selectedSubprogrammeLabel = selectedSubprogrammes.length
+    ? selectedSubprogrammes.length === 1
+      ? selectedSubprogrammes[0]
+      : `${selectedSubprogrammes.length} subprogrammes selected`
+    : '';
+
+  const parseSubprogrammeSelection = useCallback((value: unknown): string[] => {
+    const clean = String(value || '').trim();
+    if (!clean) return [];
+    if (clean.startsWith('[') && clean.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(clean.replace(/'/g, '"'));
+        if (Array.isArray(parsed)) {
+          const seen = new Set<string>();
+          return parsed
+            .map(item => String(item || '').replace(/\s+/g, ' ').trim())
+            .filter(item => {
+              const key = item.toLowerCase();
+              if (!item || seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+        }
+      } catch {
+        return [clean];
+      }
+    }
+    return [clean];
+  }, []);
 
   const learnerIdentity = (learner: ModuleOverviewLearner) => (
     learner.learnerIdentity
@@ -1671,19 +1704,22 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     return Array.from(byIdentity.values());
   }, []);
 
-  const loadLearnersForSubprogramme = useCallback(async (subprogramme: string, savedLearners: ModuleOverviewLearner[] = []) => {
-    const cleanSubprogramme = subprogramme.trim();
-    if (!cleanSubprogramme) {
+  const loadLearnersForSubprogrammes = useCallback(async (subprogrammes: string[], savedLearners: ModuleOverviewLearner[] = []) => {
+    const cleanSubprogrammes = subprogrammes.map(value => value.trim()).filter(Boolean);
+    if (!cleanSubprogrammes.length) {
       setLiveLearners(savedLearners);
       return;
     }
     setLearnersLoading(true);
     setError('');
     try {
-      const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(cleanSubprogramme)}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner load failed with status ${response.status}`));
-      const data = await response.json() as { items?: ModuleOverviewLearner[] };
-      setLiveLearners(mergeLearners(Array.isArray(data.items) ? data.items : [], savedLearners));
+      const learnerResults = await Promise.all(cleanSubprogrammes.map(async subprogramme => {
+        const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(subprogramme)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner load failed with status ${response.status}`));
+        const data = await response.json() as { items?: ModuleOverviewLearner[] };
+        return Array.isArray(data.items) ? data.items : [];
+      }));
+      setLiveLearners(mergeLearners(learnerResults.flat(), savedLearners));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load Aptem learners.');
       setLiveLearners(savedLearners);
@@ -1712,14 +1748,14 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
           : { moduleName: summary.moduleName, subprogramme: '', selectedCount: 0, learners: [] };
         if (!cancelled) {
           const savedLearners = Array.isArray(nextPayload.learners) ? nextPayload.learners : [];
-          const savedSubprogramme = String(nextPayload.subprogramme || '').trim();
+          const savedSubprogrammes = parseSubprogrammeSelection(nextPayload.subprogramme);
           setPayload(nextPayload);
           setSubprogrammeOptions(nextOptions);
-          setSelectedSubprogramme(savedSubprogramme);
+          setSelectedSubprogrammes(savedSubprogrammes);
           setSelectedLearnerIds(new Set(savedLearners.filter(isLearnerSelected).map(learnerIdentity)));
           setMappingDirty(false);
-          if (savedSubprogramme) {
-            await loadLearnersForSubprogramme(savedSubprogramme, savedLearners);
+          if (savedSubprogrammes.length) {
+            await loadLearnersForSubprogrammes(savedSubprogrammes, savedLearners);
           } else {
             setLiveLearners([]);
           }
@@ -1739,16 +1775,27 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     };
     void loadMapping();
     return () => { cancelled = true; };
-  }, [hasLoaded, isActive, loadLearnersForSubprogramme, mappingEndpoint, summary.moduleName]);
+  }, [hasLoaded, isActive, loadLearnersForSubprogrammes, mappingEndpoint, parseSubprogrammeSelection, summary.moduleName]);
 
-  const handleSubprogrammeChange = (value: string) => {
-    setSelectedSubprogramme(value);
-    setSubprogrammeOpen(false);
-    setSubprogrammeSearch('');
+  const updateSubprogrammeSelection = (nextSelection: string[]) => {
     setSelectedLearnerIds(new Set());
     setMappingDirty(true);
-    setPayload(prev => ({ ...(prev || {}), moduleName: prev?.moduleName || summary.moduleName, subprogramme: value, selectedCount: 0, learners: [] }));
-    void loadLearnersForSubprogramme(value, []);
+    setSelectedSubprogrammes(nextSelection);
+    const nextPayloadValue = nextSelection.length <= 1 ? (nextSelection[0] || '') : JSON.stringify(nextSelection);
+    setPayload(prev => ({ ...(prev || {}), moduleName: prev?.moduleName || summary.moduleName, subprogramme: nextPayloadValue, selectedCount: 0, learners: [] }));
+    void loadLearnersForSubprogrammes(nextSelection, []);
+  };
+
+  const toggleSubprogramme = (value: string) => {
+    const clean = value.trim();
+    if (!clean) {
+      updateSubprogrammeSelection([]);
+      return;
+    }
+    const exists = selectedSubprogrammes.some(item => item.toLowerCase() === clean.toLowerCase());
+    updateSubprogrammeSelection(exists
+      ? selectedSubprogrammes.filter(item => item.toLowerCase() !== clean.toLowerCase())
+      : [...selectedSubprogrammes, clean]);
   };
 
   const learners = useMemo(() => {
@@ -1788,7 +1835,12 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
   }, [liveLearners, search, selectedLearnerIds, sortMode]);
 
   const selectedCount = selectedLearnerIds.size;
-  const selectedVisibleCount = learners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner))).length;
+  const learnerPageCount = Math.max(1, Math.ceil(learners.length / learnerPageSize));
+  const safeLearnerPage = Math.min(learnerPage, learnerPageCount);
+  const learnerPageStartIndex = learners.length ? (safeLearnerPage - 1) * learnerPageSize : 0;
+  const visibleLearners = learners.slice(learnerPageStartIndex, learnerPageStartIndex + learnerPageSize);
+  const learnerPageEndIndex = learnerPageStartIndex + visibleLearners.length;
+  const selectedVisibleCount = visibleLearners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner))).length;
   const isLoading = mappingLoading || optionsLoading || learnersLoading;
   const filteredSubprogrammeOptions = useMemo(() => {
     const query = subprogrammeSearch.trim().toLowerCase();
@@ -1806,6 +1858,38 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
   const suggestedSubprogrammeOptions = useMemo(() => filteredSubprogrammeOptions.filter(item => item.isSuggested), [filteredSubprogrammeOptions]);
   const normalSubprogrammeOptions = useMemo(() => filteredSubprogrammeOptions.filter(item => !item.isSuggested), [filteredSubprogrammeOptions]);
 
+  useEffect(() => {
+    setLearnerPage(1);
+  }, [search, selectedSubprogrammePayload, sortMode]);
+
+  useEffect(() => {
+    if (learnerPage > learnerPageCount) setLearnerPage(learnerPageCount);
+  }, [learnerPage, learnerPageCount]);
+
+  useEffect(() => {
+    if (!subprogrammeOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Node && subprogrammeSelectRef.current?.contains(target)) return;
+      setSubprogrammeOpen(false);
+      setSubprogrammeSearch('');
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setSubprogrammeOpen(false);
+      setSubprogrammeSearch('');
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [subprogrammeOpen]);
+
   const toggleLearner = (identity: string) => {
     setMappingDirty(true);
     setSelectedLearnerIds(prev => {
@@ -1820,7 +1904,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     setMappingDirty(true);
     setSelectedLearnerIds(prev => {
       const next = new Set(prev);
-      learners.forEach(learner => next.add(learnerIdentity(learner)));
+      visibleLearners.forEach(learner => next.add(learnerIdentity(learner)));
       return next;
     });
   };
@@ -1829,7 +1913,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     setMappingDirty(true);
     setSelectedLearnerIds(prev => {
       const next = new Set(prev);
-      learners.forEach(learner => next.delete(learnerIdentity(learner)));
+      visibleLearners.forEach(learner => next.delete(learnerIdentity(learner)));
       return next;
     });
   };
@@ -1839,9 +1923,8 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
       setError('This module does not have a stable learner mapping scope.');
       return;
     }
-    const cleanSubprogramme = selectedSubprogramme.trim();
-    if (!cleanSubprogramme) {
-      setError('Select a subprogramme before saving learner mapping.');
+    if (!selectedSubprogrammes.length) {
+      setError('Select at least one subprogramme before saving learner mapping.');
       return;
     }
     const selectedLearners = liveLearners
@@ -1852,7 +1935,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
         name: learner.learnerName || learner.name || '',
         email: learner.learnerEmail || learner.email || '',
         programmeStatus: learner.programmeStatus || learner.status || '',
-        subprogramme: cleanSubprogramme,
+        subprogramme: selectedSubprogrammePayload,
         sortOrder: learner.sortOrder ?? index,
         isSelected: true,
       }));
@@ -1862,7 +1945,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
       const response = await fetch(mappingEndpoint, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subprogramme: cleanSubprogramme, learners: selectedLearners }),
+        body: JSON.stringify({ subprogramme: selectedSubprogrammePayload, learners: selectedLearners }),
       });
       if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner mapping save failed with status ${response.status}`));
       const nextPayload = await response.json() as ModuleOverviewLearnerPayload;
@@ -1888,7 +1971,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     <div className="flex h-full min-h-0 flex-col bg-slate-50 p-5">
       <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className="grid gap-3">
-        <div className="relative min-w-0">
+        <div ref={subprogrammeSelectRef} className="relative min-w-0">
           <span className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-wide text-slate-400">Subprogramme</span>
           <button
             type="button"
@@ -1900,8 +1983,8 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
             className="flex h-11 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 text-left text-sm font-semibold text-gray-700 shadow-sm transition-colors hover:border-slate-300 focus:border-kbc-navy focus:outline-none disabled:opacity-60"
             aria-label="Subprogramme"
           >
-            <span className={`min-w-0 flex-1 truncate ${selectedSubprogramme ? '' : 'text-gray-400'}`}>
-              {selectedSubprogramme || 'Choose an Aptem subprogramme'}
+            <span className={`min-w-0 flex-1 truncate ${selectedSubprogrammeLabel ? '' : 'text-gray-400'}`}>
+              {selectedSubprogrammeLabel || 'Choose Aptem subprogrammes'}
             </span>
             <i className={`ri-arrow-down-s-line shrink-0 text-base text-gray-400 transition-transform ${subprogrammeOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -1924,11 +2007,11 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
               <div className="max-h-72 overflow-y-auto p-1.5">
                 <button
                   type="button"
-                  onClick={() => handleSubprogrammeChange('')}
+                  onClick={() => updateSubprogrammeSelection([])}
                   className="mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-bold text-gray-500 hover:bg-slate-50"
                 >
-                  <span className="h-2 w-2 rounded-full border border-slate-300" />
-                  <span>Choose an Aptem subprogramme</span>
+                  <span className="flex h-4 w-4 items-center justify-center rounded border border-slate-300 bg-white" />
+                  <span>Clear selected subprogrammes</span>
                 </button>
                 {filteredSubprogrammeOptions.length ? (
                   <>
@@ -1942,12 +2025,14 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
                         key={item.value}
                         type="button"
                         title={item.value}
-                        onClick={() => handleSubprogrammeChange(item.value)}
-                        className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${item.value === selectedSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                        onClick={() => toggleSubprogramme(item.value)}
+                        className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${selectedSubprogrammes.some(value => value.toLowerCase() === item.value.toLowerCase()) ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
                         data-subprogramme-option={item.value}
                         data-suggested="true"
                       >
-                        <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${item.value === selectedSubprogramme ? 'bg-kbc-navy' : 'bg-slate-300 group-hover:bg-slate-400'}`} />
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${selectedSubprogrammes.some(value => value.toLowerCase() === item.value.toLowerCase()) ? 'border-kbc-navy bg-kbc-navy text-white' : 'border-slate-300 bg-white text-transparent'}`}>
+                          <i className="ri-check-line text-xs" aria-hidden="true" />
+                        </span>
                         <span className="block min-w-0 flex-1 truncate leading-5">
                           {item.value}
                         </span>
@@ -1970,12 +2055,14 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
                       key={item.value}
                       type="button"
                       title={item.value}
-                      onClick={() => handleSubprogrammeChange(item.value)}
-                      className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${item.value === selectedSubprogramme ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
+                      onClick={() => toggleSubprogramme(item.value)}
+                      className={`group flex w-full items-start gap-2 rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover:bg-slate-50 ${selectedSubprogrammes.some(value => value.toLowerCase() === item.value.toLowerCase()) ? 'bg-kbc-navy/5 text-kbc-navy' : 'text-gray-700'}`}
                       data-subprogramme-option={item.value}
                       data-suggested="false"
                     >
-                      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${item.value === selectedSubprogramme ? 'bg-kbc-navy' : 'bg-slate-300 group-hover:bg-slate-400'}`} />
+                      <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${selectedSubprogrammes.some(value => value.toLowerCase() === item.value.toLowerCase()) ? 'border-kbc-navy bg-kbc-navy text-white' : 'border-slate-300 bg-white text-transparent'}`}>
+                        <i className="ri-check-line text-xs" aria-hidden="true" />
+                      </span>
                       <span className="block min-w-0 flex-1 whitespace-normal break-words leading-5">
                         {item.value}
                       </span>
@@ -2030,10 +2117,10 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
             {learners.length !== liveLearners.length && <span>{selectedVisibleCount} visible</span>}
           </span>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={selectAllVisible} disabled={!learners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-kbc-navy transition-colors hover:bg-slate-50 disabled:opacity-50">
+          <button type="button" onClick={selectAllVisible} disabled={!visibleLearners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-kbc-navy transition-colors hover:bg-slate-50 disabled:opacity-50">
             Select all visible
           </button>
-          <button type="button" onClick={clearVisible} disabled={!learners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-slate-500 transition-colors hover:bg-slate-50 disabled:opacity-50">
+          <button type="button" onClick={clearVisible} disabled={!visibleLearners.length} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-extrabold text-slate-500 transition-colors hover:bg-slate-50 disabled:opacity-50">
             Clear visible
           </button>
         </div>
@@ -2050,20 +2137,20 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
           {error}
         </div>
       )}
-      {!isLoading && !error && !selectedSubprogramme && (
+      {!isLoading && !error && selectedSubprogrammes.length === 0 && (
         <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
           <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-kbc-navy">
             <i className="ri-team-line text-xl" />
           </span>
-          <p className="mt-3 text-sm font-extrabold text-kbc-navy">Select a subprogramme to view and map learners to this module.</p>
+          <p className="mt-3 text-sm font-extrabold text-kbc-navy">Select one or more subprogrammes to view and map learners to this module.</p>
         </div>
       )}
-      {!isLoading && !error && selectedSubprogramme && liveLearners.length === 0 && (
+      {!isLoading && !error && selectedSubprogrammes.length > 0 && liveLearners.length === 0 && (
         <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
-          <p className="text-sm font-extrabold text-kbc-navy">No learners found for this subprogramme.</p>
+          <p className="text-sm font-extrabold text-kbc-navy">No learners found for the selected subprogrammes.</p>
         </div>
       )}
-      {!isLoading && !error && selectedSubprogramme && liveLearners.length > 0 && learners.length === 0 && (
+      {!isLoading && !error && selectedSubprogrammes.length > 0 && liveLearners.length > 0 && learners.length === 0 && (
         <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center shadow-sm">
           <p className="text-sm font-extrabold text-kbc-navy">No learners match your search.</p>
         </div>
@@ -2074,7 +2161,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
             <div className="min-w-0">
               <p className="text-xs font-extrabold uppercase tracking-wide text-slate-400">Learners</p>
               <p className="mt-0.5 text-sm font-extrabold text-kbc-navy">
-                {learners.length} shown
+                {learnerPageStartIndex + 1}-{learnerPageEndIndex} shown
                 {learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
               </p>
             </div>
@@ -2083,9 +2170,34 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
               <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">{liveLearners.length} total</span>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 p-3">
-            <div className="space-y-2" role="table" aria-label="Subprogramme learners">
-              {learners.map((learner, index) => {
+          <div className="min-h-0 flex-1 overflow-auto bg-white">
+            <table className="w-full table-fixed border-separate border-spacing-0 text-left" aria-label="Subprogramme learners">
+              <thead className="bg-slate-50">
+                <tr className="border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wide text-slate-400">
+                  <th className="w-12 border-b border-slate-200 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={visibleLearners.length > 0 && selectedVisibleCount === visibleLearners.length}
+                      ref={element => {
+                        if (element) element.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleLearners.length;
+                      }}
+                      onChange={event => {
+                        if (event.currentTarget.checked) selectAllVisible();
+                        else clearVisible();
+                      }}
+                      className="h-4 w-4 rounded border-slate-300"
+                      aria-label="Select all visible learners"
+                    />
+                  </th>
+                  <th className="w-[23%] border-b border-slate-200 px-3 py-3">Learner</th>
+                  <th className="w-[22%] border-b border-slate-200 px-3 py-3">Group</th>
+                  <th className="w-[24%] border-b border-slate-200 px-3 py-3">Programme</th>
+                  <th className="w-[20%] border-b border-slate-200 px-3 py-3">Manager</th>
+                  <th className="w-32 border-b border-slate-200 px-3 py-3 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+              {visibleLearners.map((learner, index) => {
                 const name = learner.learnerName || learner.name || 'Unnamed learner';
                 const email = learner.learnerEmail || learner.email || '';
                 const group = learner.group || '';
@@ -2100,73 +2212,83 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
                   : status
                     ? 'border-amber-100 bg-amber-50 text-amber-700'
                     : 'border-slate-200 bg-slate-50 text-slate-500';
-                const detailGroups = [
-                  { icon: 'ri-group-line', label: 'Group', value: group },
-                  { icon: 'ri-graduation-cap-line', label: 'Programme', value: programmeName },
-                  { icon: 'ri-user-settings-line', label: 'Manager', value: managerName, subValue: managerEmail },
-                ];
 
                 return (
-                  <div
+                  <tr
                     key={learner.learnerIdentity || `${name}-${email}-${index}`}
-                    role="row"
-                    className={`rounded-xl border bg-white p-3 shadow-sm transition-colors ${checked ? 'border-kbc-navy/40 ring-1 ring-kbc-navy/10' : 'border-slate-200 hover:border-slate-300'}`}
+                    className={`transition-colors ${checked ? 'bg-kbc-navy/[0.03]' : 'bg-white hover:bg-slate-50'}`}
                   >
-                    <div className="flex items-start gap-3">
+                    <td className="px-4 py-3 align-top">
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() => toggleLearner(identity)}
-                        className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300"
+                        className="h-4 w-4 rounded border-slate-300"
                         aria-label={`Select ${name}`}
                       />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p role="cell" className="truncate text-sm font-black text-gray-900" title={name}>{name}</p>
-                            <p role="cell" className="mt-0.5 truncate text-xs font-semibold text-slate-500" title={email || undefined}>{email || 'No learner email'}</p>
-                          </div>
-                          <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${statusClassName}`}>
-                              {status || 'No status'}
-                            </span>
-                            {checked && (
-                              <span className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-blue-700">
-                                Selected
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
+                    </td>
+                    <td className="min-w-0 px-3 py-3 align-top">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-black text-gray-900" title={name}>{name}</p>
+                        <p className="mt-0.5 truncate text-xs font-semibold text-slate-500" title={email || undefined}>{email || 'No learner email'}</p>
                         {learner.missingFromAptem && (
-                          <span className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-700">
-                            Previously selected, not found in Aptem
+                          <span className="mt-1.5 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-700">
+                            Missing from Aptem
                           </span>
                         )}
-
-                        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                          {detailGroups.map(item => (
-                            <div key={item.label} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                              <div className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-wide text-slate-400">
-                                <i className={`${item.icon} text-sm text-slate-500`} aria-hidden="true" />
-                                <span>{item.label}</span>
-                              </div>
-                              <p className="mt-1 truncate text-xs font-extrabold text-gray-800" title={item.value || undefined}>{item.value || '-'}</p>
-                              {item.subValue && (
-                                <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-500" title={item.subValue}>{item.subValue}</p>
-                              )}
-                            </div>
-                          ))}
-                        </div>
                       </div>
-                    </div>
-                  </div>
+                    </td>
+                    <td className="min-w-0 px-3 py-3 align-top">
+                      <p className="truncate text-xs font-extrabold text-gray-800" title={group || undefined}>{group || '-'}</p>
+                    </td>
+                    <td className="min-w-0 px-3 py-3 align-top">
+                      <p className="line-clamp-2 text-xs font-extrabold leading-5 text-gray-800" title={programmeName || undefined}>{programmeName || '-'}</p>
+                    </td>
+                    <td className="min-w-0 px-3 py-3 align-top">
+                      <p className="truncate text-xs font-extrabold text-gray-800" title={managerName || undefined}>{managerName || '-'}</p>
+                      {managerEmail && <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-500" title={managerEmail}>{managerEmail}</p>}
+                    </td>
+                    <td className="px-3 py-3 text-right align-top">
+                      <div className="flex flex-col items-end gap-1.5">
+                        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${statusClassName}`}>
+                          {status || 'No status'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
+              </tbody>
+            </table>
           </div>
-          <div className="shrink-0 border-t border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-500">
-            Showing {learners.length} learner{learners.length === 1 ? '' : 's'}{learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-2 text-[11px] font-bold text-slate-500">
+            <span className="mr-auto">
+              Showing {learnerPageStartIndex + 1}-{learnerPageEndIndex} of {learners.length} learner{learners.length === 1 ? '' : 's'}
+              {learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setLearnerPage(page => Math.max(1, page - 1))}
+                disabled={safeLearnerPage <= 1}
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-extrabold text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <i className="ri-arrow-left-s-line text-sm" aria-hidden="true" />
+                Previous
+              </button>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">Page {safeLearnerPage} of {learnerPageCount}</span>
+              <button
+                type="button"
+                onClick={() => setLearnerPage(page => Math.min(learnerPageCount, page + 1))}
+                disabled={safeLearnerPage >= learnerPageCount}
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-extrabold text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Next
+                <i className="ri-arrow-right-s-line text-sm" aria-hidden="true" />
+              </button>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">Selected: {selectedCount}</span>
+              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">Total: {liveLearners.length}</span>
+            </div>
           </div>
         </div>
       )}
@@ -2174,7 +2296,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
         <button
           type="button"
           onClick={() => void saveLearnerMapping()}
-          disabled={saving || !mappingDirty || !selectedSubprogramme.trim() || !mappingEndpoint}
+          disabled={saving || !mappingDirty || selectedSubprogrammes.length === 0 || !mappingEndpoint}
           className="inline-flex h-11 items-center gap-2 rounded-lg bg-kbc-navy px-4 text-xs font-extrabold text-white shadow-sm transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white/80 disabled:shadow-none"
         >
           <i className={saving ? 'ri-loader-4-line animate-spin' : mappingDirty ? 'ri-save-3-line' : 'ri-check-line'} />
