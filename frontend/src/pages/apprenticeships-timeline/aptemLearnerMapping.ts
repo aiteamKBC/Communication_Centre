@@ -142,10 +142,28 @@ export function buildAptemSubprogrammesUrl(scope: AptemSubprogrammeScope = {}): 
   return `/api/aptem/subprogrammes/${query ? `?${query}` : ''}`;
 }
 
+export async function readApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      const payload = await response.json() as { detail?: unknown; error?: unknown; message?: unknown };
+      const detail = payload.detail ?? payload.error ?? payload.message;
+      if (typeof detail === 'string' && detail.trim()) return detail.trim();
+    } catch {
+      return fallback;
+    }
+  }
+
+  const text = await response.text();
+  const trimmed = text.trim();
+  if (!trimmed || /^<!doctype html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) return fallback;
+  return trimmed;
+}
+
 async function fetchAptemSubprogrammeOptions(url: string, init?: Parameters<typeof fetch>[1]): Promise<string[]> {
   const response = await fetch(url, init);
   if (!response.ok) {
-    throw new Error((await response.text()).trim() || `Subprogramme load failed with status ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, `Subprogramme load failed with status ${response.status}`));
   }
   return parseAptemSubprogrammeOptions(await response.json());
 }

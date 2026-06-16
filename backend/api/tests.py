@@ -10,7 +10,7 @@ from django.test import Client, SimpleTestCase, TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
 
-from django.db import connection
+from django.db import DatabaseError, connection
 
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, Module, ModuleLearnerMapping, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile
 from .views import (
@@ -1004,6 +1004,14 @@ class AptemLearnerMappingTests(TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(response.json()['items'], ['Cohort Alpha', 'Cohort Beta'])
 
+	def test_subprogrammes_endpoint_returns_json_when_aptem_source_unavailable(self):
+		with patch('api.views.AptemAutoExtracting.objects.values_list', side_effect=DatabaseError('missing aptem table')):
+			response = self.client.get('/api/aptem/subprogrammes/')
+
+		self.assertEqual(response.status_code, 503)
+		self.assertEqual(response['Content-Type'], 'application/json')
+		self.assertIn('Aptem data source is unavailable', response.json()['detail'])
+
 	def test_subprogrammes_endpoint_filters_by_cohort_name(self):
 		self.create_aptem(5, 505, 'Strategy Learner', 'strategy@example.com', 'Active', 'MM LVL6 - Jun 2026: Strategy & Planning')
 		self.create_aptem(6, 506, 'Unrelated Learner', 'other@example.com', 'Active', 'Cyber Security - Sep 2026')
@@ -1014,6 +1022,25 @@ class AptemLearnerMappingTests(TestCase):
 		payload = response.json()
 		self.assertEqual(payload['items'], ['MM LVL6 - Jun 2026: Strategy & Planning'])
 		self.assertEqual(payload['options'][0]['learnersCount'], 1)
+
+	def test_subprogrammes_endpoint_splits_list_text_values(self):
+		self.create_aptem(5, 505, 'List Learner', 'list@example.com', 'Active', '["PCP (May) Sep 2026: Risk Management", "PCP (May) Jan 27: Earned Value Management (EVM)"]')
+
+		response = self.client.get('/api/aptem/subprogrammes/?programmeName=PCP')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertIn('PCP (May) Sep 2026: Risk Management', payload['items'])
+		self.assertIn('PCP (May) Jan 27: Earned Value Management (EVM)', payload['items'])
+
+	def test_learners_endpoint_matches_selected_item_inside_list_text(self):
+		self.create_aptem(5, 505, 'List Learner', 'list@example.com', 'Active', '["PCP (May) Sep 2026: Risk Management", "PCP (May) Jan 27: Earned Value Management (EVM)"]')
+
+		response = self.client.get('/api/aptem/learners/?subprogramme=PCP%20%28May%29%20Sep%202026%3A%20Risk%20Management')
+
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertIn('505', [item['learnerId'] for item in payload['items']])
 
 	def test_subprogrammes_endpoint_falls_back_to_programme_name(self):
 		self.create_aptem(5, 505, 'Management Learner', 'management@example.com', 'Active', 'Management Level 6 - Sep 2026')

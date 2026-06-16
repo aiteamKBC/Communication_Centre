@@ -1,3 +1,4 @@
+import ast
 import base64
 import hashlib
 import html
@@ -17,7 +18,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
-from django.db import models, transaction
+from django.db import DatabaseError, models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
@@ -5349,6 +5350,25 @@ def normalize_aptem_lookup(value) -> str:
 	return normalize_aptem_text(value).casefold()
 
 
+def normalize_aptem_subprogramme_values(value) -> list[str]:
+	clean = normalize_aptem_text(value)
+	if not clean:
+		return []
+	if clean.startswith('[') and clean.endswith(']'):
+		for parser in (json.loads, ast.literal_eval):
+			try:
+				parsed = parser(clean)
+			except (ValueError, TypeError, SyntaxError, json.JSONDecodeError):
+				continue
+			if isinstance(parsed, list):
+				return [
+					normalize_aptem_text(item)
+					for item in parsed
+					if normalize_aptem_text(item)
+				]
+	return [clean]
+
+
 def normalize_aptem_scope_lookup(value) -> str:
 	clean = html.unescape(normalize_aptem_text(value))
 	clean = clean.replace('&', ' and ')
@@ -5452,6 +5472,24 @@ def serialize_module_learner_mapping(item: ModuleLearnerMapping, aptem_by_identi
 	}
 
 
+def aptem_source_unavailable_response(error: DatabaseError) -> JsonResponse:
+	logger.warning('Aptem data source is unavailable: %s', error)
+	return JsonResponse({
+		'detail': 'Aptem data source is unavailable. Check APTEM_DATABASE_URL and the aptem_auto_extracting table on the live server.',
+	}, status=503)
+
+
+def aptem_identity_lookup() -> dict:
+	return {
+		item['learnerIdentity']: item
+		for item in (
+			serialize_aptem_learner(aptem_item)
+			for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
+		)
+		if item.get('learnerIdentity')
+	}
+
+
 def validate_module_catalogue_id(module_catalogue_id: str):
 	if not module_catalogue_id:
 		return None, JsonResponse({'detail': 'moduleCatalogueId is required.'}, status=400)
@@ -5492,13 +5530,15 @@ def aptem_subprogrammes(request):
 	cohort_name = normalize_aptem_text(request.GET.get('cohortName', ''))
 	module_name = normalize_aptem_text(request.GET.get('moduleName', ''))
 	values_by_key: dict[str, dict] = {}
-	for raw in AptemAutoExtracting.objects.values_list('subprogramme', flat=True):
-		clean = normalize_aptem_text(raw)
-		key = normalize_aptem_lookup(clean)
-		if clean and key not in values_by_key:
-			values_by_key[key] = {'subprogramme': clean, 'learnersCount': 0}
-		if clean:
-			values_by_key[key]['learnersCount'] += 1
+	try:
+		for raw in AptemAutoExtracting.objects.values_list('subprogramme', flat=True):
+			for clean in normalize_aptem_subprogramme_values(raw):
+				key = normalize_aptem_lookup(clean)
+				if key not in values_by_key:
+					values_by_key[key] = {'subprogramme': clean, 'learnersCount': 0}
+				values_by_key[key]['learnersCount'] += 1
+	except DatabaseError as error:
+		return aptem_source_unavailable_response(error)
 
 	options = list(values_by_key.values())
 	filtered_by = ''
@@ -5533,11 +5573,14 @@ def aptem_learners(request):
 	if not subprogramme:
 		return JsonResponse({'detail': 'subprogramme is required.'}, status=400)
 	target = normalize_aptem_lookup(subprogramme)
-	learners = [
-		serialize_aptem_learner(item)
-		for item in AptemAutoExtracting.objects.all().order_by('full_name', 'email', 'learner_id')
-		if normalize_aptem_lookup(item.subprogramme) == target
-	]
+	try:
+		learners = [
+			serialize_aptem_learner(item)
+			for item in AptemAutoExtracting.objects.all().order_by('full_name', 'email', 'learner_id')
+			if any(normalize_aptem_lookup(value) == target for value in normalize_aptem_subprogramme_values(item.subprogramme))
+		]
+	except DatabaseError as error:
+		return aptem_source_unavailable_response(error)
 	return JsonResponse({'items': learners, 'subprogramme': subprogramme})
 
 
@@ -5559,14 +5602,10 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 		selected_subprogramme = records[0].subprogramme if records else ''
 		if selected_subprogramme:
 			records = [item for item in records if item.subprogramme == selected_subprogramme]
-		aptem_by_identity = {
-			item['learnerIdentity']: item
-			for item in (
-				serialize_aptem_learner(aptem_item)
-				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
-			)
-			if item.get('learnerIdentity')
-		}
+		try:
+			aptem_by_identity = aptem_identity_lookup()
+		except DatabaseError as error:
+			return aptem_source_unavailable_response(error)
 		return JsonResponse({
 			'cohortId': cohort_id,
 			'moduleBlockId': module_block_id,
@@ -5634,14 +5673,10 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 				serialize_module_learner_mapping(item)
 				for item in ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
 			]
-		aptem_by_identity = {
-			item['learnerIdentity']: item
-			for item in (
-				serialize_aptem_learner(aptem_item)
-				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
-			)
-			if item.get('learnerIdentity')
-		}
+		try:
+			aptem_by_identity = aptem_identity_lookup()
+		except DatabaseError as error:
+			return aptem_source_unavailable_response(error)
 		after = [
 			serialize_module_learner_mapping(item, aptem_by_identity)
 			for item in ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
@@ -5676,14 +5711,10 @@ def training_plan_module_learners(request, module_catalogue_id: str):
 		selected_subprogramme = records[0].subprogramme if records else ''
 		if selected_subprogramme:
 			records = [item for item in records if item.subprogramme == selected_subprogramme]
-		aptem_by_identity = {
-			item['learnerIdentity']: item
-			for item in (
-				serialize_aptem_learner(aptem_item)
-				for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
-			)
-			if item.get('learnerIdentity')
-		}
+		try:
+			aptem_by_identity = aptem_identity_lookup()
+		except DatabaseError as error:
+			return aptem_source_unavailable_response(error)
 		learners = [
 			serialize_module_learner_mapping(item, aptem_by_identity)
 			for item in sorted(records, key=lambda item: (item.sort_order, item.learner_name.casefold(), item.id))

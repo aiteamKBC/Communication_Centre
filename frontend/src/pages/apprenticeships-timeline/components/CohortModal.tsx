@@ -10,7 +10,7 @@ import ModernTimeField from './ModernTimeField';
 import SelectField from './SelectField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import { normalizeTutorName, profileIdForTutorName } from '../tutorProfiles';
-import { buildAptemSubprogrammeScope } from '../aptemLearnerMapping';
+import { buildAptemSubprogrammeScope, readApiErrorMessage } from '../aptemLearnerMapping';
 
 interface Props {
   mode: 'add' | 'edit';
@@ -1500,7 +1500,7 @@ export default function CohortModal({
       setAptemError('');
       try {
         const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(aptemSubprogramme)}`);
-        if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load Aptem learners.');
+        if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Could not load Aptem learners.'));
         const payload = await response.json() as { items?: AptemLearner[] };
         if (!cancelled) setAptemLearners(Array.isArray(payload.items) ? payload.items : []);
       } catch (error) {
@@ -1569,7 +1569,7 @@ export default function CohortModal({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subprogramme, learners: selectedLearners }),
     });
-    if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
+    if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner mapping save failed with status ${response.status}`));
     setAptemDirty(false);
   };
 

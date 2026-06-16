@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import type { ChangeEvent } from 'react';
 import type { CatalogModule, KsbProfile, SessionKsbMapping } from '../types';
 import { kbcSwal } from '@/components/feature/sweetAlert';
-import { loadAptemSubprogrammesForModule, rankAptemSubprogrammeOptions } from '../aptemLearnerMapping';
+import { loadAptemSubprogrammesForModule, rankAptemSubprogrammeOptions, readApiErrorMessage } from '../aptemLearnerMapping';
 
 interface Props {
   modules: CatalogModule[];
@@ -542,7 +542,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       setAptemError('');
       try {
         const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(aptemSubprogramme)}`);
-        if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load Aptem learners.');
+        if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Could not load Aptem learners.'));
         const payload = await response.json() as { items?: AptemLearner[] };
         if (!cancelled) setAptemLearners(Array.isArray(payload.items) ? payload.items : []);
       } catch (error) {
@@ -628,7 +628,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subprogramme, learners: selectedLearners }),
     });
-    if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
+    if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner mapping save failed with status ${response.status}`));
   };
 
   const sessionCount = useMemo(() => {

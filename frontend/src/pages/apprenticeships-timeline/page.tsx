@@ -25,7 +25,7 @@ import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
 import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 import { buildCoachProfilesFromGroups } from './coachProfiles';
-import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule } from './aptemLearnerMapping';
+import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
 
 type ModalState =
   | { open: false }
@@ -1681,7 +1681,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     setError('');
     try {
       const response = await fetch(`/api/aptem/learners/?subprogramme=${encodeURIComponent(cleanSubprogramme)}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error((await response.text()).trim() || `Learner load failed with status ${response.status}`);
+      if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner load failed with status ${response.status}`));
       const data = await response.json() as { items?: ModuleOverviewLearner[] };
       setLiveLearners(mergeLearners(Array.isArray(data.items) ? data.items : [], savedLearners));
     } catch (loadError) {
@@ -1864,7 +1864,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subprogramme: cleanSubprogramme, learners: selectedLearners }),
       });
-      if (!response.ok) throw new Error((await response.text()).trim() || `Learner mapping save failed with status ${response.status}`);
+      if (!response.ok) throw new Error(await readApiErrorMessage(response, `Learner mapping save failed with status ${response.status}`));
       const nextPayload = await response.json() as ModuleOverviewLearnerPayload;
       const savedLearners = Array.isArray(nextPayload.learners) ? nextPayload.learners : selectedLearners;
       setPayload({ ...nextPayload, moduleName: nextPayload.moduleName || payload?.moduleName || summary.moduleName, selectedCount: selectedLearners.length });
