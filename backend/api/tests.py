@@ -1456,7 +1456,6 @@ class TrainingPlanPartialUpdateTests(TestCase):
 			'tutorUnavailable': True,
 			'tutorUnavailableReason': 'Annual leave',
 			'coverageTutorProfileId': str(self.coverage_tutor.id),
-			'coverageReason': 'Qualified cover',
 			'coverageNotes': 'Only this session',
 		})
 
@@ -1468,6 +1467,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(len(coverage), 1)
 		self.assertEqual(coverage[0]['sessionNumber'], 2)
 		self.assertEqual(coverage[0]['coverageTutorProfileId'], str(self.coverage_tutor.id))
+		self.assertEqual(coverage[0]['coverageReason'], '')
 		self.assertEqual(self.other_row.session_coverage_json, before_other)
 
 	def test_ksb_update_changes_only_ksb_fields_for_target_session(self):

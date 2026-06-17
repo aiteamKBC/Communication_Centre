@@ -1852,9 +1852,6 @@ def normalize_session_coverage(value) -> list[dict]:
 			if not CoachProfile.objects.filter(pk=coverage_coach_id, is_active=True).exists():
 				continue
 			coverage_status = 'covered'
-		coverage_reason = str(item.get('coverageReason', '')).strip()
-		if (coverage_id or coverage_coach_id) and not coverage_reason:
-			continue
 		normalized.append({
 			'sessionNumber': session_number,
 			'assignedTutorProfileId': str(assigned_id) if assigned_id else '',
@@ -1864,8 +1861,8 @@ def normalize_session_coverage(value) -> list[dict]:
 			'tutorUnavailable': tutor_unavailable,
 			'tutorUnavailableReason': str(item.get('tutorUnavailableReason', '')).strip(),
 			'tutorUnavailableNotes': str(item.get('tutorUnavailableNotes', '')).strip(),
-			'coverageReason': coverage_reason,
-			'coverageNotes': str(item.get('coverageNotes', '')).strip(),
+			'coverageReason': '',
+			'coverageNotes': str(item.get('coverageNotes', '')).strip() if tutor_unavailable else '',
 		})
 	return normalized
 
@@ -4309,9 +4306,6 @@ def training_plan_session_coverage(request, session_id: int):
 			return JsonResponse({'detail': 'coverageTutorProfileId cannot match assignedTutorProfileId.'}, status=400)
 
 		tutor_unavailable = bool(payload.get('tutorUnavailable'))
-		coverage_reason = str(payload.get('coverageReason') or '').strip()
-		if (coverage_id or coverage_coach_id) and not coverage_reason:
-			return JsonResponse({'detail': 'coverageReason is required when coverage is selected.'}, status=400)
 
 		before = serialize_training_plan(row)
 		current_coverage = [item for item in normalize_session_coverage(row.session_coverage_json) if item.get('sessionNumber') != session_number]
@@ -4324,8 +4318,8 @@ def training_plan_session_coverage(request, session_id: int):
 			'tutorUnavailable': tutor_unavailable,
 			'tutorUnavailableReason': str(payload.get('tutorUnavailableReason') or '').strip() if tutor_unavailable else '',
 			'tutorUnavailableNotes': str(payload.get('tutorUnavailableNotes') or '').strip() if tutor_unavailable else '',
-			'coverageReason': coverage_reason if (coverage_id or coverage_coach_id) else '',
-			'coverageNotes': str(payload.get('coverageNotes') or '').strip() if (coverage_id or coverage_coach_id) else '',
+			'coverageReason': '',
+			'coverageNotes': str(payload.get('coverageNotes') or '').strip() if tutor_unavailable else '',
 		}
 		if next_item['coverageStatus'] != 'none' or next_item['tutorUnavailable'] or next_item['coverageTutorProfileId'] or next_item['coverageCoachProfileId']:
 			current_coverage.append(next_item)

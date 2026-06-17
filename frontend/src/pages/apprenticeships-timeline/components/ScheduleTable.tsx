@@ -39,7 +39,7 @@ interface TutorSessionOccurrence {
 }
 
 interface CoverageConflict {
-  role: 'Assigned tutor' | 'Coverage tutor';
+  role: 'Assigned tutor' | 'Coverage tutor' | 'Assigned coach' | 'Coverage coach';
   date: string;
   time: string;
   module: string;
@@ -60,6 +60,8 @@ interface CoachCandidate {
 
 interface CoachCoverageSuggestion {
   candidate: CoachCandidate;
+  hasConflict: boolean;
+  conflict: CoverageConflict | null;
   score: number;
   sameModuleSessions: number;
   sameProgrammeSessions: number;
@@ -195,6 +197,11 @@ const TABLE_COLUMNS = [
   180, // Next module
 ] as const;
 const TABLE_MIN_WIDTH = TABLE_COLUMNS.reduce((sum, width) => sum + width, 0);
+const suggestionBadgeBase = 'rounded-full px-2 py-0.5 text-[10px] font-extrabold';
+const suggestionMetaBadgeBase = 'rounded-full px-2 py-0.5 text-[10px] font-bold';
+const conflictBadgeClass = (hasConflict: boolean) =>
+  `${suggestionBadgeBase} ${hasConflict ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`;
+const sourceBadgeClass = `${suggestionBadgeBase} bg-slate-100 text-slate-600`;
 
 const isFinishedRow = (row: Pick<DerivedScheduleRow, 'completedSessions' | 'totalSessions'>) =>
   row.totalSessions > 0 && row.completedSessions >= row.totalSessions;
@@ -959,8 +966,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       tutorUnavailable,
       tutorUnavailableReason: tutorUnavailable ? existing?.tutorUnavailableReason || '' : '',
       tutorUnavailableNotes: tutorUnavailable ? existing?.tutorUnavailableNotes || '' : '',
-      coverageReason: hasCoverageTutor || hasCoverageCoach ? existing?.coverageReason || '' : '',
-      coverageNotes: hasCoverageTutor || hasCoverageCoach ? existing?.coverageNotes || '' : '',
+      coverageReason: '',
+      coverageNotes: tutorUnavailable ? existing?.coverageNotes || '' : '',
     });
     setCoverageError('');
     setCreateTutorName('');
@@ -1166,8 +1173,64 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
   };
 
   const coverageConflictMessage = (conflict: CoverageConflict) => (
-    `This tutor already has ${conflict.role.toLowerCase()} work on ${formatDisplayDate(conflict.date)} (${conflict.time}) for ${conflict.module} - ${conflict.programme}${conflict.groupName ? ` - ${conflict.groupName}` : ''}.`
+    `This person already has ${conflict.role.toLowerCase()} work on ${formatDisplayDate(conflict.date)} (${conflict.time}) for ${conflict.module} - ${conflict.programme}${conflict.groupName ? ` - ${conflict.groupName}` : ''}.`
   );
+
+  const getCoachCoverageConflict = (candidate: CoachCandidate, row: DerivedScheduleRow, session: SessionInstance): CoverageConflict | null => {
+    if (!candidate.normalizedName && !candidate.profile?.id) return null;
+
+    for (const group of groups) {
+      for (const cohort of group.rows) {
+        for (const block of cohort.blks) {
+          const sessionDates = getSessionDates(block, getActiveRowHolidays(cohort, holidays));
+          const startTime = block.sessionStartTime || '09:00';
+          const endTime = block.sessionEndTime || '11:00';
+          if (!timeRangesOverlap(startTime, endTime, row.sessionStartTime, row.sessionEndTime)) {
+            continue;
+          }
+
+          const programme = programmeLabelFromGroupName(group.name);
+          const groupName = (block.groupName || cohort.label || '').trim() || undefined;
+          const module = getModuleMeta(block.mod).lbl;
+          if (
+            block.id !== row.blockId
+            && normalizeTutorName(block.coachName || '') === candidate.normalizedName
+            && sessionDates.includes(session.date)
+          ) {
+            return {
+              role: 'Assigned coach',
+              date: session.date,
+              time: formatTimeRange(startTime, endTime),
+              module,
+              programme,
+              cohort: cohort.label,
+              groupName,
+            };
+          }
+
+          const conflictingCoverage = (block.sessionCoverage || []).find(item => {
+            if (block.id === row.blockId && item.sessionNumber === session.number) return false;
+            const coverageDate = sessionDates[item.sessionNumber - 1];
+            return item.coverageCoachProfileId === candidate.profile?.id && coverageDate === session.date;
+          });
+
+          if (conflictingCoverage) {
+            return {
+              role: 'Coverage coach',
+              date: session.date,
+              time: formatTimeRange(startTime, endTime),
+              module,
+              programme,
+              cohort: cohort.label,
+              groupName,
+            };
+          }
+        }
+      }
+    }
+
+    return null;
+  };
 
   const getCoverageSuggestions = (row: DerivedScheduleRow, session: SessionInstance) => {
     const activeProfiles = tutorProfiles.filter(profile => profile.isActive && profile.id !== row.assignedTutorProfileId);
@@ -1236,14 +1299,16 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       })));
 
       const totalAssignedSessions = trainingPlanSessions || candidate.sessionCount || 0;
-      const score = (sameModuleSessions * 6) + (sameProgrammeSessions * 3) + Math.min(totalAssignedSessions, 80) / 10;
+      const conflict = coverageEditor ? getCoachCoverageConflict(candidate, row, coverageEditor.session) : null;
+      const hasConflict = Boolean(conflict);
+      const score = (hasConflict ? -1000 : 0) + (sameModuleSessions * 6) + (sameProgrammeSessions * 3) + Math.min(totalAssignedSessions, 80) / 10;
       const reasons = [
         sameModuleSessions ? `${sameModuleSessions} session${sameModuleSessions === 1 ? '' : 's'} in this module` : '',
         sameProgrammeSessions ? `${sameProgrammeSessions} session${sameProgrammeSessions === 1 ? '' : 's'} in this programme` : '',
         totalAssignedSessions ? `${totalAssignedSessions} total assigned sessions` : 'No assigned sessions yet',
       ].filter(Boolean);
 
-      return { candidate, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
+      return { candidate, hasConflict, conflict, score, sameModuleSessions, sameProgrammeSessions, totalAssignedSessions, reasons };
     }).sort((a, b) => b.score - a.score || a.candidate.name.localeCompare(b.candidate.name));
   };
 
@@ -1265,10 +1330,6 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
         return;
       }
     }
-    if ((coverageTutorProfileId || coverageCoachProfileId) && !coverageDraft.coverageReason?.trim()) {
-      setCoverageError('Coverage reason is required when coverage is selected.');
-      return;
-    }
     const normalized: SessionCoverage = {
       ...coverageDraft,
       coverageTutorProfileId,
@@ -1277,8 +1338,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       tutorUnavailable,
       tutorUnavailableReason: tutorUnavailable ? coverageDraft.tutorUnavailableReason?.trim() || '' : '',
       tutorUnavailableNotes: tutorUnavailable ? coverageDraft.tutorUnavailableNotes?.trim() || '' : '',
-      coverageReason: coverageTutorProfileId || coverageCoachProfileId ? coverageDraft.coverageReason?.trim() || '' : '',
-      coverageNotes: coverageTutorProfileId || coverageCoachProfileId ? coverageDraft.coverageNotes?.trim() || '' : '',
+      coverageReason: '',
+      coverageNotes: tutorUnavailable ? coverageDraft.coverageNotes?.trim() || '' : '',
     };
     setCoverageSaving(true);
     try {
@@ -1340,6 +1401,14 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       return;
     }
 
+    if (coverageEditor) {
+      const conflict = getCoachCoverageConflict(candidate, coverageEditor.row, coverageEditor.session);
+      if (conflict) {
+        setCoverageError(coverageConflictMessage(conflict));
+        return;
+      }
+    }
+
     let profile = candidate.profile;
     if (!profile) {
       if (!onCreateCoachProfile) {
@@ -1358,11 +1427,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
     setCoverageDraft(prev => prev ? {
       ...prev,
       coverageCoachProfileId: profile.id,
-      coverageReason: prev.coverageReason || (
-        reasons?.length
-          ? `Suggested from Training Plan coach experience: ${reasons.join(', ')}`
-          : `Suggested coverage coach: ${profile.name}`
-      ),
+      coverageReason: '',
     } : prev);
     setCoverageError('');
   };
@@ -1997,7 +2062,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
       {coverageEditor && coverageDraft && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[4px]" onClick={() => setCoverageEditor(null)} />
-          <div className="relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+          <div className="relative flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="shrink-0 flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
               <div>
                 <p className="text-xs font-semibold text-white/60">{coverageEditor.row.module} - Session {coverageEditor.session.number}</p>
@@ -2008,7 +2073,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 p-5">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50 p-5">
+              <div className="grid gap-4">
               <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-700">
                 <input
                   type="checkbox"
@@ -2021,7 +2087,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                       tutorUnavailableReason: checked ? prev.tutorUnavailableReason : '',
                       coverageTutorProfileId: checked ? prev.coverageTutorProfileId : '',
                       coverageCoachProfileId: checked ? prev.coverageCoachProfileId : '',
-                      coverageReason: checked ? prev.coverageReason : '',
+                      coverageReason: '',
                       coverageNotes: checked ? prev.coverageNotes : '',
                     } : prev);
                     setCoverageError('');
@@ -2039,21 +2105,22 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                   placeholder="e.g. sickness, annual leave"
                 />
               </div>
+              {!coverageDraft.tutorUnavailable && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
+                  Mark the assigned tutor as unavailable before assigning coverage.
+                </div>
+              )}
+              <div className="grid gap-3 xl:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Tutor</label>
-                {!coverageDraft.tutorUnavailable && (
-                  <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
-                    Mark the assigned tutor as unavailable before assigning coverage.
-                  </div>
-                )}
-                <div className="mb-3 rounded-xl border border-gray-200 bg-white">
+                <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
                   <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
                     <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Doctors</p>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                      {coverageSuggestions.filter(item => !item.hasConflict).length} available
+                      {coverageSuggestions.filter(item => !item.hasConflict).length} no conflict
                     </span>
                   </div>
-                  <div className="grid max-h-64 gap-2 overflow-y-auto p-2">
+                  <div className="grid h-56 gap-2 overflow-y-auto p-2">
                     {coverageSuggestions.map(suggestion => {
                       const selected = coverageDraft.coverageTutorProfileId === suggestion.profile.id;
                       return (
@@ -2073,7 +2140,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                             setCoverageDraft(prev => prev ? {
                               ...prev,
                               coverageTutorProfileId: suggestion.profile.id,
-                              coverageReason: prev.coverageReason || `Suggested from Training Plan experience: ${suggestion.reasons.join(', ')}`,
+                              coverageReason: '',
                             } : prev);
                             setCoverageError('');
                           }}
@@ -2085,14 +2152,17 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="text-sm font-extrabold text-gray-800">{suggestion.profile.name}</span>
-                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${suggestion.hasConflict ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                              {suggestion.hasConflict ? 'Conflict' : 'Available'}
-                            </span>
+                            <div className="flex flex-wrap gap-1">
+                              <span className={conflictBadgeClass(suggestion.hasConflict)}>
+                                {suggestion.hasConflict ? 'Conflict' : 'No conflict'}
+                              </span>
+                              <span className={sourceBadgeClass}>Tutor profile</span>
+                            </div>
                           </div>
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {suggestion.sameModuleSessions > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">Same module</span>}
-                            {suggestion.sameProgrammeSessions > 0 && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Same programme</span>}
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{suggestion.totalAssignedSessions} sessions</span>
+                            {suggestion.sameModuleSessions > 0 && <span className={`${suggestionMetaBadgeBase} bg-blue-100 text-blue-700`}>Same module</span>}
+                            {suggestion.sameProgrammeSessions > 0 && <span className={`${suggestionMetaBadgeBase} bg-indigo-100 text-indigo-700`}>Same programme</span>}
+                            <span className={`${suggestionMetaBadgeBase} bg-slate-100 text-slate-600`}>{suggestion.totalAssignedSessions} sessions</span>
                           </div>
                           <p className="mt-1 text-xs text-gray-500">{suggestion.reasons.join(' - ')}</p>
                           {suggestion.conflict && (
@@ -2108,84 +2178,58 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                     )}
                   </div>
                 </div>
-                <SelectField
-                  value={coverageDraft.coverageTutorProfileId || ''}
-                  options={coverageDraft.tutorUnavailable ? coverageTutorOptions : []}
-                  onChange={value => {
-                    if (!coverageDraft.tutorUnavailable) {
-                      setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
-                      return;
-                    }
-                    const conflict = getCoverageConflict(value, coverageEditor.row, coverageEditor.session);
-                    if (conflict) {
-                      setCoverageError(coverageConflictMessage(conflict));
-                      return;
-                    }
-                    setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: value } : prev);
-                    setCoverageError('');
-                  }}
-                  placeholder="Select coverage tutor"
-                  label="Tutor Profiles"
-                  searchPlaceholder="Search tutors..."
-                  emptyTitle="No tutors found"
-                  emptyText="Create a Tutor Profile first."
-                />
-                {onCreateTutorProfile && (
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={createTutorName}
-                      onChange={event => setCreateTutorName(event.target.value)}
-                      placeholder="New tutor name"
-                      className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
-                    />
-                    <button type="button" onClick={() => void createCoverageTutor()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
-                      Create
-                    </button>
-                  </div>
-                )}
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Coach</label>
-                <div className="mb-3 rounded-xl border border-gray-200 bg-white">
+                <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
                   <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2">
                     <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500">Suggested Coverage Coaches</p>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                      {coachCoverageSuggestions.length} coaches
+                      {coachCoverageSuggestions.filter(item => !item.hasConflict).length} no conflict
                     </span>
                   </div>
-                  <div className="grid max-h-48 gap-2 overflow-y-auto p-2">
+                  <div className="grid h-56 gap-2 overflow-y-auto p-2">
                     {coachCoverageSuggestions.map(suggestion => {
                       const candidate = suggestion.candidate;
                       const selected = coverageDraft.coverageCoachProfileId === candidate.profile?.id || coverageDraft.coverageCoachProfileId === candidate.key;
-                      const sourceLabel = candidate.source === 'both' ? 'Training Plan + Profile' : candidate.source === 'profile' ? 'Coach Profile' : 'Training Plan';
-                      const sourceClassName = candidate.source === 'both'
-                        ? 'bg-cyan-100 text-cyan-700'
-                        : candidate.source === 'profile'
-                          ? 'bg-indigo-100 text-indigo-700'
-                          : 'bg-amber-100 text-amber-700';
+                      const sourceLabel = candidate.source === 'training-plan' ? 'Training plan only' : 'Coach profile';
                       return (
                         <button
                           key={candidate.key}
                           type="button"
-                          disabled={!coverageDraft.tutorUnavailable}
-                          onClick={() => void selectCoverageCoach(candidate.key, suggestion.reasons)}
+                          disabled={!coverageDraft.tutorUnavailable || suggestion.hasConflict}
+                          onClick={() => {
+                            if (suggestion.conflict) {
+                              setCoverageError(coverageConflictMessage(suggestion.conflict));
+                              return;
+                            }
+                            void selectCoverageCoach(candidate.key, suggestion.reasons);
+                          }}
                           className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
-                          style={{ borderColor: selected ? '#1B2A4A' : '#E5E7EB', background: selected ? '#F8FAFC' : '#FFFFFF' }}
+                          style={{ borderColor: selected ? '#1B2A4A' : suggestion.hasConflict ? '#FCA5A5' : '#E5E7EB', background: selected ? '#F8FAFC' : '#FFFFFF' }}
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="text-sm font-extrabold text-gray-800">{candidate.name}</span>
-                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${sourceClassName}`}>
-                              {sourceLabel}
-                            </span>
+                            <div className="flex flex-wrap gap-1">
+                              <span className={conflictBadgeClass(suggestion.hasConflict)}>
+                                {suggestion.hasConflict ? 'Conflict' : 'No conflict'}
+                              </span>
+                              <span className={sourceBadgeClass}>
+                                {sourceLabel}
+                              </span>
+                            </div>
                           </div>
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {suggestion.sameModuleSessions > 0 && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">Same module</span>}
-                            {suggestion.sameProgrammeSessions > 0 && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">Same programme</span>}
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{suggestion.totalAssignedSessions} sessions</span>
+                            {suggestion.sameModuleSessions > 0 && <span className={`${suggestionMetaBadgeBase} bg-blue-100 text-blue-700`}>Same module</span>}
+                            {suggestion.sameProgrammeSessions > 0 && <span className={`${suggestionMetaBadgeBase} bg-indigo-100 text-indigo-700`}>Same programme</span>}
+                            <span className={`${suggestionMetaBadgeBase} bg-slate-100 text-slate-600`}>{suggestion.totalAssignedSessions} sessions</span>
                           </div>
                           <p className="mt-1 text-xs text-gray-500">
                             {suggestion.reasons.join(' - ')}{candidate.email ? ` - ${candidate.email}` : ''}
                           </p>
+                          {suggestion.conflict && (
+                            <p className="mt-1 text-xs font-bold text-red-600">{coverageConflictMessage(suggestion.conflict)}</p>
+                          )}
                         </button>
                       );
                     })}
@@ -2196,47 +2240,77 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                     )}
                   </div>
                 </div>
-                <SelectField
-                  value={coverageCoachSelectValue}
-                  options={coverageDraft.tutorUnavailable ? coachOptions : []}
-                  onChange={value => void selectCoverageCoach(value)}
-                  placeholder="Select coverage coach"
-                  label="Coach Profiles"
-                  searchPlaceholder="Search coaches..."
-                  emptyTitle="No coaches found"
-                  emptyText="Add coach names in the Training Plan or create Coach Profiles first."
-                />
-                {onCreateCoachProfile && (
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      value={createCoachName}
-                      onChange={event => setCreateCoachName(event.target.value)}
-                      placeholder="New coach name"
-                      className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
-                    />
-                    <button type="button" onClick={() => void createCoverageCoach()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
-                      Create
-                    </button>
-                  </div>
+              </div>
+              <SelectField
+                value={coverageDraft.coverageTutorProfileId || ''}
+                options={coverageDraft.tutorUnavailable ? coverageTutorOptions : []}
+                onChange={value => {
+                  if (!coverageDraft.tutorUnavailable) {
+                    setCoverageError('Mark the assigned tutor as unavailable before assigning coverage.');
+                    return;
+                  }
+                  const conflict = getCoverageConflict(value, coverageEditor.row, coverageEditor.session);
+                  if (conflict) {
+                    setCoverageError(coverageConflictMessage(conflict));
+                    return;
+                  }
+                  setCoverageDraft(prev => prev ? { ...prev, coverageTutorProfileId: value } : prev);
+                  setCoverageError('');
+                }}
+                placeholder="Select coverage tutor"
+                label="Tutor Profiles"
+                searchPlaceholder="Search tutors..."
+                emptyTitle="No tutors found"
+                emptyText="Create a Tutor Profile first."
+              />
+              <SelectField
+                value={coverageCoachSelectValue}
+                options={coverageDraft.tutorUnavailable ? coachOptions : []}
+                onChange={value => void selectCoverageCoach(value)}
+                placeholder="Select coverage coach"
+                label="Coach Profiles"
+                searchPlaceholder="Search coaches..."
+                emptyTitle="No coaches found"
+                emptyText="Add coach names in the Training Plan or create Coach Profiles first."
+              />
+              <div className="min-h-10">
+                {onCreateTutorProfile && (
+                <div className="flex h-full gap-2">
+                  <input
+                    value={createTutorName}
+                    onChange={event => setCreateTutorName(event.target.value)}
+                    placeholder="New tutor name"
+                    className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                  />
+                  <button type="button" onClick={() => void createCoverageTutor()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
+                    Create
+                  </button>
+                </div>
                 )}
               </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Coverage Reason</label>
-                <input
-                  value={coverageDraft.coverageReason || ''}
-                  onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageReason: event.target.value } : prev)}
-                  disabled={!coverageDraft.tutorUnavailable || (!coverageDraft.coverageTutorProfileId && !coverageDraft.coverageCoachProfileId)}
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
-                  placeholder="Required when coverage tutor or coach is selected"
-                />
+              <div className="min-h-10">
+                {onCreateCoachProfile && (
+                <div className="flex h-full gap-2">
+                  <input
+                    value={createCoachName}
+                    onChange={event => setCreateCoachName(event.target.value)}
+                    placeholder="New coach name"
+                    className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
+                  />
+                  <button type="button" onClick={() => void createCoverageCoach()} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-kbc-navy">
+                    Create
+                  </button>
+                </div>
+                )}
+              </div>
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">Notes</label>
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={coverageDraft.coverageNotes || ''}
                   onChange={event => setCoverageDraft(prev => prev ? { ...prev, coverageNotes: event.target.value } : prev)}
-                  disabled={!coverageDraft.tutorUnavailable || (!coverageDraft.coverageTutorProfileId && !coverageDraft.coverageCoachProfileId)}
+                  disabled={!coverageDraft.tutorUnavailable}
                   className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none"
                 />
               </div>
@@ -2244,6 +2318,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">Coverage Required</div>
               )}
               {coverageError && <p className="text-xs font-bold text-red-600">{coverageError}</p>}
+              </div>
             </div>
             <div className="shrink-0 flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
               <button onClick={() => setCoverageEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>

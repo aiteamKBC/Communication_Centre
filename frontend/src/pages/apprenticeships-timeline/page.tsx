@@ -286,10 +286,8 @@ function normalizeSessionCoverage(value: unknown, count = 0, assignedTutorProfil
     const coverageTutorProfileId = String(record.coverageTutorProfileId || '').trim();
     const coverageCoachProfileId = String(record.coverageCoachProfileId || '').trim();
     const tutorUnavailable = Boolean(record.tutorUnavailable) || Boolean(coverageTutorProfileId) || Boolean(coverageCoachProfileId);
-    const coverageReason = String(record.coverageReason || '').trim();
     const coverageStatus = coverageTutorProfileId || coverageCoachProfileId ? 'covered' : tutorUnavailable ? 'required' : 'none';
-    if (coverageTutorProfileId && (!coverageReason || coverageTutorProfileId === assignedTutorProfileId)) return items;
-    if (coverageCoachProfileId && !coverageReason) return items;
+    if (coverageTutorProfileId && coverageTutorProfileId === assignedTutorProfileId) return items;
     items.push({
       sessionNumber,
       assignedTutorProfileId: String(record.assignedTutorProfileId || assignedTutorProfileId || '').trim(),
@@ -299,7 +297,7 @@ function normalizeSessionCoverage(value: unknown, count = 0, assignedTutorProfil
       tutorUnavailable,
       tutorUnavailableReason: String(record.tutorUnavailableReason || '').trim(),
       tutorUnavailableNotes: String(record.tutorUnavailableNotes || '').trim(),
-      coverageReason,
+      coverageReason: '',
       coverageNotes: String(record.coverageNotes || '').trim(),
     });
     return items;

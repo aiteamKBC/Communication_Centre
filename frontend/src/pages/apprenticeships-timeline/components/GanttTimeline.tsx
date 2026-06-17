@@ -421,6 +421,7 @@ type TutorConflictTooltipData = {
 
 type TutorConflictEntry = {
   moduleName: string;
+  moduleColor: string;
   programmeName: string;
   cohortName: string;
   className: string;
@@ -428,6 +429,14 @@ type TutorConflictEntry = {
   endTime: string;
   position: 'upper' | 'lower' | 'same row';
 };
+
+function moduleTintStyle(color: string): { background: string; color: string; borderColor: string } {
+  return {
+    background: `${color}24`,
+    color,
+    borderColor: `${color}55`,
+  };
+}
 
 interface ClassSummary {
   key: string;
@@ -924,12 +933,12 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
               <div
                 key={`${entry.programmeName}-${entry.cohortName}-${entry.moduleName}-${index}`}
                 className="rounded-md px-2 py-1.5"
-                style={{ background: index === data.activeIndex ? `${data.color}1F` : `${data.color}0F` }}
+                style={{ background: index === data.activeIndex ? `${entry.moduleColor}22` : `${entry.moduleColor}10` }}
               >
                 <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: data.color }} />
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: entry.moduleColor }} />
                   <span className="min-w-0 flex-1 truncate font-extrabold text-gray-900">{entry.moduleName}</span>
-                  <span className="shrink-0 rounded bg-white/80 px-1.5 py-px font-extrabold text-gray-600">
+                  <span className="shrink-0 rounded border px-1.5 py-px font-extrabold" style={moduleTintStyle(entry.moduleColor)}>
                     {entry.position}
                   </span>
                 </div>
@@ -1484,6 +1493,7 @@ export default function GanttTimeline({
       endTime: string;
       tutor: string;
       label: string;
+      moduleColor: string;
       programmeName: string;
       cohortName: string;
       className: string;
@@ -1514,6 +1524,7 @@ export default function GanttTimeline({
                 endTime,
                 tutor,
                 label: moduleName(blk),
+                moduleColor: resolveBlockMeta(blk, customModules).bg || '#64748B',
                 programmeName: grp.name.replace('\n', ' '),
                 cohortName: row.label,
                 className: (blk.groupName || row.label || 'Unassigned').trim(),
@@ -1547,6 +1558,7 @@ export default function GanttTimeline({
           entries: [
             {
               moduleName: a.label,
+              moduleColor: a.moduleColor,
               programmeName: a.programmeName,
               cohortName: a.cohortName,
               className: a.className,
@@ -1556,6 +1568,7 @@ export default function GanttTimeline({
             },
             {
               moduleName: b.label,
+              moduleColor: b.moduleColor,
               programmeName: b.programmeName,
               cohortName: b.cohortName,
               className: b.className,
@@ -3066,6 +3079,7 @@ export default function GanttTimeline({
                             y: layout.centerY,
                             entry: {
                               moduleName,
+                              moduleColor: resolveBlockMeta(entry.blk, customModules).bg || '#64748B',
                               programmeName: grp.name.replace('\n', ' '),
                               cohortName: row.label,
                               className: (entry.blk.groupName || row.label || 'Unassigned').trim(),
