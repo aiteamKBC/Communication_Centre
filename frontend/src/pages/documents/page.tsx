@@ -100,6 +100,10 @@ function estimateReviewDate(issueDateStr: string): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+function isPolicyNamedFile(doc: PolicyDocument): boolean {
+  return /(^|[^a-z])polic(?:y|ies)([^a-z]|$)/i.test(`${doc.rawName} ${doc.title}`);
+}
+
 /**
  * Flatten the SharePoint drive tree into a flat list of PolicyDocuments.
  *
@@ -423,7 +427,7 @@ export default function DocumentsPage() {
   // All flattened documents
   const allDocs = useMemo<PolicyDocument[]>(() => {
     if (!data?.root) return [];
-    return flattenTree(data.root);
+    return flattenTree(data.root).filter(isPolicyNamedFile);
   }, [data]);
 
   const hasUncategorizedDocs = useMemo(
@@ -466,7 +470,11 @@ export default function DocumentsPage() {
     });
   }, [allDocs, activeFolder, activeCategory, search]);
 
-  const tabs: string[] = ['All', ...topFolders, ...(hasUncategorizedDocs ? [UNCATEGORIZED_FOLDER] : [])];
+  const tabs: string[] = [
+    'All',
+    ...topFolders.filter(folder => (folderCounts[folder] ?? 0) > 0),
+    ...(hasUncategorizedDocs ? [UNCATEGORIZED_FOLDER] : []),
+  ];
   const folderThemes = useMemo<Record<string, FolderTheme>>(
     () =>
       Object.fromEntries(
@@ -486,9 +494,9 @@ export default function DocumentsPage() {
           value: tab,
           label:
             count !== undefined && count > 0
-              ? `${isAll ? 'All Documents' : tab} (${count})`
+              ? `${isAll ? 'All Policies' : tab} (${count})`
               : isAll
-                ? 'All Documents'
+                ? 'All Policies'
                 : tab,
         };
       }),
@@ -551,7 +559,7 @@ export default function DocumentsPage() {
                   return (
                     <span className="flex min-w-0 items-center gap-2">
                       <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${theme.dot}`} />
-                      <span className="truncate">{option?.label ?? 'All Documents'}</span>
+                      <span className="truncate">{option?.label ?? 'All Policies'}</span>
                     </span>
                   );
                 }}
@@ -627,7 +635,7 @@ export default function DocumentsPage() {
         ) : filteredDocs.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-100 p-12 text-center text-sm text-gray-400">
             <i className="ri-file-search-line text-3xl mb-3 block text-gray-300" />
-            No documents match your current filters.
+            No policy documents match your current filters.
           </div>
         ) : (
           <>
