@@ -2679,7 +2679,12 @@ def training_plan_reorder_programmes(request):
 			object_label='PROGRAMME_REORDER_PARTIAL_UPDATE',
 			before={'order': before, 'version': locked_version},
 			after={'order': after, 'programmeIds': programme_ids},
-			metadata={'partialUpdate': True, 'section': 'programme-order', 'changedFields': ['programmeDisplayOrder']},
+			metadata={
+				'partialUpdate': True,
+				'section': 'programme-order',
+				'changedFields': ['programmeDisplayOrder'],
+				'note': f'User changed the Training Plan programme order. New order contains {len(programme_ids)} programme(s).',
+			},
 		)
 
 	return JsonResponse(training_plan_order_response({'programmeOrder': programme_ids}))
@@ -2781,7 +2786,12 @@ def training_plan_reorder_cohorts(request):
 			object_label='COHORT_REORDER_PARTIAL_UPDATE',
 			before={'order': before, 'version': locked_version},
 			after={'order': after, 'programmeId': programme_id, 'cohortIds': cohort_ids},
-			metadata={'partialUpdate': True, 'section': 'cohort-order', 'changedFields': ['cohortDisplayOrder']},
+			metadata={
+				'partialUpdate': True,
+				'section': 'cohort-order',
+				'changedFields': ['cohortDisplayOrder'],
+				'note': f'User changed the cohort order inside programme {programme_id}. New order contains {len(cohort_ids)} cohort(s).',
+			},
 		)
 
 	return JsonResponse(training_plan_order_response({'programmeId': programme_id, 'cohortOrder': cohort_ids}))
@@ -3191,6 +3201,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			'updatedCount': len(scope_rows) - len(missing_ids),
 			'createdCount': len(created_rows),
 			'archivedCount': len(missing_ids),
+			'note': f'User edited cohort {target_cohort_id} in programme {programme_id}: updated {len(scope_rows) - len(missing_ids)} module row(s), created {len(created_rows)}, archived {len(missing_ids)}.',
 			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
@@ -3775,7 +3786,11 @@ def training_plan_session_detail(request, session_id: int):
 			object_label=audit_label,
 			before={field: before.get(field) for field in changed_fields},
 			after={field: after.get(field) for field in changed_fields},
-			metadata={'changedFields': changed_fields, 'partialUpdate': True},
+			metadata={
+				'changedFields': changed_fields,
+				'partialUpdate': True,
+				'note': f'User updated Training Plan session {row.id}: changed {", ".join(changed_fields) if changed_fields else "no stored fields"}.',
+			},
 		)
 
 	return JsonResponse(training_plan_partial_response(row))
@@ -3859,7 +3874,12 @@ def training_plan_module_detail(request, module_id: int):
 			object_label=f'MODULE_PARTIAL_UPDATE module {row.id}',
 			before={field: before.get(field) for field in changed_fields},
 			after={field: after.get(field) for field in changed_fields},
-			metadata={'changedFields': changed_fields, 'partialUpdate': True, 'section': 'module'},
+			metadata={
+				'changedFields': changed_fields,
+				'partialUpdate': True,
+				'section': 'module',
+				'note': f'User updated Training Plan module {row.id}: changed {", ".join(changed_fields) if changed_fields else "no stored fields"}.',
+			},
 		)
 
 	return JsonResponse(training_plan_partial_response(row))
@@ -5683,7 +5703,14 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 			object_label='MODULE_LEARNER_MAPPING_UPDATE',
 			before=before,
 			after=after,
-			metadata={'cohortId': cohort_id, 'moduleBlockId': module_block_id, 'moduleCatalogueId': module_catalogue_id, 'subprogramme': subprogramme, 'selectedCount': len([item for item in after if item.get('selected')])},
+			metadata={
+				'cohortId': cohort_id,
+				'moduleBlockId': module_block_id,
+				'moduleCatalogueId': module_catalogue_id,
+				'subprogramme': subprogramme,
+				'selectedCount': len([item for item in after if item.get('selected')]),
+				'note': f'User updated learner mapping for cohort module {module_block_id}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
+			},
 		)
 		return JsonResponse({'cohortId': cohort_id, 'moduleBlockId': module_block_id, 'moduleCatalogueId': module_catalogue_id, 'subprogramme': subprogramme, 'learners': after})
 
@@ -5788,7 +5815,12 @@ def training_plan_module_learners(request, module_catalogue_id: str):
 			object_label='MODULE_LEARNER_MAPPING_UPDATE',
 			before=before,
 			after=after,
-			metadata={'moduleCatalogueId': str(module.module_id), 'subprogramme': subprogramme, 'selectedCount': len([item for item in after if item.get('selected')])},
+			metadata={
+				'moduleCatalogueId': str(module.module_id),
+				'subprogramme': subprogramme,
+				'selectedCount': len([item for item in after if item.get('selected')]),
+				'note': f'User updated learner mapping for catalogue module {module.module_id}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
+			},
 		)
 		return JsonResponse({'moduleCatalogueId': str(module.module_id), 'subprogramme': subprogramme, 'learners': after})
 

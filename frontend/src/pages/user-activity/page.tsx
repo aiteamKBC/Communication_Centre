@@ -88,6 +88,25 @@ type AuditPayload = {
   logs: AuditLog[];
 };
 
+type KsbProfileItem = {
+  type?: string;
+  number?: string;
+  code?: string;
+  description?: string;
+};
+
+type KsbProfile = {
+  id: string;
+  name: string;
+  programmeName?: string;
+  description?: string;
+  ksbItems?: KsbProfileItem[];
+  knowledgeCodes?: string[];
+  skillCodes?: string[];
+  behaviourCodes?: string[];
+  isActive?: boolean;
+};
+
 const ACTIVITY_REFRESH_MS = 5000;
 const AUDIT_LOG_REFRESH_MS = 60000;
 
@@ -885,7 +904,17 @@ function fieldLabel(key: string): string {
     authorRole: 'Role',
     body: 'Body',
     isActive: 'Active',
+    isArchived: 'Archived',
     moduleName: 'Module',
+    cohortName: 'Cohort',
+    startingDateLabel: 'Starting date label',
+    groupName: 'Group',
+    coachName: 'Coach',
+    tutorName: 'Tutor',
+    startDate: 'Start date',
+    endDate: 'End date',
+    sessionsNumber: 'Sessions',
+    ksbProfileId: 'KSB profile',
     fullName: 'Name',
     email: 'Email',
   };
@@ -905,6 +934,28 @@ function displayValue(value: unknown): string {
   return '';
 }
 
+function learnerRecordId(item: Record<string, unknown>): string {
+  const value = item.learnerIdentity ?? item.learnerId ?? item.email ?? item.learnerEmail ?? item.name ?? item.learnerName;
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function learnerRecordName(item: Record<string, unknown>): string {
+  return textValue(item, 'name') || textValue(item, 'learnerName') || textValue(item, 'email') || textValue(item, 'learnerEmail') || 'Unnamed learner';
+}
+
+function learnerRecordEmail(item: Record<string, unknown>): string {
+  return textValue(item, 'email') || textValue(item, 'learnerEmail');
+}
+
+function learnerSelected(item: Record<string, unknown>): boolean {
+  return item.selected !== false && item.isSelected !== false;
+}
+
+function orderValue(item: Record<string, unknown>, key: string): number | null {
+  const value = Number(item[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
 function actionLabel(action: string): string {
   const labels: Record<string, string> = {
     create: 'Created',
@@ -920,6 +971,8 @@ function auditSummary(log: AuditLog): string {
   const before = asRecord(log.before);
   const after = asRecord(log.after);
   const metadata = asRecord(log.metadata);
+  const beforeRecords = asRecordArray(log.before);
+  const afterRecords = asRecordArray(log.after);
   const beforeCount = countValue(before, 'count');
   const afterCount = countValue(after, 'count');
   const addedCount = countValue(metadata, 'addedCount') ?? asRecordArray(after.added).length;
@@ -934,7 +987,80 @@ function auditSummary(log: AuditLog): string {
     return 'Training Plan was changed';
   }
 
+  if (log.entity === 'TrainingPlan') {
+    const section = textValue(metadata, 'section');
+    if (section === 'programme-order') return 'Programme order changed';
+    if (section === 'cohort-order') return 'Cohort order changed';
+  }
+
+  if (log.entity === 'ModuleLearnerMapping') {
+    const selectedCount = countValue(metadata, 'selectedCount');
+    if (beforeRecords.length > 0 || afterRecords.length > 0) {
+      const delta = afterRecords.length - beforeRecords.length;
+      const parts = [`${selectedCount ?? afterRecords.filter(learnerSelected).length} selected`];
+      if (delta > 0) parts.push(`${delta} added`);
+      if (delta < 0) parts.push(`${Math.abs(delta)} removed`);
+      return `Learner mapping changed: ${parts.join(', ')}`;
+    }
+  }
+
   return `${actionLabel(log.action)} ${log.objectLabel || log.entity}`;
+}
+
+function cohortEditRows(log: AuditLog): { beforeRow: Record<string, unknown>; afterRow: Record<string, unknown>; changedFields: string[] }[] {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const beforeRows = asRecordArray(before.rows);
+  const afterRows = asRecordArray(after.rows);
+  const beforeById = new Map<string, Record<string, unknown>>(
+    beforeRows.map(item => [recordId(item), item] as const).filter(([id]) => Boolean(id)),
+  );
+
+  return afterRows
+    .map(afterRow => {
+      const beforeRow = beforeById.get(recordId(afterRow));
+      if (!beforeRow) return null;
+      const changedFields = rowChangedFields(beforeRow, afterRow);
+      return changedFields.length > 0 ? { beforeRow, afterRow, changedFields } : null;
+    })
+    .filter((item): item is { beforeRow: Record<string, unknown>; afterRow: Record<string, unknown>; changedFields: string[] } => Boolean(item));
+}
+
+function auditNote(log: AuditLog): string {
+  const metadata = asRecord(log.metadata);
+  const explicitNote = textValue(metadata, 'note') || textValue(metadata, 'auditNote');
+  if (explicitNote) return explicitNote;
+
+  if (log.entity === 'TrainingPlan') {
+    const section = textValue(metadata, 'section');
+    if (section === 'cohort-edit') {
+      const changedRows = cohortEditRows(log);
+      const summary = cohortEditChangeSummary(changedRows);
+      const moduleNames = Array.from(new Set(changedRows.map(item => textValue(item.afterRow, 'moduleName')).filter(Boolean)));
+      const moduleText = moduleNames.length > 0 ? ` Modules: ${moduleNames.slice(0, 4).join(', ')}${moduleNames.length > 4 ? ` and ${moduleNames.length - 4} more` : ''}.` : '';
+      return `The user edited a cohort in Training Plan. ${summary}${moduleText}`;
+    }
+    if (section === 'programme-order') return 'The user changed the order of programmes in Training Plan.';
+    if (section === 'cohort-order') return 'The user changed the order of cohorts inside a programme in Training Plan.';
+    if (section === 'cohort-archive') return 'The user archived a cohort from the Training Plan timeline.';
+    if (section === 'module-archive') return 'The user archived a module from the Training Plan timeline.';
+    if (section === 'coverage') return `The user updated tutor or coach coverage for session ${textValue(metadata, 'sessionNumber') || ''}.`.trim();
+    if (section === 'ksb') return `The user updated KSB mapping for session ${textValue(metadata, 'sessionNumber') || ''}.`.trim();
+    if (section === 'module') return 'The user edited a saved Training Plan module row.';
+  }
+
+  if (log.entity === 'ModuleLearnerMapping') {
+    const beforeRows = asRecordArray(log.before);
+    const afterRows = asRecordArray(log.after);
+    const selectedCount = countValue(metadata, 'selectedCount') ?? afterRows.filter(learnerSelected).length;
+    const delta = afterRows.length - beforeRows.length;
+    const parts = [`selected ${selectedCount} learner${selectedCount === 1 ? '' : 's'}`];
+    if (delta > 0) parts.push(`added ${delta}`);
+    if (delta < 0) parts.push(`removed ${Math.abs(delta)}`);
+    return `The user updated learner mapping in Training Plan: ${parts.join(', ')}.`;
+  }
+
+  return '';
 }
 
 function changeSummary(log: AuditLog): string {
@@ -979,6 +1105,431 @@ function GenericAuditDetails({ log }: { log: AuditLog }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function ModuleLearnerAuditCard({ item, tone }: { item: Record<string, unknown>; tone: 'added' | 'removed' | 'updated' }) {
+  const toneClass = tone === 'added'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+    : tone === 'removed'
+      ? 'border-red-200 bg-red-50 text-red-950'
+      : 'border-blue-200 bg-blue-50 text-blue-950';
+  const email = learnerRecordEmail(item);
+  const status = learnerSelected(item) ? 'Selected' : 'Not selected';
+
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${toneClass}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-extrabold">{learnerRecordName(item)}</p>
+          {email && <p className="mt-0.5 truncate text-xs font-semibold opacity-75">{email}</p>}
+        </div>
+        <span className="rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold">
+          {status}
+        </span>
+      </div>
+      {(textValue(item, 'programmeName') || textValue(item, 'group') || textValue(item, 'subprogramme')) && (
+        <p className="mt-2 line-clamp-2 text-xs font-semibold opacity-80">
+          {[textValue(item, 'programmeName'), textValue(item, 'group'), textValue(item, 'subprogramme')].filter(Boolean).join(' | ')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModuleLearnerMappingAuditDetails({ log }: { log: AuditLog }) {
+  const beforeRows = asRecordArray(log.before);
+  const afterRows = asRecordArray(log.after);
+  const metadata = asRecord(log.metadata);
+  const beforeById = new Map<string, Record<string, unknown>>(
+    beforeRows.map(item => [learnerRecordId(item), item] as const).filter(([id]) => Boolean(id)),
+  );
+  const afterById = new Map<string, Record<string, unknown>>(
+    afterRows.map(item => [learnerRecordId(item), item] as const).filter(([id]) => Boolean(id)),
+  );
+  const added = afterRows.filter(item => !beforeById.has(learnerRecordId(item)));
+  const removed = beforeRows.filter(item => !afterById.has(learnerRecordId(item)));
+  const updated = afterRows.filter(item => {
+    const before = beforeById.get(learnerRecordId(item));
+    if (!before) return false;
+    return ['selected', 'isSelected', 'name', 'learnerName', 'email', 'learnerEmail', 'sortOrder'].some(key => (
+      displayValue(before[key]) !== displayValue(item[key])
+    ));
+  });
+  const selectedCount = countValue(metadata, 'selectedCount') ?? afterRows.filter(learnerSelected).length;
+  const totalShown = added.length + removed.length + updated.length;
+
+  if (beforeRows.length === 0 && afterRows.length === 0) {
+    return (
+      <p className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
+        No learner details were stored for this mapping log.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex flex-wrap gap-2 text-[11px] font-extrabold text-gray-600">
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Selected after save: {selectedCount}</span>
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Before: {beforeRows.length}</span>
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">After: {afterRows.length}</span>
+        {textValue(metadata, 'subprogramme') && (
+          <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Subprogramme: {textValue(metadata, 'subprogramme')}</span>
+        )}
+      </div>
+
+      {added.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Added learners</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {added.slice(0, 12).map((item, index) => <ModuleLearnerAuditCard key={`added-${index}`} item={item} tone="added" />)}
+          </div>
+        </div>
+      )}
+
+      {removed.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Removed learners</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {removed.slice(0, 12).map((item, index) => <ModuleLearnerAuditCard key={`removed-${index}`} item={item} tone="removed" />)}
+          </div>
+        </div>
+      )}
+
+      {updated.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-blue-700">Updated learners</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {updated.slice(0, 12).map((item, index) => <ModuleLearnerAuditCard key={`updated-${index}`} item={item} tone="updated" />)}
+          </div>
+        </div>
+      )}
+
+      {totalShown === 0 && (
+        <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+          The saved learner list has the same learners as before. Only mapping metadata or ordering may have changed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function uniqueOrderById(rows: Record<string, unknown>[], idKey: string, orderKey: string): Record<string, number> {
+  const result: Record<string, number> = {};
+  rows.forEach(row => {
+    const id = textValue(row, idKey);
+    const order = orderValue(row, orderKey);
+    if (!id || order === null) return;
+    if (result[id] === undefined || order < result[id]) result[id] = order;
+  });
+  return result;
+}
+
+function ReorderAuditDetails({ log }: { log: AuditLog }) {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const metadata = asRecord(log.metadata);
+  const beforeOrder = asRecordArray(before.order);
+  const afterOrder = asRecordArray(after.order);
+  const section = textValue(metadata, 'section');
+  const isCohortOrder = section === 'cohort-order';
+  const idKey = isCohortOrder ? 'cohortId' : 'programmeId';
+  const orderKey = isCohortOrder ? 'cohortDisplayOrder' : 'programmeDisplayOrder';
+  const label = isCohortOrder ? 'Cohort' : 'Programme';
+  const beforeById = uniqueOrderById(beforeOrder, idKey, orderKey);
+  const afterById = uniqueOrderById(afterOrder, idKey, orderKey);
+  const moved = Object.keys(afterById)
+    .filter(id => beforeById[id] !== undefined && beforeById[id] !== afterById[id])
+    .sort((left, right) => afterById[left] - afterById[right]);
+
+  if (beforeOrder.length === 0 && afterOrder.length === 0) {
+    return (
+      <p className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
+        No order details were stored for this log.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex flex-wrap gap-2 text-[11px] font-extrabold text-gray-600">
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Action: {label} reorder</span>
+        {textValue(after, 'programmeId') && (
+          <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Programme: {textValue(after, 'programmeId')}</span>
+        )}
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Changed items: {moved.length}</span>
+      </div>
+
+      {moved.length > 0 ? (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-kbc-navy">Order changes</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {moved.slice(0, 16).map(id => (
+              <div key={id} className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-950">
+                <p className="truncate text-sm font-extrabold">{label} {id}</p>
+                <p className="mt-1 text-xs font-semibold opacity-80">
+                  Moved from position {beforeById[id] + 1} to {afterById[id] + 1}
+                </p>
+              </div>
+            ))}
+          </div>
+          {moved.length > 16 && (
+            <p className="mt-2 text-xs font-semibold text-gray-500">{moved.length - 16} more order changes not shown.</p>
+          )}
+        </div>
+      ) : (
+        <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+          The submitted order matched the saved order, so no item position changed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function rowChangedFields(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+  const hiddenFields = new Set(['id']);
+  return Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
+    .filter(key => !hiddenFields.has(key))
+    .filter(key => !(key === 'isArchived' && before[key] === undefined && after[key] === false))
+    .filter(key => displayValue(before[key]) !== displayValue(after[key]))
+    .filter(key => isPresentValue(before[key]) || isPresentValue(after[key]));
+}
+
+function cohortEditChangeSummary(changedRows: { afterRow: Record<string, unknown>; changedFields: string[] }[]): string {
+  const fieldCounts = new Map<string, number>();
+  changedRows.forEach(row => {
+    row.changedFields.forEach(field => {
+      fieldCounts.set(field, (fieldCounts.get(field) || 0) + 1);
+    });
+  });
+  const entries = Array.from(fieldCounts.entries()).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return 'No business fields changed.';
+  return entries
+    .slice(0, 3)
+    .map(([field, count]) => `${fieldLabel(field)} changed on ${count} module${count === 1 ? '' : 's'}`)
+    .join(', ');
+}
+
+function ksbProfileById(profiles: KsbProfile[], value: unknown): KsbProfile | null {
+  const id = value === undefined || value === null || value === '' ? '' : String(value);
+  if (!id) return null;
+  return profiles.find(profile => String(profile.id) === id) || null;
+}
+
+function KsbProfileValueDetails({ value, profiles, label }: { value: unknown; profiles: KsbProfile[]; label: string }) {
+  const valueText = displayValue(value) || 'Empty';
+  const profile = ksbProfileById(profiles, value);
+  const items = profile?.ksbItems || [];
+  const knowledgeCodes = profile?.knowledgeCodes || [];
+  const skillCodes = profile?.skillCodes || [];
+  const behaviourCodes = profile?.behaviourCodes || [];
+  const hasCodes = knowledgeCodes.length > 0 || skillCodes.length > 0 || behaviourCodes.length > 0;
+
+  if (!profile) {
+    return (
+      <p className="text-xs font-semibold">
+        <span className="opacity-55">{label}:</span> {valueText}
+        {valueText !== 'Empty' && <span className="ml-1 opacity-60">(profile details not loaded)</span>}
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-blue-100 bg-white px-3 py-2">
+      <p className="text-xs font-semibold">
+        <span className="opacity-55">{label}:</span> {profile.name} <span className="opacity-60">(ID {profile.id})</span>
+      </p>
+      {profile.programmeName && <p className="mt-1 text-xs font-semibold opacity-80">Programme: {profile.programmeName}</p>}
+      {profile.description && <p className="mt-1 text-xs font-semibold opacity-75">{profile.description}</p>}
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-extrabold">
+        <span className="rounded bg-blue-50 px-2 py-1 text-blue-900 ring-1 ring-blue-100">K: {knowledgeCodes.length}</span>
+        <span className="rounded bg-blue-50 px-2 py-1 text-blue-900 ring-1 ring-blue-100">S: {skillCodes.length}</span>
+        <span className="rounded bg-blue-50 px-2 py-1 text-blue-900 ring-1 ring-blue-100">B: {behaviourCodes.length}</span>
+      </div>
+      {items.length > 0 ? (
+        <div className="mt-2 max-h-44 overflow-auto rounded border border-blue-100 bg-blue-50/40">
+          {items.slice(0, 40).map((item, index) => {
+            const code = item.code || `${item.type || ''}${item.number || ''}` || `Item ${index + 1}`;
+            return (
+              <div key={`${code}-${index}`} className="border-b border-blue-100 px-2 py-1.5 last:border-b-0">
+                <p className="text-[11px] font-extrabold text-blue-950">{code}</p>
+                {item.description && <p className="mt-0.5 text-[11px] font-semibold text-blue-900/75">{item.description}</p>}
+              </div>
+            );
+          })}
+          {items.length > 40 && <p className="px-2 py-1.5 text-[11px] font-semibold text-blue-900/70">{items.length - 40} more items not shown.</p>}
+        </div>
+      ) : hasCodes ? (
+        <div className="mt-2 space-y-1 text-[11px] font-semibold opacity-80">
+          {knowledgeCodes.length > 0 && <p>K: {knowledgeCodes.join(', ')}</p>}
+          {skillCodes.length > 0 && <p>S: {skillCodes.join(', ')}</p>}
+          {behaviourCodes.length > 0 && <p>B: {behaviourCodes.join(', ')}</p>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CohortEditAuditCard({
+  before,
+  after,
+  changedFields,
+  ksbProfiles,
+}: {
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  changedFields: string[];
+  ksbProfiles: KsbProfile[];
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const moduleName = textValue(after, 'moduleName') || textValue(before, 'moduleName') || 'Unnamed module';
+  const groupName = textValue(after, 'groupName') || textValue(before, 'groupName') || 'Not set';
+  const dates = [textValue(after, 'startDate'), textValue(after, 'endDate')].filter(Boolean).join(' - ') || 'Not set';
+
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-blue-950">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-extrabold">{moduleName}</p>
+          <p className="mt-0.5 text-xs font-semibold opacity-75">Group: {groupName} | Dates: {dates}</p>
+        </div>
+        <span className="rounded bg-white/70 px-2 py-1 text-[11px] font-extrabold">
+          {changedFields.length} field{changedFields.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1.5">
+          {changedFields.slice(0, 4).map(field => (
+            <span key={field} className="rounded bg-white/80 px-2 py-1 text-[11px] font-extrabold text-blue-900 ring-1 ring-blue-100">
+              {fieldLabel(field)}
+            </span>
+          ))}
+          {changedFields.length > 4 && (
+            <span className="rounded bg-white/80 px-2 py-1 text-[11px] font-extrabold text-blue-900 ring-1 ring-blue-100">
+              +{changedFields.length - 4} more
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setDetailsOpen(current => !current)}
+          className="inline-flex h-7 items-center gap-1 rounded-md bg-kbc-navy px-2.5 text-[11px] font-extrabold text-white transition-colors hover:bg-kbc-navy/90"
+          aria-expanded={detailsOpen}
+        >
+          {detailsOpen ? 'Hide details' : 'Details'}
+          <i className={detailsOpen ? 'ri-arrow-up-s-line text-base' : 'ri-arrow-down-s-line text-base'} />
+        </button>
+      </div>
+
+      {detailsOpen && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {changedFields.slice(0, 8).map(field => (
+            <div key={field} className="rounded-md bg-white/70 px-3 py-2 ring-1 ring-blue-100">
+              <p className="text-[11px] font-extrabold uppercase tracking-wide opacity-60">{fieldLabel(field)}</p>
+              {field === 'ksbProfileId' ? (
+                <div className="mt-1 space-y-2">
+                  <KsbProfileValueDetails value={before[field]} profiles={ksbProfiles} label="Before" />
+                  <KsbProfileValueDetails value={after[field]} profiles={ksbProfiles} label="After" />
+                </div>
+              ) : (
+                <div className="mt-1 space-y-1 text-xs font-semibold">
+                  <p><span className="opacity-55">Before:</span> {displayValue(before[field]) || 'Empty'}</p>
+                  <p><span className="opacity-55">After:</span> {displayValue(after[field]) || 'Empty'}</p>
+                </div>
+              )}
+            </div>
+          ))}
+          {changedFields.length > 8 && (
+            <p className="text-xs font-semibold opacity-70">{changedFields.length - 8} more changed fields not shown.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CohortEditAuditDetails({ log, ksbProfiles }: { log: AuditLog; ksbProfiles: KsbProfile[] }) {
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const metadata = asRecord(log.metadata);
+  const beforeRows = asRecordArray(before.rows);
+  const afterRows = asRecordArray(after.rows);
+  const createdRows = asRecordArray(after.createdRows);
+  const beforeById = new Map<string, Record<string, unknown>>(
+    beforeRows.map(item => [recordId(item), item] as const).filter(([id]) => Boolean(id)),
+  );
+  const changedRows = afterRows
+    .map(afterRow => {
+      const beforeRow = beforeById.get(recordId(afterRow));
+      if (!beforeRow) return null;
+      const changedFields = rowChangedFields(beforeRow, afterRow);
+      return changedFields.length > 0 ? { beforeRow, afterRow, changedFields } : null;
+    })
+    .filter((item): item is { beforeRow: Record<string, unknown>; afterRow: Record<string, unknown>; changedFields: string[] } => Boolean(item));
+  const summary = cohortEditChangeSummary(changedRows);
+  const archivedRows = beforeRows.filter(row => {
+    const matchingAfter = afterRows.find(afterRow => recordId(afterRow) === recordId(row));
+    return matchingAfter && matchingAfter.isArchived === true;
+  });
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex flex-wrap gap-2 text-[11px] font-extrabold text-gray-600">
+        {textValue(metadata, 'cohortId') && <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Cohort: {textValue(metadata, 'cohortId')}</span>}
+        {textValue(metadata, 'programmeId') && <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Programme: {textValue(metadata, 'programmeId')}</span>}
+        <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Real changes: {changedRows.length}</span>
+        {countValue(metadata, 'createdCount') !== null && <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Created: {countValue(metadata, 'createdCount')}</span>}
+        {countValue(metadata, 'archivedCount') !== null && <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Archived: {countValue(metadata, 'archivedCount')}</span>}
+      </div>
+      <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-extrabold text-blue-900">
+        {summary}
+      </p>
+
+      {changedRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-blue-700">Changed fields</p>
+          <div className="mt-2 space-y-2">
+            {changedRows.slice(0, 12).map(item => (
+              <CohortEditAuditCard
+                key={recordId(item.afterRow)}
+                before={item.beforeRow}
+                after={item.afterRow}
+                changedFields={item.changedFields}
+                ksbProfiles={ksbProfiles}
+              />
+            ))}
+          </div>
+          {changedRows.length > 12 && (
+            <p className="mt-2 text-xs font-semibold text-gray-500">{changedRows.length - 12} more changed rows not shown.</p>
+          )}
+        </div>
+      )}
+
+      {createdRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-700">Created modules</p>
+          <div className="mt-2 space-y-2">
+            {createdRows.map((item, index) => <TrainingPlanAuditCard key={`created-${index}`} item={item} tone="added" />)}
+          </div>
+        </div>
+      )}
+
+      {archivedRows.length > 0 && (
+        <div>
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">Archived modules</p>
+          <div className="mt-2 space-y-2">
+            {archivedRows.map((item, index) => <TrainingPlanAuditCard key={`archived-${index}`} item={item} tone="removed" />)}
+          </div>
+        </div>
+      )}
+
+      {changedRows.length === 0 && createdRows.length === 0 && archivedRows.length === 0 && (
+        <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+          The cohort edit was saved, but the stored row fields match the previous values.
+        </p>
+      )}
     </div>
   );
 }
@@ -1044,9 +1595,20 @@ function recordId(item: Record<string, unknown>): string {
   return value === undefined || value === null ? '' : String(value);
 }
 
-function TrainingPlanAuditDetails({ log }: { log: AuditLog }) {
+function TrainingPlanAuditDetails({ log, ksbProfiles }: { log: AuditLog; ksbProfiles: KsbProfile[] }) {
   const before = asRecord(log.before);
   const after = asRecord(log.after);
+  const metadata = asRecord(log.metadata);
+  const section = textValue(metadata, 'section');
+
+  if (section === 'programme-order' || section === 'cohort-order') {
+    return <ReorderAuditDetails log={log} />;
+  }
+
+  if (section === 'cohort-edit') {
+    return <CohortEditAuditDetails log={log} ksbProfiles={ksbProfiles} />;
+  }
+
   const added = asRecordArray(after.added);
   const removed = asRecordArray(before.removed);
   const beforeRows = asRecordArray(before.rows);
@@ -1127,6 +1689,7 @@ export default function UserActivityPage() {
   const [currentDateValue, setCurrentDateValue] = useState(() => dateInputValue(new Date()));
   const [payload, setPayload] = useState<ActivityPayload>(emptyPayload);
   const [auditPayload, setAuditPayload] = useState<AuditPayload>(emptyAuditPayload);
+  const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [auditLoading, setAuditLoading] = useState(true);
   const [error, setError] = useState('');
@@ -1399,6 +1962,30 @@ export default function UserActivityPage() {
       controller?.abort();
     };
   }, [auditQuery, canView]);
+
+  useEffect(() => {
+    if (!canView) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    fetch('/api/ksb-profiles/?includeInactive=1', { cache: 'no-store', signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('Unable to load KSB profiles.');
+        return response.json() as Promise<KsbProfile[]>;
+      })
+      .then(items => {
+        if (!cancelled) setKsbProfiles(items);
+      })
+      .catch(() => {
+        if (!cancelled) setKsbProfiles([]);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [canView]);
 
   if (!canView) {
     return (
@@ -1846,9 +2433,16 @@ export default function UserActivityPage() {
                               {changeSummary(log) !== auditSummary(log) && (
                                 <p className="mt-1 text-xs font-semibold text-gray-500">{changeSummary(log)}</p>
                               )}
+                              {auditNote(log) && (
+                                <p className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                                  Note: {auditNote(log)}
+                                </p>
+                              )}
 
                               {log.entity === 'TrainingPlan' ? (
-                                <TrainingPlanAuditDetails log={log} />
+                                <TrainingPlanAuditDetails log={log} ksbProfiles={ksbProfiles} />
+                              ) : log.entity === 'ModuleLearnerMapping' ? (
+                                <ModuleLearnerMappingAuditDetails log={log} />
                               ) : (
                                 <GenericAuditDetails log={log} />
                               )}
