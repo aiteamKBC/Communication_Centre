@@ -11,7 +11,7 @@ type DocumentsSummaryResponse = {
   categories?: PolicyCategory[];
 };
 
-const POLICIES_SUMMARY_CACHE_KEY = 'kbc-policies-summary-v3';
+const POLICIES_SUMMARY_CACHE_KEY = 'kbc-policies-summary-v4';
 
 const categoryDots = [
   'bg-sky-500',

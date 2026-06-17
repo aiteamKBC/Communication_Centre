@@ -123,7 +123,7 @@ function flattenTree(node: DriveNode, ancestorFolders: string[] = []): PolicyDoc
       id: node.id,
       title,
       rawName: node.name,
-      topFolder: ancestorFolders[0] ?? '—',
+      topFolder: ancestorFolders[0] ?? UNCATEGORIZED_FOLDER,
       category: detectCategory(ancestorFolders, node.name),
       department,
       version: extractVersion(node.name),
@@ -431,7 +431,7 @@ export default function DocumentsPage() {
   }, [data]);
 
   const hasUncategorizedDocs = useMemo(
-    () => allDocs.some(doc => doc.topFolder === 'â€”'),
+    () => allDocs.some(doc => doc.topFolder === UNCATEGORIZED_FOLDER),
     [allDocs],
   );
 
@@ -439,7 +439,7 @@ export default function DocumentsPage() {
   const folderCounts = useMemo(() => {
     const counts: Record<string, number> = { All: allDocs.length };
     for (const doc of allDocs) {
-      const folderKey = doc.topFolder === 'â€”' ? UNCATEGORIZED_FOLDER : doc.topFolder;
+      const folderKey = doc.topFolder;
       counts[folderKey] = (counts[folderKey] ?? 0) + 1;
     }
     return counts;
@@ -462,8 +462,7 @@ export default function DocumentsPage() {
   const filteredDocs = useMemo(() => {
     const q = search.trim().toLowerCase();
     return allDocs.filter(doc => {
-      if (activeFolder === UNCATEGORIZED_FOLDER && doc.topFolder !== 'â€”') return false;
-      if (activeFolder !== 'All' && activeFolder !== UNCATEGORIZED_FOLDER && doc.topFolder !== activeFolder) return false;
+      if (activeFolder !== 'All' && doc.topFolder !== activeFolder) return false;
       if (activeCategory !== 'All' && doc.category !== activeCategory) return false;
       if (q && !doc.title.toLowerCase().includes(q) && !doc.department.toLowerCase().includes(q)) return false;
       return true;

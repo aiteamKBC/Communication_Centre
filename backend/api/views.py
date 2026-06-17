@@ -6125,7 +6125,11 @@ DOCUMENTS_SUMMARY_CACHE_SECONDS = 300
 
 def _documents_cache_key(kind: str, policies_url: str) -> str:
 	digest = hashlib.sha256(policies_url.encode('utf-8')).hexdigest()[:16]
-	return f'policies:v3:{kind}:{digest}'
+	return f'policies:v4:{kind}:{digest}'
+
+
+def _is_policy_file_name(name: str) -> bool:
+	return re.search(r'(^|[^a-z])polic(?:y|ies)([^a-z]|$)', name, re.IGNORECASE) is not None
 
 
 def _get_policies_context() -> tuple[str, str, str, str, str, str, str]:
@@ -6218,6 +6222,12 @@ def _count_tree_files(node: dict) -> int:
 	return sum(_count_tree_files(child) for child in node.get('children', []) if isinstance(child, dict))
 
 
+def _count_tree_policy_files(node: dict) -> int:
+	if node.get('type') == 'file':
+		return 1 if _is_policy_file_name(str(node.get('name', ''))) else 0
+	return sum(_count_tree_policy_files(child) for child in node.get('children', []) if isinstance(child, dict))
+
+
 def _count_drive_files_recursive(site_id: str, item_id: str, token: str, *, depth: int = 0, max_depth: int = 6, node_count: dict | None = None, max_nodes: int = 1000) -> int:
 	counter = node_count or {'value': 0}
 	if counter['value'] >= max_nodes or depth >= max_depth:
@@ -6244,6 +6254,32 @@ def _count_drive_files_recursive(site_id: str, item_id: str, token: str, *, dept
 	return total
 
 
+def _count_drive_policy_files_recursive(site_id: str, item_id: str, token: str, *, depth: int = 0, max_depth: int = 6, node_count: dict | None = None, max_nodes: int = 1000) -> int:
+	counter = node_count or {'value': 0}
+	if counter['value'] >= max_nodes or depth >= max_depth:
+		return 0
+
+	total = 0
+	children = _list_drive_children(site_id, item_id, token)
+	for child in children:
+		counter['value'] += 1
+		if counter['value'] > max_nodes:
+			break
+		if child.get('folder'):
+			total += _count_drive_policy_files_recursive(
+				site_id,
+				str(child.get('id', '')),
+				token,
+				depth=depth + 1,
+				max_depth=max_depth,
+				node_count=counter,
+				max_nodes=max_nodes,
+			)
+		elif _is_policy_file_name(str(child.get('name', ''))):
+			total += 1
+	return total
+
+
 def _build_documents_summary_payload() -> tuple[dict, str]:
 	client_id, client_secret, tenant_id, policies_url, host, site_path, drive_path = _get_policies_context()
 	live_cache_key = _documents_cache_key('live', policies_url)
@@ -6251,20 +6287,23 @@ def _build_documents_summary_payload() -> tuple[dict, str]:
 	if isinstance(live_payload, dict) and isinstance(live_payload.get('root'), dict):
 		root = live_payload['root']
 		categories = [
-			{'name': child.get('name', ''), 'count': _count_tree_files(child)}
+			{'name': child.get('name', ''), 'count': _count_tree_policy_files(child)}
 			for child in root.get('children', [])
 			if isinstance(child, dict) and child.get('type') == 'folder'
 		]
 		uncategorized_count = sum(
 			1 for child in root.get('children', [])
-			if isinstance(child, dict) and child.get('type') == 'file'
+			if isinstance(child, dict)
+			and child.get('type') == 'file'
+			and _is_policy_file_name(str(child.get('name', '')))
 		)
 		if uncategorized_count > 0:
 			categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
+		categories = [category for category in categories if category['count'] > 0]
 		return {
 			'fetchedAt': live_payload.get('fetchedAt') or datetime.utcnow().isoformat() + 'Z',
 			'source': live_payload.get('source', {}),
-			'total': _count_tree_files(root),
+			'total': sum(item['count'] for item in categories),
 			'categories': categories,
 		}, policies_url
 
@@ -6276,12 +6315,15 @@ def _build_documents_summary_payload() -> tuple[dict, str]:
 	counter = {'value': 0}
 	for child in children:
 		if not child.get('folder'):
-			uncategorized_count += 1
+			if _is_policy_file_name(str(child.get('name', ''))):
+				uncategorized_count += 1
 			continue
-		categories.append({
-			'name': str(child.get('name', '')).strip(),
-			'count': _count_drive_files_recursive(site_id, str(child.get('id', '')), access_token, node_count=counter),
-		})
+		policy_count = _count_drive_policy_files_recursive(site_id, str(child.get('id', '')), access_token, node_count=counter)
+		if policy_count > 0:
+			categories.append({
+				'name': str(child.get('name', '')).strip(),
+				'count': policy_count,
+			})
 	if uncategorized_count > 0:
 		categories.append({'name': 'Uncategorized', 'count': uncategorized_count})
 
