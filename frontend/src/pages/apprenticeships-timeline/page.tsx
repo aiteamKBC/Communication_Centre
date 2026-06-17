@@ -1394,6 +1394,8 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
   ).filter(summary => summary.months.length > 0);
 }
 
+type LearnerMappingSaveHandler = () => Promise<boolean>;
+
 function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack }: { summary: ModuleMonthlySummary; mode?: ModuleOverviewMode; onClose: () => void; onBack?: () => void }) {
   const selectedMonths = summary.months;
   const totalClashedSessions = summary.affectedSessions + summary.extensionAffectedSessions;
@@ -1401,6 +1403,51 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
   const originalClashCount = summary.affectedSessions;
   const replacementAttemptClashCount = summary.extensionAffectedSessions;
   const isMonthly = mode === 'monthly';
+  const [studentsDirty, setStudentsDirty] = useState(false);
+  const saveStudentsRef = useRef<LearnerMappingSaveHandler | null>(null);
+
+  useEffect(() => {
+    setStudentsDirty(false);
+    saveStudentsRef.current = null;
+  }, [summary.moduleBlockId, summary.moduleCatalogueId, mode]);
+
+  const requestClose = useCallback(async (closeAction: () => void) => {
+    if (!isMonthly && studentsDirty) {
+      const result = await kbcSwal.fire({
+        title: 'Unsaved learner mapping',
+        html: 'You changed the selected subprogramme learners, but the changes have not been saved yet. Save them before closing, or leave without saving.',
+        icon: 'warning',
+        showCancelButton: true,
+        showDenyButton: true,
+        confirmButtonText: 'Save changes',
+        denyButtonText: 'Leave without saving',
+        cancelButtonText: 'Keep editing',
+        customClass: {
+          confirmButton: 'kbc-swal-confirm kbc-swal-confirm-save',
+          denyButton: 'kbc-swal-deny',
+          cancelButton: 'kbc-swal-cancel',
+        },
+        reverseButtons: true,
+        focusCancel: true,
+      });
+
+      if (result.isConfirmed) {
+        const saved = await saveStudentsRef.current?.();
+        if (saved) closeAction();
+        return;
+      }
+
+      if (result.isDenied) {
+        closeAction();
+      }
+      return;
+    }
+
+    closeAction();
+  }, [isMonthly, studentsDirty]);
+
+  const handleBack = onBack ? () => void requestClose(onBack) : undefined;
+  const handleClose = () => void requestClose(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1408,7 +1455,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
         type="button"
         aria-label={onBack ? 'Back to module overview options' : 'Close module overview'}
         className="absolute inset-0 bg-slate-950/50 backdrop-blur-md"
-        onClick={onBack || onClose}
+        onClick={handleBack || handleClose}
       />
       <div className="relative flex h-[calc(100vh-2rem)] max-h-[960px] w-full max-w-[1440px] flex-col overflow-hidden rounded-2xl border border-white/80 bg-slate-50 shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
@@ -1446,7 +1493,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
             )}
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="flex h-10 w-10 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
             >
               <i className="ri-close-line text-lg" />
@@ -1595,7 +1642,14 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
         )}
         {!isMonthly && (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <ModuleOverviewStudentsTab summary={summary} isActive />
+          <ModuleOverviewStudentsTab
+            summary={summary}
+            isActive
+            onDirtyChange={setStudentsDirty}
+            onRegisterSave={handler => {
+              saveStudentsRef.current = handler;
+            }}
+          />
         </div>
         )}
       </div>
@@ -1603,7 +1657,17 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
   );
 }
 
-function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonthlySummary; isActive: boolean }) {
+function ModuleOverviewStudentsTab({
+  summary,
+  isActive,
+  onDirtyChange,
+  onRegisterSave,
+}: {
+  summary: ModuleMonthlySummary;
+  isActive: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
+  onRegisterSave?: (handler: LearnerMappingSaveHandler | null) => void;
+}) {
   const [payload, setPayload] = useState<ModuleOverviewLearnerPayload | null>(null);
   const [subprogrammeOptions, setSubprogrammeOptions] = useState<string[]>([]);
   const [selectedSubprogrammes, setSelectedSubprogrammes] = useState<string[]>([]);
@@ -1926,14 +1990,14 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     });
   };
 
-  const saveLearnerMapping = async () => {
+  const saveLearnerMapping = async (): Promise<boolean> => {
     if (!mappingEndpoint) {
       setError('This module does not have a stable learner mapping scope.');
-      return;
+      return false;
     }
     if (!selectedSubprogrammes.length) {
       setError('Select at least one subprogramme before saving learner mapping.');
-      return;
+      return false;
     }
     const selectedLearners = liveLearners
       .filter(learner => selectedLearnerIds.has(learnerIdentity(learner)))
@@ -1968,12 +2032,23 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
         icon: 'success',
         confirmButtonText: 'OK',
       });
+      return true;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Could not save learner mapping.');
+      return false;
     } finally {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    onDirtyChange?.(mappingDirty);
+  }, [mappingDirty, onDirtyChange]);
+
+  useEffect(() => {
+    onRegisterSave?.(saveLearnerMapping);
+    return () => onRegisterSave?.(null);
+  });
 
   const exportLearnerMappingExcel = () => {
     const exportLearners = selectedLearnerIds.size

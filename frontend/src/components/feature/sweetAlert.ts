@@ -16,6 +16,7 @@ export const kbcSwal = Swal.mixin({
     title: 'kbc-swal-title',
     htmlContainer: 'kbc-swal-html',
     confirmButton: 'kbc-swal-confirm',
+    denyButton: 'kbc-swal-deny',
     cancelButton: 'kbc-swal-cancel',
   },
   buttonsStyling: false,

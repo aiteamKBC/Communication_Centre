@@ -940,9 +940,24 @@ function displayValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (typeof value === 'number') return String(value);
   if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(displayValue).join(', ');
+  if (Array.isArray(value)) return value.map(displayValue).map(item => item.trim()).filter(Boolean).join(', ');
   if (value && typeof value === 'object') return JSON.stringify(value);
   return '';
+}
+
+function stringListValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => String(item ?? '').trim());
+}
+
+function plannedSessionCount(item: Record<string, unknown>): number {
+  const explicit = Number(item.sessions ?? item.sessionsNumber ?? item.numberOfSessions);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return Math.max(
+    stringListValue(item.sessionNames).filter(Boolean).length,
+    stringListValue(item.sessionDescriptions).filter(Boolean).length,
+    asRecordArray(item.sessionKsbMappings).length,
+  );
 }
 
 function learnerRecordId(item: Record<string, unknown>): string {
@@ -1046,6 +1061,16 @@ function auditSummary(log: AuditLog): string {
     }
   }
 
+  if (log.entity === 'Module') {
+    const source = log.action === 'delete' ? before : after;
+    const name = textValue(source, 'name') || log.objectLabel || 'module';
+    const sessions = plannedSessionCount(source);
+    const suffix = sessions > 0 ? ` with ${sessions} planned session${sessions === 1 ? '' : 's'}` : '';
+    if (log.action === 'create') return `Created module template: ${name}${suffix}`;
+    if (log.action === 'update') return `Updated module template: ${name}`;
+    if (log.action === 'delete') return `Deleted module template: ${name}${suffix}`;
+  }
+
   return `${actionLabel(log.action)} ${log.objectLabel || log.entity}`;
 }
 
@@ -1102,6 +1127,14 @@ function auditNote(log: AuditLog): string {
     return `The user updated learner mapping in Training Plan: ${parts.join(', ')}.`;
   }
 
+  if (log.entity === 'Module') {
+    const source = log.action === 'delete' ? asRecord(log.before) : asRecord(log.after);
+    const moduleName = textValue(source, 'name') || log.objectLabel || 'module';
+    const sessions = plannedSessionCount(source);
+    const action = log.action === 'delete' ? 'deleted' : log.action === 'update' ? 'updated' : 'created';
+    return `The user ${action} the module template "${moduleName}"${sessions > 0 ? ` with ${sessions} planned session${sessions === 1 ? '' : 's'}` : ''}. This is a catalogue module, not a cohort/programme placement.`;
+  }
+
   return '';
 }
 
@@ -1147,6 +1180,143 @@ function GenericAuditDetails({ log }: { log: AuditLog }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function ModuleSessionList({ module }: { module: Record<string, unknown> }) {
+  const sessionCount = plannedSessionCount(module);
+  const names = stringListValue(module.sessionNames);
+  const descriptions = stringListValue(module.sessionDescriptions);
+  const mappings = asRecordArray(module.sessionKsbMappings);
+  const rows = Array.from({ length: Math.max(sessionCount, names.length, descriptions.length, mappings.length) }, (_, index) => ({
+    number: index + 1,
+    name: names[index] || '',
+    description: descriptions[index] || '',
+    mapping: asRecord(mappings[index]),
+  }));
+  const visibleRows = rows.filter(row => row.name || row.description || Object.keys(row.mapping).length > 0);
+
+  if (!visibleRows.length) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+        No session titles, descriptions, or KSB mappings were entered for this module.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {visibleRows.map(row => {
+        const knowledgeCodes = stringListValue(row.mapping.knowledgeCodes);
+        const skillCodes = stringListValue(row.mapping.skillCodes);
+        const behaviourCodes = stringListValue(row.mapping.behaviourCodes);
+        const hasKsb = knowledgeCodes.length > 0 || skillCodes.length > 0 || behaviourCodes.length > 0;
+
+        return (
+          <div key={row.number} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold text-kbc-navy">
+                  Session {row.number}{row.name ? `: ${row.name}` : ''}
+                </p>
+                {row.description && <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{row.description}</p>}
+              </div>
+              {hasKsb && (
+                <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-600">
+                  KSB mapped
+                </span>
+              )}
+            </div>
+            {hasKsb && (
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-extrabold">
+                {knowledgeCodes.length > 0 && <span className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-800">K: {knowledgeCodes.join(', ')}</span>}
+                {skillCodes.length > 0 && <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-800">S: {skillCodes.join(', ')}</span>}
+                {behaviourCodes.length > 0 && <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">B: {behaviourCodes.join(', ')}</span>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ModuleAuditDetails({ log }: { log: AuditLog }) {
+  const source = log.action === 'delete' ? asRecord(log.before) : asRecord(log.after);
+  const before = asRecord(log.before);
+  const after = asRecord(log.after);
+  const moduleName = textValue(source, 'name') || log.objectLabel || 'Unnamed module';
+  const colour = textValue(source, 'colour');
+  const sessions = plannedSessionCount(source);
+
+  if (log.action === 'update') {
+    const changedFields = ['name', 'colour', 'sessions', 'notes', 'sessionNames', 'sessionDescriptions', 'sessionKsbMappings']
+      .filter(key => displayValue(before[key]) !== displayValue(after[key]))
+      .filter(key => isPresentValue(before[key]) || isPresentValue(after[key]));
+
+    return (
+      <div className="mt-3 space-y-3">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+          Note: The user updated module catalogue item <strong>{moduleName}</strong>. This change affects future use of this module template.
+        </div>
+        {changedFields.length > 0 ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {changedFields.map(key => (
+              <div key={key} className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                <p className="text-[11px] font-extrabold uppercase tracking-wide text-blue-600">{fieldLabel(key)}</p>
+                <div className="mt-1 space-y-1 text-xs font-semibold text-slate-700">
+                  <p><span className="text-slate-400">Before:</span> {displayValue(before[key]) || 'Empty'}</p>
+                  <p><span className="text-slate-400">After:</span> {displayValue(after[key]) || 'Empty'}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <GenericAuditDetails log={log} />
+        )}
+        {(changedFields.includes('sessionNames') || changedFields.includes('sessionDescriptions') || changedFields.includes('sessionKsbMappings')) && (
+          <div>
+            <p className="mb-2 text-[11px] font-extrabold uppercase tracking-wide text-blue-700">Session details after update</p>
+            <ModuleSessionList module={after} />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+        Note: The user {log.action === 'delete' ? 'deleted' : 'created'} module catalogue item <strong>{moduleName}</strong>. It is a reusable module template, not a specific cohort/programme placement.
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-gray-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">Module name</p>
+          <p className="mt-1 text-xs font-extrabold text-gray-800">{moduleName}</p>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">Planned sessions</p>
+          <p className="mt-1 text-xs font-extrabold text-gray-800">{sessions || 'Not set'}</p>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">Colour</p>
+          <p className="mt-1 inline-flex items-center gap-2 text-xs font-extrabold text-gray-800">
+            {colour && <span className="h-3 w-3 rounded-sm border border-slate-200" style={{ backgroundColor: colour }} />}
+            {colour || 'Not set'}
+          </p>
+        </div>
+      </div>
+      {textValue(source, 'notes') && (
+        <div className="rounded-lg border border-gray-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-gray-400">Notes</p>
+          <p className="mt-1 text-xs font-semibold leading-5 text-gray-700">{textValue(source, 'notes')}</p>
+        </div>
+      )}
+      <div>
+        <p className="mb-2 text-[11px] font-extrabold uppercase tracking-wide text-kbc-navy">Session details</p>
+        <ModuleSessionList module={source} />
+      </div>
     </div>
   );
 }
@@ -2537,6 +2707,8 @@ export default function UserActivityPage() {
                                 <TrainingPlanAuditDetails log={log} ksbProfiles={ksbProfiles} />
                               ) : log.entity === 'ModuleLearnerMapping' ? (
                                 <ModuleLearnerMappingAuditDetails log={log} trainingPlanRows={trainingPlanRows} />
+                              ) : log.entity === 'Module' ? (
+                                <ModuleAuditDetails log={log} />
                               ) : (
                                 <GenericAuditDetails log={log} />
                               )}

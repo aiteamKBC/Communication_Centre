@@ -55,6 +55,7 @@
   }
 
   .kbc-swal-confirm,
+  .kbc-swal-deny,
   .kbc-swal-cancel {
     @apply inline-flex items-center justify-center rounded-xl font-bold transition-all;
     min-width: 9.5rem;
@@ -71,6 +72,26 @@
   }
 
   .kbc-swal-confirm:hover {
+    background: #b91c1c;
+  }
+
+  .kbc-swal-confirm-save {
+    background: #10264f;
+    color: #fff;
+    box-shadow: 0 12px 24px rgba(16, 38, 79, 0.18);
+  }
+
+  .kbc-swal-confirm-save:hover {
+    background: #0b1b38;
+  }
+
+  .kbc-swal-deny {
+    background: #dc2626;
+    color: #fff;
+    box-shadow: 0 12px 24px rgba(220, 38, 38, 0.16);
+  }
+
+  .kbc-swal-deny:hover {
     background: #b91c1c;
   }
 
