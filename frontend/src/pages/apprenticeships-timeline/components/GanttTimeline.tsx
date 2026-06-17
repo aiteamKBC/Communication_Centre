@@ -936,7 +936,6 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
                 style={{ background: index === data.activeIndex ? `${entry.moduleColor}22` : `${entry.moduleColor}10` }}
               >
                 <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: entry.moduleColor }} />
                   <span className="min-w-0 flex-1 truncate font-extrabold text-gray-900">{entry.moduleName}</span>
                   <span className="shrink-0 rounded border px-1.5 py-px font-extrabold" style={moduleTintStyle(entry.moduleColor)}>
                     {entry.position}
