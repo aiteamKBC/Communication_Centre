@@ -1776,12 +1776,22 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
   }, [hasLoaded, isActive, loadLearnersForSubprogrammes, mappingEndpoint, parseSubprogrammeSelection, summary.moduleName]);
 
   const updateSubprogrammeSelection = (nextSelection: string[]) => {
-    setSelectedLearnerIds(new Set());
+    const preservedLearners = mergeLearners(
+      liveLearners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner))),
+      Array.isArray(payload?.learners) ? payload.learners.filter(isLearnerSelected) : [],
+    );
     setMappingDirty(true);
     setSelectedSubprogrammes(nextSelection);
     const nextPayloadValue = nextSelection.length <= 1 ? (nextSelection[0] || '') : JSON.stringify(nextSelection);
-    setPayload(prev => ({ ...(prev || {}), moduleName: prev?.moduleName || summary.moduleName, subprogramme: nextPayloadValue, selectedCount: 0, learners: [] }));
-    void loadLearnersForSubprogrammes(nextSelection, []);
+    setPayload(prev => ({
+      ...(prev || {}),
+      moduleName: prev?.moduleName || summary.moduleName,
+      subprogramme: nextPayloadValue,
+      selectedCount: preservedLearners.length,
+      learners: preservedLearners,
+    }));
+    setSelectedLearnerIds(new Set(preservedLearners.map(learnerIdentity)));
+    void loadLearnersForSubprogrammes(nextSelection, preservedLearners);
   };
 
   const toggleSubprogramme = (value: string) => {
@@ -1963,6 +1973,70 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
     } finally {
       setSaving(false);
     }
+  };
+
+  const exportLearnerMappingExcel = () => {
+    const exportLearners = selectedLearnerIds.size
+      ? liveLearners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner)))
+      : learners;
+    if (!exportLearners.length) return;
+
+    const headers = [
+      'Module',
+      'Programme',
+      'Cohort',
+      'Group',
+      'Selected Subprogrammes',
+      'Learner Name',
+      'Learner Email',
+      'Learner ID',
+      'Learner Group',
+      'Learner Programme',
+      'Programme Status',
+      'Manager Name',
+      'Manager Email',
+      'Selected',
+    ];
+    const rows = exportLearners.map(learner => [
+      summary.moduleName,
+      summary.programme,
+      summary.cohort,
+      summary.groupName,
+      selectedSubprogrammes.join(' | '),
+      learner.learnerName || learner.name || '',
+      learner.learnerEmail || learner.email || '',
+      learner.learnerId || '',
+      learner.group || '',
+      learner.programmeName || '',
+      learner.programmeStatus || learner.status || '',
+      learner.managerName || '',
+      learner.managerEmail || '',
+      selectedLearnerIds.has(learnerIdentity(learner)) ? 'Yes' : 'No',
+    ]);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    worksheet['!cols'] = [
+      { wch: 28 },
+      { wch: 26 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 38 },
+      { wch: 24 },
+      { wch: 34 },
+      { wch: 12 },
+      { wch: 42 },
+      { wch: 34 },
+      { wch: 18 },
+      { wch: 22 },
+      { wch: 32 },
+      { wch: 10 },
+    ];
+    worksheet['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Learner Mapping');
+    const stamp = new Date().toISOString().slice(0, 10);
+    const safeModuleName = summary.moduleName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'module';
+    XLSX.writeFile(workbook, `${safeModuleName}-learner-mapping-${stamp}.xlsx`, { compression: true });
   };
 
   return (
@@ -2155,7 +2229,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
       )}
       {!isLoading && !error && learners.length > 0 && (
         <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3">
             <div className="min-w-0">
               <p className="text-xs font-extrabold uppercase tracking-wide text-slate-400">Learners</p>
               <p className="mt-0.5 text-sm font-extrabold text-kbc-navy">
@@ -2163,7 +2237,16 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
                 {learners.length !== liveLearners.length ? ` from ${liveLearners.length}` : ''}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2 text-[11px] font-extrabold">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 text-[11px] font-extrabold">
+              <button
+                type="button"
+                onClick={exportLearnerMappingExcel}
+                disabled={!liveLearners.length}
+                className="inline-flex h-9 items-center gap-2 rounded-lg bg-emerald-600 px-3.5 text-[11px] font-extrabold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-white/80 disabled:shadow-none"
+              >
+                <i className="ri-download-2-line text-sm" aria-hidden="true" />
+                Export Excel
+              </button>
               <span className="rounded-full bg-kbc-navy px-2.5 py-1 text-white">{selectedCount} selected</span>
               <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">{liveLearners.length} total</span>
             </div>
@@ -2290,7 +2373,7 @@ function ModuleOverviewStudentsTab({ summary, isActive }: { summary: ModuleMonth
           </div>
         </div>
       )}
-      <div className="mt-3 flex shrink-0 justify-end border-t border-slate-200 pt-3">
+      <div className="mt-3 flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-200 pt-3">
         <button
           type="button"
           onClick={() => void saveLearnerMapping()}

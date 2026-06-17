@@ -5678,9 +5678,9 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 		with transaction.atomic():
 			before = [
 				serialize_module_learner_mapping(item)
-				for item in ModuleLearnerMapping.objects.select_for_update().filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).order_by('sort_order', 'id')
+				for item in ModuleLearnerMapping.objects.select_for_update().filter(cohort_id=cohort_id, module_block_id=module_block_id).order_by('sort_order', 'id')
 			]
-			ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id, subprogramme=subprogramme).delete()
+			ModuleLearnerMapping.objects.filter(cohort_id=cohort_id, module_block_id=module_block_id).delete()
 			if next_records:
 				ModuleLearnerMapping.objects.bulk_create(next_records)
 			after = [
@@ -5705,11 +5705,16 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 			after=after,
 			metadata={
 				'cohortId': cohort_id,
+				'cohortName': row.cohort_name,
+				'programmeId': training_plan_row_identity(row)['programmeId'],
+				'programmeName': row.program,
 				'moduleBlockId': module_block_id,
 				'moduleCatalogueId': module_catalogue_id,
+				'moduleName': row.module_name,
+				'groupName': row.group_name,
 				'subprogramme': subprogramme,
 				'selectedCount': len([item for item in after if item.get('selected')]),
-				'note': f'User updated learner mapping for cohort module {module_block_id}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
+				'note': f'User updated learner mapping for {row.program} / {row.cohort_name} / {row.module_name}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
 			},
 		)
 		return JsonResponse({'cohortId': cohort_id, 'moduleBlockId': module_block_id, 'moduleCatalogueId': module_catalogue_id, 'subprogramme': subprogramme, 'learners': after})
@@ -5797,15 +5802,15 @@ def training_plan_module_learners(request, module_catalogue_id: str):
 
 		before = [
 			serialize_module_learner_mapping(item)
-			for item in ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).order_by('sort_order', 'id')
+			for item in ModuleLearnerMapping.objects.filter(cohort_id=f'catalogue:{module.module_id}', module_block_id=f'catalogue:{module.module_id}').order_by('sort_order', 'id')
 		]
 		with transaction.atomic():
-			ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).delete()
+			ModuleLearnerMapping.objects.filter(cohort_id=f'catalogue:{module.module_id}', module_block_id=f'catalogue:{module.module_id}').delete()
 			if next_records:
 				ModuleLearnerMapping.objects.bulk_create(next_records)
 		after = [
 			serialize_module_learner_mapping(item)
-			for item in ModuleLearnerMapping.objects.filter(module_catalogue_id=str(module.module_id), subprogramme=subprogramme).order_by('sort_order', 'id')
+			for item in ModuleLearnerMapping.objects.filter(cohort_id=f'catalogue:{module.module_id}', module_block_id=f'catalogue:{module.module_id}', subprogramme=subprogramme).order_by('sort_order', 'id')
 		]
 		_audit_log(
 			request,
@@ -5817,9 +5822,10 @@ def training_plan_module_learners(request, module_catalogue_id: str):
 			after=after,
 			metadata={
 				'moduleCatalogueId': str(module.module_id),
+				'moduleName': module.module_name,
 				'subprogramme': subprogramme,
 				'selectedCount': len([item for item in after if item.get('selected')]),
-				'note': f'User updated learner mapping for catalogue module {module.module_id}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
+				'note': f'User updated learner mapping for catalogue module {module.module_name}: selected {len([item for item in after if item.get("selected")])} learner(s) in {subprogramme}.',
 			},
 		)
 		return JsonResponse({'moduleCatalogueId': str(module.module_id), 'subprogramme': subprogramme, 'learners': after})

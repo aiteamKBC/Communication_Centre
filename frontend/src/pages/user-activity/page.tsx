@@ -107,6 +107,17 @@ type KsbProfile = {
   isActive?: boolean;
 };
 
+type TrainingPlanAuditRow = {
+  id?: number | string;
+  programmeId?: string;
+  cohortId?: string;
+  cohortName?: string;
+  program?: string;
+  moduleName?: string;
+  groupName?: string;
+  notes?: string;
+};
+
 const ACTIVITY_REFRESH_MS = 5000;
 const AUDIT_LOG_REFRESH_MS = 60000;
 
@@ -951,6 +962,37 @@ function learnerSelected(item: Record<string, unknown>): boolean {
   return item.selected !== false && item.isSelected !== false;
 }
 
+function markerValueFromNotes(notes: string | undefined, marker: string): string {
+  if (!notes) return '';
+  const line = notes.split(/\r?\n/).find(item => item.trim().startsWith(marker));
+  return line ? line.trim().slice(marker.length).trim() : '';
+}
+
+function moduleMappingContext(log: AuditLog, trainingPlanRows: TrainingPlanAuditRow[]) {
+  const metadata = asRecord(log.metadata);
+  const cohortId = textValue(metadata, 'cohortId');
+  const moduleBlockId = textValue(metadata, 'moduleBlockId');
+  const moduleCatalogueId = textValue(metadata, 'moduleCatalogueId');
+  const matchingRow = trainingPlanRows.find(row => (
+    (!cohortId || row.cohortId === cohortId)
+    && (
+      !moduleBlockId
+      || markerValueFromNotes(row.notes, '__block_id:') === moduleBlockId
+    )
+  ));
+
+  return {
+    programmeId: textValue(metadata, 'programmeId') || matchingRow?.programmeId || '',
+    programmeName: textValue(metadata, 'programmeName') || matchingRow?.program || '',
+    cohortId,
+    cohortName: textValue(metadata, 'cohortName') || matchingRow?.cohortName || '',
+    moduleBlockId,
+    moduleCatalogueId,
+    moduleName: textValue(metadata, 'moduleName') || matchingRow?.moduleName || '',
+    groupName: textValue(metadata, 'groupName') || matchingRow?.groupName || '',
+  };
+}
+
 function orderValue(item: Record<string, unknown>, key: string): number | null {
   const value = Number(item[key]);
   return Number.isFinite(value) ? value : null;
@@ -1138,10 +1180,11 @@ function ModuleLearnerAuditCard({ item, tone }: { item: Record<string, unknown>;
   );
 }
 
-function ModuleLearnerMappingAuditDetails({ log }: { log: AuditLog }) {
+function ModuleLearnerMappingAuditDetails({ log, trainingPlanRows }: { log: AuditLog; trainingPlanRows: TrainingPlanAuditRow[] }) {
   const beforeRows = asRecordArray(log.before);
   const afterRows = asRecordArray(log.after);
   const metadata = asRecord(log.metadata);
+  const context = moduleMappingContext(log, trainingPlanRows);
   const beforeById = new Map<string, Record<string, unknown>>(
     beforeRows.map(item => [learnerRecordId(item), item] as const).filter(([id]) => Boolean(id)),
   );
@@ -1170,6 +1213,31 @@ function ModuleLearnerMappingAuditDetails({ log }: { log: AuditLog }) {
 
   return (
     <div className="mt-3 space-y-3">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+        <p className="text-[11px] font-extrabold uppercase tracking-wide text-slate-500">Training Plan location</p>
+        <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <p className="font-extrabold uppercase text-slate-400">Programme</p>
+            <p className="mt-0.5 font-bold text-kbc-navy">{context.programmeName || context.programmeId || 'Unknown'}</p>
+            {context.programmeName && context.programmeId && <p className="mt-0.5 font-semibold text-slate-400">{context.programmeId}</p>}
+          </div>
+          <div>
+            <p className="font-extrabold uppercase text-slate-400">Cohort</p>
+            <p className="mt-0.5 font-bold text-kbc-navy">{context.cohortName || context.cohortId || 'Unknown'}</p>
+            {context.cohortName && context.cohortId && <p className="mt-0.5 font-semibold text-slate-400">{context.cohortId}</p>}
+          </div>
+          <div>
+            <p className="font-extrabold uppercase text-slate-400">Module</p>
+            <p className="mt-0.5 font-bold text-kbc-navy">{context.moduleName || context.moduleBlockId || 'Unknown'}</p>
+            {context.moduleName && context.moduleBlockId && <p className="mt-0.5 font-semibold text-slate-400">{context.moduleBlockId}</p>}
+          </div>
+          <div>
+            <p className="font-extrabold uppercase text-slate-400">Group</p>
+            <p className="mt-0.5 font-bold text-kbc-navy">{context.groupName || 'Unknown'}</p>
+            {context.moduleCatalogueId && <p className="mt-0.5 font-semibold text-slate-400">Catalogue {context.moduleCatalogueId}</p>}
+          </div>
+        </div>
+      </div>
       <div className="flex flex-wrap gap-2 text-[11px] font-extrabold text-gray-600">
         <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Selected after save: {selectedCount}</span>
         <span className="rounded bg-white px-2 py-1 ring-1 ring-gray-200">Before: {beforeRows.length}</span>
@@ -1690,6 +1758,7 @@ export default function UserActivityPage() {
   const [payload, setPayload] = useState<ActivityPayload>(emptyPayload);
   const [auditPayload, setAuditPayload] = useState<AuditPayload>(emptyAuditPayload);
   const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
+  const [trainingPlanRows, setTrainingPlanRows] = useState<TrainingPlanAuditRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [auditLoading, setAuditLoading] = useState(true);
   const [error, setError] = useState('');
@@ -1979,6 +2048,31 @@ export default function UserActivityPage() {
       })
       .catch(() => {
         if (!cancelled) setKsbProfiles([]);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [canView]);
+
+  useEffect(() => {
+    if (!canView) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    fetch('/api/training-plan/', { cache: 'no-store', signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('Unable to load Training Plan context.');
+        return response.json() as Promise<{ items?: TrainingPlanAuditRow[] } | TrainingPlanAuditRow[]>;
+      })
+      .then(payload => {
+        const items = Array.isArray(payload) ? payload : payload.items;
+        if (!cancelled) setTrainingPlanRows(Array.isArray(items) ? items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setTrainingPlanRows([]);
       });
 
     return () => {
@@ -2442,7 +2536,7 @@ export default function UserActivityPage() {
                               {log.entity === 'TrainingPlan' ? (
                                 <TrainingPlanAuditDetails log={log} ksbProfiles={ksbProfiles} />
                               ) : log.entity === 'ModuleLearnerMapping' ? (
-                                <ModuleLearnerMappingAuditDetails log={log} />
+                                <ModuleLearnerMappingAuditDetails log={log} trainingPlanRows={trainingPlanRows} />
                               ) : (
                                 <GenericAuditDetails log={log} />
                               )}
