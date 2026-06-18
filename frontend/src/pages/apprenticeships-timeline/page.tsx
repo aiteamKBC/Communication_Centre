@@ -500,6 +500,36 @@ function normalizeProgramLabel(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function normalizeTrainingPlanIdentity(value: string): string {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function fallbackCohortId(item: TrainingPlanItem): string {
+  return `${normalizeTrainingPlanIdentity(item.cohortName)}::${normalizeTrainingPlanIdentity(item.startingDateLabel)}`;
+}
+
+function cohortOrderId(row: CohortRow): string {
+  if (row.id && !row.id.startsWith('db-row-') && !row.id.startsWith('row-')) {
+    return row.id;
+  }
+  return `${normalizeTrainingPlanIdentity(row.label)}::${normalizeTrainingPlanIdentity(row.dateLbl)}`;
+}
+
+function resolveCohortOrderId(row: CohortRow, programmeId: string, items: TrainingPlanItem[]): string {
+  const currentId = cohortOrderId(row);
+  const programmeItems = items.filter(item => trainingPlanItemProgrammeId(item) === programmeId);
+  const existingIds = new Set(programmeItems.map(trainingPlanItemCohortId).filter(Boolean));
+  if (existingIds.has(currentId)) {
+    return currentId;
+  }
+
+  const matchedItem = programmeItems.find(item =>
+    normalizeTrainingPlanIdentity(item.cohortName) === normalizeTrainingPlanIdentity(row.label) &&
+    normalizeTrainingPlanIdentity(item.startingDateLabel) === normalizeTrainingPlanIdentity(row.dateLbl)
+  );
+  return matchedItem ? trainingPlanItemCohortId(matchedItem) : currentId;
+}
+
 function inferGroupId(program: string, groups: ProgrammeGroup[]): string {
   const normalizedProgram = normalizeProgramLabel(program);
   const exactIdMatch = groups.find(group => normalizeProgramLabel(group.id) === normalizedProgram);
@@ -580,11 +610,12 @@ function buildGroupsFromTrainingRows(
     }
 
     const persistedCohortId = parsedNotes.cohortId || item.cohortId;
-    const cohortKey = persistedCohortId || `${groupId}::${item.cohortName}::${item.startingDateLabel}`;
+    const resolvedCohortId = persistedCohortId || fallbackCohortId(item);
+    const cohortKey = `${groupId}::${resolvedCohortId}`;
     let cohort = cohortIndex.get(cohortKey);
     if (!cohort) {
       cohort = {
-        id: persistedCohortId || `db-row-${groupId}-${cohortIndex.size + 1}`,
+        id: resolvedCohortId,
         label: item.cohortName || 'Cohort',
         dateLbl: item.startingDateLabel || '',
         endDateLbl: undefined,
@@ -758,7 +789,34 @@ function trainingPlanItemProgrammeId(item: TrainingPlanItem): string {
 
 function trainingPlanItemCohortId(item: TrainingPlanItem): string {
   const parsedNotes = splitPersistedNotes(item.notes || '');
-  return parsedNotes.cohortId || item.cohortId || '';
+  return parsedNotes.cohortId || item.cohortId || fallbackCohortId(item);
+}
+
+function completeProgrammeCohortOrder(
+  visibleOrder: string[],
+  programmeId: string,
+  items: TrainingPlanItem[],
+): string[] {
+  const existingOrder: string[] = [];
+  const existing = new Set<string>();
+  items.forEach(item => {
+    if (trainingPlanItemProgrammeId(item) !== programmeId) return;
+    const cohortId = trainingPlanItemCohortId(item);
+    if (!cohortId || existing.has(cohortId)) return;
+    existing.add(cohortId);
+    existingOrder.push(cohortId);
+  });
+
+  const order = existing.size
+    ? visibleOrder.filter(cohortId => existing.has(cohortId))
+    : visibleOrder.filter(Boolean);
+  const included = new Set(order);
+  existingOrder.forEach(cohortId => {
+    if (!cohortId || included.has(cohortId)) return;
+    included.add(cohortId);
+    order.push(cohortId);
+  });
+  return order;
 }
 
 function missingSiblingCohortIds(items: TrainingPlanItem[], programmeId: string, siblingCohortIds: string[]): string[] {
@@ -3065,6 +3123,25 @@ export default function ApprenticeshipTimeline() {
     }
   }, []);
 
+  const fetchLatestTrainingPlanSnapshot = useCallback(async (
+    options: { commit?: boolean } = {},
+  ): Promise<{ items: TrainingPlanItem[]; version?: string } | null> => {
+    try {
+      const response = await fetch('/api/training-plan/', { cache: 'no-store' });
+      if (!response.ok) return null;
+      const payload = parseTrainingPlanPayload(await response.json());
+      if (!payload || !Array.isArray(payload.items)) return null;
+      if (options.commit) {
+        setTrainingPlanItems(payload.items);
+        setTrainingPlanVersion(payload.version);
+        setHasLoadedTrainingPlan(true);
+      }
+      return { items: payload.items, version: payload.version };
+    } catch {
+      return null;
+    }
+  }, []);
+
   const reloadTrainingPlanHolidays = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch('/api/training-plan-holidays/');
@@ -4226,7 +4303,10 @@ export default function ApprenticeshipTimeline() {
     if (!response.ok) {
       let errorText = '';
       try {
-        const errorPayload = await response.clone().json() as { detail?: string };
+        const errorPayload = await response.clone().json() as { detail?: string; missingIds?: string[]; unknownIds?: string[]; crossScopeIds?: string[] };
+        if (errorPayload.missingIds?.length || errorPayload.unknownIds?.length || errorPayload.crossScopeIds?.length) {
+          console.warn('TRAINING_PLAN_PARTIAL_SAVE_REJECTED_IDS', errorPayload);
+        }
         errorText = errorPayload.detail || '';
       } catch {
         errorText = (await response.text()).trim();
@@ -4360,26 +4440,26 @@ export default function ApprenticeshipTimeline() {
     return handleTrainingPlanPartialResponse(response);
   };
 
-  const updateTrainingPlanProgrammeOrder = async (programmeIds: string[]): Promise<TrainingPlanMutationResult> => {
+  const updateTrainingPlanProgrammeOrder = async (programmeIds: string[], versionOverride?: string): Promise<TrainingPlanMutationResult> => {
     const response = await fetch('/api/training-plan/reorder/programmes/', {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
         'X-KBC-Training-Plan-Save-Source': 'reorder_programmes',
       },
-      body: JSON.stringify({ programmeIds, version: trainingPlanVersion }),
+      body: JSON.stringify({ programmeIds, version: versionOverride || trainingPlanVersion }),
     });
     return handleTrainingPlanPartialResponse(response);
   };
 
-  const updateTrainingPlanCohortOrder = async (programmeId: string, cohortIds: string[]): Promise<TrainingPlanMutationResult> => {
+  const updateTrainingPlanCohortOrder = async (programmeId: string, cohortIds: string[], versionOverride?: string): Promise<TrainingPlanMutationResult> => {
     const response = await fetch('/api/training-plan/reorder/cohorts/', {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
         'X-KBC-Training-Plan-Save-Source': 'reorder_cohorts',
       },
-      body: JSON.stringify({ programmeId, cohortIds, version: trainingPlanVersion }),
+      body: JSON.stringify({ programmeId, cohortIds, version: versionOverride || trainingPlanVersion }),
     });
     return handleTrainingPlanPartialResponse(response);
   };
@@ -4387,6 +4467,7 @@ export default function ApprenticeshipTimeline() {
   const moveTrainingPlanCohort = async (
     cohortId: string,
     payload: { fromProgrammeId: string; toProgrammeId: string; toProgrammeName: string; sourceCohortIds: string[]; targetCohortIds: string[] },
+    versionOverride?: string,
   ): Promise<TrainingPlanMutationResult> => {
     const response = await fetch(`/api/training-plan/cohorts/${encodeURIComponent(cohortId)}/move/`, {
       method: 'PATCH',
@@ -4394,7 +4475,7 @@ export default function ApprenticeshipTimeline() {
         'Content-Type': 'application/json',
         'X-KBC-Training-Plan-Save-Source': 'move_cohort',
       },
-      body: JSON.stringify({ ...payload, version: trainingPlanVersion }),
+      body: JSON.stringify({ ...payload, version: versionOverride || trainingPlanVersion }),
     });
     return handleTrainingPlanPartialResponse(response);
   };
@@ -4927,10 +5008,95 @@ export default function ApprenticeshipTimeline() {
     if (!canManageCohorts) return;
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
     const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
+    if (!moved) return;
     const rawInsertAt = position === 'after' ? toRowIdx + 1 : toRowIdx;
     const insertAt = fromGroupIdx === toGroupIdx && fromRowIdx < rawInsertAt ? rawInsertAt - 1 : rawInsertAt;
     next[toGroupIdx].rows.splice(insertAt, 0, moved);
+
+    const sourceGroup = groups[fromGroupIdx];
+    const targetGroup = next[toGroupIdx];
+    const latestSnapshot = await fetchLatestTrainingPlanSnapshot();
+    const latestItems = latestSnapshot?.items || trainingPlanItems;
+    const latestVersion = latestSnapshot?.version || trainingPlanVersion;
+    const movedCohortId = resolveCohortOrderId(moved, targetGroup?.id || sourceGroup?.id || '', latestItems);
+    const visibleSourceCohortIds = next[fromGroupIdx]?.rows
+      .map(row => resolveCohortOrderId(row, sourceGroup?.id || '', latestItems))
+      .filter(Boolean) || [];
+    const visibleTargetCohortIds = targetGroup.rows
+      .map(row => resolveCohortOrderId(row, targetGroup?.id || '', latestItems))
+      .filter(Boolean);
+    const sourceCohortIds = completeProgrammeCohortOrder(visibleSourceCohortIds, sourceGroup?.id || '', latestItems);
+    let targetCohortIds = completeProgrammeCohortOrder(visibleTargetCohortIds, targetGroup?.id || '', latestItems);
+    if (sourceGroup?.id !== targetGroup?.id && movedCohortId && !targetCohortIds.includes(movedCohortId)) {
+      const desiredMovedIndex = Math.max(0, visibleTargetCohortIds.indexOf(movedCohortId));
+      targetCohortIds = [
+        ...targetCohortIds.slice(0, desiredMovedIndex),
+        movedCohortId,
+        ...targetCohortIds.slice(desiredMovedIndex),
+      ];
+    }
+    const expectedSourceCount = next[fromGroupIdx]?.rows.length || 0;
+    const expectedTargetCount = targetGroup.rows.length;
+    const stableIdsLoaded =
+      Boolean(sourceGroup?.id && targetGroup?.id && movedCohortId) &&
+      visibleSourceCohortIds.length === expectedSourceCount &&
+      visibleTargetCohortIds.length === expectedTargetCount;
+
+    if (!stableIdsLoaded) {
+      console.warn('COHORT_REORDER_SAVE_BLOCKED_MISSING_IDS', {
+        reason: 'missing stable programme/cohort ids',
+        movedCohortId,
+        originalMovedCohortId: moved.id,
+        fromProgrammeId: sourceGroup?.id,
+        toProgrammeId: targetGroup?.id,
+      });
+      await kbcSwal.fire({
+        title: 'Cohort Not Reordered',
+        html: 'This cohort order cannot be saved safely until stable cohort IDs have loaded. Reload latest data and try again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+
     setGroups(next);
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving cohort order...');
+
+    try {
+      const result = sourceGroup.id === targetGroup.id
+        ? await updateTrainingPlanCohortOrder(targetGroup.id, targetCohortIds, latestVersion)
+        : await moveTrainingPlanCohort(movedCohortId, {
+          fromProgrammeId: sourceGroup.id,
+          toProgrammeId: targetGroup.id,
+          toProgrammeName: toProgrammeLabel(targetGroup),
+          sourceCohortIds,
+          targetCohortIds,
+        }, latestVersion);
+
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (result.items) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Cohort order saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+    } catch (error) {
+      setGroups(groups);
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') {
+        return;
+      }
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Reordered');
+        return;
+      } catch {
+        // Continue with normal validation/server error handling.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Cohort order was not saved.');
+      await kbcSwal.fire({ title: 'Cohort Not Reordered', html: message, icon: 'error', confirmButtonText: 'OK' });
+    }
   };
 
   const handleReorderGroup = async (fromGroupIdx: number, toGroupIdx: number) => {

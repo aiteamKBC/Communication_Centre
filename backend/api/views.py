@@ -2639,9 +2639,13 @@ def training_plan_reorder_programmes(request):
 		if conflict is not None:
 			return conflict
 
-		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows)
+		unsafe_row_ids = [
+			int(row.id)
+			for row in rows
+			if not training_plan_row_identity(row)['programmeId']
+		]
 		if unsafe_row_ids:
-			return JsonResponse({'detail': 'Programme reorder cannot safely run because some rows are missing stable programme ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
+			return JsonResponse({'detail': 'Programme reorder cannot safely run because some rows are missing programme identities.', 'unsafeRowIds': unsafe_row_ids}, status=400)
 		existing_ids = []
 		for row in rows:
 			programme_id = training_plan_row_identity(row)['programmeId']
@@ -2724,9 +2728,13 @@ def training_plan_reorder_cohorts(request):
 		if conflict is not None:
 			return conflict
 
-		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows, require_cohort=True)
+		unsafe_row_ids = [
+			int(row.id)
+			for row in rows
+			if not training_plan_row_identity(row)['programmeId'] or not training_plan_row_identity(row)['cohortId']
+		]
 		if unsafe_row_ids:
-			return JsonResponse({'detail': 'Cohort reorder cannot safely run because some rows are missing stable programme/cohort ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
+			return JsonResponse({'detail': 'Cohort reorder cannot safely run because some rows are missing programme/cohort identities.', 'unsafeRowIds': unsafe_row_ids}, status=400)
 		cohorts_by_programme: dict[str, list[str]] = {}
 		cohort_programmes: dict[str, set[str]] = {}
 		for row in rows:
@@ -2841,9 +2849,13 @@ def training_plan_move_cohort(request, cohort_id: str):
 		if conflict is not None:
 			return conflict
 
-		unsafe_row_ids = training_plan_rows_missing_stable_scope(rows, require_cohort=True)
+		unsafe_row_ids = [
+			int(row.id)
+			for row in rows
+			if not training_plan_row_identity(row)['programmeId'] or not training_plan_row_identity(row)['cohortId']
+		]
 		if unsafe_row_ids:
-			return JsonResponse({'detail': 'Cohort move cannot safely run because some rows are missing stable programme/cohort ids.', 'unsafeRowIds': unsafe_row_ids}, status=400)
+			return JsonResponse({'detail': 'Cohort move cannot safely run because some rows are missing programme/cohort identities.', 'unsafeRowIds': unsafe_row_ids}, status=400)
 		source_rows = [
 			row for row in rows
 			if training_plan_row_identity(row)['programmeId'] == from_programme_id
