@@ -15,6 +15,8 @@ const REALTIME_EVENT_NAME = 'kbc:realtime-update';
 const REALTIME_STATUS_EVENT_NAME = 'kbc:realtime-status';
 const FALLBACK_POLL_MS = 60000;
 const SSE_RETRY_MS = 60000;
+const SSE_OPEN_DELAY_MS = 5000;
+const SSE_FIRST_MESSAGE_TIMEOUT_MS = 8000;
 
 type RealtimeOptions = {
   enabled?: boolean;
@@ -81,6 +83,8 @@ export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
 
     let timer: number | undefined;
     let retryTimer: number | undefined;
+    let openTimer: number | undefined;
+    let firstMessageTimer: number | undefined;
     let stopped = false;
     let fallbackEnabled = false;
 
@@ -133,10 +137,27 @@ export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
       if (stopped || eventSourceRef.current) return;
       const source = new EventSource('/api/realtime/?stream=1');
       eventSourceRef.current = source;
+      firstMessageTimer = window.setTimeout(() => {
+        if (eventSourceRef.current !== source) return;
+        source.close();
+        eventSourceRef.current = null;
+        startFallback();
+        if (!stopped && retryTimer === undefined) {
+          retryTimer = window.setTimeout(() => {
+            retryTimer = undefined;
+            fallbackEnabled = false;
+            openSse();
+          }, SSE_RETRY_MS);
+        }
+      }, SSE_FIRST_MESSAGE_TIMEOUT_MS);
 
       const handlePayloadEvent = (event: MessageEvent<string>) => {
         const payload = parseRealtimePayload(event.data);
         if (!payload) return;
+        if (firstMessageTimer !== undefined) {
+          window.clearTimeout(firstMessageTimer);
+          firstMessageTimer = undefined;
+        }
         fallbackEnabled = false;
         if (timer !== undefined) window.clearTimeout(timer);
         emitRealtimeStatus('sse');
@@ -151,6 +172,10 @@ export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
         if (eventSourceRef.current === source) {
           source.close();
           eventSourceRef.current = null;
+        }
+        if (firstMessageTimer !== undefined) {
+          window.clearTimeout(firstMessageTimer);
+          firstMessageTimer = undefined;
         }
         startFallback();
         if (!stopped && retryTimer === undefined) {
@@ -170,12 +195,14 @@ export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    openSse();
+    openTimer = window.setTimeout(openSse, SSE_OPEN_DELAY_MS);
 
     return () => {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (openTimer !== undefined) window.clearTimeout(openTimer);
+      if (firstMessageTimer !== undefined) window.clearTimeout(firstMessageTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       controllerRef.current?.abort();
       controllerRef.current = null;
