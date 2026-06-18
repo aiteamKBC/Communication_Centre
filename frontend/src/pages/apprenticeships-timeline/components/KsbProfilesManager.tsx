@@ -171,6 +171,11 @@ function parseKsbTemplateRows(rows: unknown[][]): KsbProfileItem[] {
   return normalizeItems(dataRows.map(row => itemFromTemplateRow(row, indexes)).filter(Boolean));
 }
 
+function safeFileName(value: string, fallback: string): string {
+  const cleaned = value.trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+  return cleaned || fallback;
+}
+
 export default function KsbProfilesManager({ profiles, programmeOptions = [], onCreate, onUpdate, onDelete, onClose }: Props) {
   const templateInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
@@ -341,6 +346,29 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
     templateInputRef.current?.click();
   };
 
+  const downloadTemplate = () => {
+    const rows = [
+      ['Type', 'Number', 'Code', 'Description'],
+      ['K', '1', 'K1', 'Knowledge header example'],
+      ['K', '1.1', 'K1.1', 'Knowledge point example'],
+      ['S', '1', 'S1', 'Skill header example'],
+      ['S', '1.1', 'S1.1', 'Skill point example'],
+      ['B', '1', 'B1', 'Behaviour header example'],
+      ['B', '1.1', 'B1.1', 'Behaviour point example'],
+    ];
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!cols'] = [
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 52 },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'KSB Definitions');
+    const namePart = safeFileName(draft.name || draft.programmeName, 'ksb-profile');
+    XLSX.writeFile(workbook, `${namePart}-ksb-template.xlsx`);
+  };
+
   const importTemplate = async (file: File) => {
     setImportingTemplate(true);
     try {
@@ -358,25 +386,33 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
         return;
       }
       let added = 0;
-      let skipped = 0;
+      let updated = 0;
+      let unchanged = 0;
       setDraft(prev => {
-        const existingCodes = new Set(normalizeItems(prev.ksbItems).map(item => item.code));
         const nextItems = [...orderedItemsFromProfile(prev)];
+        const indexByCode = new Map(nextItems.map((item, index) => [item.code, index]));
         importedItems.forEach(item => {
-          if (existingCodes.has(item.code)) {
-            skipped += 1;
+          const existingIndex = indexByCode.get(item.code);
+          if (existingIndex !== undefined) {
+            const existing = nextItems[existingIndex];
+            if (existing.type === item.type && existing.number === item.number && existing.description === item.description) {
+              unchanged += 1;
+              return;
+            }
+            nextItems[existingIndex] = item;
+            updated += 1;
             return;
           }
-          existingCodes.add(item.code);
+          indexByCode.set(item.code, nextItems.length);
           nextItems.push(item);
           added += 1;
         });
         return { ...prev, ksbItems: sortKsbItems(nextItems) };
       });
       await kbcSwal.fire({
-        title: added ? 'Template uploaded' : 'No new KSBs added',
-        html: `${added} KSB code${added === 1 ? '' : 's'} added.${skipped ? ` ${skipped} duplicate${skipped === 1 ? '' : 's'} skipped.` : ''}`,
-        icon: added ? 'success' : 'info',
+        title: added || updated ? 'Template uploaded' : 'No KSB changes found',
+        html: `${added} KSB code${added === 1 ? '' : 's'} added.${updated ? ` ${updated} updated.` : ''}${unchanged ? ` ${unchanged} unchanged.` : ''}`,
+        icon: added || updated ? 'success' : 'info',
         confirmButtonText: 'OK',
       });
     } catch {
@@ -612,6 +648,10 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <input ref={templateInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleTemplateFileChange} />
+                  <button type="button" onClick={downloadTemplate} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm hover:border-kbc-navy/20 hover:bg-gray-50">
+                    <i className="ri-download-2-line" />
+                    Download Template
+                  </button>
                   <button type="button" onClick={openTemplateUpload} disabled={!profileReady || importingTemplate} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-kbc-navy shadow-sm hover:border-kbc-navy/20 hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:text-gray-300 disabled:shadow-none">
                     <i className="ri-upload-2-line" />
                     {importingTemplate ? 'Uploading...' : 'Upload Template'}

@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from api.models import UserActivitySession, UserPageVisit
+from api.realtime import emit_realtime_resource_change_on_commit
 from .access import get_user_access_payload
 
 
@@ -63,7 +64,7 @@ def _display_name(user) -> str:
 
 def _create_activity_session(request, user, auth_provider: str = 'password') -> UserActivitySession:
 	now = timezone.now()
-	return UserActivitySession.objects.create(
+	session = UserActivitySession.objects.create(
 		tracking_session_id=uuid.uuid4(),
 		user_id=user.id,
 		username=user.username or '',
@@ -75,6 +76,8 @@ def _create_activity_session(request, user, auth_provider: str = 'password') -> 
 		ip_address=_client_ip(request),
 		user_agent=(request.META.get('HTTP_USER_AGENT') or '')[:2000],
 	)
+	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions')
+	return session
 
 
 def _safe_create_activity_session(request, user, auth_provider: str = 'password') -> UserActivitySession | None:
@@ -281,6 +284,7 @@ def logout_view(request):
 		session.last_seen_at = now
 		session.save(update_fields=['logout_at', 'logout_reason', 'last_seen_at', 'updated_at'])
 		_sync_session_totals(session, now)
+		emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions', 'page_visits')
 
 	return JsonResponse({'detail': 'Logged out.'})
 
@@ -363,6 +367,7 @@ def activity_view(request):
 		_sync_session_totals(session, now)
 	else:
 		_sync_session_totals(session, now)
+	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions', 'page_visits')
 
 	return JsonResponse(
 		{

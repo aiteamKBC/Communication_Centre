@@ -12,16 +12,43 @@ export type RealtimeUpdateDetail = {
 };
 
 const REALTIME_EVENT_NAME = 'kbc:realtime-update';
-const BASE_POLL_MS = 10000;
-const MAX_POLL_MS = 60000;
+const REALTIME_STATUS_EVENT_NAME = 'kbc:realtime-status';
+const FALLBACK_POLL_MS = 60000;
+const SSE_RETRY_MS = 60000;
 
 type RealtimeOptions = {
   enabled?: boolean;
 };
 
+type RealtimeStatusDetail = {
+  mode: 'sse' | 'fallback';
+};
+
 function changedResources(previous: RealtimePayload | null, next: RealtimePayload): string[] {
   if (!previous) return [];
   return Object.keys(next.resources).filter(resource => previous.resources[resource] !== next.resources[resource]);
+}
+
+function parseRealtimePayload(raw: string): RealtimePayload | null {
+  try {
+    const payload = JSON.parse(raw) as Partial<RealtimePayload>;
+    if (
+      typeof payload.version !== 'number'
+      || !payload.resources
+      || typeof payload.resources !== 'object'
+    ) {
+      return null;
+    }
+    return {
+      version: payload.version,
+      resources: Object.fromEntries(
+        Object.entries(payload.resources).filter(([, value]) => typeof value === 'number'),
+      ),
+      serverTime: typeof payload.serverTime === 'string' ? payload.serverTime : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function emitRealtimeUpdate(payload: RealtimePayload, resources: string[]) {
@@ -31,21 +58,31 @@ function emitRealtimeUpdate(payload: RealtimePayload, resources: string[]) {
   }));
 }
 
+function emitRealtimeStatus(mode: RealtimeStatusDetail['mode']) {
+  window.dispatchEvent(new CustomEvent<RealtimeStatusDetail>(REALTIME_STATUS_EVENT_NAME, {
+    detail: { mode },
+  }));
+}
+
 export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
   const lastPayloadRef = useRef<RealtimePayload | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!enabled) {
       controllerRef.current?.abort();
       controllerRef.current = null;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
       lastPayloadRef.current = null;
       return;
     }
 
     let timer: number | undefined;
+    let retryTimer: number | undefined;
     let stopped = false;
-    let delayMs = BASE_POLL_MS;
+    let fallbackEnabled = false;
 
     const applyPayload = (payload: RealtimePayload) => {
       const resources = changedResources(lastPayloadRef.current, payload);
@@ -53,52 +90,123 @@ export function useRealtimeUpdates({ enabled = true }: RealtimeOptions = {}) {
       emitRealtimeUpdate(payload, resources);
     };
 
-    const scheduleNext = () => {
-      if (stopped) return;
-      timer = window.setTimeout(poll, delayMs);
+    const scheduleFallback = () => {
+      if (stopped || !fallbackEnabled) return;
+      timer = window.setTimeout(poll, FALLBACK_POLL_MS);
     };
 
     const poll = async () => {
-      if (stopped) return;
+      if (stopped || !fallbackEnabled) return;
+      if (document.visibilityState !== 'visible') {
+        scheduleFallback();
+        return;
+      }
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
       try {
-        const response = await fetch('/api/realtime/', { signal: controller.signal });
+        const response = await fetch('/api/realtime/', { cache: 'no-store', signal: controller.signal });
         if (response.status === 401 || response.status === 403) {
           stopped = true;
           return;
         }
-        if (!response.ok) {
-          delayMs = Math.min(delayMs * 2, MAX_POLL_MS);
-          return;
-        }
+        if (!response.ok) return;
         applyPayload((await response.json()) as RealtimePayload);
-        delayMs = BASE_POLL_MS;
       } catch (error) {
-        if (!stopped && !(error instanceof DOMException && error.name === 'AbortError')) {
-          delayMs = Math.min(delayMs * 2, MAX_POLL_MS);
-        }
+        if (stopped || (error instanceof DOMException && error.name === 'AbortError')) return;
       } finally {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
         }
-        scheduleNext();
+        scheduleFallback();
       }
     };
 
-    void poll();
+    const startFallback = () => {
+      if (stopped || fallbackEnabled) return;
+      fallbackEnabled = true;
+      emitRealtimeStatus('fallback');
+      void poll();
+    };
+
+    const openSse = () => {
+      if (stopped || eventSourceRef.current) return;
+      const source = new EventSource('/api/realtime/?stream=1');
+      eventSourceRef.current = source;
+
+      const handlePayloadEvent = (event: MessageEvent<string>) => {
+        const payload = parseRealtimePayload(event.data);
+        if (!payload) return;
+        fallbackEnabled = false;
+        if (timer !== undefined) window.clearTimeout(timer);
+        emitRealtimeStatus('sse');
+        applyPayload(payload);
+      };
+      const handleNamedPayloadEvent = (event: Event) => handlePayloadEvent(event as MessageEvent<string>);
+
+      source.onmessage = handlePayloadEvent;
+      source.addEventListener('snapshot', handleNamedPayloadEvent);
+      source.addEventListener('update', handleNamedPayloadEvent);
+      source.onerror = () => {
+        if (eventSourceRef.current === source) {
+          source.close();
+          eventSourceRef.current = null;
+        }
+        startFallback();
+        if (!stopped && retryTimer === undefined) {
+          retryTimer = window.setTimeout(() => {
+            retryTimer = undefined;
+            fallbackEnabled = false;
+            openSse();
+          }, SSE_RETRY_MS);
+        }
+      };
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && fallbackEnabled) {
+        void poll();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    openSse();
 
     return () => {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       controllerRef.current?.abort();
       controllerRef.current = null;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
     };
   }, [enabled]);
 }
 
-export function useRealtimeResource(resource: string, onChange: () => void | Promise<void>) {
+export function useRealtimeResource(resource: string | string[], onChange: (detail?: RealtimeUpdateDetail) => void | Promise<void>) {
+  const onChangeRef = useRef(onChange);
+  const resourceKey = Array.isArray(resource) ? resource.join('|') : resource;
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    const resources = resourceKey.split('|');
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<RealtimeUpdateDetail>).detail;
+      if (!detail?.changedResources?.some(changedResource => resources.includes(changedResource))) return;
+      void onChangeRef.current(detail);
+    };
+
+    window.addEventListener(REALTIME_EVENT_NAME, handler);
+    return () => window.removeEventListener(REALTIME_EVENT_NAME, handler);
+  }, [resourceKey]);
+}
+
+export function useRealtimeStatus(onChange: (mode: RealtimeStatusDetail['mode']) => void) {
   const onChangeRef = useRef(onChange);
 
   useEffect(() => {
@@ -107,12 +215,11 @@ export function useRealtimeResource(resource: string, onChange: () => void | Pro
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<RealtimeUpdateDetail>).detail;
-      if (!detail?.changedResources?.includes(resource)) return;
-      void onChangeRef.current();
+      const detail = (event as CustomEvent<RealtimeStatusDetail>).detail;
+      if (detail?.mode) onChangeRef.current(detail.mode);
     };
 
-    window.addEventListener(REALTIME_EVENT_NAME, handler);
-    return () => window.removeEventListener(REALTIME_EVENT_NAME, handler);
-  }, [resource]);
+    window.addEventListener(REALTIME_STATUS_EVENT_NAME, handler);
+    return () => window.removeEventListener(REALTIME_STATUS_EVENT_NAME, handler);
+  }, []);
 }

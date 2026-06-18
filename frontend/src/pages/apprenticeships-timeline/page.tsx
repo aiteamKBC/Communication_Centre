@@ -22,7 +22,7 @@ import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
 import { buildHolidayAdjustedSessionPlan, formatDate } from './utils';
-import { useRealtimeResource } from '@/hooks/useRealtimeUpdates';
+import { useRealtimeResource, type RealtimeUpdateDetail } from '@/hooks/useRealtimeUpdates';
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 import { buildCoachProfilesFromGroups } from './coachProfiles';
 import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
@@ -721,6 +721,54 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
       })),
     ),
   );
+}
+
+function nextCloneId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function copyLabel(value: string, existing: string[] = []): string {
+  const base = `${(value || 'Copy').trim()} Copy`;
+  const used = new Set(existing.map(item => item.trim().toLowerCase()));
+  if (!used.has(base.toLowerCase())) return base;
+  let index = 2;
+  while (used.has(`${base} ${index}`.toLowerCase())) index += 1;
+  return `${base} ${index}`;
+}
+
+function cloneModuleBlock(block: ModuleBlock, patch: Partial<ModuleBlock> = {}): ModuleBlock {
+  const sessions = Math.max(1, Number(patch.sessions ?? block.sessions) || 1);
+  const tutorProfileId = patch.tutorProfileId ?? block.tutorProfileId;
+  return {
+    ...block,
+    ...patch,
+    id: patch.id || nextCloneId('blk'),
+    trainingPlanId: undefined,
+    groupId: patch.groupId ?? block.groupId ?? nextCloneId('grp'),
+    days: [...(patch.days ?? block.days ?? [])],
+    sessionKsbMappings: normalizeSessionKsbMappings(patch.sessionKsbMappings ?? block.sessionKsbMappings, sessions),
+    sessionCoverage: normalizeSessionCoverage(patch.sessionCoverage ?? block.sessionCoverage, sessions, tutorProfileId),
+  };
+}
+
+function cloneCohortRow(row: CohortRow, existingLabels: string[] = [], patch: Partial<CohortRow> = {}): CohortRow {
+  const groupIdMap = new Map<string, string>();
+  const clonedBlocks = row.blks.map(block => {
+    const sourceGroupKey = block.groupId || block.groupName || 'group';
+    if (!groupIdMap.has(sourceGroupKey)) groupIdMap.set(sourceGroupKey, nextCloneId('grp'));
+    return cloneModuleBlock(block, {
+      groupId: groupIdMap.get(sourceGroupKey),
+      groupName: block.groupName,
+    });
+  });
+  return {
+    ...row,
+    ...patch,
+    id: patch.id || nextCloneId('cohort'),
+    label: patch.label || copyLabel(row.label, existingLabels),
+    holidayIds: [...(patch.holidayIds ?? row.holidayIds ?? [])],
+    blks: patch.blks || clonedBlocks,
+  };
 }
 
 function stableJson(value: unknown): string {
@@ -3271,6 +3319,66 @@ export default function ApprenticeshipTimeline() {
     }
   }, [reloadCoachProfiles, reloadTrainingPlanHolidays, reloadTutorProfiles]);
 
+  const runTrainingPlanRealtimeRefresh = useCallback(async (resources: string[]): Promise<void> => {
+    const changed = new Set(resources.map(resource => resource.trim().toLowerCase()).filter(Boolean));
+    const hasAny = (names: string[]) => names.some(name => changed.has(name));
+
+    const shouldReloadPlan = hasAny([
+      'trainingplan',
+      'training_plan',
+      'sessions',
+      'session',
+      'cohorts',
+      'cohort',
+      'coverage',
+      'notes',
+      'session_notes',
+    ]);
+    const shouldReloadHolidays = hasAny(['holidays', 'holiday']);
+    const shouldReloadTutors = hasAny(['tutors', 'tutor', 'tutor_profiles', 'tutorprofiles']);
+    const shouldReloadCoaches = hasAny(['coaches', 'coach', 'coach_profiles', 'coachprofiles']);
+    const shouldReloadPlanAndSupportFallback = hasAny([
+      'modules',
+      'module',
+      'training_plan_modules',
+      'trainingplanmodules',
+      'module_catalogue',
+      'module_catalog',
+      'catalog_modules',
+      'catalogmodules',
+    ]);
+    const shouldReloadSupportFallback = shouldReloadPlanAndSupportFallback || hasAny([
+      'ksb',
+      'ksb_profiles',
+      'ksbprofiles',
+      'programmes',
+      'programme',
+      'programs',
+      'program',
+      'programme_configs',
+      'programmeconfigs',
+      'program_configs',
+      'programconfigs',
+    ]);
+
+    if (shouldReloadSupportFallback) {
+      await Promise.all([
+        (shouldReloadPlan || shouldReloadPlanAndSupportFallback) ? reloadTrainingPlan() : Promise.resolve(false),
+        reloadTrainingPlanSupportData(),
+      ]);
+      return;
+    }
+
+    const reloads: Array<Promise<unknown>> = [];
+    if (shouldReloadPlan) reloads.push(reloadTrainingPlan());
+    if (shouldReloadHolidays) reloads.push(reloadTrainingPlanHolidays());
+    if (shouldReloadTutors) reloads.push(reloadTutorProfiles());
+    if (shouldReloadCoaches) reloads.push(reloadCoachProfiles());
+    if (reloads.length) {
+      await Promise.all(reloads);
+    }
+  }, [reloadCoachProfiles, reloadTrainingPlan, reloadTrainingPlanHolidays, reloadTrainingPlanSupportData, reloadTutorProfiles]);
+
   useEffect(() => {
     void reloadTrainingPlan();
   }, [reloadTrainingPlan]);
@@ -3287,10 +3395,45 @@ export default function ApprenticeshipTimeline() {
     void reloadTrainingPlanSupportData();
   }, [reloadTrainingPlanSupportData]);
 
-  useRealtimeResource('trainingPlan', () => {
-    void reloadTrainingPlan();
-    void reloadTrainingPlanSupportData();
-  });
+  const trainingPlanRealtimeTimerRef = useRef<number | null>(null);
+  const trainingPlanRealtimeResourcesRef = useRef<Set<string>>(new Set());
+  useRealtimeResource(
+    [
+      'trainingPlan',
+      'training_plan',
+      'modules',
+      'cohorts',
+      'sessions',
+      'coverage',
+      'notes',
+      'ksb',
+      'holidays',
+      'tutors',
+      'tutor_profiles',
+      'coaches',
+      'coach_profiles',
+      'programmes',
+      'programme_configs',
+    ],
+    (detail?: RealtimeUpdateDetail) => {
+      if (document.visibilityState !== 'visible') return;
+      const changedResources = detail?.changedResources?.length ? detail.changedResources : ['training_plan', 'ksb'];
+      changedResources.forEach(resource => trainingPlanRealtimeResourcesRef.current.add(resource));
+      if (trainingPlanRealtimeTimerRef.current !== null) window.clearTimeout(trainingPlanRealtimeTimerRef.current);
+      trainingPlanRealtimeTimerRef.current = window.setTimeout(() => {
+        trainingPlanRealtimeTimerRef.current = null;
+        const resources = Array.from(trainingPlanRealtimeResourcesRef.current);
+        trainingPlanRealtimeResourcesRef.current.clear();
+        void runTrainingPlanRealtimeRefresh(resources);
+      }, 1000);
+    },
+  );
+
+  useEffect(() => {
+    return () => {
+      if (trainingPlanRealtimeTimerRef.current !== null) window.clearTimeout(trainingPlanRealtimeTimerRef.current);
+    };
+  }, []);
 
 
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
@@ -4532,6 +4675,7 @@ export default function ApprenticeshipTimeline() {
     programmeId: string,
     cohortId: string,
     rows: TrainingPlanItem[],
+    versionOverride = trainingPlanVersion,
   ): Promise<TrainingPlanMutationResult> => {
     const response = await fetch('/api/training-plan/cohorts/', {
       method: 'POST',
@@ -4543,7 +4687,7 @@ export default function ApprenticeshipTimeline() {
         programmeId,
         cohortId,
         rows,
-        version: trainingPlanVersion,
+        version: versionOverride,
       }),
     });
     return handleTrainingPlanPartialResponse(response);
@@ -5001,6 +5145,184 @@ export default function ApprenticeshipTimeline() {
       setTrainingPlanSaveState('error');
       setTrainingPlanSaveMessage('Cohort was not archived.');
       throw new Error(message);
+    }
+  };
+
+  const handleCloneCohort = async (groupIdx: number, rowIdx: number, options: { silent?: boolean; versionOverride?: string; sourceGroups?: ProgrammeGroup[] } = {}) => {
+    if (!canManageCohorts) return null;
+    const sourceGroups = options.sourceGroups || groups;
+    const targetGroup = sourceGroups[groupIdx];
+    const sourceRow = targetGroup?.rows[rowIdx];
+    if (!targetGroup || !sourceRow) return null;
+    if (!trainingPlanVersion && !options.versionOverride) {
+      await kbcSwal.fire({ title: 'Training Plan Not Ready', html: 'Reload latest data before cloning cohorts.', icon: 'warning', confirmButtonText: 'OK' });
+      return null;
+    }
+    if (!options.silent) {
+      const result = await kbcSwal.fire({
+        title: 'Clone Cohort?',
+        html: `This will copy <strong>${sourceRow.label}</strong> with all groups, modules, dates, KSBs, coverage, and notes.`,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Clone Cohort',
+        cancelButtonText: 'Cancel',
+        reverseButtons: true,
+      });
+      if (!result.isConfirmed) return null;
+    }
+
+    const clonedRow = cloneCohortRow(sourceRow, targetGroup.rows.map(row => row.label));
+    const nextGroups = sourceGroups.map((group, gi) => gi === groupIdx
+      ? { ...group, rows: [...group.rows, clonedRow] }
+      : { ...group, rows: [...group.rows] });
+    const cohortRows = flattenGroupsForApi(nextGroups, tutorProfiles).filter(item => item.programmeId === targetGroup.id && item.cohortId === clonedRow.id);
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Cloning cohort...');
+    try {
+      const result = await createTrainingPlanCohort(targetGroup.id, clonedRow.id, cohortRows, options.versionOverride);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+        setGroups(nextGroups);
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Cohort cloned at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      if (!options.silent) {
+        await kbcSuccessSwal.fire({ icon: 'success', title: 'Cohort cloned successfully', confirmButtonText: 'OK' });
+      }
+      return { row: clonedRow, groups: nextGroups, version: result.version, items: result.items };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') return null;
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Cohort Not Cloned');
+        return null;
+      } catch {
+        // Continue with normal error reporting.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown clone error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Cohort was not cloned.');
+      await kbcSwal.fire({ title: 'Cohort Not Cloned', html: message, icon: 'error', confirmButtonText: 'OK' });
+      return null;
+    }
+  };
+
+  const handleCloneGroup = async (groupIdx: number, rowIdx: number, groupName: string) => {
+    if (!canManageCohorts) return;
+    const targetGroup = groups[groupIdx];
+    const targetRow = targetGroup?.rows[rowIdx];
+    if (!targetGroup || !targetRow) return;
+    const sourceBlocks = targetRow.blks.filter(block => (block.groupName || '').trim() === groupName.trim());
+    if (!sourceBlocks.length) return;
+    const result = await kbcSwal.fire({
+      title: 'Clone Group?',
+      html: `This will copy <strong>${groupName || 'this group'}</strong> with all its modules and details inside <strong>${targetRow.label}</strong>.`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Clone Group',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+    });
+    if (!result.isConfirmed) return;
+
+    const existingGroupNames = targetRow.blks.map(block => block.groupName || '').filter(Boolean);
+    const nextGroupName = copyLabel(groupName || 'Group', existingGroupNames);
+    const nextGroupId = nextCloneId('grp');
+    const clonedBlocks = sourceBlocks.map(block => cloneModuleBlock(block, { groupId: nextGroupId, groupName: nextGroupName }));
+    await saveClonedBlocksToCohort(groupIdx, rowIdx, clonedBlocks, 'Group cloned successfully', 'Group Not Cloned');
+  };
+
+  const handleCloneModule = async (groupIdx: number, rowIdx: number, blockId: string) => {
+    if (!canManageCohorts) return;
+    const targetRow = groups[groupIdx]?.rows[rowIdx];
+    const sourceBlock = targetRow?.blks.find(block => block.id === blockId);
+    if (!targetRow || !sourceBlock) return;
+    const result = await kbcSwal.fire({
+      title: 'Clone Module?',
+      html: 'This will copy this module with its dates, tutor, coach, KSB mapping, coverage, and notes.',
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Clone Module',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+    });
+    if (!result.isConfirmed) return;
+    await saveClonedBlocksToCohort(groupIdx, rowIdx, [cloneModuleBlock(sourceBlock)], 'Module cloned successfully', 'Module Not Cloned');
+  };
+
+  const saveClonedBlocksToCohort = async (groupIdx: number, rowIdx: number, clonedBlocks: ModuleBlock[], successTitle: string, errorTitle: string) => {
+    const targetGroup = groups[groupIdx];
+    const targetRow = targetGroup?.rows[rowIdx];
+    if (!targetGroup || !targetRow || !clonedBlocks.length) return false;
+    const nextRow = { ...targetRow, blks: [...targetRow.blks, ...clonedBlocks] };
+    const nextGroups = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+      ...group,
+      rows: group.rows.map((row, ri) => ri === rowIdx ? nextRow : row),
+    });
+    const nextItemsForSave = flattenGroupsForApi(nextGroups, tutorProfiles);
+    const itemsByTrainingPlanId = new Map(nextItemsForSave.filter(item => item.id).map(item => [String(item.id), item]));
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Cloning item...');
+    try {
+      const result = await updateTrainingPlanCohort(targetRow.id, {
+        programmeId: targetGroup.id,
+        cohortName: nextRow.label,
+        startingDateLabel: nextRow.dateLbl,
+        cohortColor: nextRow.color || '',
+        cohortEndDate: nextRow.endDateLbl || '',
+        holidayIds: nextRow.holidayIds || [],
+        ksbProfileId: nextRow.ksbProfileId || '',
+        blocks: nextRow.blks.map(block => ({
+          trainingPlanId: block.trainingPlanId,
+          moduleCatalogueId: block.moduleCatalogueId,
+          blockId: block.id,
+          groupId: block.groupId || '',
+          groupName: block.groupName || '',
+          coachName: block.coachName || '',
+          moduleName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.moduleName || getModuleMeta(block.mod).lbl,
+          tutorName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorName || block.tutor || '',
+          tutorProfileId: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorProfileId || block.tutorProfileId || '',
+          startDate: block.startDate,
+          endDate: block.endDate,
+          sessionsNumber: String(block.sessions),
+          sessionWeekDay: (block.days || []).join(', '),
+          sessionStartTime: block.sessionStartTime || '09:00',
+          sessionEndTime: block.sessionEndTime || '11:00',
+          sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
+          sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
+          moduleColor: block.color || '',
+          notes: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.notes || block.notes || '',
+        })),
+        allowBlockMembershipChanges: true,
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+        setGroups(nextGroups);
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Clone saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      await kbcSuccessSwal.fire({ icon: 'success', title: successTitle, confirmButtonText: 'OK' });
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') return false;
+      try {
+        await handleTrainingPlanRequestFailure(error, errorTitle);
+        return false;
+      } catch {
+        // Continue with normal error reporting.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown clone error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Clone was not saved.');
+      await kbcSwal.fire({ title: errorTitle, html: message, icon: 'error', confirmButtonText: 'OK' });
+      return false;
     }
   };
 
@@ -5763,6 +6085,84 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const handleCloneProgram = async (programId: string) => {
+    if (!canManageCohorts) return;
+    const sourceGroup = groups.find(item => item.id === programId);
+    if (!sourceGroup) return;
+    const result = await kbcSwal.fire({
+      title: 'Clone Programme?',
+      html: `This will copy <strong>${sourceGroup.name.replace('\n', ' ')}</strong> with all cohorts, groups, modules, dates, KSBs, coverage, and notes.`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Clone Programme',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+    });
+    if (!result.isConfirmed) return;
+    if (!trainingPlanVersion) {
+      await kbcSwal.fire({ title: 'Training Plan Not Ready', html: 'Reload latest data before cloning a programme.', icon: 'warning', confirmButtonText: 'OK' });
+      return;
+    }
+
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Cloning programme...');
+    try {
+      const savedProgram = await createProgramConfig({
+        id: nextCloneId('program'),
+        name: copyLabel(sourceGroup.name.replace('\n', ' '), groups.map(group => group.name.replace('\n', ' '))),
+        sub: sourceGroup.sub,
+        color: sourceGroup.color,
+      });
+      const nextCustomPrograms = [...customPrograms.filter(program => program.id !== savedProgram.id), savedProgram];
+      const clonedRows: CohortRow[] = [];
+      sourceGroup.rows.forEach(row => {
+        clonedRows.push(cloneCohortRow(row, clonedRows.map(item => item.label)));
+      });
+      const clonedGroup: ProgrammeGroup = {
+        id: savedProgram.id,
+        name: savedProgram.name,
+        sub: savedProgram.sub,
+        color: savedProgram.color,
+        rows: clonedRows,
+      };
+      const workingGroups = [...groups, clonedGroup];
+      let workingVersion = trainingPlanVersion;
+      let latestItems: TrainingPlanItem[] | undefined;
+
+      for (const clonedRow of clonedRows) {
+        const cohortRows = flattenGroupsForApi(workingGroups, tutorProfiles).filter(item => item.programmeId === clonedGroup.id && item.cohortId === clonedRow.id);
+        const cloneResult = await createTrainingPlanCohort(clonedGroup.id, clonedRow.id, cohortRows, workingVersion);
+        if (cloneResult.version) workingVersion = cloneResult.version;
+        if (Array.isArray(cloneResult.items)) latestItems = cloneResult.items;
+      }
+
+      setCustomPrograms(nextCustomPrograms);
+      setTrainingPlanVersion(workingVersion);
+      if (latestItems) {
+        setTrainingPlanItems(latestItems);
+        setGroups(buildGroupsFromTrainingRows(latestItems, nextCustomPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(flattenGroupsForApi(workingGroups, tutorProfiles));
+        setGroups(workingGroups);
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Programme cloned at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      await kbcSuccessSwal.fire({ icon: 'success', title: 'Programme cloned successfully', confirmButtonText: 'OK' });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') return;
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Programme Not Cloned');
+        return;
+      } catch {
+        // Continue with normal error reporting.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown clone error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Programme was not cloned.');
+      await kbcSwal.fire({ title: 'Programme Not Cloned', html: message, icon: 'error', confirmButtonText: 'OK' });
+    }
+  };
+
   const totalCohorts  = groups.reduce((s, g) => s + g.rows.length, 0);
   const totalGroups = groups.reduce((sum, group) => (
     sum + group.rows.reduce((rowSum, row) => {
@@ -6316,6 +6716,10 @@ export default function ApprenticeshipTimeline() {
                   onDeleteRow={handleDeleteRow}
                   onEditProgram={handleEditProgram}
                   onDeleteProgram={handleDeleteProgram}
+                  onCloneProgram={handleCloneProgram}
+                  onCloneRow={handleCloneCohort}
+                  onCloneGroup={handleCloneGroup}
+                  onCloneModule={handleCloneModule}
                   onReorderRow={handleReorderRow}
                   onReorderGroup={handleReorderGroup}
                   onExportExcel={exportTrainingPlanExcel}

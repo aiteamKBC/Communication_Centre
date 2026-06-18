@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import useAccessControl from '../../hooks/useAccessControl';
+import { useRealtimeResource, useRealtimeStatus } from '../../hooks/useRealtimeUpdates';
 
 type PageVisit = {
   id: number;
@@ -118,8 +119,8 @@ type TrainingPlanAuditRow = {
   notes?: string;
 };
 
-const ACTIVITY_REFRESH_MS = 5000;
-const AUDIT_LOG_REFRESH_MS = 60000;
+const REALTIME_REFETCH_DEBOUNCE_MS = 1000;
+const AUDIT_FALLBACK_REFRESH_MS = 60000;
 
 const emptyPayload: ActivityPayload = {
   summary: {
@@ -1947,7 +1948,12 @@ export default function UserActivityPage() {
   const [summaryModal, setSummaryModal] = useState<SummaryModalType>(null);
   const [sessionPage, setSessionPage] = useState(1);
   const [auditPage, setAuditPage] = useState(1);
+  const [realtimeMode, setRealtimeMode] = useState<'sse' | 'fallback'>('sse');
   const pageSize = 10;
+  const loadActivityRef = useRef<(showSpinner?: boolean) => void>(() => undefined);
+  const loadAuditLogsRef = useRef<(showSpinner?: boolean) => void>(() => undefined);
+  const activityDebounceRef = useRef<number | null>(null);
+  const auditDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     let timeoutId: number | null = null;
@@ -2098,6 +2104,36 @@ export default function UserActivityPage() {
     }));
   };
 
+  useRealtimeStatus(setRealtimeMode);
+
+  const scheduleActivityRefetch = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (activityDebounceRef.current !== null) window.clearTimeout(activityDebounceRef.current);
+    activityDebounceRef.current = window.setTimeout(() => {
+      activityDebounceRef.current = null;
+      loadActivityRef.current(false);
+    }, REALTIME_REFETCH_DEBOUNCE_MS);
+  };
+
+  const scheduleAuditRefetch = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (auditDebounceRef.current !== null) window.clearTimeout(auditDebounceRef.current);
+    auditDebounceRef.current = window.setTimeout(() => {
+      auditDebounceRef.current = null;
+      loadAuditLogsRef.current(false);
+    }, REALTIME_REFETCH_DEBOUNCE_MS);
+  };
+
+  useRealtimeResource(['user_activity', 'activity', 'auth_activity', 'sessions', 'page_visits'], scheduleActivityRefetch);
+  useRealtimeResource(['audit_logs', 'audit'], scheduleAuditRefetch);
+
+  useEffect(() => {
+    return () => {
+      if (activityDebounceRef.current !== null) window.clearTimeout(activityDebounceRef.current);
+      if (auditDebounceRef.current !== null) window.clearTimeout(auditDebounceRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (!canView) {
       setLoading(false);
@@ -2134,10 +2170,8 @@ export default function UserActivityPage() {
         });
     };
 
+    loadActivityRef.current = loadActivity;
     loadActivity(true);
-    const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') loadActivity();
-    }, ACTIVITY_REFRESH_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') loadActivity();
     };
@@ -2147,7 +2181,6 @@ export default function UserActivityPage() {
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleFocus);
       controller?.abort();
@@ -2190,17 +2223,23 @@ export default function UserActivityPage() {
         });
     };
 
+    loadAuditLogsRef.current = loadAuditLogs;
     loadAuditLogs(true);
     const intervalId = window.setInterval(() => {
+      if (realtimeMode === 'fallback' && document.visibilityState === 'visible') loadAuditLogs();
+    }, AUDIT_FALLBACK_REFRESH_MS);
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') loadAuditLogs();
-    }, AUDIT_LOG_REFRESH_MS);
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       controller?.abort();
     };
-  }, [auditQuery, canView]);
+  }, [auditQuery, canView, realtimeMode]);
 
   useEffect(() => {
     if (!canView) return;

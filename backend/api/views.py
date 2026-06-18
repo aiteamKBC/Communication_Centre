@@ -24,6 +24,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+from .realtime import REALTIME_RESOURCE_ENTITIES, emit_realtime_resource_change_on_commit, realtime_resource_versions, resources_for_entity
 
 
 logger = logging.getLogger(__name__)
@@ -45,27 +46,6 @@ PROFILE_FORCE_DELETE_CONFIRM_HEADER = 'X-KBC-Profile-Force-Delete'
 PROFILE_FORCE_DELETE_CONFIRM_VALUE = 'internal-admin-debug'
 MAX_UPLOAD_IMAGE_SIZE_MB = 10
 MAX_UPLOAD_IMAGE_SIZE_BYTES = MAX_UPLOAD_IMAGE_SIZE_MB * 1024 * 1024
-
-
-REALTIME_RESOURCE_ENTITIES = {
-	'events': {'Event'},
-	'news': {'News'},
-	'urgentNotice': {'UrgentNotice'},
-	'leadershipMessage': {'LeadershipMessage', 'Image'},
-	'trainingPlan': {
-		'TrainingPlan',
-		'TrainingPlanHoliday',
-		'TrainingPlanHolidayType',
-		'TrainingPlanModuleDefinition',
-		'TrainingPlanProgramConfig',
-		'Module',
-		'TutorProfile',
-		'KsbProfile',
-		'ModuleLearnerMapping',
-	},
-	'employees': {'Employee'},
-	'feedback': {'Feedback'},
-}
 
 
 def _client_ip(request) -> str | None:
@@ -118,6 +98,7 @@ def _audit_log(
 			after=after,
 			metadata=metadata or {},
 		)
+		emit_realtime_resource_change_on_commit('audit_logs', 'audit', *resources_for_entity(entity))
 	except Exception:
 		# Audit logging should not break the user-facing workflow.
 		pass
@@ -138,11 +119,17 @@ def _realtime_versions_payload() -> dict:
 		row['entity']: int(row['version'] or 0)
 		for row in AuditLog.objects.values('entity').annotate(version=models.Max('id'))
 	}
+	signalled_versions = realtime_resource_versions()
+	audit_version = max(entity_versions.values(), default=0)
 	resources = {}
 	for resource, entities in REALTIME_RESOURCE_ENTITIES.items():
-		resources[resource] = max((entity_versions.get(entity, 0) for entity in entities), default=0)
+		resources[resource] = max(
+			signalled_versions.get(resource, 0),
+			audit_version if resource in {'audit_logs', 'audit'} else 0,
+			max((entity_versions.get(entity, 0) for entity in entities), default=0),
+		)
 	return {
-		'version': max(entity_versions.values(), default=0),
+		'version': max([audit_version, *resources.values()], default=0),
 		'resources': resources,
 		'serverTime': timezone.now().isoformat(),
 	}
@@ -155,7 +142,7 @@ def realtime(request):
 	if request.GET.get('stream') != '1':
 		return JsonResponse(_realtime_versions_payload())
 
-	if os.getenv('ENABLE_REALTIME_SSE', 'false').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+	if os.getenv('ENABLE_REALTIME_SSE', 'true').strip().lower() not in {'1', 'true', 'yes', 'on'}:
 		return JsonResponse(
 			{
 				'detail': 'Realtime SSE streaming is disabled in this deployment. Use /api/realtime/ polling.',

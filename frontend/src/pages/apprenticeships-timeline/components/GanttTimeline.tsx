@@ -483,6 +483,10 @@ interface Props {
   onDeleteRow: (groupIdx: number, rowIdx: number) => void | Promise<void>;
   onEditProgram?: (groupId: string) => void;
   onDeleteProgram?: (groupId: string) => void;
+  onCloneProgram?: (groupId: string) => void;
+  onCloneRow?: (groupIdx: number, rowIdx: number) => void;
+  onCloneGroup?: (groupIdx: number, rowIdx: number, groupName: string) => void;
+  onCloneModule?: (groupIdx: number, rowIdx: number, blockId: string) => void;
   onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position?: 'before' | 'after') => void;
   onReorderGroup?: (fromGroupIdx: number, toGroupIdx: number) => void;
   onExportExcel?: () => void;
@@ -959,6 +963,7 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
 export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], tutorProfiles = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
+  onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
@@ -2321,6 +2326,20 @@ export default function GanttTimeline({
           onEditRow(groupIdx, rowIdx, blk.id);
         }}
       >
+        {canManageCohorts && onCloneModule && pos.width > 42 && (
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation();
+              setTooltip(null);
+              onCloneModule(groupIdx, rowIdx, blk.id);
+            }}
+            title="Clone module"
+            className="absolute left-1 top-1 z-[9] flex h-4 w-4 items-center justify-center rounded bg-white/90 text-slate-600 shadow-sm transition-all hover:scale-110 hover:bg-white hover:text-kbc-navy"
+          >
+            <i className="ri-file-copy-line" style={{ fontSize: '9px', lineHeight: 1 }} />
+          </button>
+        )}
         {extensionStyle && extensionStyle.width > 3 && (
           <div
             className="absolute inset-y-0"
@@ -2973,6 +2992,13 @@ export default function GanttTimeline({
                               style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
                               <i className="ri-edit-line" style={{ fontSize: '9px' }} />
                             </button>
+                            {onCloneProgram && (
+                              <button onClick={() => onCloneProgram?.(grp.id)} title={`Clone ${grp.name.replace('\n', ' ')}`}
+                                className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
+                                style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
+                                <i className="ri-file-copy-line" style={{ fontSize: '9px' }} />
+                              </button>
+                            )}
                             <button onClick={() => void onDeleteProgram?.(grp.id)} title={`Delete ${grp.name.replace('\n', ' ')}`}
                               className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
                               style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
@@ -3177,6 +3203,13 @@ export default function GanttTimeline({
                               style={{ background: rowColor, color: '#fff' }}>
                               <i className="ri-edit-line" style={{ fontSize: '8px' }} />
                             </button>
+                            {onCloneRow && (
+                              <button onClick={() => onCloneRow(gi, ri)} title="Clone cohort"
+                                className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
+                                style={{ background: rowColor, color: '#fff' }}>
+                                <i className="ri-file-copy-line" style={{ fontSize: '8px' }} />
+                              </button>
+                            )}
                             <button onClick={() => { void handleDeleteRequest(gi, ri, row.label); }} title="Delete cohort"
                               className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110 bg-gray-100 text-gray-400 hover:bg-red-50 hover:text-red-600"
                               >
@@ -3211,7 +3244,7 @@ export default function GanttTimeline({
                               style={{ borderColor: `${entry.color}24` }}
                             >
                               <span className="shrink-0 rounded-sm" style={{ width: 8, height: 8, background: entry.color }} />
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <p className="font-bold text-gray-800 truncate leading-tight" style={{ fontSize: '9px' }}>
                                   {entry.label}
                                 </p>
@@ -3219,6 +3252,16 @@ export default function GanttTimeline({
                                   <p className="text-gray-400 leading-none" style={{ fontSize: '7.5px' }}>{entry.meta}</p>
                                 )}
                               </div>
+                              {canManageCohorts && onCloneGroup && entry.label && (
+                                <button
+                                  type="button"
+                                  onClick={() => onCloneGroup(gi, ri, entry.label)}
+                                  title={`Clone group ${entry.label}`}
+                                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-400 transition-all hover:scale-110 hover:bg-gray-100 hover:text-kbc-navy"
+                                >
+                                  <i className="ri-file-copy-line" style={{ fontSize: '9px' }} />
+                                </button>
+                              )}
                             </div>
                           </div>
                         ))}
