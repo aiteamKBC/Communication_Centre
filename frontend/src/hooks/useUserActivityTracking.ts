@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 const AUTH_STORAGE_KEY = 'kbc-auth-user';
 const ACTIVITY_ENDPOINT = '/api/auth/activity/';
@@ -50,8 +51,9 @@ async function postActivity(payload: Record<string, unknown>, useBeacon = false,
   }
 
   try {
-    const response = await fetch(ACTIVITY_ENDPOINT, {
+    const response = await fetchWithTimeout(ACTIVITY_ENDPOINT, {
       method: 'POST',
+      timeoutMs: 5000,
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: useBeacon,
@@ -97,8 +99,9 @@ export function useUserActivityTracking({ enabled = true }: ActivityTrackingOpti
     const controller = new AbortController();
     startControllerRef.current = controller;
     try {
-      const response = await fetch('/api/auth/activity/start/', {
+      const response = await fetchWithTimeout('/api/auth/activity/start/', {
         method: 'POST',
+        timeoutMs: 8000,
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AUTH_STORAGE_KEY, clearAuthStorage, readStoredAuthUser, type StoredAuthUser } from '../utils/authStorage';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface AccessControl {
   adminAccess: boolean;
@@ -134,7 +135,7 @@ export default function useAccessControl(): AccessControl {
 
       sharedAccessKey = accessKey;
       sharedAccessPromise = (async () => {
-        const response = await fetch(`/api/auth/access/?${searchParams.toString()}`);
+        const response = await fetchWithTimeout(`/api/auth/access/?${searchParams.toString()}`, { timeoutMs: 8000 });
         sharedAccessFetchedAt = Date.now();
         if (!response.ok) {
           if (response.status === 404) {

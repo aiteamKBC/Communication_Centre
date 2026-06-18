@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MS_AUTH_RESULT_KEY, replaceStoredAuthUser } from '../../utils/authStorage';
+import { fetchWithTimeout } from '../../utils/fetchWithTimeout';
 
 function isAllowedMsMessageOrigin(origin: string): boolean {
   if (origin === window.location.origin) {
@@ -158,8 +159,9 @@ export default function LoginPage() {
       setSubmitting(true);
       setError(null);
 
-      const response = await fetch('/api/auth/login/', {
+      const response = await fetchWithTimeout('/api/auth/login/', {
         method: 'POST',
+        timeoutMs: 15000,
         headers: {
           'Content-Type': 'application/json',
         },

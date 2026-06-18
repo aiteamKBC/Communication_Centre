@@ -76,7 +76,7 @@ def _create_activity_session(request, user, auth_provider: str = 'password') -> 
 		ip_address=_client_ip(request),
 		user_agent=(request.META.get('HTTP_USER_AGENT') or '')[:2000],
 	)
-	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions')
+	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity')
 	return session
 
 
@@ -284,7 +284,7 @@ def logout_view(request):
 		session.last_seen_at = now
 		session.save(update_fields=['logout_at', 'logout_reason', 'last_seen_at', 'updated_at'])
 		_sync_session_totals(session, now)
-		emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions', 'page_visits')
+		emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'page_visits')
 
 	return JsonResponse({'detail': 'Logged out.'})
 
@@ -367,7 +367,7 @@ def activity_view(request):
 		_sync_session_totals(session, now)
 	else:
 		_sync_session_totals(session, now)
-	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'sessions', 'page_visits')
+	emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'page_visits')
 
 	return JsonResponse(
 		{

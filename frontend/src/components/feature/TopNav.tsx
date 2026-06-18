@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import useAccessControl from '../../hooks/useAccessControl';
 import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
+import { fetchWithTimeout } from '../../utils/fetchWithTimeout';
 
 function hasAuthSession(): boolean {
   if (typeof window === 'undefined') {
@@ -98,7 +99,7 @@ export default function TopNav() {
     return path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
   };
 
-  const handleLogout = async () => {
+  const handleLogout = () => {
     let trackingSessionId = '';
     let userId = '';
     let email = '';
@@ -112,22 +113,30 @@ export default function TopNav() {
       username = String(user?.username || '');
     }
 
-    try {
-      await fetch('/api/auth/logout/', {
+    const body = JSON.stringify({
+      trackingSessionId,
+      userId,
+      email,
+      username,
+      reason: 'logout_button',
+    });
+
+    const sentWithBeacon = typeof navigator !== 'undefined' && Boolean(
+      navigator.sendBeacon?.('/api/auth/logout/', new Blob([body], { type: 'application/json' })),
+    );
+
+    if (!sentWithBeacon) {
+      void fetchWithTimeout('/api/auth/logout/', {
         method: 'POST',
+        timeoutMs: 5000,
+        keepalive: true,
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          trackingSessionId,
-          userId,
-          email,
-          username,
-          reason: 'logout_button',
-        }),
+        body,
+      }).catch(() => {
+        // ignore logout network failures
       });
-    } catch {
-      // ignore logout network failures
     }
 
     if (typeof window !== 'undefined') {

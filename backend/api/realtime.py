@@ -33,7 +33,7 @@ REALTIME_RESOURCE_ENTITIES = {
 	},
 	'modules': {'TrainingPlanModuleDefinition', 'Module', 'ModuleLearnerMapping'},
 	'cohorts': {'TrainingPlan'},
-	'sessions': {'TrainingPlan', 'Module', 'UserActivitySession'},
+	'sessions': {'TrainingPlan', 'Module'},
 	'coverage': {'TrainingPlan'},
 	'ksb': {'TrainingPlan', 'KsbProfile', 'Module'},
 	'holidays': {'TrainingPlanHoliday', 'TrainingPlanHolidayType'},
