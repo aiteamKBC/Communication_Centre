@@ -116,12 +116,24 @@ function parseKsbCodeText(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
   return normalizeKsbCodes(cellText(value).split(/[,\s|;]+/), prefix);
 }
 
+function parseMixedKsbCodeText(value: unknown): SessionKsbMapping {
+  const codes = (cellText(value).match(/[KSB]\s*\d+(?:\.\d+)*/gi) || []).map(code => code.replace(/\s+/g, ''));
+  return {
+    knowledgeCodes: normalizeKsbCodes(codes, 'K'),
+    skillCodes: normalizeKsbCodes(codes, 'S'),
+    behaviourCodes: normalizeKsbCodes(codes, 'B'),
+  };
+}
+
 function parseSessionKsbTemplateRows(rows: unknown[][], sessionCount: number) {
   const usefulRows = rows.filter(row => row.some(cell => cellText(cell)));
   const headerRowIndex = usefulRows.findIndex(row => {
     const headers = row.map(normalizeHeader);
     return headers.some(header => ['session', 'sessionnumber', 'no', 'number'].includes(header)) &&
-      headers.some(header => ['knowledge', 'k', 'knowledgecodes', 'kcoding'].includes(header));
+      (
+        headers.some(header => ['knowledge', 'k', 'knowledgecodes', 'kcoding'].includes(header)) ||
+        headers.some(header => ['exactksbcodescovered', 'exactksbcodes', 'ksbcodescovered', 'ksbcodes', 'codes'].includes(header))
+      );
   });
   const headers = headerRowIndex >= 0 ? usefulRows[headerRowIndex].map(normalizeHeader) : [];
   const indexFor = (names: string[], fallback: number) => {
@@ -131,13 +143,15 @@ function parseSessionKsbTemplateRows(rows: unknown[][], sessionCount: number) {
   const indexes = headerRowIndex >= 0
     ? {
         session: indexFor(['session', 'sessionnumber', 'no', 'number'], 0),
-        name: indexFor(['name', 'sessionname', 'title'], 1),
-        description: indexFor(['description', 'desc', 'details', 'notes'], 2),
+        name: indexFor(['professionaldomainalignment', 'domainalignment', 'alignment', 'name', 'sessionname', 'title'], 1),
+        description: indexFor(['briefexplanationofksbalignment', 'briefexplanation', 'description', 'desc', 'details', 'notes'], 3),
+        evidence: indexFor(['evidencegenerated', 'evidence'], -1),
+        exactCodes: indexFor(['exactksbcodescovered', 'exactksbcodes', 'ksbcodescovered', 'ksbcodes', 'codes'], -1),
         knowledge: indexFor(['knowledge', 'k', 'knowledgecodes'], 3),
         skills: indexFor(['skills', 'skill', 's', 'skillcodes'], 4),
         behaviours: indexFor(['behaviours', 'behaviour', 'behavior', 'behaviors', 'b', 'behaviourcodes', 'behaviorcodes'], 5),
       }
-    : { session: 0, name: 1, description: 2, knowledge: 3, skills: 4, behaviours: 5 };
+    : { session: 0, name: 1, description: 3, evidence: 4, exactCodes: 2, knowledge: 3, skills: 4, behaviours: 5 };
   const dataRows = headerRowIndex >= 0 ? usefulRows.slice(headerRowIndex + 1) : usefulRows;
   const mappings = normalizeSessionKsbMappings([], sessionCount);
   const sessionNames: string[] = [];
@@ -147,16 +161,59 @@ function parseSessionKsbTemplateRows(rows: unknown[][], sessionCount: number) {
     const sessionNumber = parseInt(cellText(row[indexes.session]), 10);
     const index = Number.isFinite(sessionNumber) && sessionNumber > 0 ? sessionNumber - 1 : rowIndex;
     if (index < 0 || index >= sessionCount) return;
-    mappings[index] = {
-      knowledgeCodes: parseKsbCodeText(row[indexes.knowledge], 'K'),
-      skillCodes: parseKsbCodeText(row[indexes.skills], 'S'),
-      behaviourCodes: parseKsbCodeText(row[indexes.behaviours], 'B'),
-    };
+    mappings[index] = indexes.exactCodes >= 0
+      ? parseMixedKsbCodeText(row[indexes.exactCodes])
+      : {
+          knowledgeCodes: parseKsbCodeText(row[indexes.knowledge], 'K'),
+          skillCodes: parseKsbCodeText(row[indexes.skills], 'S'),
+          behaviourCodes: parseKsbCodeText(row[indexes.behaviours], 'B'),
+        };
     sessionNames[index] = cellText(row[indexes.name]);
-    sessionDescriptions[index] = cellText(row[indexes.description]);
+    sessionDescriptions[index] = [cellText(row[indexes.description]), cellText(row[indexes.evidence])]
+      .filter(Boolean)
+      .join(' Evidence: ');
   });
 
   return { mappings, sessionNames, sessionDescriptions };
+}
+
+function safeTemplateFileName(value: string, fallback: string): string {
+  const cleaned = value.trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+  return cleaned || fallback;
+}
+
+function downloadSessionKsbTemplate(
+  filenameBase: string,
+  sessionCount: number,
+  mappings: SessionKsbMapping[] = [],
+  sessionNames: string[] = [],
+  sessionDescriptions: string[] = [],
+) {
+  const normalizedMappings = normalizeSessionKsbMappings(mappings, sessionCount);
+  const rows = [
+    ['Session', 'Professional domain alignment', 'Exact KSB codes covered', 'Brief explanation of KSB alignment', 'Evidence generated'],
+    ...Array.from({ length: sessionCount }, (_, index) => {
+      const mapping = normalizedMappings[index] || emptySessionKsbMapping();
+      return [
+        index + 1,
+        sessionNames[index] || '',
+        [...mapping.knowledgeCodes, ...mapping.skillCodes, ...mapping.behaviourCodes].join(', '),
+        sessionDescriptions[index] || '',
+        '',
+      ];
+    }),
+  ];
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet['!cols'] = [
+    { wch: 10 },
+    { wch: 42 },
+    { wch: 34 },
+    { wch: 52 },
+    { wch: 44 },
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Session KSB Mapping');
+  XLSX.writeFile(workbook, `${safeTemplateFileName(filenameBase, 'session-ksb')}-session-ksb-template.xlsx`);
 }
 
 function countNamedSessions(names: string[] | undefined, count: number): number {
@@ -737,6 +794,18 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
     if (file) void importKsbTemplate(file);
   };
 
+  const downloadKsbTemplate = () => {
+    if (!editing) return;
+    const count = Math.max(1, parseSessionCount(editing.sessions) || 1);
+    downloadSessionKsbTemplate(
+      editing.name || 'module',
+      count,
+      editing.sessionKsbMappings,
+      editing.sessionNames,
+      editing.sessionDescriptions,
+    );
+  };
+
   const handleDelete = async (m: CatalogModule) => {
     const result = await kbcSwal.fire({
       title: 'Delete Module?',
@@ -1277,6 +1346,14 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={downloadKsbTemplate}
+                className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-extrabold text-kbc-navy transition-colors hover:bg-gray-50"
+              >
+                <i className="ri-download-2-line" />
+                Download Template
+              </button>
               <button
                 type="button"
                 onClick={() => ksbTemplateInputRef.current?.click()}

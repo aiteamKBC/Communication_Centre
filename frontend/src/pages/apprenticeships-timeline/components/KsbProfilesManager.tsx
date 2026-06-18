@@ -385,30 +385,28 @@ export default function KsbProfilesManager({ profiles, programmeOptions = [], on
         await kbcSwal.fire({ title: 'No KSBs found', html: 'Use columns like Code and Description, or Type, Number, and Description.', icon: 'info', confirmButtonText: 'OK' });
         return;
       }
+      const nextItems = [...orderedItemsFromProfile(draft)];
+      const indexByCode = new Map(nextItems.map((item, index) => [item.code, index]));
       let added = 0;
       let updated = 0;
       let unchanged = 0;
-      setDraft(prev => {
-        const nextItems = [...orderedItemsFromProfile(prev)];
-        const indexByCode = new Map(nextItems.map((item, index) => [item.code, index]));
-        importedItems.forEach(item => {
-          const existingIndex = indexByCode.get(item.code);
-          if (existingIndex !== undefined) {
-            const existing = nextItems[existingIndex];
-            if (existing.type === item.type && existing.number === item.number && existing.description === item.description) {
-              unchanged += 1;
-              return;
-            }
-            nextItems[existingIndex] = item;
-            updated += 1;
+      importedItems.forEach(item => {
+        const existingIndex = indexByCode.get(item.code);
+        if (existingIndex !== undefined) {
+          const existing = nextItems[existingIndex];
+          if (existing.type === item.type && existing.number === item.number && existing.description === item.description) {
+            unchanged += 1;
             return;
           }
-          indexByCode.set(item.code, nextItems.length);
-          nextItems.push(item);
-          added += 1;
-        });
-        return { ...prev, ksbItems: sortKsbItems(nextItems) };
+          nextItems[existingIndex] = item;
+          updated += 1;
+          return;
+        }
+        indexByCode.set(item.code, nextItems.length);
+        nextItems.push(item);
+        added += 1;
       });
+      setDraft(prev => ({ ...prev, ksbItems: sortKsbItems(nextItems) }));
       await kbcSwal.fire({
         title: added || updated ? 'Template uploaded' : 'No KSB changes found',
         html: `${added} KSB code${added === 1 ? '' : 's'} added.${updated ? ` ${updated} updated.` : ''}${unchanged ? ` ${unchanged} unchanged.` : ''}`,
