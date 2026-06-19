@@ -6838,14 +6838,36 @@ def training_plan_bootstrap(request):
 	include_archived = str(request.GET.get('includeArchived', '')).strip().lower() in {'1', 'true', 'yes'}
 	include_inactive = str(request.GET.get('includeInactive', '')).strip().lower() in {'1', 'true', 'yes'}
 
-	training_plan_items = [serialize_training_plan(item) for item in training_plan_queryset(include_archived=include_archived)]
+	# TEMP DIAGNOSTIC: per-section timing to locate where the ~7.7s is spent.
+	# Querysets are lazy, so each section is materialised explicitly with list()
+	# and timed. A trivial warm-up query first isolates DB connection cold-start
+	# (e.g. Neon serverless wake / SSL handshake) from actual query time.
+	# Remove this instrumentation once the bottleneck is identified.
+	from time import perf_counter
+	from django.db import connection as _diag_connection
+	_t = {}
+	_start = perf_counter()
 
-	holiday_records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+	with _diag_connection.cursor() as _cur:
+		_cur.execute('SELECT 1')
+		_cur.fetchone()
+	_t['db_connect_warmup'] = perf_counter() - _start
 
-	module_definition_records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
-	program_config_records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
+	def _section(name, fn):
+		_s = perf_counter()
+		result = fn()
+		_t[name] = perf_counter() - _s
+		return result
 
-	catalog_module_records = Module.objects.all().order_by('module_name', 'module_id')
+	training_plan_items = _section('training_plan', lambda: [serialize_training_plan(item) for item in training_plan_queryset(include_archived=include_archived)])
+	training_plan_ver = _section('training_plan_version', lambda: training_plan_version(training_plan_items))
+
+	holiday_items = _section('holidays', lambda: [serialize_training_plan_holiday(item) for item in training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')])
+	holiday_ver = _section('holidays_version', lambda: training_plan_holidays_version())
+
+	module_definitions = _section('module_definitions', lambda: [serialize_training_plan_module_definition(item) for item in TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')])
+	program_configs = _section('program_configs', lambda: [serialize_training_plan_program_config(item) for item in TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')])
+	catalog_modules = _section('catalog_modules', lambda: [_serialize_module(item) for item in Module.objects.all().order_by('module_name', 'module_id')])
 
 	if include_inactive:
 		ksb_records = KsbProfile.objects.all()
@@ -6856,27 +6878,36 @@ def training_plan_bootstrap(request):
 		tutor_records = TutorProfile.objects.filter(is_active=True)
 		coach_records = CoachProfile.objects.filter(is_active=True)
 
-	tutor_counts = tutor_profile_session_counts()
-	coach_counts = coach_profile_session_counts()
+	ksb_profiles = _section('ksb_profiles', lambda: [serialize_ksb_profile(item) for item in ksb_records.order_by('id')])
+	tutor_counts = _section('tutor_counts', lambda: tutor_profile_session_counts())
+	tutor_profiles = _section('tutor_profiles', lambda: [serialize_tutor_profile(item, tutor_counts) for item in tutor_records.order_by('name', 'id')])
+	coach_counts = _section('coach_counts', lambda: coach_profile_session_counts())
+	coach_profiles = _section('coach_profiles', lambda: [serialize_coach_profile(item, coach_counts) for item in coach_records.order_by('name', 'id')])
+
+	module_defs_ver = _section('module_defs_version', lambda: training_plan_module_definitions_version())
+	program_configs_ver = _section('program_configs_version', lambda: training_plan_program_configs_version())
+
+	_t['TOTAL'] = perf_counter() - _start
+	logger.warning('training_plan_bootstrap timing (seconds): %s', ' '.join(f'{k}={v:.3f}' for k, v in _t.items()))
 
 	return JsonResponse({
 		'trainingPlan': {
 			'items': training_plan_items,
-			'version': training_plan_version(training_plan_items),
+			'version': training_plan_ver,
 			'count': len(training_plan_items),
 		},
 		'holidays': {
-			'items': [serialize_training_plan_holiday(item) for item in holiday_records],
-			'version': training_plan_holidays_version(),
+			'items': holiday_items,
+			'version': holiday_ver,
 		},
-		'moduleDefinitions': [serialize_training_plan_module_definition(item) for item in module_definition_records],
-		'programConfigs': [serialize_training_plan_program_config(item) for item in program_config_records],
-		'catalogModules': [_serialize_module(item) for item in catalog_module_records],
-		'ksbProfiles': [serialize_ksb_profile(item) for item in ksb_records.order_by('id')],
-		'tutorProfiles': [serialize_tutor_profile(item, tutor_counts) for item in tutor_records.order_by('name', 'id')],
-		'coachProfiles': [serialize_coach_profile(item, coach_counts) for item in coach_records.order_by('name', 'id')],
+		'moduleDefinitions': module_definitions,
+		'programConfigs': program_configs,
+		'catalogModules': catalog_modules,
+		'ksbProfiles': ksb_profiles,
+		'tutorProfiles': tutor_profiles,
+		'coachProfiles': coach_profiles,
 		'versions': {
-			'moduleDefinitions': training_plan_module_definitions_version(),
-			'programConfigs': training_plan_program_configs_version(),
+			'moduleDefinitions': module_defs_ver,
+			'programConfigs': program_configs_ver,
 		},
 	})
