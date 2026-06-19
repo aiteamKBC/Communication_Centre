@@ -157,29 +157,6 @@ if aptem_database_url:
 DATABASE_ROUTERS = ['backend.db_routers.ExternalDbRouter', 'backend.db_routers.AuthAdminRouter']
 
 
-# Cache
-# https://docs.djangoproject.com/en/4.2/topics/cache/
-# A shared cache (Redis) lets all gunicorn workers share realtime version
-# payloads and change signals. Without REDIS_URL we fall back to per-process
-# local memory, which still works but is not shared across workers.
-
-redis_url = os.getenv('REDIS_URL')
-if redis_url:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': redis_url,
-        }
-    }
-else:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-            'LOCATION': 'kbc-locmem',
-        }
-    }
-
-
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 

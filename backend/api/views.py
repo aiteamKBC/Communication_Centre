@@ -135,47 +135,29 @@ def _realtime_versions_payload() -> dict:
 	}
 
 
-_REALTIME_PAYLOAD_CACHE_KEY = 'kbc:realtime:versions-payload'
-_REALTIME_PAYLOAD_CACHE_TTL = 3
-
-
-def _cached_realtime_versions_payload() -> dict:
-	"""Share the AuditLog aggregation across concurrent SSE streams and poll
-	requests so each open tab does not run its own DB query every loop."""
-	cached = cache.get(_REALTIME_PAYLOAD_CACHE_KEY)
-	if cached is not None:
-		# serverTime must reflect "now" even on a cache hit.
-		return {**cached, 'serverTime': timezone.now().isoformat()}
-	payload = _realtime_versions_payload()
-	cache.set(_REALTIME_PAYLOAD_CACHE_KEY, payload, timeout=_REALTIME_PAYLOAD_CACHE_TTL)
-	return payload
-
-
 def realtime(request):
 	if request.method != 'GET':
 		return HttpResponseBadRequest('Only GET is supported.')
 
 	if request.GET.get('stream') != '1':
-		return JsonResponse(_cached_realtime_versions_payload())
+		return JsonResponse(_realtime_versions_payload())
 
 	if os.getenv('ENABLE_REALTIME_SSE', 'true').strip().lower() not in {'1', 'true', 'yes', 'on'}:
 		return JsonResponse(
 			{
 				'detail': 'Realtime SSE streaming is disabled in this deployment. Use /api/realtime/ polling.',
-				'payload': _cached_realtime_versions_payload(),
+				'payload': _realtime_versions_payload(),
 			},
 			status=409,
 		)
 
-	loop_interval = max(2, int(os.getenv('REALTIME_SSE_INTERVAL', '15')))
-
 	def event_stream():
-		last_payload = _cached_realtime_versions_payload()
+		last_payload = _realtime_versions_payload()
 		yield f"event: snapshot\ndata: {json.dumps(last_payload)}\n\n"
 		deadline = time.monotonic() + 300
 		while time.monotonic() < deadline:
-			time.sleep(loop_interval)
-			payload = _cached_realtime_versions_payload()
+			time.sleep(2)
+			payload = _realtime_versions_payload()
 			if payload['version'] != last_payload['version'] or payload['resources'] != last_payload['resources']:
 				last_payload = payload
 				yield f"event: update\ndata: {json.dumps(payload)}\n\n"
