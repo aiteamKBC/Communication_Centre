@@ -6819,3 +6819,64 @@ def audit_logs(request):
 			'logs': [serialize_audit_log(item) for item in logs],
 		}
 	)
+
+
+@csrf_exempt
+def training_plan_bootstrap(request):
+	"""Single GET endpoint returning every dataset the Training Plan page loads on
+	mount. Replaces ~8 parallel requests (training-plan, holidays, modules,
+	program-configs, catalog modules, ksb/tutor/coach profiles) with one round-trip
+	to reduce request queuing under limited Gunicorn worker slots.
+
+	Each section reuses the exact same serializers as its standalone endpoint, so
+	the payload shapes match. Version values that the standalone endpoints expose
+	via HTTP response headers (modules, program configs) are embedded inline here
+	under `versions`, since a single response cannot carry per-section headers."""
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	include_archived = str(request.GET.get('includeArchived', '')).strip().lower() in {'1', 'true', 'yes'}
+	include_inactive = str(request.GET.get('includeInactive', '')).strip().lower() in {'1', 'true', 'yes'}
+
+	training_plan_items = [serialize_training_plan(item) for item in training_plan_queryset(include_archived=include_archived)]
+
+	holiday_records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
+
+	module_definition_records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
+	program_config_records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
+
+	catalog_module_records = Module.objects.all().order_by('module_name', 'module_id')
+
+	if include_inactive:
+		ksb_records = KsbProfile.objects.all()
+		tutor_records = TutorProfile.objects.all()
+		coach_records = CoachProfile.objects.all()
+	else:
+		ksb_records = KsbProfile.objects.filter(is_active=True)
+		tutor_records = TutorProfile.objects.filter(is_active=True)
+		coach_records = CoachProfile.objects.filter(is_active=True)
+
+	tutor_counts = tutor_profile_session_counts()
+	coach_counts = coach_profile_session_counts()
+
+	return JsonResponse({
+		'trainingPlan': {
+			'items': training_plan_items,
+			'version': training_plan_version(training_plan_items),
+			'count': len(training_plan_items),
+		},
+		'holidays': {
+			'items': [serialize_training_plan_holiday(item) for item in holiday_records],
+			'version': training_plan_holidays_version(),
+		},
+		'moduleDefinitions': [serialize_training_plan_module_definition(item) for item in module_definition_records],
+		'programConfigs': [serialize_training_plan_program_config(item) for item in program_config_records],
+		'catalogModules': [_serialize_module(item) for item in catalog_module_records],
+		'ksbProfiles': [serialize_ksb_profile(item) for item in ksb_records.order_by('id')],
+		'tutorProfiles': [serialize_tutor_profile(item, tutor_counts) for item in tutor_records.order_by('name', 'id')],
+		'coachProfiles': [serialize_coach_profile(item, coach_counts) for item in coach_records.order_by('name', 'id')],
+		'versions': {
+			'moduleDefinitions': training_plan_module_definitions_version(),
+			'programConfigs': training_plan_program_configs_version(),
+		},
+	})

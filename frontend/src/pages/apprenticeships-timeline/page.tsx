@@ -3319,6 +3319,74 @@ export default function ApprenticeshipTimeline() {
     }
   }, [reloadCoachProfiles, reloadTrainingPlanHolidays, reloadTutorProfiles]);
 
+  // Single mount-time fetch that replaces the ~8 parallel requests previously
+  // fired by reloadTrainingPlan() + reloadTrainingPlanSupportData(). Hitting one
+  // endpoint avoids saturating the limited Gunicorn worker slots on page load.
+  // Returns false if the bootstrap call fails so callers can fall back to the
+  // individual loaders. The per-resource reload functions above are still used
+  // for realtime refreshes, so they remain intact.
+  const bootstrapTrainingPlan = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/training-plan-bootstrap/?includeInactive=1', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const data = await response.json();
+      if (!data || typeof data !== 'object') return false;
+
+      const planPayload = parseTrainingPlanPayload(data.trainingPlan);
+      if (planPayload && Array.isArray(planPayload.items)) {
+        setTrainingPlanItems(planPayload.items);
+        setTrainingPlanVersion(planPayload.version);
+        setHasLoadedTrainingPlan(true);
+      }
+
+      const holidayPayload = parseHolidayPayload(data.holidays);
+      if (holidayPayload) {
+        setHolidays(holidayPayload.items);
+        setHolidayVersion(holidayPayload.version);
+      }
+
+      if (Array.isArray(data.moduleDefinitions)) {
+        const items = data.moduleDefinitions as Array<{ id: string; name: string; defaultSessions: number; bg: string; tx: string }>;
+        setCustomModules(items.map(item => ({
+          id: item.id,
+          name: item.name,
+          defaultSessions: item.defaultSessions,
+          bg: item.bg,
+          tx: item.tx,
+        })));
+        setModuleDefinitionsVersion(data.versions?.moduleDefinitions || undefined);
+      }
+
+      if (Array.isArray(data.programConfigs)) {
+        setCustomPrograms(data.programConfigs as TrainingPlanProgramConfigPayload[]);
+        setProgramConfigsVersion(data.versions?.programConfigs || undefined);
+      }
+      setHasLoadedProgramConfigs(true);
+
+      if (Array.isArray(data.catalogModules)) {
+        const raw = data.catalogModules as (CatalogModule & { sessionNames?: string[]; sessionDescriptions?: string[]; sessionKsbMappings?: SessionKsbMapping[] })[];
+        setCatalogModules(raw.map(m => ({ ...m, sessionNames: m.sessionNames ?? [], sessionDescriptions: m.sessionDescriptions ?? [], sessionKsbMappings: m.sessionKsbMappings ?? [] })));
+      }
+
+      if (Array.isArray(data.ksbProfiles)) {
+        const items = data.ksbProfiles as KsbProfile[];
+        setKsbProfiles(items.map(profile => ({ ...profile, ksbItems: normalizeKsbProfileItems(profile) })));
+      }
+
+      if (Array.isArray(data.tutorProfiles)) {
+        setTutorProfiles(data.tutorProfiles as TutorProfile[]);
+      }
+
+      if (Array.isArray(data.coachProfiles)) {
+        setCoachProfiles(data.coachProfiles as CoachProfile[]);
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const runTrainingPlanRealtimeRefresh = useCallback(async (resources: string[]): Promise<void> => {
     const changed = new Set(resources.map(resource => resource.trim().toLowerCase()).filter(Boolean));
     const hasAny = (names: string[]) => names.some(name => changed.has(name));
@@ -3380,8 +3448,15 @@ export default function ApprenticeshipTimeline() {
   }, [reloadCoachProfiles, reloadTrainingPlan, reloadTrainingPlanHolidays, reloadTrainingPlanSupportData, reloadTutorProfiles]);
 
   useEffect(() => {
-    void reloadTrainingPlan();
-  }, [reloadTrainingPlan]);
+    let cancelled = false;
+    void (async () => {
+      const ok = await bootstrapTrainingPlan();
+      if (cancelled || ok) return;
+      // Bootstrap failed — fall back to the original per-resource loaders.
+      await Promise.all([reloadTrainingPlan(), reloadTrainingPlanSupportData()]);
+    })();
+    return () => { cancelled = true; };
+  }, [bootstrapTrainingPlan, reloadTrainingPlan, reloadTrainingPlanSupportData]);
 
   useEffect(() => {
     setGroups(
@@ -3390,10 +3465,6 @@ export default function ApprenticeshipTimeline() {
         : buildAllGroups(customPrograms),
     );
   }, [trainingPlanItems, customPrograms, tutorProfiles]);
-
-  useEffect(() => {
-    void reloadTrainingPlanSupportData();
-  }, [reloadTrainingPlanSupportData]);
 
   const trainingPlanRealtimeTimerRef = useRef<number | null>(null);
   const trainingPlanRealtimeResourcesRef = useRef<Set<string>>(new Set());
