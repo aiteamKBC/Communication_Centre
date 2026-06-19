@@ -1930,6 +1930,11 @@ export default function UserActivityPage() {
   const [auditPayload, setAuditPayload] = useState<AuditPayload>(emptyAuditPayload);
   const [ksbProfiles, setKsbProfiles] = useState<KsbProfile[]>([]);
   const [trainingPlanRows, setTrainingPlanRows] = useState<TrainingPlanAuditRow[]>([]);
+  // These two datasets are only used inside expanded audit-log details, so they
+  // are fetched lazily the first time a log that needs them is expanded rather
+  // than on page load (avoids two unnecessary parallel requests on mount).
+  const ksbProfilesFetchedRef = useRef(false);
+  const trainingPlanRowsFetchedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [auditLoading, setAuditLoading] = useState(true);
   const [error, setError] = useState('');
@@ -2022,6 +2027,12 @@ export default function UserActivityPage() {
   }, [auditLogSort, auditPayload.logs]);
   const sessionGroups = useMemo(() => groupedSortedSessions(visibleSessions, sessionSort, dateSortOrder), [currentDateValue, dateSortOrder, sessionSort, visibleSessions]);
   const auditLogGroups = useMemo(() => groupedSortedAuditLogs(auditPayload.logs, auditLogSort), [auditLogSort, auditPayload.logs, currentDateValue]);
+  // Entity type of the currently expanded audit log, used to lazily fetch the
+  // supporting datasets only the matching detail view needs.
+  const expandedAuditEntity = useMemo(() => {
+    if (expandedAuditId === null) return null;
+    return auditPayload.logs.find(log => log.id === expandedAuditId)?.entity ?? null;
+  }, [expandedAuditId, auditPayload.logs]);
   useEffect(() => {
     const firstGroupKey = auditLogGroups[0]?.key;
     if (!firstGroupKey) return;
@@ -2241,8 +2252,13 @@ export default function UserActivityPage() {
     };
   }, [auditQuery, canView, realtimeMode]);
 
+  // KSB profiles enrich the expanded TrainingPlan audit detail view only — fetch
+  // them the first time such a log is expanded, not on page load.
   useEffect(() => {
     if (!canView) return;
+    if (expandedAuditEntity !== 'TrainingPlan') return;
+    if (ksbProfilesFetchedRef.current) return;
+    ksbProfilesFetchedRef.current = true;
 
     let cancelled = false;
     const controller = new AbortController();
@@ -2256,17 +2272,25 @@ export default function UserActivityPage() {
         if (!cancelled) setKsbProfiles(items);
       })
       .catch(() => {
-        if (!cancelled) setKsbProfiles([]);
+        if (!cancelled) {
+          setKsbProfiles([]);
+          ksbProfilesFetchedRef.current = false; // allow a retry on the next expand
+        }
       });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [canView]);
+  }, [canView, expandedAuditEntity]);
 
+  // Training Plan rows enrich the expanded ModuleLearnerMapping audit detail view
+  // only — fetch them the first time such a log is expanded, not on page load.
   useEffect(() => {
     if (!canView) return;
+    if (expandedAuditEntity !== 'ModuleLearnerMapping') return;
+    if (trainingPlanRowsFetchedRef.current) return;
+    trainingPlanRowsFetchedRef.current = true;
 
     let cancelled = false;
     const controller = new AbortController();
@@ -2281,14 +2305,17 @@ export default function UserActivityPage() {
         if (!cancelled) setTrainingPlanRows(Array.isArray(items) ? items : []);
       })
       .catch(() => {
-        if (!cancelled) setTrainingPlanRows([]);
+        if (!cancelled) {
+          setTrainingPlanRows([]);
+          trainingPlanRowsFetchedRef.current = false; // allow a retry on the next expand
+        }
       });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [canView]);
+  }, [canView, expandedAuditEntity]);
 
   if (!canView) {
     return (

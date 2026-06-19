@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { CalendarEvent, EventMedia, sortCalendarEvents } from '../mocks/events';
 import { useRealtimeResource } from '../hooks/useRealtimeUpdates';
 import { containsUnsafeDataImage } from '../pages/events/components/eventMediaUpload';
@@ -83,6 +83,10 @@ type EventsContextValue = {
   updateEvent: (event: CalendarEvent) => Promise<void>;
   deleteEvent: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
+  // Triggers the initial events fetch. Called by useEventsContext on first
+  // consumption so the request only fires on pages that actually read events
+  // (Home, Events) instead of every page the provider wraps.
+  ensureLoaded: () => void;
 };
 
 const EventsContext = createContext<EventsContextValue | null>(null);
@@ -91,8 +95,11 @@ const EventsContext = createContext<EventsContextValue | null>(null);
 
 export function EventsProvider({ children }: { children: React.ReactNode }) {
   const [events, setEvents]   = useState<CalendarEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Starts false because the fetch is deferred until a consumer asks for it;
+  // ensureLoaded flips it to true when the first request actually begins.
+  const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
 
   const fetchEvents = useCallback(async (showLoading = true) => {
     try {
@@ -109,8 +116,18 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  useEffect(() => { void fetchEvents(); }, [fetchEvents]);
-  useRealtimeResource('events', () => fetchEvents(false));
+  // Fetch once, on first consumption (see ensureLoaded in the context value),
+  // rather than unconditionally on provider mount.
+  const ensureLoaded = useCallback(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
+    void fetchEvents();
+  }, [fetchEvents]);
+
+  // Realtime refreshes only matter once events have been loaded; the callback
+  // is a no-op until then so a background update on an events-less page does
+  // not trigger a fetch.
+  useRealtimeResource('events', () => { if (hasLoadedRef.current) void fetchEvents(false); });
 
   const serializePayload = (event: CalendarEvent) => {
     const coverItem = event.media?.find(m => m.isCover);
@@ -165,7 +182,7 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <EventsContext.Provider value={{ events, loading, error, addEvent, updateEvent, deleteEvent, refresh: fetchEvents }}>
+    <EventsContext.Provider value={{ events, loading, error, addEvent, updateEvent, deleteEvent, refresh: fetchEvents, ensureLoaded }}>
       {children}
     </EventsContext.Provider>
   );
@@ -176,5 +193,8 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
 export function useEventsContext(): EventsContextValue {
   const ctx = useContext(EventsContext);
   if (!ctx) throw new Error('useEventsContext must be used inside <EventsProvider>');
+  // First consumer on a page triggers the (deferred) initial fetch. Pages that
+  // never call this hook never trigger the events request.
+  useEffect(() => { ctx.ensureLoaded(); }, [ctx]);
   return ctx;
 }
