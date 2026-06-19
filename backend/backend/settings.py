@@ -43,6 +43,8 @@ def parse_database_url(database_url: str) -> dict:
         'PASSWORD': parsed.password,
         'HOST': parsed.hostname,
         'PORT': str(parsed.port or 5432),
+        # Reuse connections across requests instead of reconnecting each time (seconds).
+        'CONN_MAX_AGE': int(os.getenv('CONN_MAX_AGE', '600')),
         # Required for transaction poolers (Neon/pgBouncer) to avoid InvalidCursorName errors.
         'DISABLE_SERVER_SIDE_CURSORS': True,
         'OPTIONS': {'sslmode': ssl_mode} if ssl_mode else {},
