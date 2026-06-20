@@ -1126,22 +1126,30 @@ export default function GanttTimeline({
     });
   }, []);
 
-  const handleTimelineWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+  const handleTimelineWheel = useCallback((event: WheelEvent) => {
     const el = scrollRef.current;
     if (!el) return;
 
     if (event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-      event.preventDefault();
+      if (event.cancelable) event.preventDefault();
       el.scrollLeft += event.deltaY;
       handleTimelineScroll();
       return;
     }
 
     if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-      event.preventDefault();
+      if (event.cancelable) event.preventDefault();
       window.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
     }
   }, [handleTimelineScroll]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+
+    el.addEventListener('wheel', handleTimelineWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleTimelineWheel);
+  }, [handleTimelineWheel]);
 
   const endTimelinePan = useCallback((event?: React.PointerEvent<HTMLDivElement>) => {
     const el = scrollRef.current;
@@ -2812,7 +2820,6 @@ export default function GanttTimeline({
       <div
         ref={scrollRef}
         className="training-plan-gantt-scroll"
-        onWheel={handleTimelineWheel}
         onScroll={handleTimelineScroll}
         onPointerDown={handleTimelinePointerDown}
         onPointerMove={handleTimelinePointerMove}
