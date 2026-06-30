@@ -5397,6 +5397,116 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const handleMoveModuleDates = async (groupIdx: number, rowIdx: number, blockId: string, nextStartDate: string, nextEndDate: string): Promise<boolean> => {
+    if (!canManageCohorts) return false;
+    if (trainingPlanServerUnavailable) {
+      await kbcSwal.fire({
+        title: 'Training Plan Server Unavailable',
+        html: 'The backend is temporarily unavailable. Training Plan data has not been deleted.<br /><br />Save is disabled until the server is healthy again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      void checkTrainingPlanHealth();
+      return false;
+    }
+
+    const targetGroup = groups[groupIdx];
+    const targetRow = targetGroup?.rows[rowIdx];
+    const targetBlock = targetRow?.blks.find(block => block.id === blockId);
+    if (!targetGroup || !targetRow || !targetBlock) return false;
+    if (!targetGroup.id || !targetRow.id) {
+      await kbcSwal.fire({
+        title: 'Module Not Moved',
+        html: 'This module cannot be moved safely until stable Training Plan IDs have loaded. Reload latest data and try again.',
+        icon: 'warning',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+    if (targetBlock.startDate === nextStartDate && targetBlock.endDate === nextEndDate) return true;
+
+    const nextRow = {
+      ...targetRow,
+      blks: targetRow.blks.map(block => block.id === blockId
+        ? { ...block, startDate: nextStartDate, endDate: nextEndDate }
+        : block
+      ),
+    };
+    const nextGroups = groups.map((group, gi) => gi !== groupIdx ? { ...group, rows: [...group.rows] } : {
+      ...group,
+      rows: group.rows.map((row, ri) => ri === rowIdx ? nextRow : row),
+    });
+    const nextItemsForSave = flattenGroupsForApi(nextGroups, tutorProfiles);
+    const itemsByTrainingPlanId = new Map(nextItemsForSave.filter(item => item.id).map(item => [String(item.id), item]));
+
+    setGroups(nextGroups);
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Moving module...');
+    try {
+      const result = await updateTrainingPlanCohort(targetRow.id, {
+        programmeId: targetGroup.id,
+        cohortName: nextRow.label,
+        startingDateLabel: nextRow.dateLbl,
+        cohortColor: nextRow.color || '',
+        cohortEndDate: nextRow.endDateLbl || '',
+        holidayIds: nextRow.holidayIds || [],
+        ksbProfileId: nextRow.ksbProfileId || '',
+        blocks: nextRow.blks.map(block => ({
+          trainingPlanId: block.trainingPlanId,
+          moduleCatalogueId: block.moduleCatalogueId,
+          blockId: block.id,
+          groupId: block.groupId || '',
+          groupName: block.groupName || '',
+          coachName: block.coachName || '',
+          moduleName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.moduleName || getModuleMeta(block.mod).lbl,
+          tutorName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorName || block.tutor || '',
+          tutorProfileId: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorProfileId || block.tutorProfileId || '',
+          startDate: block.startDate,
+          endDate: block.endDate,
+          sessionsNumber: String(block.sessions),
+          sessionWeekDay: (block.days || []).join(', '),
+          sessionStartTime: block.sessionStartTime || '09:00',
+          sessionEndTime: block.sessionEndTime || '11:00',
+          sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
+          sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
+          moduleColor: block.color || '',
+          notes: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.notes || block.notes || '',
+        })),
+        allowBlockMembershipChanges: true,
+      });
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else {
+        setTrainingPlanItems(flattenGroupsForApi(nextGroups, tutorProfiles));
+        setGroups(nextGroups);
+      }
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage(`Module moved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      return true;
+    } catch (error) {
+      setGroups(groups);
+      if (error instanceof Error && error.message === 'Training Plan version conflict.') return false;
+      try {
+        await handleTrainingPlanRequestFailure(error, 'Module Not Moved');
+        return false;
+      } catch {
+        // Continue with normal error reporting.
+      }
+      const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Module move was not saved.');
+      await kbcSwal.fire({
+        title: 'Module Not Moved',
+        html: `The module dates were not saved.<br /><br /><strong>Details:</strong> ${message}`,
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
   const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position: 'before' | 'after' = 'before') => {
     if (!canManageCohorts) return;
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
@@ -6791,6 +6901,7 @@ export default function ApprenticeshipTimeline() {
                   onCloneRow={handleCloneCohort}
                   onCloneGroup={handleCloneGroup}
                   onCloneModule={handleCloneModule}
+                  onMoveModuleDates={handleMoveModuleDates}
                   onReorderRow={handleReorderRow}
                   onReorderGroup={handleReorderGroup}
                   onExportExcel={exportTrainingPlanExcel}

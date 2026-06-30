@@ -9,9 +9,13 @@ import {
   buildHolidayAdjustedSessionPlan, rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
 } from '../utils';
 
+type SessionPlan = ReturnType<typeof buildHolidayAdjustedSessionPlan>;
+
 const LEFT_W    = 220;
 const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 52;
+const PROGRAMME_HEADER_H = 76;
+const VIRTUAL_ROW_BUFFER_PX = 1400;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
@@ -42,6 +46,20 @@ function nextIsoDate(dateStr: string): string {
   const date = new Date(`${dateStr}T00:00:00`);
   date.setDate(date.getDate() + 1);
   return toLocalIsoDate(date);
+}
+
+function shiftIsoDate(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(year || 1970, (month || 1) - 1, day || 1);
+  date.setDate(date.getDate() + days);
+  return toLocalIsoDate(date);
+}
+
+function inclusiveDaysBetween(startDate: string, endDate: string): number {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 1;
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
 }
 
 function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []): boolean {
@@ -126,6 +144,46 @@ function hasSessionEnded(date: string, endTime: string, now: Date): boolean {
   return parseLocalDateTime(date, endTime) <= now;
 }
 
+function parseLocalDateOnly(isoDate: string): Date | null {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getModuleExpiryWarning(endDate: string, now = new Date()): { daysRemaining: number; label: string; title: string } | null {
+  const end = parseLocalDateOnly(endDate);
+  if (!end) return null;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const daysRemaining = Math.ceil((end.getTime() - today.getTime()) / 86400000);
+  if (daysRemaining < 0 || daysRemaining > 14) return null;
+  const label = daysRemaining === 0
+    ? 'Ends today'
+    : daysRemaining === 1
+    ? 'Ends tomorrow'
+    : `Ends in ${daysRemaining} days`;
+  return {
+    daysRemaining,
+    label,
+    title: `${label}. Take action before ${formatDate(endDate)}.`,
+  };
+}
+
+function buildSessionPlanCacheKey(blk: ModuleBlock, activeHolidays: Holiday[] = []): string {
+  const holidayKey = [...activeHolidays]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(holiday => `${holiday.id}:${holiday.startDate}:${holiday.endDate}`)
+    .join(',');
+  return [
+    blk.id,
+    blk.startDate,
+    blk.endDate,
+    blk.sessions,
+    [...(blk.days || [])].sort().join(','),
+    holidayKey,
+  ].join('|');
+}
+
 function timeToMinutes(time24: string): number | null {
   const [hRaw, mRaw] = time24.split(':');
   const h = Number(hRaw);
@@ -141,6 +199,31 @@ function timeRangesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: s
   const be = timeToMinutes(bEnd);
   if (as === null || ae === null || bs === null || be === null) return false;
   return as < be && ae > bs;
+}
+
+function forEachOverlappingTutorSessionPair<T extends { date: string; tutor: string; startTime: string; endTime: string }>(
+  sessions: T[],
+  onPair: (a: T, b: T) => void,
+): void {
+  const grouped = new Map<string, T[]>();
+  sessions.forEach(session => {
+    const key = `${session.date}|${session.tutor}`;
+    const group = grouped.get(key);
+    if (group) group.push(session);
+    else grouped.set(key, [session]);
+  });
+
+  grouped.forEach(group => {
+    if (group.length < 2) return;
+    for (let i = 0; i < group.length; i += 1) {
+      for (let j = i + 1; j < group.length; j += 1) {
+        const a = group[i];
+        const b = group[j];
+        if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
+        onPair(a, b);
+      }
+    }
+  });
 }
 
 function splitPeople(value: string): string[] {
@@ -223,11 +306,17 @@ function resolveCatalogModuleForBlock(blk: ModuleBlock, customModules: CustomMod
   });
 }
 
-function getCurrentSessionSummary(blk: ModuleBlock, customModules: CustomModule[], catalogModules: CatalogModule[], activeHolidays: Holiday[] = []) {
+function getCurrentSessionSummary(
+  blk: ModuleBlock,
+  customModules: CustomModule[],
+  catalogModules: CatalogModule[],
+  activeHolidays: Holiday[] = [],
+  holidayPlan?: SessionPlan,
+) {
   const plannedTotal = Math.max(1, blk.sessions || 1);
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
-  const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+  const plan = holidayPlan || buildHolidayAdjustedSessionPlan(blk, activeHolidays);
   const sessionDates = plan.sessions.length ? plan.sessions : [{ date: blk.startDate, originalNumber: 1, isClash: false, isExtension: false, holidays: [], countedNumber: 1 }];
   const affected = plan.originalClashedSessions;
   const total = plannedTotal;
@@ -265,8 +354,8 @@ function coverageTutorName(profileId: string, tutorProfiles: TutorProfile[]): st
   return tutorProfiles.find(profile => profile.id === profileId)?.name || 'Selected cover';
 }
 
-function getBlockCoverageItems(blk: ModuleBlock, tutorProfiles: TutorProfile[], activeHolidays: Holiday[] = []) {
-  const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+function getBlockCoverageItems(blk: ModuleBlock, tutorProfiles: TutorProfile[], activeHolidays: Holiday[] = [], holidayPlan?: SessionPlan) {
+  const plan = holidayPlan || buildHolidayAdjustedSessionPlan(blk, activeHolidays);
   const sessionDateByNumber = new Map<number, string>();
   plan.sessions.forEach(session => {
     sessionDateByNumber.set(session.originalNumber, session.date);
@@ -344,6 +433,7 @@ interface TooltipData {
   programmeName: string;
   programmeColor: string;
   holidays: Holiday[];
+  holidayPlan?: SessionPlan;
   x: number;
   y: number;
   customModules: CustomModule[];
@@ -438,6 +528,26 @@ function moduleTintStyle(color: string): { background: string; color: string; bo
   };
 }
 
+interface ExpiringModuleSummary {
+  key: string;
+  groupIdx: number;
+  rowIdx: number;
+  blockId: string;
+  moduleName: string;
+  programmeName: string;
+  cohortName: string;
+  className: string;
+  startDate: string;
+  endDate: string;
+  targetDate: string;
+  color: string;
+  warning: {
+    daysRemaining: number;
+    label: string;
+    title: string;
+  };
+}
+
 interface ClassSummary {
   key: string;
   groupIdx: number;
@@ -454,6 +564,7 @@ interface ClassSummary {
   holidayClashCount: number;
   tutorConflictCount: number;
   replacementClashCount: number;
+  expiryWarningCount: number;
   moduleBreakdown: {
     label: string;
     blockId: string;
@@ -461,6 +572,7 @@ interface ClassSummary {
     targetDate: string;
     clashCount: number;
     isFinished: boolean;
+    expiryWarning?: { daysRemaining: number; label: string; title: string };
     holidayClashCount: number;
     tutorConflictCount: number;
     replacementClashCount: number;
@@ -487,6 +599,7 @@ interface Props {
   onCloneRow?: (groupIdx: number, rowIdx: number) => void;
   onCloneGroup?: (groupIdx: number, rowIdx: number, groupName: string) => void;
   onCloneModule?: (groupIdx: number, rowIdx: number, blockId: string) => void;
+  onMoveModuleDates?: (groupIdx: number, rowIdx: number, blockId: string, nextStartDate: string, nextEndDate: string) => boolean | Promise<boolean>;
   onReorderRow?: (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position?: 'before' | 'after') => void;
   onReorderGroup?: (fromGroupIdx: number, toGroupIdx: number) => void;
   onExportExcel?: () => void;
@@ -613,19 +726,20 @@ function getClashTone(type: ClashMarker['type']) {
   };
 }
 
-function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => void }) {
+function ModuleTooltip({ data, currentDate, onClose }: { data: TooltipData; currentDate: Date; onClose: () => void }) {
   const mod = resolveBlockMeta(data.blk, data.customModules);
   const displayName = getBlockDisplayName(data.blk, data.customModules);
   const hasHolidays = data.holidays.length > 0;
-  const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays);
+  const sessionSummary = getCurrentSessionSummary(data.blk, data.customModules, [], data.holidays, data.holidayPlan);
   const displayEndDate = sessionSummary.effectiveEndDate || data.blk.endDate;
+  const expiryWarning = sessionSummary.isFinished ? null : getModuleExpiryWarning(displayEndDate, currentDate);
   const hasHolidayClashes = sessionSummary.allAffected > 0;
   const holidayWeeksLabel = `${sessionSummary.allAffected} week${sessionSummary.allAffected !== 1 ? 's' : ''}`;
   const scheduleDayLabel = data.blk.days?.length ? data.blk.days.join('/') : 'scheduled';
   const extensionLabel = sessionSummary.extensionDays > 0
     ? `${Math.max(1, Math.round(sessionSummary.extensionDays / 7))} week${Math.max(1, Math.round(sessionSummary.extensionDays / 7)) !== 1 ? 's' : ''}`
     : '';
-  const holidayPlan = buildHolidayAdjustedSessionPlan(data.blk, data.holidays);
+  const holidayPlan = data.holidayPlan || buildHolidayAdjustedSessionPlan(data.blk, data.holidays);
   const deliveryWeeks = holidayPlan.sessions.length + holidayPlan.skippedSessions.length;
   const shiftedToByDate = new Map<string, string>();
   holidayPlan.sessions.forEach(session => {
@@ -706,6 +820,19 @@ function ModuleTooltip({ data, onClose }: { data: TooltipData; onClose: () => vo
                     {data.blk.sessionStartTime}{data.blk.sessionEndTime ? ` – ${data.blk.sessionEndTime}` : ''}
                   </p>
                 )}
+              </div>
+            </div>
+          )}
+          {expiryWarning && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+              <div className="flex items-start gap-2">
+                <i className="ri-alert-line mt-0.5 text-sm text-amber-700" />
+                <div className="min-w-0">
+                  <p className="font-extrabold text-amber-950">Module ending soon</p>
+                  <p className="mt-0.5 font-semibold text-amber-800">
+                    {expiryWarning.label}. Take action before {formatDate(displayEndDate)}.
+                  </p>
+                </div>
               </div>
             </div>
           )}
@@ -964,7 +1091,7 @@ export default function GanttTimeline({
   groups, holidays, customModules = [], catalogModules = [], tutorProfiles = [], zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
-  onEditCatalogModule, onViewMonthlyBreakdown, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
+  onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
 }: Props) {
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -973,13 +1100,24 @@ export default function GanttTimeline({
   const [extensionTip, setExtensionTip] = useState<ExtensionTooltipData | null>(null);
   const [tutorConflictTip, setTutorConflictTip] = useState<TutorConflictTooltipData | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [classSearch, setClassSearch] = useState('');
   const [showCompletedClasses, setShowCompletedClasses] = useState(false);
   const [collapsedClassProgrammes, setCollapsedClassProgrammes] = useState<Set<string>>(new Set());
   const [lastClassSelection, setLastClassSelection] = useState<{ classKey: string; moduleKey?: string } | null>(null);
   const [classesPopupPosition, setClassesPopupPosition] = useState({ left: 12, top: 12, width: 360, maxHeight: 520 });
+  const [notificationsPopupPosition, setNotificationsPopupPosition] = useState({ left: 12, top: 12, width: 380, maxHeight: 520 });
   const [focusedTimelineTarget, setFocusedTimelineTarget] = useState<{ groupIdx?: number; rowKey?: string; blockId?: string } | null>(null);
   const [pendingTimelineNavigation, setPendingTimelineNavigation] = useState<{ groupIdx?: number; rowKey?: string; targetDate: string } | null>(null);
+  const [moduleDateDrag, setModuleDateDrag] = useState<{
+    groupIdx: number;
+    rowIdx: number;
+    blockId: string;
+    startX: number;
+    deltaDays: number;
+    originalStartDate: string;
+    originalEndDate: string;
+  } | null>(null);
   const [editChoice, setEditChoice] = useState<{
     blk: ModuleBlock;
     moduleLabel: string;
@@ -993,6 +1131,9 @@ export default function GanttTimeline({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  const [virtualViewport, setVirtualViewport] = useState(() => ({ top: 0, bottom: typeof window === 'undefined' ? 900 : window.innerHeight }));
+  const [todayKey, setTodayKey] = useState(() => toLocalIsoDate(new Date()));
+  const currentDate = useMemo(() => parseLocalDateOnly(todayKey) || new Date(), [todayKey]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const headerTrackRef = useRef<HTMLDivElement>(null);
   const headerScrollFrame = useRef<number | null>(null);
@@ -1000,7 +1141,30 @@ export default function GanttTimeline({
   const timelineSurfaceRef = useRef<HTMLDivElement>(null);
   const classesButtonRef = useRef<HTMLButtonElement>(null);
   const classesPopupRef = useRef<HTMLDivElement>(null);
+  const notificationsButtonRef = useRef<HTMLButtonElement>(null);
+  const notificationsPopupRef = useRef<HTMLDivElement>(null);
+  const floatingTipMoveFrame = useRef<number | null>(null);
+  const pendingFloatingTipMove = useRef<{ type: 'tooltip' | 'badge' | 'extension' | 'holiday' | 'tutorConflict'; x: number; y: number } | null>(null);
+  const virtualViewportFrame = useRef<number | null>(null);
+  const suppressModuleClickRef = useRef(false);
   const leftW = viewportWidth < 640 ? 184 : viewportWidth < 1024 ? 210 : LEFT_W;
+
+  const scheduleFloatingTipMove = useCallback((type: 'tooltip' | 'badge' | 'extension' | 'holiday' | 'tutorConflict', x: number, y: number) => {
+    if (typeof window === 'undefined') return;
+    pendingFloatingTipMove.current = { type, x, y };
+    if (floatingTipMoveFrame.current !== null) return;
+    floatingTipMoveFrame.current = window.requestAnimationFrame(() => {
+      const move = pendingFloatingTipMove.current;
+      floatingTipMoveFrame.current = null;
+      pendingFloatingTipMove.current = null;
+      if (!move) return;
+      if (move.type === 'tooltip') setTooltip(prev => prev ? { ...prev, x: move.x, y: move.y } : null);
+      else if (move.type === 'badge') setBadgeTip(prev => prev ? { ...prev, x: move.x, y: move.y } : null);
+      else if (move.type === 'extension') setExtensionTip(prev => prev ? { ...prev, x: move.x, y: move.y } : null);
+      else if (move.type === 'holiday') setHolidayTip(prev => prev ? { ...prev, x: move.x, y: move.y } : null);
+      else setTutorConflictTip(prev => prev ? { ...prev, x: move.x, y: move.y } : null);
+    });
+  }, []);
 
   const updateClassesPopupPosition = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -1022,6 +1186,26 @@ export default function GanttTimeline({
     setClassesPopupPosition({ left, top, width, maxHeight });
   }, []);
 
+  const updateNotificationsPopupPosition = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const button = notificationsButtonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(380, Math.max(292, window.innerWidth - 24));
+    const belowTop = rect.bottom + 8;
+    const preferredMaxHeight = 520;
+    const belowSpace = window.innerHeight - belowTop - 12;
+    const aboveSpace = rect.top - 12;
+    const shouldOpenAbove = belowSpace < 260 && aboveSpace > belowSpace;
+    const maxHeight = Math.max(240, Math.min(preferredMaxHeight, shouldOpenAbove ? aboveSpace - 8 : belowSpace));
+    const top = shouldOpenAbove ? Math.max(12, rect.top - maxHeight - 8) : belowTop;
+    const left = Math.min(
+      Math.max(12, rect.right - width),
+      Math.max(12, window.innerWidth - width - 12),
+    );
+    setNotificationsPopupPosition({ left, top, width, maxHeight });
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const handleResize = () => setViewportWidth(window.innerWidth);
@@ -1030,11 +1214,76 @@ export default function GanttTimeline({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    let midnightTimer: number | undefined;
+    const syncToday = () => {
+      const nextKey = toLocalIsoDate(new Date());
+      setTodayKey(previous => previous === nextKey ? previous : nextKey);
+    };
+    const scheduleNextMidnight = () => {
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      midnightTimer = window.setTimeout(() => {
+        syncToday();
+        scheduleNextMidnight();
+      }, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+    };
+
+    syncToday();
+    scheduleNextMidnight();
+    const pollTimer = window.setInterval(syncToday, 60000);
+    return () => {
+      if (midnightTimer !== undefined) window.clearTimeout(midnightTimer);
+      window.clearInterval(pollTimer);
+    };
+  }, []);
+
   useEffect(() => () => {
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
     }
+    if (floatingTipMoveFrame.current !== null) {
+      window.cancelAnimationFrame(floatingTipMoveFrame.current);
+    }
+    if (virtualViewportFrame.current !== null) {
+      window.cancelAnimationFrame(virtualViewportFrame.current);
+    }
   }, []);
+
+  const updateVirtualViewport = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (virtualViewportFrame.current !== null) return;
+    virtualViewportFrame.current = window.requestAnimationFrame(() => {
+      virtualViewportFrame.current = null;
+      const surface = timelineSurfaceRef.current;
+      if (!surface) return;
+      const rect = surface.getBoundingClientRect();
+      const next = {
+        top: Math.max(0, -rect.top - VIRTUAL_ROW_BUFFER_PX),
+        bottom: Math.max(0, -rect.top + window.innerHeight + VIRTUAL_ROW_BUFFER_PX),
+      };
+      setVirtualViewport(prev => (
+        Math.abs(prev.top - next.top) < 24 && Math.abs(prev.bottom - next.bottom) < 24 ? prev : next
+      ));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    updateVirtualViewport();
+    window.addEventListener('scroll', updateVirtualViewport, { passive: true });
+    window.addEventListener('resize', updateVirtualViewport);
+    return () => {
+      window.removeEventListener('scroll', updateVirtualViewport);
+      window.removeEventListener('resize', updateVirtualViewport);
+    };
+  }, [updateVirtualViewport]);
+
+  useEffect(() => {
+    updateVirtualViewport();
+  }, [collapsedGroups, groups, holidays, updateVirtualViewport, viewportWidth, zoom]);
 
   // Drag-and-drop state
   type DragItem = { type: 'cohort'; groupIdx: number; rowIdx: number } | { type: 'group'; groupIdx: number };
@@ -1064,6 +1313,24 @@ export default function GanttTimeline({
   }, [classesOpen]);
 
   useEffect(() => {
+    if (!notificationsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && notificationsButtonRef.current?.contains(target)) {
+        return;
+      }
+      if (target instanceof Node && notificationsPopupRef.current?.contains(target)) {
+        return;
+      }
+      setNotificationsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [notificationsOpen]);
+
+  useEffect(() => {
     if (!classesOpen) return undefined;
     updateClassesPopupPosition();
     window.addEventListener('resize', updateClassesPopupPosition);
@@ -1073,6 +1340,17 @@ export default function GanttTimeline({
       window.removeEventListener('scroll', updateClassesPopupPosition, true);
     };
   }, [classesOpen, updateClassesPopupPosition]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return undefined;
+    updateNotificationsPopupPosition();
+    window.addEventListener('resize', updateNotificationsPopupPosition);
+    window.addEventListener('scroll', updateNotificationsPopupPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateNotificationsPopupPosition);
+      window.removeEventListener('scroll', updateNotificationsPopupPosition, true);
+    };
+  }, [notificationsOpen, updateNotificationsPopupPosition]);
 
   useEffect(() => {
     if (!classesOpen || !lastClassSelection) return;
@@ -1258,14 +1536,21 @@ export default function GanttTimeline({
 
   const cols       = useMemo(() => generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end), [zoom, effectiveViewWindow]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
+  const pixelsPerDay = useMemo(() => {
+    const first = cols[0];
+    const last = cols[cols.length - 1];
+    if (!first || !last) return 1;
+    return Math.max(0.1, totalWidth / inclusiveDaysBetween(first.startDate, last.endDate));
+  }, [cols, totalWidth]);
   const dayGridSize = useMemo(() => (
     zoom === 'day' ? Math.max(Math.round(cols[0]?.widthPx || 32), 16) : 14
   ), [cols, zoom]);
 
-  const nowDate = toLocalIsoDate(new Date());
+  const nowDate = todayKey;
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
   const isZoomedGrid = zoom === 'day';
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
+  const shouldVirtualizeRows = zoom === 'week' || zoom === 'day';
 
   useEffect(() => {
     if (!pendingTimelineNavigation) return;
@@ -1306,6 +1591,46 @@ export default function GanttTimeline({
   const isCurrentColumn = useCallback((startDate: string, endDate: string) => (
     startDate <= nowDate && endDate >= nowDate
   ), [nowDate]);
+
+  useEffect(() => {
+    if (!moduleDateDrag) return undefined;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      setModuleDateDrag(current => {
+        if (!current) return current;
+        const nextDeltaDays = Math.round((event.clientX - current.startX) / pixelsPerDay);
+        if (nextDeltaDays === current.deltaDays) return current;
+        suppressModuleClickRef.current = true;
+        setTooltip(null);
+        setBadgeTip(null);
+        setExtensionTip(null);
+        setTutorConflictTip(null);
+        return { ...current, deltaDays: nextDeltaDays };
+      });
+    };
+
+    const handlePointerUp = () => {
+      const drag = moduleDateDrag;
+      setModuleDateDrag(null);
+      if (!drag) return;
+      window.setTimeout(() => {
+        suppressModuleClickRef.current = false;
+      }, 0);
+      if (!drag.deltaDays || !onMoveModuleDates) return;
+      const nextStartDate = shiftIsoDate(drag.originalStartDate, drag.deltaDays);
+      const nextEndDate = shiftIsoDate(drag.originalEndDate, drag.deltaDays);
+      void onMoveModuleDates(drag.groupIdx, drag.rowIdx, drag.blockId, nextStartDate, nextEndDate);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+    window.addEventListener('pointercancel', handlePointerUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [moduleDateDrag, onMoveModuleDates, pixelsPerDay]);
 
   const getIsoWeekNumber = useCallback((date: Date) => {
     const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -1424,6 +1749,52 @@ export default function GanttTimeline({
       .filter(x => x.pos !== null),
   [holidays, cols]);
 
+  const getHolidayPlan = useMemo(() => {
+    const cache = new Map<string, SessionPlan>();
+    return (blk: ModuleBlock, activeHolidays: Holiday[] = []) => {
+      const key = buildSessionPlanCacheKey(blk, activeHolidays);
+      const cached = cache.get(key);
+      if (cached) return cached;
+      const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+      cache.set(key, plan);
+      return plan;
+    };
+  }, [groups, holidays]);
+
+  const virtualProgrammeMetrics = useMemo(() => {
+    let cursor = 0;
+    return groups.map(grp => {
+      const isCollapsed = collapsedGroups.has(grp.id);
+      const programmeTop = cursor;
+      cursor += PROGRAMME_HEADER_H;
+      const rows = grp.rows.map(row => {
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
+        const ganttRows = buildGanttRows(row.blks, rowHolidays);
+        const totalModuleH = ganttRows.reduce((sum, ganttRow) => sum + rowHeight(ganttRow), 0);
+        const height = COHORT_H + (totalModuleH || MODULE_H);
+        const top = cursor;
+        if (!isCollapsed) cursor += height;
+        return {
+          top,
+          bottom: top + height,
+          height,
+          rowHolidays,
+          ganttRows,
+          totalModuleH,
+        };
+      });
+      if (!isCollapsed && grp.rows.length === 0) {
+        cursor += MODULE_H;
+      }
+      return {
+        top: programmeTop,
+        bottom: cursor,
+        rows,
+      };
+    });
+  }, [collapsedGroups, groups, holidays]);
+
   const rowClashMarkers = useMemo(() => {
     const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
     return groups.map(grp => grp.rows.map(row => {
@@ -1445,7 +1816,7 @@ export default function GanttTimeline({
       };
 
       row.blks.forEach(blk => {
-        const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
+        const plan = getHolidayPlan(blk, activeHolidays);
         plan.skippedSessions.forEach(session => {
           const holidayLabels = session.holidays.map(holiday => holiday.label).join(', ');
           addMarker(session.date, {
@@ -1460,11 +1831,11 @@ export default function GanttTimeline({
 
       const tutorSessions: { blk: ModuleBlock; date: string; startTime: string; endTime: string; tutor: string }[] = [];
       row.blks.forEach(blk => {
-        const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+        const plan = getHolidayPlan(blk, activeHolidays);
+        const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays, plan);
         if (sessionSummary.isFinished) return;
         const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
         if (!tutors.length) return;
-        const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
         plan.sessions.filter(session => !session.isClash).forEach(session => {
           const startTime = blk.sessionStartTime || '09:00';
           const endTime = blk.sessionEndTime || '11:00';
@@ -1474,26 +1845,20 @@ export default function GanttTimeline({
           });
         });
       });
-      for (let i = 0; i < tutorSessions.length; i += 1) {
-        for (let j = i + 1; j < tutorSessions.length; j += 1) {
-          const a = tutorSessions[i];
-          const b = tutorSessions[j];
-          if (a.blk.id === b.blk.id) continue;
-          if (a.date !== b.date || a.tutor !== b.tutor) continue;
-          if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
-          addMarker(a.date, {
-            type: 'Tutor conflict',
-            modules: [moduleName(a.blk), moduleName(b.blk)],
-            cohorts: [row.label],
-            groups: [a.blk.groupName || row.label, b.blk.groupName || row.label],
-            explanation: 'The same tutor is scheduled for overlapping sessions.',
-          });
-        }
-      }
+      forEachOverlappingTutorSessionPair(tutorSessions, (a, b) => {
+        if (a.blk.id === b.blk.id) return;
+        addMarker(a.date, {
+          type: 'Tutor conflict',
+          modules: [moduleName(a.blk), moduleName(b.blk)],
+          cohorts: [row.label],
+          groups: [a.blk.groupName || row.label, b.blk.groupName || row.label],
+          explanation: 'The same tutor is scheduled for overlapping sessions.',
+        });
+      });
 
       return Array.from(markers.values()).sort((a, b) => a.date.localeCompare(b.date));
     }));
-  }, [catalogModules, customModules, groups, holidays]);
+  }, [catalogModules, customModules, getHolidayPlan, groups, holidays]);
 
   const crossRowTutorConflictPairs = useMemo<TimelineTutorConflictPair[]>(() => {
     const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
@@ -1518,13 +1883,13 @@ export default function GanttTimeline({
         const selectedHolidayIds = new Set(row.holidayIds || []);
         const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
         row.blks.forEach(blk => {
-          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+          const plan = getHolidayPlan(blk, activeHolidays);
+          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays, plan);
           if (sessionSummary.isFinished) return;
           const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
           if (!tutors.length) return;
           const startTime = blk.sessionStartTime || '09:00';
           const endTime = blk.sessionEndTime || '11:00';
-          const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
           plan.sessions.filter(session => !session.isClash).forEach(session => {
             if (hasSessionEnded(session.date, endTime, new Date())) return;
             tutors.forEach(tutor => {
@@ -1549,51 +1914,45 @@ export default function GanttTimeline({
 
     const pairs: TimelineTutorConflictPair[] = [];
     const seen = new Set<string>();
-    for (let i = 0; i < tutorSessions.length; i += 1) {
-      for (let j = i + 1; j < tutorSessions.length; j += 1) {
-        const a = tutorSessions[i];
-        const b = tutorSessions[j];
-        if (a.blockId === b.blockId) continue;
-        if (a.rowKey === b.rowKey) continue;
-        if (a.date !== b.date || a.tutor !== b.tutor) continue;
-        if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
-        const [firstId, secondId] = [a.blockId, b.blockId].sort();
-        const key = `${a.tutor}|${firstId}|${secondId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        pairs.push({
-          key,
-          date: a.date,
-          tutor: a.tutor,
-          blockIds: [a.blockId, b.blockId],
-          labels: [a.label, b.label],
-          entries: [
-            {
-              moduleName: a.label,
-              moduleColor: a.moduleColor,
-              programmeName: a.programmeName,
-              cohortName: a.cohortName,
-              className: a.className,
-              startTime: a.startTime,
-              endTime: a.endTime,
-              position: 'same row',
-            },
-            {
-              moduleName: b.label,
-              moduleColor: b.moduleColor,
-              programmeName: b.programmeName,
-              cohortName: b.cohortName,
-              className: b.className,
-              startTime: b.startTime,
-              endTime: b.endTime,
-              position: 'same row',
-            },
-          ],
-        });
-      }
-    }
+    forEachOverlappingTutorSessionPair(tutorSessions, (a, b) => {
+      if (a.blockId === b.blockId) return;
+      if (a.rowKey === b.rowKey) return;
+      const [firstId, secondId] = [a.blockId, b.blockId].sort();
+      const key = `${a.tutor}|${firstId}|${secondId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      pairs.push({
+        key,
+        date: a.date,
+        tutor: a.tutor,
+        blockIds: [a.blockId, b.blockId],
+        labels: [a.label, b.label],
+        entries: [
+          {
+            moduleName: a.label,
+            moduleColor: a.moduleColor,
+            programmeName: a.programmeName,
+            cohortName: a.cohortName,
+            className: a.className,
+            startTime: a.startTime,
+            endTime: a.endTime,
+            position: 'same row',
+          },
+          {
+            moduleName: b.label,
+            moduleColor: b.moduleColor,
+            programmeName: b.programmeName,
+            cohortName: b.cohortName,
+            className: b.className,
+            startTime: b.startTime,
+            endTime: b.endTime,
+            position: 'same row',
+          },
+        ],
+      });
+    });
     return pairs;
-  }, [catalogModules, collapsedGroups, customModules, groups, holidays]);
+  }, [catalogModules, collapsedGroups, customModules, getHolidayPlan, groups, holidays]);
 
   const tutorConflictColorMap = useMemo(() => {
     const keys = new Set<string>();
@@ -1608,13 +1967,13 @@ export default function GanttTimeline({
         const activeHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
         const tutorSessions: { blockId: string; date: string; startTime: string; endTime: string; tutor: string }[] = [];
         row.blks.forEach(blk => {
-          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
+          const plan = getHolidayPlan(blk, activeHolidays);
+          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays, plan);
           if (sessionSummary.isFinished) return;
           const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
           if (!tutors.length) return;
           const startTime = blk.sessionStartTime || '09:00';
           const endTime = blk.sessionEndTime || '11:00';
-          const plan = buildHolidayAdjustedSessionPlan(blk, activeHolidays);
           plan.sessions.filter(session => !session.isClash).forEach(session => {
             if (hasSessionEnded(session.date, endTime, new Date())) return;
             tutors.forEach(tutor => {
@@ -1623,17 +1982,11 @@ export default function GanttTimeline({
           });
         });
 
-        for (let i = 0; i < tutorSessions.length; i += 1) {
-          for (let j = i + 1; j < tutorSessions.length; j += 1) {
-            const a = tutorSessions[i];
-            const b = tutorSessions[j];
-            if (a.blockId === b.blockId) continue;
-            if (a.date !== b.date || a.tutor !== b.tutor) continue;
-            if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
-            const [firstId, secondId] = [a.blockId, b.blockId].sort();
-            keys.add(`${a.tutor}|${firstId}|${secondId}`);
-          }
-        }
+        forEachOverlappingTutorSessionPair(tutorSessions, (a, b) => {
+          if (a.blockId === b.blockId) return;
+          const [firstId, secondId] = [a.blockId, b.blockId].sort();
+          keys.add(`${a.tutor}|${firstId}|${secondId}`);
+        });
       });
     });
 
@@ -1642,7 +1995,7 @@ export default function GanttTimeline({
       colorMap.set(key, tutorConflictColorAt(index));
     });
     return colorMap;
-  }, [catalogModules, collapsedGroups, crossRowTutorConflictPairs, customModules, groups, holidays]);
+  }, [catalogModules, collapsedGroups, crossRowTutorConflictPairs, customModules, getHolidayPlan, groups, holidays]);
 
   const timelineLayoutSignature = useMemo(() => (
     groups.map(grp => [
@@ -1733,8 +2086,9 @@ export default function GanttTimeline({
           const className = (blk.groupName || row.label || 'Unnamed class').trim();
           const key = `${grp.id}|${row.id}|${className}`;
           const moduleLabel = getBlockDisplayName(blk, customModules);
-          const modulePlan = buildHolidayAdjustedSessionPlan(blk, rowHolidays);
-          const moduleSessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays);
+          const modulePlan = getHolidayPlan(blk, rowHolidays);
+          const moduleSessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays, modulePlan);
+          const moduleExpiryWarning = moduleSessionSummary.isFinished ? null : getModuleExpiryWarning(modulePlan.effectiveEndDate, currentDate);
           const moduleTutorConflicts = rowClashes.filter(marker => (
             marker.type === 'Tutor conflict' &&
             marker.groups.includes(className) &&
@@ -1745,9 +2099,10 @@ export default function GanttTimeline({
             label: moduleLabel,
             blockId: blk.id,
             dateRange: blk.startDate && modulePlan.effectiveEndDate ? `${formatDateShort(blk.startDate)} to ${formatDateShort(modulePlan.effectiveEndDate)}` : '',
-            targetDate: moduleFirstClashDate || blk.startDate || row.dateLbl || '',
+            targetDate: moduleFirstClashDate || modulePlan.effectiveEndDate || blk.startDate || row.dateLbl || '',
             clashCount: modulePlan.originalClashedSessions + moduleTutorConflicts.length + modulePlan.extensionClashedSessions,
             isFinished: moduleSessionSummary.isFinished,
+            expiryWarning: moduleExpiryWarning || undefined,
             holidayClashCount: modulePlan.originalClashedSessions,
             tutorConflictCount: moduleTutorConflicts.length,
             replacementClashCount: modulePlan.extensionClashedSessions,
@@ -1761,6 +2116,7 @@ export default function GanttTimeline({
           const tutorConflictCount = moduleBreakdown.tutorConflictCount;
           const replacementClashCount = moduleBreakdown.replacementClashCount;
           const moduleClashCount = holidayClashCount + tutorConflictCount + replacementClashCount;
+          const expiryWarningCount = moduleExpiryWarning ? 1 : 0;
           const existing = summaries.get(key);
           if (existing) {
             existing.moduleCount += 1;
@@ -1774,6 +2130,7 @@ export default function GanttTimeline({
             existing.holidayClashCount += holidayClashCount;
             existing.tutorConflictCount += tutorConflictCount;
             existing.replacementClashCount += replacementClashCount;
+            existing.expiryWarningCount += expiryWarningCount;
             existing.moduleBreakdown.push(moduleBreakdown);
             return;
           }
@@ -1793,18 +2150,20 @@ export default function GanttTimeline({
             holidayClashCount,
             tutorConflictCount,
             replacementClashCount,
+            expiryWarningCount,
             moduleBreakdown: [moduleBreakdown],
           });
         });
       });
     });
     return Array.from(summaries.values()).sort((a, b) => (
-      (b.clashCount > 0 ? 1 : 0) - (a.clashCount > 0 ? 1 : 0) ||
+      (b.clashCount + b.expiryWarningCount > 0 ? 1 : 0) - (a.clashCount + a.expiryWarningCount > 0 ? 1 : 0) ||
+      b.expiryWarningCount - a.expiryWarningCount ||
       a.className.localeCompare(b.className) ||
       a.programmeName.localeCompare(b.programmeName) ||
       a.cohortName.localeCompare(b.cohortName)
     ));
-  }, [catalogModules, customModules, groups, holidays, rowClashMarkers]);
+  }, [catalogModules, currentDate, customModules, getHolidayPlan, groups, holidays, rowClashMarkers]);
 
   const filteredClassSummaries = useMemo(() => {
     const q = classSearch.trim().toLowerCase();
@@ -1819,11 +2178,11 @@ export default function GanttTimeline({
 
   const classNavigationGroups = useMemo(() => {
     const q = classSearch.trim();
-    const grouped = new Map<string, { programmeName: string; items: ClassSummary[]; color: string; issueCount: number; moduleCount: number }>();
+    const grouped = new Map<string, { programmeName: string; items: ClassSummary[]; color: string; issueCount: number; expiryWarningCount: number; moduleCount: number }>();
     const completed: ClassSummary[] = [];
 
     filteredClassSummaries.forEach(item => {
-      const activeModules = item.moduleBreakdown.filter(moduleItem => !moduleItem.isFinished || moduleItem.clashCount > 0 || q);
+      const activeModules = item.moduleBreakdown.filter(moduleItem => !moduleItem.isFinished || moduleItem.clashCount > 0 || moduleItem.expiryWarning || q);
       const isCompletedClass = item.moduleBreakdown.length > 0 && item.moduleBreakdown.every(moduleItem => moduleItem.isFinished) && item.clashCount === 0;
       if (isCompletedClass && !q) {
         completed.push(item);
@@ -1834,19 +2193,95 @@ export default function GanttTimeline({
         items: [],
         color: item.color,
         issueCount: 0,
+        expiryWarningCount: 0,
         moduleCount: 0,
       };
       entry.items.push({ ...item, moduleBreakdown: activeModules });
       entry.issueCount += item.clashCount;
+      entry.expiryWarningCount += item.expiryWarningCount;
       entry.moduleCount += activeModules.length;
       grouped.set(item.programmeName, entry);
     });
 
     return {
-      active: Array.from(grouped.values()).sort((a, b) => b.issueCount - a.issueCount || a.programmeName.localeCompare(b.programmeName)),
+      active: Array.from(grouped.values()).sort((a, b) => b.expiryWarningCount - a.expiryWarningCount || b.issueCount - a.issueCount || a.programmeName.localeCompare(b.programmeName)),
       completed,
     };
   }, [classSearch, filteredClassSummaries]);
+
+  const expiringModuleSummaries = useMemo<ExpiringModuleSummary[]>(() => {
+    const items: ExpiringModuleSummary[] = [];
+    groups.forEach((grp, groupIdx) => {
+      grp.rows.forEach((row, rowIdx) => {
+        const selectedHolidayIds = new Set(row.holidayIds || []);
+        const rowHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
+        row.blks.forEach(blk => {
+          const plan = getHolidayPlan(blk, rowHolidays);
+          const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays, plan);
+          if (sessionSummary.isFinished) return;
+          const displayEndDate = sessionSummary.effectiveEndDate || blk.endDate;
+          const warning = getModuleExpiryWarning(displayEndDate, currentDate);
+          if (!warning) return;
+          items.push({
+            key: `${grp.id}|${row.id}|${blk.id}`,
+            groupIdx,
+            rowIdx,
+            blockId: blk.id,
+            moduleName: getBlockDisplayName(blk, customModules),
+            programmeName: grp.name.replace('\n', ' '),
+            cohortName: row.label,
+            className: (blk.groupName || row.label || 'Unnamed class').trim(),
+            startDate: blk.startDate,
+            endDate: displayEndDate,
+            targetDate: displayEndDate,
+            color: blk.color || row.color || grp.color,
+            warning,
+          });
+        });
+      });
+    });
+    return items.sort((a, b) =>
+      a.warning.daysRemaining - b.warning.daysRemaining ||
+      a.endDate.localeCompare(b.endDate) ||
+      a.moduleName.localeCompare(b.moduleName)
+    );
+  }, [catalogModules, currentDate, customModules, getHolidayPlan, groups, holidays]);
+
+  const navigateToExpiringModule = useCallback((item: ExpiringModuleSummary) => {
+    setNotificationsOpen(false);
+    setClassesOpen(false);
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      const groupId = groups[item.groupIdx]?.id;
+      if (groupId) next.delete(groupId);
+      return next;
+    });
+
+    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    setFocusedTimelineTarget({ rowKey, blockId: item.blockId });
+
+    const [year, month, day] = item.targetDate.split('-').map(Number);
+    const target = new Date(year || 1970, (month || 1) - 1, day || 1);
+    if (!Number.isNaN(target.getTime())) {
+      let nextWindow: { start: Date; end: Date };
+      if (zoom === 'week') {
+        nextWindow = getNormalizedWeekWindow(target);
+      } else if (zoom === 'day') {
+        nextWindow = { start: shiftDateByDays(target, -14), end: shiftDateByDays(target, 28) };
+      } else if (zoom === 'month') {
+        nextWindow = { start: new Date(target.getFullYear(), 0, 1), end: new Date(target.getFullYear(), 11, 31) };
+      } else if (zoom === 'intake') {
+        const intakeStartMonth = Math.floor(target.getMonth() / 4) * 4;
+        nextWindow = { start: new Date(target.getFullYear(), intakeStartMonth, 1), end: new Date(target.getFullYear(), intakeStartMonth + 4, 0) };
+      } else {
+        nextWindow = { start: new Date(target.getFullYear(), 0, 1), end: new Date(target.getFullYear(), 11, 31) };
+      }
+      setViewWindow(nextWindow);
+    }
+
+    setPendingTimelineNavigation({ rowKey, targetDate: item.targetDate });
+    window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === item.blockId ? null : prev), 2200);
+  }, [groups, zoom]);
 
   const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
     setLastClassSelection({ classKey: item.key, moduleKey });
@@ -2170,9 +2605,18 @@ export default function GanttTimeline({
   ) => {
     const rowTargetKey = `${groupIdx}-${rowIdx}`;
     const isFocusedModule = focusedTimelineTarget?.rowKey === rowTargetKey && focusedTimelineTarget.blockId === blk.id;
-    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, activeHolidays);
-    const displayEndDate = sessionSummary.effectiveEndDate || blk.endDate;
-    const pos = getBlockPosition(blk.startDate, displayEndDate, cols);
+    const activeDateDrag = moduleDateDrag?.groupIdx === groupIdx && moduleDateDrag.rowIdx === rowIdx && moduleDateDrag.blockId === blk.id ? moduleDateDrag : null;
+    const renderBlk = activeDateDrag?.deltaDays
+      ? {
+          ...blk,
+          startDate: shiftIsoDate(activeDateDrag.originalStartDate, activeDateDrag.deltaDays),
+          endDate: shiftIsoDate(activeDateDrag.originalEndDate, activeDateDrag.deltaDays),
+        }
+      : blk;
+    const holidayPlan = getHolidayPlan(renderBlk, activeHolidays);
+    const sessionSummary = getCurrentSessionSummary(renderBlk, customModules, catalogModules, activeHolidays, holidayPlan);
+    const displayEndDate = sessionSummary.effectiveEndDate || renderBlk.endDate;
+    const pos = getBlockPosition(renderBlk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
       ? nextIsoDate(sessionSummary.baselineEndDate)
@@ -2187,7 +2631,7 @@ export default function GanttTimeline({
         }
       : null;
     const mod = resolveBlockMeta(blk, customModules);
-    const extensionPlan = extensionStyle ? buildHolidayAdjustedSessionPlan(blk, activeHolidays) : null;
+    const extensionPlan = extensionStyle ? holidayPlan : null;
     const extensionWeeks = Math.max(1, Math.round((sessionSummary.extensionDays || 0) / 7));
     const extensionReasons = extensionPlan
       ? Array.from(new Set(extensionPlan.skippedSessions.flatMap(session =>
@@ -2196,7 +2640,7 @@ export default function GanttTimeline({
           )
         )))
       : [];
-    const overlaps = activeHolidays.filter(holiday => rangesOverlap(blk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
+    const overlaps = activeHolidays.filter(holiday => rangesOverlap(renderBlk.startDate, displayEndDate, holiday.startDate, holiday.endDate));
     const tutorConflictMarkers = (rowClashMarkers[groupIdx]?.[rowIdx] || []).filter(marker => (
       marker.type === 'Tutor conflict'
       && marker.modules.includes(mod.lbl)
@@ -2205,7 +2649,7 @@ export default function GanttTimeline({
     const hasTutorConflict = !sessionSummary.isFinished && tutorConflictMarkers.length > 0;
     const coachLabel = (blk.coachName || '').trim();
     const tutorLabel = (blk.tutor || '').trim();
-    const coverageItems = getBlockCoverageItems(blk, tutorProfiles, activeHolidays);
+    const coverageItems = getBlockCoverageItems(renderBlk, tutorProfiles, activeHolidays, holidayPlan);
     const firstCoverage = coverageItems[0];
     const coverageMarkers = coverageItems.map(item => {
       const datePos = getBlockPosition(item.date, item.date, cols);
@@ -2218,6 +2662,7 @@ export default function GanttTimeline({
     const personLabel = tutorLabel || coachLabel;
     const personRole = tutorLabel ? 'Tutor' : coachLabel ? 'Coach' : '';
     const showPerson = pos.width > 78 && Boolean(personLabel);
+    const expiryWarning = sessionSummary.isFinished ? null : getModuleExpiryWarning(displayEndDate, currentDate);
     const sessionLabel = sessionSummary.isFinished
       ? 'Finished'
       : sessionSummary.total === 0
@@ -2238,7 +2683,7 @@ export default function GanttTimeline({
       setBadgeTip({ ...data, x: event.clientX, y: event.clientY });
     };
     const moveBadgeTip = (event: ReactMouseEvent) => {
-      setBadgeTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+      scheduleFloatingTipMove('badge', event.clientX, event.clientY);
     };
     const showCoverageTip = (event: ReactMouseEvent) => {
       event.stopPropagation();
@@ -2286,12 +2731,33 @@ export default function GanttTimeline({
         y: event.clientY,
       });
     };
+    const startModuleDateDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!canManageCohorts || !onMoveModuleDates || event.button !== 0) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest('button,[role="button"]')) return;
+      event.stopPropagation();
+      setTooltip(null);
+      setBadgeTip(null);
+      setClashTip(null);
+      setExtensionTip(null);
+      setTutorConflictTip(null);
+      suppressModuleClickRef.current = false;
+      setModuleDateDrag({
+        groupIdx,
+        rowIdx,
+        blockId: blk.id,
+        startX: event.clientX,
+        deltaDays: 0,
+        originalStartDate: blk.startDate,
+        originalEndDate: blk.endDate,
+      });
+    };
 
     return (
       <div
         key={blk.id}
         data-timeline-block-id={blk.id}
-        className={`absolute z-10 cursor-pointer transition-all ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
+        className={`absolute z-10 cursor-grab transition-all active:cursor-grabbing ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
         style={{
           left: pos.left,
           width: pos.width,
@@ -2304,17 +2770,24 @@ export default function GanttTimeline({
           boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : undefined,
           display: 'flex',
           alignItems: 'center',
+          opacity: activeDateDrag ? 0.9 : 1,
         }}
+        onPointerDown={startModuleDateDrag}
         onMouseEnter={e => {
+          if (moduleDateDrag) return;
           setClashTip(null);
           setExtensionTip(null);
-          setTooltip({ blk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
+          setTooltip({ blk: renderBlk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, holidayPlan, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
         }}
         onMouseLeave={() => {
           setTooltip(null);
         }}
-        onMouseMove={e => { if (tooltip) setTooltip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null); }}
+        onMouseMove={e => scheduleFloatingTipMove('tooltip', e.clientX, e.clientY)}
         onClick={() => {
+          if (suppressModuleClickRef.current || activeDateDrag) {
+            suppressModuleClickRef.current = false;
+            return;
+          }
           if (!canManageCohorts) {
             return;
           }
@@ -2352,7 +2825,10 @@ export default function GanttTimeline({
           <div
             className="absolute inset-y-0"
             onMouseEnter={showExtensionTip}
-            onMouseMove={showExtensionTip}
+            onMouseMove={event => {
+              event.stopPropagation();
+              scheduleFloatingTipMove('extension', event.clientX, event.clientY);
+            }}
             onMouseLeave={() => setExtensionTip(null)}
             style={{
               left: extensionStyle.left,
@@ -2390,7 +2866,7 @@ export default function GanttTimeline({
               </div>
               {showStackedSessionProgress && (
                 <span
-                  title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                  title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                   style={{
                     color: mod.tx,
                     fontSize: '9px',
@@ -2407,7 +2883,7 @@ export default function GanttTimeline({
             </div>
 
             {/* Dates */}
-            {pos.width > 180 && blk.startDate && displayEndDate && (
+            {pos.width > 180 && renderBlk.startDate && displayEndDate && (
               <span
                 style={{
                   color: mod.tx,
@@ -2424,11 +2900,37 @@ export default function GanttTimeline({
                   marginLeft: 2,
                 }}
               >
-                {formatDateShort(blk.startDate)} → {formatDateShort(displayEndDate)}
+                {formatDateShort(renderBlk.startDate)} → {formatDateShort(displayEndDate)}
               </span>
             )}
 
           </div>
+        )}
+        {expiryWarning && (
+          <span
+            className="absolute bottom-1 right-1 z-[8] flex items-center gap-1 rounded px-1.5 py-px shadow-sm"
+            title={expiryWarning.title}
+            style={{
+              background: '#FEF3C7',
+              color: '#92400E',
+              border: '1px solid rgba(245,158,11,0.42)',
+              fontSize: pos.width > 108 ? '8px' : '0',
+              fontWeight: 900,
+              lineHeight: 1.15,
+              maxWidth: Math.max(22, pos.width - 10),
+            }}
+          >
+            <i className="ri-alert-line" style={{ fontSize: '11px', lineHeight: 1 }} />
+            {pos.width > 108 && <span className="truncate">{expiryWarning.label}</span>}
+          </span>
+        )}
+        {activeDateDrag && activeDateDrag.deltaDays !== 0 && (
+          <span
+            className="absolute -top-5 left-1/2 z-[12] -translate-x-1/2 rounded-full bg-kbc-navy px-2 py-0.5 text-[10px] font-extrabold text-white shadow"
+            title="Release to save the new module dates"
+          >
+            {activeDateDrag.deltaDays > 0 ? '+' : ''}{activeDateDrag.deltaDays}d
+          </span>
         )}
         {sessionSummary.isFinished && pos.width > 112 && (
           <span
@@ -2451,7 +2953,7 @@ export default function GanttTimeline({
             key={`coverage-marker-${blk.id}-${item.sessionNumber}`}
             className="absolute -top-1 flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border shadow-sm"
             onMouseEnter={showCoverageTip}
-            onMouseMove={showCoverageTip}
+            onMouseMove={moveBadgeTip}
             onMouseLeave={() => setBadgeTip(null)}
             onClick={event => event.stopPropagation()}
             style={{
@@ -2495,7 +2997,7 @@ export default function GanttTimeline({
                 }}
                 onMouseMove={event => {
                   event.stopPropagation();
-                  moveBadgeTip(event);
+                  scheduleFloatingTipMove('badge', event.clientX, event.clientY);
                 }}
                 onMouseLeave={() => setBadgeTip(null)}
               >
@@ -2557,10 +3059,97 @@ export default function GanttTimeline({
           )}
             <div className="relative">
               <button
+                ref={notificationsButtonRef}
+                type="button"
+                onClick={() => {
+                  updateNotificationsPopupPosition();
+                  setClassesOpen(false);
+                  setNotificationsOpen(prev => !prev);
+                }}
+                className={`relative h-8 w-9 flex items-center justify-center rounded-lg border cursor-pointer transition-all text-xs font-bold ${
+                  expiringModuleSummaries.length
+                    ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                }`}
+                title="Modules ending within 14 days"
+                aria-label="Modules ending within 14 days"
+              >
+                <i className={expiringModuleSummaries.length ? 'ri-notification-3-fill text-sm' : 'ri-notification-3-line text-sm'} />
+                {expiringModuleSummaries.length > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-600 px-1 text-[9px] font-extrabold leading-none text-white shadow-sm">
+                    {expiringModuleSummaries.length > 99 ? '99+' : expiringModuleSummaries.length}
+                  </span>
+                )}
+              </button>
+              {notificationsOpen && typeof document !== 'undefined' && createPortal(
+                <div
+                  ref={notificationsPopupRef}
+                  className="fixed z-[160] flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl ring-1 ring-slate-900/5"
+                  style={{
+                    left: notificationsPopupPosition.left,
+                    top: notificationsPopupPosition.top,
+                    width: notificationsPopupPosition.width,
+                    maxHeight: notificationsPopupPosition.maxHeight,
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold text-kbc-navy">Ending Soon</p>
+                      <p className="text-[11px] font-semibold text-gray-400">
+                        {expiringModuleSummaries.length} module{expiringModuleSummaries.length === 1 ? '' : 's'} ending within 14 days
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => setNotificationsOpen(false)} className="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                      <i className="ri-close-line" />
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto p-2">
+                    {expiringModuleSummaries.length ? (
+                      <div className="space-y-1.5">
+                        {expiringModuleSummaries.map(item => (
+                          <button
+                            key={item.key}
+                            type="button"
+                            onClick={() => navigateToExpiringModule(item)}
+                            className="flex w-full items-start gap-2 rounded-lg border border-transparent px-2.5 py-2 text-left transition-all hover:border-amber-100 hover:bg-amber-50/70"
+                          >
+                            <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: item.color }} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-extrabold text-gray-800">{item.moduleName}</span>
+                              <span className="mt-0.5 block truncate text-[11px] font-semibold text-gray-500">
+                                {item.programmeName} / {item.cohortName}
+                              </span>
+                              <span className="mt-0.5 block truncate text-[10px] font-semibold text-gray-400">
+                                {item.className} / {formatDateShort(item.startDate)} to {formatDateShort(item.endDate)}
+                              </span>
+                            </span>
+                            <span
+                              title={item.warning.title}
+                              className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800"
+                            >
+                              {item.warning.daysRemaining === 0 ? 'Today' : `${item.warning.daysRemaining}d`}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="px-3 py-8 text-center">
+                        <i className="ri-notification-off-line text-2xl text-gray-300" />
+                        <p className="mt-2 text-xs font-semibold text-gray-400">No modules ending in the next 14 days.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>,
+                document.body,
+              )}
+            </div>
+            <div className="relative">
+              <button
                 ref={classesButtonRef}
                 type="button"
                 onClick={() => {
                   updateClassesPopupPosition();
+                  setNotificationsOpen(false);
                   setClassesOpen(prev => !prev);
                 }}
                 className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
@@ -2627,6 +3216,7 @@ export default function GanttTimeline({
                           </div>
                           </button>
                           <div className="flex shrink-0 items-center gap-1">
+                            {programme.expiryWarningCount > 0 && <span title="Modules ending within 14 days" className="rounded-full bg-amber-50 px-1.5 py-px text-[9px] font-extrabold text-amber-700">{programme.expiryWarningCount} Due</span>}
                             {programme.issueCount > 0 && <span className="rounded-full bg-amber-50 px-1.5 py-px text-[9px] font-extrabold text-amber-700">{programme.issueCount}</span>}
                             <button
                               type="button"
@@ -2641,7 +3231,12 @@ export default function GanttTimeline({
                         {!isProgrammeCollapsed && (
                         <div className="ml-3 space-y-1 border-l border-slate-200 py-1 pl-3">
                           {programme.items.map(item => {
-                            const sortedModules = [...item.moduleBreakdown].sort((a, b) => b.clashCount - a.clashCount || Number(a.isFinished) - Number(b.isFinished) || a.label.localeCompare(b.label));
+                            const sortedModules = [...item.moduleBreakdown].sort((a, b) =>
+                              Number(Boolean(b.expiryWarning)) - Number(Boolean(a.expiryWarning)) ||
+                              b.clashCount - a.clashCount ||
+                              Number(a.isFinished) - Number(b.isFinished) ||
+                              a.label.localeCompare(b.label)
+                            );
                             const visibleModules = sortedModules.slice(0, 4);
                             const isSelectedClass = lastClassSelection?.classKey === item.key && !lastClassSelection.moduleKey;
                             return (
@@ -2658,6 +3253,7 @@ export default function GanttTimeline({
                                     {isSelectedClass && <p className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-kbc-navy">Last selected</p>}
                                   </button>
                                   <div className="flex shrink-0 flex-wrap justify-end gap-0.5">
+                                    {item.expiryWarningCount > 0 && <span title="Modules ending within 14 days" className="rounded-full bg-amber-50 px-1.5 py-px text-[9px] font-extrabold text-amber-700">{item.expiryWarningCount} Due</span>}
                                     {item.holidayClashCount > 0 && <span title="Holiday clashes: sessions blocked by holiday weeks" className="rounded-full bg-red-50 px-1.5 py-px text-[9px] font-extrabold text-red-700">{item.holidayClashCount} H</span>}
                                     {item.replacementClashCount > 0 && <span title="Replacement clashes: replacement sessions also hit a holiday week" className="rounded-full bg-orange-50 px-1.5 py-px text-[9px] font-extrabold text-orange-700">{item.replacementClashCount} R</span>}
                                     {item.tutorConflictCount > 0 && <span title="Tutor conflicts: same tutor booked at the same time" className="rounded-full bg-violet-50 px-1.5 py-px text-[9px] font-extrabold text-violet-700">{item.tutorConflictCount} T</span>}
@@ -2683,6 +3279,7 @@ export default function GanttTimeline({
                                             {isSelectedModule && <p className="text-[9px] font-extrabold uppercase tracking-wide text-kbc-navy">Last selected</p>}
                                           </div>
                                           <div className="flex shrink-0 items-center gap-1">
+                                            {moduleItem.expiryWarning && <span title={moduleItem.expiryWarning.title} className="rounded-full bg-amber-100 px-1.5 py-px text-[9px] font-extrabold text-amber-800">{moduleItem.expiryWarning.daysRemaining === 0 ? 'Today' : `${moduleItem.expiryWarning.daysRemaining}d`}</span>}
                                             {moduleItem.holidayClashCount > 0 && <span title="Holiday clashes: sessions blocked by holiday weeks" className="rounded-full bg-red-100 px-1.5 py-px text-[9px] font-extrabold text-red-700">{moduleItem.holidayClashCount}H</span>}
                                             {moduleItem.replacementClashCount > 0 && <span title="Replacement clashes: replacement sessions also hit a holiday week" className="rounded-full bg-orange-100 px-1.5 py-px text-[9px] font-extrabold text-orange-700">{moduleItem.replacementClashCount}R</span>}
                                             {moduleItem.tutorConflictCount > 0 && <span title="Tutor conflicts: same tutor booked at the same time" className="rounded-full bg-violet-100 px-1.5 py-px text-[9px] font-extrabold text-violet-700">{moduleItem.tutorConflictCount}T</span>}
@@ -2843,7 +3440,7 @@ export default function GanttTimeline({
                 cursor: 'default',
               }}
               onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
-              onMouseMove={e => setHolidayTip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null)}
+              onMouseMove={e => scheduleFloatingTipMove('holiday', e.clientX, e.clientY)}
               onMouseLeave={() => setHolidayTip(null)}
             />
           ))}
@@ -2909,7 +3506,7 @@ export default function GanttTimeline({
                   }}
                   onMouseMove={event => {
                     event.stopPropagation();
-                    setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+                    scheduleFloatingTipMove('tutorConflict', event.clientX, event.clientY);
                   }}
                   onMouseLeave={event => {
                     event.stopPropagation();
@@ -2924,6 +3521,7 @@ export default function GanttTimeline({
             const isCollapsed = collapsedGroups.has(grp.id);
             const isGroupDragOver = dragOver?.type === 'group' && dragOver.groupIdx === gi;
             const isFocusedProgramme = focusedTimelineTarget?.groupIdx === gi && !focusedTimelineTarget.rowKey;
+            const programmeMetrics = virtualProgrammeMetrics[gi];
             return (
             <div
               key={grp.id}
@@ -3032,14 +3630,35 @@ export default function GanttTimeline({
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
               {!isCollapsed && grp.rows.map((row, ri) => {
-                const group = extractGroup(row.label);
                 const rowColor = row.color || grp.color;
                 const tunnelBg = `${grp.color}0D`;
-                const selectedHolidayIds = new Set(row.holidayIds || []);
-                const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
-                const ganttRows = buildGanttRows(row.blks, rowHolidays);
-                const totalModuleH = ganttRows.reduce((s, r) => s + rowHeight(r), 0);
                 const rowTargetKey = `${gi}-${ri}`;
+                const rowMetrics = programmeMetrics?.rows[ri];
+                const rowHolidays = rowMetrics?.rowHolidays || [];
+                const ganttRows = rowMetrics?.ganttRows || [];
+                const totalModuleH = rowMetrics?.totalModuleH || 0;
+                const rowHeightPx = rowMetrics?.height || (COHORT_H + (totalModuleH || MODULE_H));
+                const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
+                const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
+                const isFocusedRow = focusedTimelineTarget?.rowKey === rowTargetKey || pendingTimelineNavigation?.rowKey === rowTargetKey;
+                const isRowInVirtualWindow = !shouldVirtualizeRows
+                  ? true
+                  : rowMetrics
+                    ? rowMetrics.bottom >= virtualViewport.top && rowMetrics.top <= virtualViewport.bottom
+                    : true;
+                if (!isRowInVirtualWindow && !isFocusedRow && !isCohortDragOver) {
+                  return (
+                    <div
+                      key={row.id}
+                      data-row-target={rowTargetKey}
+                      style={{
+                        height: rowHeightPx,
+                        borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '18' : '0F'}`,
+                        background: `${grp.color}08`,
+                      }}
+                    />
+                  );
+                }
                 const barPad = 5;
                 const moduleLayouts = (() => {
                   const layouts: { blk: ModuleBlock; top: number; height: number; centerY: number }[] = [];
@@ -3061,11 +3680,11 @@ export default function GanttTimeline({
                 const tutorConflictConnectors = (() => {
                   const tutorSessions: { blk: ModuleBlock; date: string; startTime: string; endTime: string; tutor: string }[] = [];
                   row.blks.forEach(blk => {
-                    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays);
+                    const plan = getHolidayPlan(blk, rowHolidays);
+                    const sessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays, plan);
                     if (sessionSummary.isFinished) return;
                     const tutors = splitPeople(blk.tutor || '').map(tutor => tutor.toLowerCase());
                     if (!tutors.length) return;
-                    const plan = buildHolidayAdjustedSessionPlan(blk, rowHolidays);
                     plan.sessions.filter(session => !session.isClash).forEach(session => {
                       const startTime = blk.sessionStartTime || '09:00';
                       const endTime = blk.sessionEndTime || '11:00';
@@ -3090,69 +3709,61 @@ export default function GanttTimeline({
                   }[] = [];
                   const seenConnectors = new Set<string>();
 
-                  for (let i = 0; i < tutorSessions.length; i += 1) {
-                    for (let j = i + 1; j < tutorSessions.length; j += 1) {
-                      const a = tutorSessions[i];
-                      const b = tutorSessions[j];
-                      if (a.blk.id === b.blk.id) continue;
-                      if (a.date !== b.date || a.tutor !== b.tutor) continue;
-                      if (!timeRangesOverlap(a.startTime, a.endTime, b.startTime, b.endTime)) continue;
-                      const [firstId, secondId] = [a.blk.id, b.blk.id].sort();
-                      const connectorKey = `${a.tutor}|${firstId}|${secondId}`;
-                      if (seenConnectors.has(connectorKey)) continue;
-                      seenConnectors.add(connectorKey);
-                      const datePos = getBlockPosition(a.date, a.date, cols);
-                      if (!datePos) continue;
-                      const points = [a, b]
-                        .map(entry => {
-                          const layout = moduleLayoutById.get(entry.blk.id);
-                          const moduleName = getBlockDisplayName(entry.blk, customModules);
-                          return layout ? {
-                            y: layout.centerY,
-                            entry: {
-                              moduleName,
-                              moduleColor: resolveBlockMeta(entry.blk, customModules).bg || '#64748B',
-                              programmeName: grp.name.replace('\n', ' '),
-                              cohortName: row.label,
-                              className: (entry.blk.groupName || row.label || 'Unassigned').trim(),
-                              startTime: entry.startTime,
-                              endTime: entry.endTime,
-                              position: 'same row',
-                            } as TutorConflictEntry,
-                          } : null;
-                        })
-                        .filter((point): point is { y: number; entry: TutorConflictEntry } => Boolean(point));
-                      if (points.length < 2) continue;
-                      const ys = points.map(point => point.y);
-                      const entries = points.map(point => ({
-                        ...point.entry,
-                        position: point.y === Math.min(...ys) ? 'upper' : 'lower',
-                      } as TutorConflictEntry));
-                      connectors.push({
-                        key: `${rowTargetKey}-tutor-conflict-${connectorKey}`,
-                        x: getDateCenter(datePos),
-                        top: Math.min(...ys),
-                        bottom: Math.max(...ys),
-                        labels: entries.map(entry => entry.moduleName),
-                        date: a.date,
-                        tutor: a.tutor,
-                        color: tutorConflictColorMap.get(connectorKey) || tutorConflictColor(connectorKey),
-                        points: points.map((point, pointIndex) => ({ ...point, entry: entries[pointIndex] })),
-                        entries,
-                      });
-                    }
-                  }
+                  forEachOverlappingTutorSessionPair(tutorSessions, (a, b) => {
+                    if (a.blk.id === b.blk.id) return;
+                    const [firstId, secondId] = [a.blk.id, b.blk.id].sort();
+                    const connectorKey = `${a.tutor}|${firstId}|${secondId}`;
+                    if (seenConnectors.has(connectorKey)) return;
+                    seenConnectors.add(connectorKey);
+                    const datePos = getBlockPosition(a.date, a.date, cols);
+                    if (!datePos) return;
+                    const points = [a, b]
+                      .map(entry => {
+                        const layout = moduleLayoutById.get(entry.blk.id);
+                        const moduleName = getBlockDisplayName(entry.blk, customModules);
+                        return layout ? {
+                          y: layout.centerY,
+                          entry: {
+                            moduleName,
+                            moduleColor: resolveBlockMeta(entry.blk, customModules).bg || '#64748B',
+                            programmeName: grp.name.replace('\n', ' '),
+                            cohortName: row.label,
+                            className: (entry.blk.groupName || row.label || 'Unassigned').trim(),
+                            startTime: entry.startTime,
+                            endTime: entry.endTime,
+                            position: 'same row',
+                          } as TutorConflictEntry,
+                        } : null;
+                      })
+                      .filter((point): point is { y: number; entry: TutorConflictEntry } => Boolean(point));
+                    if (points.length < 2) return;
+                    const ys = points.map(point => point.y);
+                    const entries = points.map(point => ({
+                      ...point.entry,
+                      position: point.y === Math.min(...ys) ? 'upper' : 'lower',
+                    } as TutorConflictEntry));
+                    connectors.push({
+                      key: `${rowTargetKey}-tutor-conflict-${connectorKey}`,
+                      x: getDateCenter(datePos),
+                      top: Math.min(...ys),
+                      bottom: Math.max(...ys),
+                      labels: entries.map(entry => entry.moduleName),
+                      date: a.date,
+                      tutor: a.tutor,
+                      color: tutorConflictColorMap.get(connectorKey) || tutorConflictColor(connectorKey),
+                      points: points.map((point, pointIndex) => ({ ...point, entry: entries[pointIndex] })),
+                      entries,
+                    });
+                  });
 
                   return connectors;
                 })();
 
-                const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
                 const cohortDropShadow = isCohortDragOver
                   ? dragOver.position === 'after'
                     ? `inset 0 -2px 0 ${rowColor}`
                     : `inset 0 2px 0 ${rowColor}`
                   : undefined;
-                const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
 
                 return (
                   <div
@@ -3357,7 +3968,7 @@ export default function GanttTimeline({
                                 }}
                                 onMouseMove={event => {
                                   event.stopPropagation();
-                                  setTutorConflictTip(prev => prev ? { ...prev, x: event.clientX, y: event.clientY } : null);
+                                  scheduleFloatingTipMove('tutorConflict', event.clientX, event.clientY);
                                 }}
                                 onMouseLeave={event => {
                                   event.stopPropagation();
@@ -3413,7 +4024,7 @@ export default function GanttTimeline({
         </div>
       </div>
 
-      {tooltip && <ModuleTooltip data={tooltip} onClose={() => setTooltip(null)} />}
+      {tooltip && <ModuleTooltip data={tooltip} currentDate={currentDate} onClose={() => setTooltip(null)} />}
       {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
       {badgeTip && <BadgeTooltip data={badgeTip} />}
       {extensionTip && <ExtensionTooltip data={extensionTip} />}
