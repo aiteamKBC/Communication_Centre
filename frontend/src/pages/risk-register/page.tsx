@@ -50,6 +50,14 @@ function normalize(value: string): string {
   return (value || '').trim().toLowerCase();
 }
 
+function ragKey(rag: string): 'R' | 'A' | 'G' | '?' {
+  const value = normalize(rag);
+  if (value === 'r' || value === 'red') return 'R';
+  if (value === 'a' || value === 'amber') return 'A';
+  if (value === 'g' || value === 'green') return 'G';
+  return '?';
+}
+
 function titleCase(value: string): string {
   const clean = (value || '').trim();
   if (!clean) return '-';
@@ -131,7 +139,7 @@ function typeTone(type: string): Tone {
 }
 
 function ragStyle(rag: string): { bg: string; color: string; label: string } {
-  switch (rag?.toUpperCase()) {
+  switch (ragKey(rag)) {
     case 'R': return { bg: '#FEE2E2', color: '#DC2626', label: 'Red' };
     case 'A': return { bg: '#FEF3C7', color: '#D97706', label: 'Amber' };
     case 'G': return { bg: '#D1FAE5', color: '#059669', label: 'Green' };
@@ -420,7 +428,7 @@ export default function RiskRegisterPage() {
   const ragCounts = useMemo(() => {
     const counts = { R: 0, A: 0, G: 0, '?': 0 };
     risks.forEach(risk => {
-      const key = risk.rag?.toUpperCase();
+      const key = ragKey(risk.rag);
       if (key === 'R' || key === 'A' || key === 'G') counts[key]++;
       else counts['?']++;
     });

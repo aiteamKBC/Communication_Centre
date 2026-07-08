@@ -6590,7 +6590,7 @@ def serialize_risk(r: RiskRegisterItem) -> dict:
 def risk_register(request):
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
-	if _is_local_request(request):
+	if _is_local_request(request) and 'ofsted_db' not in settings.DATABASES:
 		return JsonResponse([], safe=False)
 	try:
 		records = RiskRegisterItem.objects.using('ofsted_db').order_by('id')
