@@ -6,7 +6,6 @@ import QuickActions from './components/QuickActions';
 import NewsFeed from './components/NewsFeed';
 import TodaysSessions, { type TrainingItem } from './components/TodaysSessions';
 import PrioritySnapshot from './components/PrioritySnapshot';
-import RiskSummary from './components/RiskSummary';
 import EventsWidget from './components/EventsWidget';
 import { useSharedEvents } from '../../hooks/useSharedEvents';
 import type { NewsItem } from '../../mocks/news';
@@ -328,7 +327,6 @@ export default function Home() {
                 </div>
 
                 <div className="lg:col-span-6 flex flex-col gap-4">
-                  <RiskSummary />
                   <PrioritySnapshot />
                 </div>
 
