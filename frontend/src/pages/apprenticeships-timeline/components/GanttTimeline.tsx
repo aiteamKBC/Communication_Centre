@@ -1418,7 +1418,8 @@ export default function GanttTimeline({
     const left = Math.max(viewportPadding, rect.left);
     const right = Math.min(window.innerWidth - viewportPadding, rect.right);
     const width = Math.max(0, right - left);
-    const visible = el.scrollWidth > el.clientWidth + 1 && width > 64;
+    const timelineSpansViewportBottom = rect.top < window.innerHeight - 24 && rect.bottom > window.innerHeight + 24;
+    const visible = el.scrollWidth > el.clientWidth + 1 && width > 64 && timelineSpansViewportBottom;
 
     setFixedScrollbarBounds(prev => (
       prev.left === left && prev.width === width && prev.visible === visible
