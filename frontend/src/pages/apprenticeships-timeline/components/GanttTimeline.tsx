@@ -1135,6 +1135,7 @@ export default function GanttTimeline({
   const [fixedScrollbarBounds, setFixedScrollbarBounds] = useState({ left: 0, width: 0, visible: false });
   const [todayKey, setTodayKey] = useState(() => toLocalIsoDate(new Date()));
   const currentDate = useMemo(() => parseLocalDateOnly(todayKey) || new Date(), [todayKey]);
+  const ganttContainerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fixedScrollbarRef = useRef<HTMLDivElement>(null);
   const headerTrackRef = useRef<HTMLDivElement>(null);
@@ -1414,12 +1415,21 @@ export default function GanttTimeline({
     }
 
     const rect = el.getBoundingClientRect();
+    const containerRect = ganttContainerRef.current?.getBoundingClientRect();
+    const surfaceRect = timelineSurfaceRef.current?.getBoundingClientRect();
+    const ganttBottom = Math.min(
+      rect.bottom,
+      containerRect?.bottom ?? Number.POSITIVE_INFINITY,
+      surfaceRect?.bottom ?? Number.POSITIVE_INFINITY,
+    );
+    const footerTop = document.querySelector('footer')?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
     const viewportPadding = 8;
     const left = Math.max(viewportPadding, rect.left);
     const right = Math.min(window.innerWidth - viewportPadding, rect.right);
     const width = Math.max(0, right - left);
-    const timelineSpansViewportBottom = rect.top < window.innerHeight - 24 && rect.bottom > window.innerHeight + 24;
-    const visible = el.scrollWidth > el.clientWidth + 1 && width > 64 && timelineSpansViewportBottom;
+    const timelineSpansViewportBottom = rect.top < window.innerHeight - 24 && ganttBottom > window.innerHeight + 24;
+    const footerIsVisible = footerTop < window.innerHeight;
+    const visible = el.scrollWidth > el.clientWidth + 1 && width > 64 && timelineSpansViewportBottom && !footerIsVisible;
 
     setFixedScrollbarBounds(prev => (
       prev.left === left && prev.width === width && prev.visible === visible
@@ -3086,7 +3096,7 @@ export default function GanttTimeline({
   };
 
   return (
-    <div className="relative">
+    <div ref={ganttContainerRef} className="relative">
       {/* Zoom controls */}
       <div
         className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
