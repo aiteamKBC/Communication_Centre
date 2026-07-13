@@ -1132,11 +1132,14 @@ export default function GanttTimeline({
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
   const [virtualViewport, setVirtualViewport] = useState(() => ({ top: 0, bottom: typeof window === 'undefined' ? 900 : window.innerHeight }));
+  const [fixedScrollbarBounds, setFixedScrollbarBounds] = useState({ left: 0, width: 0, visible: false });
   const [todayKey, setTodayKey] = useState(() => toLocalIsoDate(new Date()));
   const currentDate = useMemo(() => parseLocalDateOnly(todayKey) || new Date(), [todayKey]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fixedScrollbarRef = useRef<HTMLDivElement>(null);
   const headerTrackRef = useRef<HTMLDivElement>(null);
   const headerScrollFrame = useRef<number | null>(null);
+  const fixedScrollbarSyncing = useRef(false);
   const panState = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; windowY: number } | null>(null);
   const timelineSurfaceRef = useRef<HTMLDivElement>(null);
   const classesButtonRef = useRef<HTMLButtonElement>(null);
@@ -1389,10 +1392,47 @@ export default function GanttTimeline({
     setDragOver(null);
   }, []);
 
+  const syncFixedScrollbarToTimeline = useCallback(() => {
+    const el = scrollRef.current;
+    const fixed = fixedScrollbarRef.current;
+    if (!el || !fixed || typeof window === 'undefined') return;
+    if (Math.abs(fixed.scrollLeft - el.scrollLeft) <= 1) return;
+
+    fixedScrollbarSyncing.current = true;
+    fixed.scrollLeft = el.scrollLeft;
+    window.requestAnimationFrame(() => {
+      fixedScrollbarSyncing.current = false;
+    });
+  }, []);
+
+  const updateFixedScrollbarBounds = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const el = scrollRef.current;
+    if (!el) {
+      setFixedScrollbarBounds(prev => prev.visible ? { ...prev, visible: false } : prev);
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    const viewportPadding = 8;
+    const left = Math.max(viewportPadding, rect.left);
+    const right = Math.min(window.innerWidth - viewportPadding, rect.right);
+    const width = Math.max(0, right - left);
+    const visible = el.scrollWidth > el.clientWidth + 1 && width > 64;
+
+    setFixedScrollbarBounds(prev => (
+      prev.left === left && prev.width === width && prev.visible === visible
+        ? prev
+        : { left, width, visible }
+    ));
+  }, []);
+
   const handleTimelineScroll = useCallback(() => {
     const el = scrollRef.current;
     const header = headerTrackRef.current;
     if (!el || !header) return;
+
+    syncFixedScrollbarToTimeline();
 
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
@@ -1402,7 +1442,15 @@ export default function GanttTimeline({
       header.style.transform = `translate3d(-${el.scrollLeft}px, 0, 0)`;
       headerScrollFrame.current = null;
     });
-  }, []);
+  }, [syncFixedScrollbarToTimeline]);
+
+  const handleFixedScrollbarScroll = useCallback(() => {
+    const el = scrollRef.current;
+    const fixed = fixedScrollbarRef.current;
+    if (!el || !fixed || fixedScrollbarSyncing.current) return;
+    el.scrollLeft = fixed.scrollLeft;
+    handleTimelineScroll();
+  }, [handleTimelineScroll]);
 
   const handleTimelineWheel = useCallback((event: WheelEvent) => {
     const el = scrollRef.current;
@@ -1536,6 +1584,32 @@ export default function GanttTimeline({
 
   const cols       = useMemo(() => generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end), [zoom, effectiveViewWindow]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
+
+  useEffect(() => {
+    updateFixedScrollbarBounds();
+
+    const el = scrollRef.current;
+    let resizeObserver: ResizeObserver | undefined;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(updateFixedScrollbarBounds);
+      resizeObserver.observe(el);
+    }
+
+    window.addEventListener('resize', updateFixedScrollbarBounds);
+    window.addEventListener('scroll', updateFixedScrollbarBounds, true);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateFixedScrollbarBounds);
+      window.removeEventListener('scroll', updateFixedScrollbarBounds, true);
+    };
+  }, [leftW, totalWidth, updateFixedScrollbarBounds]);
+
+  useEffect(() => {
+    if (fixedScrollbarBounds.visible) {
+      syncFixedScrollbarToTimeline();
+    }
+  }, [fixedScrollbarBounds.visible, leftW, syncFixedScrollbarToTimeline, totalWidth]);
+
   const pixelsPerDay = useMemo(() => {
     const first = cols[0];
     const last = cols[cols.length - 1];
@@ -4023,6 +4097,21 @@ export default function GanttTimeline({
         </div>
         </div>
       </div>
+
+      {fixedScrollbarBounds.visible && (
+        <div
+          className="training-plan-gantt-fixed-scrollbar"
+          style={{ left: fixedScrollbarBounds.left, width: fixedScrollbarBounds.width }}
+        >
+          <div
+            ref={fixedScrollbarRef}
+            className="training-plan-gantt-fixed-scrollbar-track"
+            onScroll={handleFixedScrollbarScroll}
+          >
+            <div style={{ width: totalWidth + leftW, height: 1 }} />
+          </div>
+        </div>
+      )}
 
       {tooltip && <ModuleTooltip data={tooltip} currentDate={currentDate} onClose={() => setTooltip(null)} />}
       {clashTip && <ClashTooltip marker={clashTip.marker} x={clashTip.x} y={clashTip.y} />}
