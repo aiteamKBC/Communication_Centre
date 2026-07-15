@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import * as XLSX from 'xlsx';
-import type { ChangeEvent, DragEvent } from 'react';
+import type { DragEvent } from 'react';
 import type { CatalogModule, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
@@ -170,108 +169,6 @@ function normalizeSessionKsbMappings(value: unknown, count = 0): SessionKsbMappi
       behaviourCodes: normalizeKsbCodes(record.behaviourCodes, 'B'),
     };
   });
-}
-
-function cellText(value: unknown): string {
-  return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function normalizeHeader(value: unknown): string {
-  return cellText(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
-function parseKsbCodeText(value: unknown, prefix: 'K' | 'S' | 'B'): string[] {
-  return normalizeKsbCodes(cellText(value).split(/[,\s|;]+/), prefix);
-}
-
-function parseMixedKsbCodeText(value: unknown): SessionKsbMapping {
-  const codes = (cellText(value).match(/[KSB]\s*\d+(?:\.\d+)*/gi) || []).map(code => code.replace(/\s+/g, ''));
-  return {
-    knowledgeCodes: normalizeKsbCodes(codes, 'K'),
-    skillCodes: normalizeKsbCodes(codes, 'S'),
-    behaviourCodes: normalizeKsbCodes(codes, 'B'),
-  };
-}
-
-function parseSessionKsbTemplateRows(rows: unknown[][], sessionCount: number): SessionKsbMapping[] {
-  const usefulRows = rows.filter(row => row.some(cell => cellText(cell)));
-  const headerRowIndex = usefulRows.findIndex(row => {
-    const headers = row.map(normalizeHeader);
-    return headers.some(header => ['session', 'sessionnumber', 'no', 'number'].includes(header)) &&
-      (
-        headers.some(header => ['knowledge', 'k', 'knowledgecodes'].includes(header)) ||
-        headers.some(header => ['exactksbcodescovered', 'exactksbcodes', 'ksbcodescovered', 'ksbcodes', 'codes'].includes(header))
-      );
-  });
-  const headers = headerRowIndex >= 0 ? usefulRows[headerRowIndex].map(normalizeHeader) : [];
-  const indexFor = (names: string[], fallback: number) => {
-    const index = headers.findIndex(header => names.includes(header));
-    return index >= 0 ? index : fallback;
-  };
-  const indexes = headerRowIndex >= 0
-    ? {
-        session: indexFor(['session', 'sessionnumber', 'no', 'number'], 0),
-        exactCodes: indexFor(['exactksbcodescovered', 'exactksbcodes', 'ksbcodescovered', 'ksbcodes', 'codes'], -1),
-        knowledge: indexFor(['knowledge', 'k', 'knowledgecodes'], 3),
-        skills: indexFor(['skills', 'skill', 's', 'skillcodes'], 4),
-        behaviours: indexFor(['behaviours', 'behaviour', 'behavior', 'behaviors', 'b', 'behaviourcodes', 'behaviorcodes'], 5),
-      }
-    : { session: 0, exactCodes: 2, knowledge: 3, skills: 4, behaviours: 5 };
-  const dataRows = headerRowIndex >= 0 ? usefulRows.slice(headerRowIndex + 1) : usefulRows;
-  const mappings = normalizeSessionKsbMappings([], sessionCount);
-
-  dataRows.forEach((row, rowIndex) => {
-    const sessionNumber = parseInt(cellText(row[indexes.session]), 10);
-    const index = Number.isFinite(sessionNumber) && sessionNumber > 0 ? sessionNumber - 1 : rowIndex;
-    if (index < 0 || index >= sessionCount) return;
-    mappings[index] = indexes.exactCodes >= 0
-      ? parseMixedKsbCodeText(row[indexes.exactCodes])
-      : {
-          knowledgeCodes: parseKsbCodeText(row[indexes.knowledge], 'K'),
-          skillCodes: parseKsbCodeText(row[indexes.skills], 'S'),
-          behaviourCodes: parseKsbCodeText(row[indexes.behaviours], 'B'),
-        };
-  });
-
-  return mappings;
-}
-
-function safeTemplateFileName(value: string, fallback: string): string {
-  const cleaned = value.trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-  return cleaned || fallback;
-}
-
-function downloadSessionKsbTemplate(
-  filenameBase: string,
-  sessionCount: number,
-  mappings: SessionKsbMapping[] = [],
-  sessionNames: string[] = [],
-) {
-  const normalizedMappings = normalizeSessionKsbMappings(mappings, sessionCount);
-  const rows = [
-    ['Session', 'Professional domain alignment', 'Exact KSB codes covered', 'Brief explanation of KSB alignment', 'Evidence generated'],
-    ...Array.from({ length: sessionCount }, (_, index) => {
-      const mapping = normalizedMappings[index] || emptySessionKsbMapping();
-      return [
-        index + 1,
-        sessionNames[index] || '',
-        [...mapping.knowledgeCodes, ...mapping.skillCodes, ...mapping.behaviourCodes].join(', '),
-        '',
-        '',
-      ];
-    }),
-  ];
-  const worksheet = XLSX.utils.aoa_to_sheet(rows);
-  worksheet['!cols'] = [
-    { wch: 10 },
-    { wch: 42 },
-    { wch: 34 },
-    { wch: 52 },
-    { wch: 44 },
-  ];
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Session KSB Mapping');
-  XLSX.writeFile(workbook, `${safeTemplateFileName(filenameBase, 'session-ksb')}-session-ksb-template.xlsx`);
 }
 
 function contrastColor(hex: string): string {
@@ -612,6 +509,7 @@ function KsbCodeInput({
   value,
   codeDescriptions = {},
   suggestions = [],
+  readOnly = false,
   onChange,
 }: {
   label: string;
@@ -620,6 +518,7 @@ function KsbCodeInput({
   value: string[];
   codeDescriptions?: Record<string, string>;
   suggestions?: KsbProfileCodeOption[];
+  readOnly?: boolean;
   onChange: (codes: string[]) => void;
 }) {
   const [draft, setDraft] = useState('');
@@ -654,6 +553,7 @@ function KsbCodeInput({
   }, [draft, focused, suggestions, value]);
 
   const addDraftCodes = () => {
+    if (readOnly) return;
     const parts = draft.split(/[,\s]+/).map(item => item.trim()).filter(Boolean);
     if (!parts.length) {
       setDraft('');
@@ -668,6 +568,7 @@ function KsbCodeInput({
   };
 
   const addSuggestedCode = (code: string) => {
+    if (readOnly) return;
     onChange(normalizeKsbCodes([...value, code], prefix));
     setDraft('');
     setError('');
@@ -683,40 +584,46 @@ function KsbCodeInput({
         <span>{label}</span>
       </label>
       <div className="relative">
-        <div className={`min-h-10 rounded-lg border bg-white px-2 py-1.5 transition-colors ${tone.border}`}>
+        <div className={`min-h-10 rounded-lg border bg-white px-2 py-1.5 transition-colors ${readOnly ? tone.border.replace('focus-within:', '') : tone.border}`}>
           <div className="flex flex-wrap items-center gap-1">
             {value.map(code => (
               <span key={code} title={codeDescriptions[code] || code} className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-extrabold leading-none ${tone.chip}`}>
                 {code}
-                <button type="button" aria-label={`Remove ${code}`} onClick={() => onChange(value.filter(item => item !== code))} className="text-current opacity-45 hover:opacity-100">
-                  <i className="ri-close-line text-[10px]" />
-                </button>
+                {!readOnly && (
+                  <button type="button" aria-label={`Remove ${code}`} onClick={() => onChange(value.filter(item => item !== code))} className="text-current opacity-45 hover:opacity-100">
+                    <i className="ri-close-line text-[10px]" />
+                  </button>
+                )}
               </span>
             ))}
-            <input
-              type="text"
-              value={draft}
-              onChange={e => {
-                setDraft(e.target.value.toUpperCase());
-                if (error) setError('');
-              }}
-              onFocus={() => setFocused(true)}
-              onBlur={() => {
-                setFocused(false);
-                addDraftCodes();
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' || e.key === ',') {
-                  e.preventDefault();
+            {readOnly ? (
+              value.length === 0 && <span className="px-1 py-0.5 text-xs font-semibold text-gray-300">None</span>
+            ) : (
+              <input
+                type="text"
+                value={draft}
+                onChange={e => {
+                  setDraft(e.target.value.toUpperCase());
+                  if (error) setError('');
+                }}
+                onFocus={() => setFocused(true)}
+                onBlur={() => {
+                  setFocused(false);
                   addDraftCodes();
-                }
-              }}
-              placeholder={value.length ? `Add ${prefix}...` : placeholder}
-              className="min-w-20 flex-1 bg-transparent px-1 py-0.5 text-xs font-semibold text-gray-700 placeholder:text-gray-300 focus:outline-none"
-            />
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault();
+                    addDraftCodes();
+                  }
+                }}
+                placeholder={value.length ? `Add ${prefix}...` : placeholder}
+                className="min-w-20 flex-1 bg-transparent px-1 py-0.5 text-xs font-semibold text-gray-700 placeholder:text-gray-300 focus:outline-none"
+              />
+            )}
           </div>
         </div>
-        {suggestionMatches.length > 0 && (
+        {!readOnly && suggestionMatches.length > 0 && (
           <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[170] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
             {suggestionMatches.map(option => (
               <button
@@ -756,6 +663,7 @@ function KsbSessionMappingRows({
   accentColor,
   codeDescriptions,
   profileCodes,
+  readOnly = false,
   onChange,
 }: {
   sessionCount: number;
@@ -764,6 +672,7 @@ function KsbSessionMappingRows({
   accentColor: string;
   codeDescriptions?: Record<string, string>;
   profileCodes?: Record<'K' | 'S' | 'B', KsbProfileCodeOption[]>;
+  readOnly?: boolean;
   onChange: (sessionIndex: number, field: KsbCodeField, codes: string[]) => void;
 }) {
   const normalizedMappings = normalizeSessionKsbMappings(mappings, sessionCount);
@@ -806,6 +715,7 @@ function KsbSessionMappingRows({
                 value={mapping.knowledgeCodes}
                 codeDescriptions={codeDescriptions}
                 suggestions={profileCodes?.K || []}
+                readOnly={readOnly}
                 onChange={codes => onChange(i, 'knowledgeCodes', codes)}
               />
               <KsbCodeInput
@@ -815,6 +725,7 @@ function KsbSessionMappingRows({
                 value={mapping.skillCodes}
                 codeDescriptions={codeDescriptions}
                 suggestions={profileCodes?.S || []}
+                readOnly={readOnly}
                 onChange={codes => onChange(i, 'skillCodes', codes)}
               />
               <KsbCodeInput
@@ -824,6 +735,7 @@ function KsbSessionMappingRows({
                 value={mapping.behaviourCodes}
                 codeDescriptions={codeDescriptions}
                 suggestions={profileCodes?.B || []}
+                readOnly={readOnly}
                 onChange={codes => onChange(i, 'behaviourCodes', codes)}
               />
             </div>
@@ -1092,6 +1004,8 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
       order.push(key);
     }
 
+    const catalogModule = resolveCatalogModuleForValue(block.mod, catalogModules, block.moduleCatalogueId);
+    const catalogMappings = normalizeSessionKsbMappings(catalogModule?.sessionKsbMappings || [], block.sessions);
     const blockMappings = normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions);
 
     grouped.get(key)!.modules.push({
@@ -1103,7 +1017,11 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
       startDate: block.startDate,
       endDate: block.endDate,
       sessions: block.sessions,
-      sessionKsbMappings: hasKsbCodes(blockMappings) ? blockMappings : normalizeSessionKsbMappings([], block.sessions),
+      sessionKsbMappings: hasKsbCodes(catalogMappings)
+        ? catalogMappings
+        : hasKsbCodes(blockMappings)
+          ? blockMappings
+          : normalizeSessionKsbMappings([], block.sessions),
       sessionCoverage: block.sessionCoverage || [],
       notes: block.notes || '',
       tutor: block.tutor || '',
@@ -1146,7 +1064,7 @@ export default function CohortModal({
       moduleCatalogueId: prefillCatalogModule?.id ? String(prefillCatalogModule.id) : undefined,
       color: prefillCatalogModule?.colour || prefillModuleMeta?.bg || '',
       sessions: sessionCount,
-      sessionKsbMappings: normalizeSessionKsbMappings([], sessionCount),
+      sessionKsbMappings: normalizeSessionKsbMappings(prefillCatalogModule?.sessionKsbMappings || [], sessionCount),
       tutor: prefillTutorProfile?.name || '',
       tutorProfileId: prefillTutorProfile?.id || '',
     };
@@ -1225,7 +1143,6 @@ export default function CohortModal({
   const [learnerSearch, setLearnerSearch] = useState('');
   const [learnerSort, setLearnerSort] = useState<LearnerSortMode>('selected');
   const [aptemDirty, setAptemDirty] = useState(false);
-  const ksbTemplateInputRef = useRef<HTMLInputElement | null>(null);
   const initialSnapshotRef = useRef(serializeDraftState(initialFormData, null, null));
   const groupDragItemRef = useRef<string | null>(null);
   const [groupDragOverId, setGroupDragOverId] = useState<string | null>(null);
@@ -1238,11 +1155,6 @@ export default function CohortModal({
   const programmeDates = parseProgrammeDates(selectedProgramme?.sub || '');
   const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
   const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
-  const [ksbMappingProfileId, setKsbMappingProfileId] = useState('');
-  const selectedKsbMappingProfile = useMemo(
-    () => ksbProfiles.find(profile => profile.id === ksbMappingProfileId),
-    [ksbMappingProfileId, ksbProfiles],
-  );
   const activeTutorProfiles = useMemo(() => tutorProfiles.filter(profile => profile.isActive), [tutorProfiles]);
   const coachOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1813,54 +1725,6 @@ export default function CohortModal({
       };
       return { ...prev, module: { ...prev.module, sessionKsbMappings: nextMappings } };
     });
-  };
-
-  const importModuleDraftKsbTemplate = async (file: File) => {
-    if (!moduleDraft) return;
-    try {
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
-      if (!worksheet) {
-        await kbcSwal.fire({ title: 'Empty template', html: 'The selected file does not contain a readable sheet.', icon: 'warning', confirmButtonText: 'OK' });
-        return;
-      }
-      const sessionCount = Math.max(1, Number(moduleDraft.module.sessions) || 1);
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '' });
-      const mappings = parseSessionKsbTemplateRows(rows, sessionCount);
-      const importedCodeCount = mappings.reduce(
-        (total, mapping) => total + mapping.knowledgeCodes.length + mapping.skillCodes.length + mapping.behaviourCodes.length,
-        0,
-      );
-      if (!importedCodeCount) {
-        await kbcSwal.fire({ title: 'No KSB mappings found', html: 'Use columns like Session, Knowledge, Skills, and Behaviours.', icon: 'info', confirmButtonText: 'OK' });
-        return;
-      }
-      markUserEdited();
-      setModuleDraftDirty(true);
-      setModuleDraft(prev => prev ? { ...prev, module: { ...prev.module, sessionKsbMappings: mappings } } : prev);
-      await kbcSwal.fire({ title: 'Template uploaded', html: `${importedCodeCount} KSB code${importedCodeCount === 1 ? '' : 's'} mapped from the template.`, icon: 'success', confirmButtonText: 'OK' });
-    } catch {
-      await kbcSwal.fire({ title: 'Could not read template', html: 'Please upload a valid Excel or CSV file.', icon: 'error', confirmButtonText: 'OK' });
-    }
-  };
-
-  const handleModuleDraftKsbTemplateChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (file) void importModuleDraftKsbTemplate(file);
-  };
-
-  const downloadModuleDraftKsbTemplate = () => {
-    if (!moduleDraft) return;
-    const sessionCount = Math.max(1, Number(moduleDraft.module.sessions) || 1);
-    const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules, moduleDraft.module.moduleCatalogueId);
-    downloadSessionKsbTemplate(
-      selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod) || 'module',
-      sessionCount,
-      moduleDraft.module.sessionKsbMappings,
-      selectedCatalogModule?.sessionNames || [],
-    );
   };
 
   const saveModuleDraft = async () => {
@@ -2850,8 +2714,12 @@ export default function CohortModal({
                       color: m.colour || '#4A6DB0',
                     })),
                   ];
-                  const sessionCount = Math.max(1, Number(moduleDraft.module.sessions) || 1);
-                  const ksbMappings = normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, sessionCount);
+                  const sessionCount = selectedCatalogModule
+                    ? Math.max(1, parseInt(selectedCatalogModule.sessions || '1', 10) || 1)
+                    : Math.max(1, Number(moduleDraft.module.sessions) || 1);
+                  const ksbMappings = selectedCatalogModule
+                    ? normalizeSessionKsbMappings(selectedCatalogModule.sessionKsbMappings || [], sessionCount)
+                    : normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, sessionCount);
                   const selectedTutorProfile = activeTutorProfiles.find(profile => profile.id === moduleDraft.module.tutorProfileId);
                   const legacyTutorName = moduleDraft.module.tutor.trim();
                   const legacyTutorId = legacyTutorName ? profileIdForTutorName(legacyTutorName, activeTutorProfiles) : '';
@@ -2922,7 +2790,7 @@ export default function CohortModal({
                                   ...prev,
                                   module: {
                                     ...prev.module,
-                                    sessionKsbMappings: normalizeSessionKsbMappings([], sessions),
+                                    sessionKsbMappings: normalizeSessionKsbMappings(selected.sessionKsbMappings || [], sessions),
                                   },
                                 } : prev);
                               } else {
@@ -3044,11 +2912,11 @@ export default function CohortModal({
                           <span className="flex items-center gap-2">
                             <span className="text-xs font-extrabold uppercase tracking-wider text-gray-800">Session KSB Mapping</span>
                             <span className="rounded-full px-2 py-0.5 text-[10px] font-extrabold" style={{ background: `${accentColor}12`, color: accentColor }}>
-                              Optional
+                              Read only
                             </span>
                           </span>
                           <span className="mt-1 block truncate text-[11px] font-medium text-gray-400">
-                            {mappedKsbCount > 0 ? `${mappedKsbCount} KSB code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'Map the KSBs covered by each session.'}
+                            {mappedKsbCount > 0 ? `${mappedKsbCount} KSB code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'No catalogue KSBs mapped.'}
                           </span>
                         </span>
                         <span className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-bold transition-colors group-hover:bg-gray-50" style={{ color: accentColor }}>
@@ -3286,11 +3154,13 @@ export default function CohortModal({
                 const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod) || 'Selected module';
                 const parentGroup = data.groups.find(group => group.id === moduleDraft.parentGroupId);
                 const accentColor = selectedCatalogModule?.colour || moduleDraft.module.color || parentGroup?.color || '#1B2A4A';
-                const sessionCount = Math.max(1, Number(moduleDraft.module.sessions) || 1);
-                const ksbMappings = normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, sessionCount);
-                const suggestionProfiles = selectedKsbMappingProfile ? [selectedKsbMappingProfile] : [];
-                const codeDescriptions = buildKsbDescriptionLookup(suggestionProfiles);
-                const profileCodes = buildKsbProfileCodeOptions(suggestionProfiles);
+                const sessionCount = selectedCatalogModule
+                  ? Math.max(1, parseInt(selectedCatalogModule.sessions || '1', 10) || 1)
+                  : Math.max(1, Number(moduleDraft.module.sessions) || 1);
+                const ksbMappings = selectedCatalogModule
+                  ? normalizeSessionKsbMappings(selectedCatalogModule.sessionKsbMappings || [], sessionCount)
+                  : normalizeSessionKsbMappings(moduleDraft.module.sessionKsbMappings, sessionCount);
+                const codeDescriptions = buildKsbDescriptionLookup(ksbProfiles);
                 const mappedKsbCount = ksbMappings.reduce(
                   (total, mapping) => total + mapping.knowledgeCodes.length + mapping.skillCodes.length + mapping.behaviourCodes.length,
                   0,
@@ -3309,50 +3179,17 @@ export default function CohortModal({
                     </div>
 
                     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-100 bg-white px-5 py-3">
-                      <input
-                        ref={ksbTemplateInputRef}
-                        type="file"
-                        accept=".xlsx,.xls,.csv"
-                        onChange={handleModuleDraftKsbTemplateChange}
-                        className="hidden"
-                      />
                       <span className="rounded-full px-2.5 py-1 text-xs font-extrabold" style={{ background: `${accentColor}12`, color: accentColor }}>
                         {sessionCount} session{sessionCount === 1 ? '' : 's'}
                       </span>
                       <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-bold text-gray-500">
                         {mappedKsbCount > 0 ? `${mappedKsbCount} code${mappedKsbCount === 1 ? '' : 's'} mapped` : 'No KSBs mapped yet'}
                       </span>
-                      <select
-                        value={selectedKsbMappingProfile?.id || ''}
-                        onChange={event => setKsbMappingProfileId(event.target.value)}
-                        className="h-8 min-w-52 rounded-lg border border-gray-200 bg-white px-2.5 text-[11px] font-extrabold text-gray-700 focus:outline-none"
-                        aria-label="Add from profile"
-                      >
-                        <option value="">Add from profile</option>
-                        {activeKsbProfiles.map(profile => (
-                          <option key={profile.id} value={profile.id}>
-                            {profile.name}{profile.programmeName ? ` - ${profile.programmeName}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={downloadModuleDraftKsbTemplate}
-                        className="inline-flex h-8 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-extrabold text-kbc-navy transition-colors hover:bg-gray-50"
-                      >
-                        <i className="ri-download-2-line" />
-                        Download Template
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => ksbTemplateInputRef.current?.click()}
-                        className="inline-flex h-8 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-extrabold text-kbc-navy transition-colors hover:bg-gray-50"
-                      >
-                        <i className="ri-upload-2-line" />
-                        Upload Template
-                      </button>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-500">
+                        Managed in Module Catalogue
+                      </span>
                       <p className="w-full text-[11px] font-medium text-gray-400 lg:w-auto">
-                        Map the KSBs covered by each session, for example K1, K3, S2, B1.
+                        Changes made in the module catalogue are reflected here automatically.
                       </p>
                     </div>
 
@@ -3363,7 +3200,7 @@ export default function CohortModal({
                         sessionNames={selectedCatalogModule?.sessionNames}
                         accentColor={accentColor}
                         codeDescriptions={codeDescriptions}
-                        profileCodes={profileCodes}
+                        readOnly
                         onChange={updateModuleDraftKsb}
                       />
                     </div>

@@ -177,9 +177,6 @@ export interface SessionScheduleUpdatePayload {
 }
 
 type DayKey = WeekDayKey;
-type KsbCodePrefix = 'K' | 'S' | 'B';
-type KsbProfileCodeOption = { code: string; description: string; profileName: string };
-
 const TOP_NAV_H = 56;
 const TABLE_COLUMNS = [
   110, // Programme
@@ -515,122 +512,15 @@ function normalizeKsbMapping(value: unknown): SessionKsbMapping {
   };
 }
 
-function buildKsbDescriptionLookup(profile: KsbProfile | undefined): Record<string, string> {
-  const lookup: Record<string, string> = {};
-  (profile?.ksbItems || []).forEach(item => {
-    const code = (item.code || `${item.type}${item.number}`).trim().toUpperCase();
-    if (code) lookup[code] = item.description || code;
-  });
-  return lookup;
+function hasKsbMapping(mapping: SessionKsbMapping): boolean {
+  return mapping.knowledgeCodes.length > 0 || mapping.skillCodes.length > 0 || mapping.behaviourCodes.length > 0;
 }
 
-function buildKsbProfileCodeOptions(profile: KsbProfile | undefined): Record<KsbCodePrefix, KsbProfileCodeOption[]> {
-  const buckets: Record<KsbCodePrefix, KsbProfileCodeOption[]> = { K: [], S: [], B: [] };
-  const seen: Record<KsbCodePrefix, Set<string>> = { K: new Set(), S: new Set(), B: new Set() };
-  (profile?.ksbItems || []).forEach(item => {
-    const prefix = item.type;
-    if (prefix !== 'K' && prefix !== 'S' && prefix !== 'B') return;
-    const code = (item.code || `${item.type}${item.number}`).trim().toUpperCase();
-    if (!code || seen[prefix].has(code)) return;
-    seen[prefix].add(code);
-    buckets[prefix].push({ code, description: item.description || code, profileName: profile.name });
-  });
-  return buckets;
-}
-
-function ksbCodesFromText(value: string, prefix: KsbCodePrefix): string[] {
-  return normalizeKsbCodes(value.split(/[,\s;|]+/), prefix);
-}
-
-function replaceActiveKsbToken(value: string, code: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return code;
-  const parts = trimmed.split(/([,\s;|]+)/);
-  for (let i = parts.length - 1; i >= 0; i -= 1) {
-    if (parts[i].trim()) {
-      parts[i] = code;
-      return parts.join('').replace(/[,\s;|]+$/g, '').trim();
-    }
+function getKsbMappingForSession(block: ModuleBlock, sessionNumber: number, catalogModule?: CatalogModule): SessionKsbMapping {
+  const catalogMapping = normalizeKsbMapping(catalogModule?.sessionKsbMappings?.[sessionNumber - 1] || emptyKsbMapping());
+  if (hasKsbMapping(catalogMapping)) {
+    return catalogMapping;
   }
-  return code;
-}
-
-function KsbDraftInput({
-  label,
-  placeholder,
-  prefix,
-  value,
-  disabled,
-  descriptions,
-  suggestions,
-  onChange,
-}: {
-  label: string;
-  placeholder: string;
-  prefix: KsbCodePrefix;
-  value: string;
-  disabled: boolean;
-  descriptions: Record<string, string>;
-  suggestions: KsbProfileCodeOption[];
-  onChange: (value: string) => void;
-}) {
-  const [focused, setFocused] = useState(false);
-  const tokens = value.split(/[,\s;|]+/).map(item => item.trim().toUpperCase()).filter(Boolean);
-  const lastToken = tokens[tokens.length - 1] || '';
-  const usedCodes = new Set(ksbCodesFromText(value, prefix));
-  const matches = focused && !disabled && lastToken
-    ? suggestions
-      .filter(option => !usedCodes.has(option.code) && option.code.startsWith(lastToken))
-      .slice(0, 6)
-    : [];
-
-  const tone = prefix === 'K'
-    ? { label: 'text-sky-700', row: 'hover:bg-sky-50', chip: 'border-sky-200 bg-sky-50 text-sky-800' }
-    : prefix === 'S'
-      ? { label: 'text-emerald-700', row: 'hover:bg-emerald-50', chip: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
-      : { label: 'text-amber-700', row: 'hover:bg-amber-50', chip: 'border-amber-200 bg-amber-50 text-amber-800' };
-
-  return (
-    <div className="relative">
-      <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">{label}</label>
-      <input
-        value={value}
-        disabled={disabled}
-        onFocus={() => setFocused(true)}
-        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
-        onChange={event => onChange(event.target.value)}
-        placeholder={disabled ? 'Select a KSB profile first' : placeholder}
-        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-      />
-      {matches.length > 0 && (
-        <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[90] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
-          {matches.map(option => (
-            <button
-              key={option.code}
-              type="button"
-              title={`${option.code} - ${descriptions[option.code] || option.description}`}
-              onMouseDown={event => {
-                event.preventDefault();
-                onChange(replaceActiveKsbToken(value, option.code));
-              }}
-              className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors ${tone.row}`}
-            >
-              <span className={`mt-0.5 rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold ${tone.chip}`}>{option.code}</span>
-              <span className="min-w-0 flex-1">
-                <span className={`block truncate text-[11px] font-extrabold ${tone.label}`} title={descriptions[option.code] || option.description}>
-                  {descriptions[option.code] || option.description}
-                </span>
-                <span className="block truncate text-[10px] font-semibold text-gray-400">{option.profileName}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function getKsbMappingForSession(block: ModuleBlock, sessionNumber: number): SessionKsbMapping {
   return normalizeKsbMapping(block.sessionKsbMappings?.[sessionNumber - 1] || emptyKsbMapping());
 }
 
@@ -664,7 +554,7 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
       hasRealName: Boolean(catalogModule?.sessionNames?.[i]?.trim()),
       status: ended ? 'completed' : number === currentSessionNumber ? 'current' : 'upcoming',
       coverage: getCoverageForSession(blk, number, assignedTutorProfileId),
-      ksbMapping: getKsbMappingForSession(blk, number),
+      ksbMapping: getKsbMappingForSession(blk, number, catalogModule),
     };
   });
 
@@ -680,7 +570,7 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
     sessionDate: sessionDates[sessionIndex] || blk.startDate,
     currentSessionNumber,
     currentCoverage: getCoverageForSession(blk, currentSessionNumber, assignedTutorProfileId),
-    currentKsbMapping: getKsbMappingForSession(blk, currentSessionNumber),
+    currentKsbMapping: getKsbMappingForSession(blk, currentSessionNumber, catalogModule),
     completedSessions,
     totalSessions,
     sessionInstances,
@@ -819,7 +709,7 @@ function toProgrammeSections(rows: DerivedScheduleRow[]): ProgrammeSection[] {
   return sections.sort((a, b) => a.programme.localeCompare(b.programme));
 }
 
-export default function ScheduleTable({ groups, tutorProfiles = [], coachProfiles = [], catalogModules = [], holidays = [], ksbProfiles = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onUpdateSessionSchedule, onUpdateSessionKsb, onUpdateSessionNotes, onCreateTutorProfile, onCreateCoachProfile }: Props) {
+export default function ScheduleTable({ groups, tutorProfiles = [], coachProfiles = [], catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onUpdateSessionSchedule, onUpdateSessionNotes, onCreateTutorProfile, onCreateCoachProfile }: Props) {
   const rows = toDerivedRows(groups, catalogModules, tutorProfiles, holidays);
   const sections = toProgrammeSections(rows);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -843,10 +733,6 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleError, setScheduleError] = useState('');
   const [ksbEditor, setKsbEditor] = useState<DerivedScheduleRow | null>(null);
-  const [ksbDraftText, setKsbDraftText] = useState({ knowledgeCodes: '', skillCodes: '', behaviourCodes: '' });
-  const [ksbProfileId, setKsbProfileId] = useState('');
-  const [ksbSaving, setKsbSaving] = useState(false);
-  const [ksbError, setKsbError] = useState('');
   const [notesEditor, setNotesEditor] = useState<DerivedScheduleRow | null>(null);
   const [notesDraft, setNotesDraft] = useState('');
   const [notesSaving, setNotesSaving] = useState(false);
@@ -932,11 +818,6 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
 
     return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [coachProfiles, groups]);
-  const activeKsbProfiles = useMemo(() => ksbProfiles.filter(profile => profile.isActive || profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
-  const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === ksbProfileId), [ksbProfileId, ksbProfiles]);
-  const ksbCodeDescriptions = useMemo(() => buildKsbDescriptionLookup(selectedKsbProfile), [selectedKsbProfile]);
-  const ksbProfileCodes = useMemo(() => buildKsbProfileCodeOptions(selectedKsbProfile), [selectedKsbProfile]);
-
   const coachOptions = useMemo(() => coachCandidates.map(candidate => ({
     value: candidate.key,
     label: candidate.name,
@@ -1017,18 +898,6 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
   };
 
   const openKsbEditor = (row: DerivedScheduleRow) => {
-    if (!row.trainingPlanId) {
-      showMissingTrainingPlanId('ksb');
-      return;
-    }
-    const normalized = normalizeKsbMapping(row.currentKsbMapping);
-    setKsbProfileId('');
-    setKsbDraftText({
-      knowledgeCodes: ksbCodeText(normalized.knowledgeCodes),
-      skillCodes: ksbCodeText(normalized.skillCodes),
-      behaviourCodes: ksbCodeText(normalized.behaviourCodes),
-    });
-    setKsbError('');
     setKsbEditor(row);
   };
 
@@ -1040,28 +909,6 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
     setNotesDraft(row.notes || '');
     setNotesError('');
     setNotesEditor(row);
-  };
-
-  const saveKsbDraft = async () => {
-    if (!ksbEditor || !onUpdateSessionKsb) return;
-    const normalized = normalizeKsbMapping({
-      knowledgeCodes: ksbDraftText.knowledgeCodes,
-      skillCodes: ksbDraftText.skillCodes,
-      behaviourCodes: ksbDraftText.behaviourCodes,
-    });
-    setKsbSaving(true);
-    setKsbError('');
-    try {
-      const saved = await onUpdateSessionKsb(ksbEditor.groupIdx, ksbEditor.rowIdx, ksbEditor.blockId, ksbEditor.currentSessionNumber, normalized);
-      if (saved) {
-        setKsbEditor(null);
-        setKsbDraftText({ knowledgeCodes: '', skillCodes: '', behaviourCodes: '' });
-      }
-    } catch (error) {
-      setKsbError(error instanceof Error ? error.message : 'KSB Mapping could not be saved.');
-    } finally {
-      setKsbSaving(false);
-    }
   };
 
   const saveNotesDraft = async () => {
@@ -1802,20 +1649,17 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
                             >
                               Manage Coverage
                             </button>
-                            {onUpdateSessionKsb && (
-                              <button
-                                type="button"
-                                aria-disabled={!row.trainingPlanId}
-                                title={row.trainingPlanId ? 'Edit KSB Mapping for this session' : 'Partial save unavailable for this session. Use the full editor until this row has a stable Training Plan ID.'}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openKsbEditor(row);
-                                }}
-                                className={`rounded-md px-2.5 py-1 text-[11px] font-bold ${row.trainingPlanId ? 'bg-white text-kbc-navy ring-1 ring-kbc-navy/20 hover:bg-kbc-navy/5' : 'bg-gray-100 text-gray-400 ring-1 ring-gray-200'}`}
-                              >
-                                Edit KSB
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              title="View KSB Mapping for this session"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openKsbEditor(row);
+                              }}
+                              className="rounded-md bg-white px-2.5 py-1 text-[11px] font-bold text-kbc-navy ring-1 ring-kbc-navy/20 hover:bg-kbc-navy/5"
+                            >
+                              View KSB
+                            </button>
                             {onUpdateSessionNotes && (
                               <button
                                 type="button"
@@ -2336,59 +2180,46 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
             <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
               <div>
                 <p className="text-xs font-semibold text-white/60">{ksbEditor.module} - Session {ksbEditor.currentSessionNumber}</p>
-                <h3 className="mt-1 text-base font-extrabold text-white">Edit KSB Mapping</h3>
+                <h3 className="mt-1 text-base font-extrabold text-white">Session KSB Mapping</h3>
                 <p className="mt-1 text-xs text-white/70">{formatDisplayDate(ksbEditor.sessionDate)}</p>
               </div>
               <button onClick={() => setKsbEditor(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white">
                 <i className="ri-close-line text-lg" />
               </button>
             </div>
-            <div className="space-y-4 bg-gray-50 p-5">
-              <div>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-500">KSB Profile</label>
-                <select
-                  value={ksbProfileId}
-                  onChange={event => {
-                    setKsbProfileId(event.target.value);
-                    setKsbError('');
-                  }}
-                  className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm font-extrabold text-gray-700 focus:outline-none"
-                >
-                  <option value="">Select profile first</option>
-                  {activeKsbProfiles.map(profile => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}{profile.programmeName ? ` - ${profile.programmeName}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="space-y-3 bg-gray-50 p-5">
+              <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-500">
+                These KSBs are managed in the Module Catalogue. Catalogue changes are reflected here automatically.
+              </p>
               {([
-                ['Knowledge', 'knowledgeCodes', 'K1, K3', 'K'],
-                ['Skills', 'skillCodes', 'S2, S5', 'S'],
-                ['Behaviours', 'behaviourCodes', 'B1, B4', 'B'],
-              ] as const).map(([label, field, placeholder, prefix]) => (
-                <KsbDraftInput
-                  key={field}
-                  label={label}
-                  placeholder={placeholder}
-                  prefix={prefix}
-                  value={ksbDraftText[field]}
-                  disabled={!selectedKsbProfile}
-                  descriptions={ksbCodeDescriptions}
-                  suggestions={ksbProfileCodes[prefix]}
-                  onChange={value => {
-                    setKsbDraftText(prev => ({ ...prev, [field]: value }));
-                    setKsbError('');
-                  }}
-                />
-              ))}
-              {ksbError && <p className="text-xs font-bold text-red-600">{ksbError}</p>}
+                ['Knowledge', 'knowledgeCodes', 'K', 'border-sky-200 bg-sky-50 text-sky-800'],
+                ['Skills', 'skillCodes', 'S', 'border-emerald-200 bg-emerald-50 text-emerald-800'],
+                ['Behaviours', 'behaviourCodes', 'B', 'border-amber-200 bg-amber-50 text-amber-800'],
+              ] as const).map(([label, field, prefix, chipClass]) => {
+                const codes = normalizeKsbMapping(ksbEditor.currentKsbMapping)[field];
+                return (
+                  <div key={field}>
+                    <label className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                      <span className={`flex h-4 min-w-4 items-center justify-center rounded px-1 text-[10px] font-extrabold leading-none ${prefix === 'K' ? 'bg-sky-600' : prefix === 'S' ? 'bg-emerald-600' : 'bg-amber-500'} text-white`}>
+                        {prefix}
+                      </span>
+                      <span>{label}</span>
+                    </label>
+                    <div className="min-h-10 rounded-lg border border-gray-200 bg-white px-2 py-1.5">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {codes.length ? codes.map(code => (
+                          <span key={code} className={`inline-flex items-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold leading-none ${chipClass}`}>
+                            {code}
+                          </span>
+                        )) : <span className="px-1 py-0.5 text-xs font-semibold text-gray-300">None</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
-              <button onClick={() => setKsbEditor(null)} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100">Cancel</button>
-              <button disabled={ksbSaving} onClick={() => void saveKsbDraft()} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white disabled:opacity-60">
-                {ksbSaving ? 'Saving...' : 'Save KSB'}
-              </button>
+              <button onClick={() => setKsbEditor(null)} className="rounded-lg bg-kbc-navy px-4 py-2 text-sm font-bold text-white">Close</button>
             </div>
           </div>
         </div>
