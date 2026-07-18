@@ -6988,7 +6988,7 @@ export default function ApprenticeshipTimeline() {
         {activeTab === 'coaches' && (
           isInitialProgrammesLoading ? (
             <SessionScheduleSkeleton />
-          ) : groups.length ? (
+          ) : (
             <CoachProfiles
               groups={groups}
               coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
@@ -6999,10 +6999,6 @@ export default function ApprenticeshipTimeline() {
               onUpdateCoachProfile={updateCoachProfile}
               onDeleteCoachProfile={deleteCoachProfile}
             />
-          ) : (
-            <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
-              No coach profiles yet because there are no saved programmes in the database.
-            </div>
           )
         )}
 
@@ -7499,6 +7495,7 @@ export default function ApprenticeshipTimeline() {
           catalogModules={catalogModules}
           ksbProfiles={ksbProfiles}
           tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+          coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}

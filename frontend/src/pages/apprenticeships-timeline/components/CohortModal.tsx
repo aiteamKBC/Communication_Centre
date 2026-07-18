@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { DragEvent } from 'react';
-import type { CatalogModule, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
+import type { CatalogModule, CoachProfile, CohortRow, CustomModule, Holiday, KsbProfile, ModuleBlock, ModuleValue, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
@@ -19,6 +19,7 @@ interface Props {
   catalogModules?: CatalogModule[];
   ksbProfiles?: KsbProfile[];
   tutorProfiles?: TutorProfile[];
+  coachProfiles?: CoachProfile[];
   initialGroupIdx?: number;
   initialRow?: CohortRow;
   initialExpandedBlockId?: string;
@@ -1040,6 +1041,7 @@ export default function CohortModal({
   catalogModules = [],
   ksbProfiles = [],
   tutorProfiles = [],
+  coachProfiles = [],
   initialGroupIdx = 0,
   initialRow,
   initialExpandedBlockId,
@@ -1157,24 +1159,53 @@ export default function CohortModal({
   const selectedKsbProfile = useMemo(() => ksbProfiles.find(profile => profile.id === data.ksbProfileId), [data.ksbProfileId, ksbProfiles]);
   const activeTutorProfiles = useMemo(() => tutorProfiles.filter(profile => profile.isActive), [tutorProfiles]);
   const coachOptions = useMemo(() => {
-    const counts = new Map<string, number>();
+    const byName = new Map<string, { name: string; count: number; email?: string; source: 'profile' | 'training-plan' | 'both' }>();
     groups.forEach(programme => programme.rows.forEach(row => row.blks.forEach(block => {
       const name = String(block.coachName || '').trim();
-      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+      const normalizedName = normalizeTutorName(name);
+      if (!normalizedName) return;
+      const existing = byName.get(normalizedName);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+      byName.set(normalizedName, { name, count: 1, source: 'training-plan' });
     })));
     data.groups.forEach(group => {
       const name = group.coachName.trim();
-      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+      const normalizedName = normalizeTutorName(name);
+      if (!normalizedName) return;
+      const existing = byName.get(normalizedName);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+      byName.set(normalizedName, { name, count: 1, source: 'training-plan' });
     });
-    return Array.from(counts.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, count]) => ({
+    coachProfiles.filter(profile => profile.isActive).forEach(profile => {
+      const normalizedName = normalizeTutorName(profile.name);
+      if (!normalizedName) return;
+      const existing = byName.get(normalizedName);
+      byName.set(normalizedName, {
+        name: profile.name,
+        count: existing?.count || profile.sessionCount || 0,
+        email: profile.email,
+        source: existing ? 'both' : 'profile',
+      });
+    });
+    return Array.from(byName.values())
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(({ name, count, email, source }) => ({
         value: name,
         label: name,
-        description: `${count} Training Plan block${count === 1 ? '' : 's'}`,
+        description: [
+          source === 'both' ? 'Coach Profile + Training Plan' : source === 'profile' ? 'Coach Profile' : 'Training Plan',
+          email,
+          `${count} Training Plan block${count === 1 ? '' : 's'}`,
+        ].filter(Boolean).join(' - '),
         color: '#1B2A4A',
       }));
-  }, [data.groups, groups]);
+  }, [coachProfiles, data.groups, groups]);
 
   const allModules = useMemo(() => data.groups.flatMap(group => group.modules), [data.groups]);
   const rangedModules = allModules.filter(item => isIsoDate(item.startDate) && isIsoDate(item.endDate) && item.startDate <= item.endDate);

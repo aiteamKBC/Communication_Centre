@@ -16,14 +16,14 @@ export function coachDisplayName(name: string, profileId: string | undefined, pr
 }
 
 export function buildCoachProfilesFromGroups(groups: ProgrammeGroup[], profiles: CoachProfile[]): CoachProfile[] {
-  const byId = new Map(profiles.filter(profile => profile.isActive).map(profile => [profile.id, { ...profile }]));
+  const byId = new Map(profiles.map(profile => [profile.id, { ...profile }]));
   const fallbackByName = new Map<string, CoachProfile>();
 
   groups.forEach(group => group.rows.forEach(row => row.blks.forEach(block => {
     const name = (block.coachName || '').trim();
     const normalizedName = normalizeTutorName(name);
     if (!normalizedName) return;
-    const existing = profiles.find(profile => profile.isActive && normalizeTutorName(profile.name) === normalizedName);
+    const existing = profiles.find(profile => normalizeTutorName(profile.name) === normalizedName);
     if (existing) return;
     if (fallbackByName.has(normalizedName)) return;
     fallbackByName.set(normalizedName, {

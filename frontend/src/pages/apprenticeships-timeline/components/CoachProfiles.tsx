@@ -289,6 +289,8 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
     .filter(item => parseLocalDateTime(item.date, item.module.endTime) > now)
     .sort((a, b) => a.date.localeCompare(b.date));
   const filteredProfiles = profiles.filter(profile => normalizeTutorName(`${profile.name} ${profile.email || ''}`).includes(normalizeTutorName(query)));
+  const activeCount = profiles.filter(profile => profile.isActive).length;
+  const inactiveCount = profiles.length - activeCount;
 
   const startCreate = () => {
     setSelectedId('');
@@ -360,8 +362,15 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
       },
     });
     const deleted = await onDeleteCoachProfile(activeProfile.id);
-    if (deleted) {
-      setSelectedId('');
+    if (!deleted) return;
+    setSelectedId(activeProfile.id);
+  };
+
+  const activateActiveProfile = async () => {
+    if (!activeProfile || activeProfile.id.startsWith('legacy:') || !onUpdateCoachProfile) return;
+    const result = await onUpdateCoachProfile(activeProfile.id, { ...activeProfile, isActive: true, confirmSave: true });
+    if (result && 'id' in result) {
+      setSelectedId(result.id);
     }
   };
 
@@ -373,6 +382,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
             <div>
               <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Coaches</p>
               <p className="mt-1 text-sm font-extrabold text-kbc-navy">{profiles.length} profile{profiles.length === 1 ? '' : 's'}</p>
+              {inactiveCount > 0 && <p className="mt-0.5 text-xs font-semibold text-gray-400">{activeCount} active, {inactiveCount} inactive</p>}
             </div>
             {canEdit && (
               <button type="button" onClick={startCreate} className="rounded-lg bg-kbc-navy px-2.5 py-1.5 text-xs font-extrabold text-white">
@@ -406,8 +416,13 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-bold">{profile.name}</span>
                   {profile.email && <span className={`block truncate text-xs ${selected ? 'text-white/70' : 'text-gray-500'}`}>{profile.email}</span>}
-                  <span className={`block text-xs ${selected ? 'text-white/60' : 'text-gray-400'}`}>{count} sessions</span>
+                  <span className={`block text-xs ${selected ? 'text-white/60' : 'text-gray-400'}`}>{count} sessions{profile.isActive ? '' : ' - inactive'}</span>
                 </span>
+                {!profile.isActive && (
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold ${selected ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    Inactive
+                  </span>
+                )}
               </button>
             );
           })}
@@ -437,14 +452,18 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 px-4 py-4 sm:px-5">
                 <div className="min-w-0">
                   <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Coach Profile</p>
-                  <h2 className="mt-1 text-xl font-extrabold text-kbc-navy">{activeProfile.name}</h2>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <h2 className="text-xl font-extrabold text-kbc-navy">{activeProfile.name}</h2>
+                    {!activeProfile.isActive && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-extrabold text-slate-600">Inactive</span>}
+                  </div>
                   {activeProfile.email && <p className="mt-1 text-xs font-semibold text-gray-400">{activeProfile.email}</p>}
                   <p className="mt-1 text-sm text-gray-500">{activeModules.reduce((sum, item) => sum + item.sessions, 0)} assigned sessions, {coverageRequiredSessions.length} coverage required, {coverageSessions.length} covering sessions</p>
                 </div>
                 {canEdit && !activeProfile.id.startsWith('legacy:') && (
                   <div className="flex gap-2">
+                    {onUpdateCoachProfile && !activeProfile.isActive && <button type="button" onClick={() => void activateActiveProfile()} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-extrabold text-emerald-700">Activate</button>}
                     {onUpdateCoachProfile && <button type="button" onClick={() => startEdit(activeProfile)} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">Edit Profile</button>}
-                    {onDeleteCoachProfile && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
+                    {onDeleteCoachProfile && activeProfile.isActive && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
                   </div>
                 )}
               </div>
