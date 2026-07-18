@@ -4184,6 +4184,41 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const forceDeleteCoachProfile = async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/coach-profiles/${id}/?force=1`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-KBC-Profile-Force-Delete': 'internal-admin-debug',
+        },
+        body: JSON.stringify({ confirmForceDelete: true }),
+      });
+      if (!response.ok) {
+        const errorText = (await response.text()).trim();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
+      const result = await response.json() as { deleted?: boolean; force?: boolean; unlinkedRows?: number };
+      setCoachProfiles(prev => prev.filter(item => item.id !== id));
+      void reloadCoachProfiles();
+      await kbcSwal.fire({
+        title: 'Coach Deleted',
+        html: `The coach profile was permanently deleted.${result.unlinkedRows ? ` Removed coverage links from ${result.unlinkedRows} Training Plan row${result.unlinkedRows === 1 ? '' : 's'}.` : ''}`,
+        icon: 'success',
+        confirmButtonText: 'OK',
+      });
+      return true;
+    } catch (error) {
+      await kbcSwal.fire({
+        title: 'Coach Not Deleted',
+        html: error instanceof Error ? error.message : 'Unknown delete error',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+      return false;
+    }
+  };
+
   const updateKsbProfile = async (id: string, profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
     try {
       const response = await fetch(`/api/ksb-profiles/${id}/`, {
@@ -6998,6 +7033,7 @@ export default function ApprenticeshipTimeline() {
               onCreateCoachProfile={createCoachProfile}
               onUpdateCoachProfile={updateCoachProfile}
               onDeleteCoachProfile={deleteCoachProfile}
+              onForceDeleteCoachProfile={forceDeleteCoachProfile}
             />
           )
         )}

@@ -15,6 +15,7 @@ interface Props {
   onCreateCoachProfile?: (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }) => Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }>;
   onUpdateCoachProfile?: (id: string, profile: Partial<CoachProfile> & { confirmSave?: boolean }) => Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }>;
   onDeleteCoachProfile?: (id: string) => Promise<boolean>;
+  onForceDeleteCoachProfile?: (id: string) => Promise<boolean>;
 }
 
 interface CoachModule {
@@ -264,7 +265,7 @@ function ModuleList({
   );
 }
 
-export default function CoachProfiles({ groups, coachProfiles = [], holidays = [], canEdit = false, onEditTrainingPlan, onCreateCoachProfile, onUpdateCoachProfile, onDeleteCoachProfile }: Props) {
+export default function CoachProfiles({ groups, coachProfiles = [], holidays = [], canEdit = false, onEditTrainingPlan, onCreateCoachProfile, onUpdateCoachProfile, onDeleteCoachProfile, onForceDeleteCoachProfile }: Props) {
   const now = useMemo(() => new Date(), []);
   const profiles = useMemo(() => buildCoachProfilesFromGroups(groups, coachProfiles), [coachProfiles, groups]);
   const [selectedId, setSelectedId] = useState('');
@@ -291,6 +292,15 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
   const filteredProfiles = profiles.filter(profile => normalizeTutorName(`${profile.name} ${profile.email || ''}`).includes(normalizeTutorName(query)));
   const activeCount = profiles.filter(profile => profile.isActive).length;
   const inactiveCount = profiles.length - activeCount;
+  const assignedSessionCount = activeModules.reduce((sum, item) => sum + item.sessions, 0);
+  const isLegacyProfile = (profile: CoachProfile) => profile.id.startsWith('legacy:');
+  const persistedProfileFromResult = (result: Awaited<ReturnType<NonNullable<Props['onCreateCoachProfile']>>> | Awaited<ReturnType<NonNullable<Props['onUpdateCoachProfile']>>> | null) => (
+    result && 'id' in result
+      ? result
+      : result && !('id' in result)
+        ? result.existingProfile || result.possibleExistingProfile
+        : undefined
+  );
 
   const startCreate = () => {
     setSelectedId('');
@@ -315,24 +325,44 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
       availabilityNotes: String(draft.availabilityNotes || '').trim(),
       isActive: draft.isActive !== false,
     };
-    const result = draft.id && onUpdateCoachProfile
+    const result = draft.id && !String(draft.id).startsWith('legacy:') && onUpdateCoachProfile
       ? await onUpdateCoachProfile(draft.id, payload)
       : onCreateCoachProfile
         ? await onCreateCoachProfile(payload)
         : null;
-    const saved = result && 'id' in result
-      ? result
-      : result && !('id' in result)
-        ? result.existingProfile || result.possibleExistingProfile
-        : undefined;
+    const saved = persistedProfileFromResult(result);
     if (saved) {
       setSelectedId(saved.id);
       setEditing(false);
     }
   };
 
+  const ensurePersistedProfile = async (profile: CoachProfile, isActive = true): Promise<CoachProfile | null> => {
+    if (!isLegacyProfile(profile)) return profile;
+    if (!onCreateCoachProfile) {
+      await kbcSwal.fire({
+        title: 'Coach Profile Needed',
+        html: 'This coach name exists only in the Training Plan. Create a coach profile first, then try again.',
+        icon: 'info',
+        confirmButtonText: 'OK',
+      });
+      return null;
+    }
+    const result = await onCreateCoachProfile({
+      name: profile.name,
+      email: profile.email || '',
+      phone: profile.phone || '',
+      notes: profile.notes || '',
+      availabilityNotes: profile.availabilityNotes || '',
+      isActive,
+      confirmCreateNew: true,
+    });
+    const saved = persistedProfileFromResult(result);
+    return saved && !isLegacyProfile(saved) ? saved : null;
+  };
+
   const deleteActiveProfile = async () => {
-    if (!activeProfile || activeProfile.id.startsWith('legacy:') || !onDeleteCoachProfile) return;
+    if (!activeProfile || !onDeleteCoachProfile) return;
     const result = await kbcSwal.fire({
       title: 'Deactivate Coach Profile?',
       html: `
@@ -361,9 +391,11 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
         kbcSwal.showLoading();
       },
     });
-    const deleted = await onDeleteCoachProfile(activeProfile.id);
+    const profile = await ensurePersistedProfile(activeProfile, true);
+    if (!profile) return;
+    const deleted = await onDeleteCoachProfile(profile.id);
     if (!deleted) return;
-    setSelectedId(activeProfile.id);
+    setSelectedId(profile.id);
   };
 
   const activateActiveProfile = async () => {
@@ -372,6 +404,67 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
     if (result && 'id' in result) {
       setSelectedId(result.id);
     }
+  };
+
+  const forceDeleteActiveProfile = async () => {
+    if (!activeProfile || !onForceDeleteCoachProfile) return;
+    if (assignedSessionCount > 0) {
+      await kbcSwal.fire({
+        title: 'Coach Still Assigned',
+        html: `
+          <div style="text-align:left;line-height:1.55">
+            <p><strong>${activeProfile.name}</strong> is still assigned to ${assignedSessionCount} Training Plan session${assignedSessionCount === 1 ? '' : 's'}.</p>
+            <p style="margin-top:8px;color:#64748b">Change those module coach assignments first, or use <strong>Deactivate</strong> to hide this coach from normal selection while keeping existing rows unchanged.</p>
+          </div>
+        `,
+        icon: 'info',
+        confirmButtonText: 'OK',
+      });
+      return;
+    }
+    const result = await kbcSwal.fire({
+      title: 'Permanently Delete Coach?',
+      html: `
+        <div style="text-align:left;line-height:1.55">
+          <p>This will permanently delete <strong>${activeProfile.name}</strong>.</p>
+          <p style="margin-top:8px;color:#64748b">Coverage links to this coach will be removed from Training Plan sessions. Normal assigned coach names on modules stay as text.</p>
+          <p style="margin-top:8px;color:#b91c1c;font-weight:700">This cannot be undone.</p>
+        </div>
+      `,
+      input: 'text',
+      inputPlaceholder: 'Type DELETE to confirm',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete Permanently',
+      cancelButtonText: 'Cancel',
+      reverseButtons: true,
+      focusCancel: true,
+      confirmButtonColor: '#B91C1C',
+      cancelButtonColor: '#1B2A4A',
+      preConfirm: value => {
+        if (String(value || '').trim().toUpperCase() !== 'DELETE') {
+          kbcSwal.showValidationMessage('Type DELETE to confirm permanent deletion.');
+          return false;
+        }
+        return true;
+      },
+    });
+    if (!result.isConfirmed) return;
+    const profile = await ensurePersistedProfile(activeProfile, true);
+    if (!profile) return;
+    void kbcSwal.fire({
+      title: 'Deleting coach...',
+      html: `Permanently deleting <strong>${profile.name}</strong>.`,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        kbcSwal.showLoading();
+      },
+    });
+    const deleted = await onForceDeleteCoachProfile(profile.id);
+    if (!deleted) return;
+    setSelectedId('');
   };
 
   return (
@@ -457,13 +550,14 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
                     {!activeProfile.isActive && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-extrabold text-slate-600">Inactive</span>}
                   </div>
                   {activeProfile.email && <p className="mt-1 text-xs font-semibold text-gray-400">{activeProfile.email}</p>}
-                  <p className="mt-1 text-sm text-gray-500">{activeModules.reduce((sum, item) => sum + item.sessions, 0)} assigned sessions, {coverageRequiredSessions.length} coverage required, {coverageSessions.length} covering sessions</p>
+                  <p className="mt-1 text-sm text-gray-500">{assignedSessionCount} assigned sessions, {coverageRequiredSessions.length} coverage required, {coverageSessions.length} covering sessions</p>
                 </div>
-                {canEdit && !activeProfile.id.startsWith('legacy:') && (
+                {canEdit && (
                   <div className="flex gap-2">
                     {onUpdateCoachProfile && !activeProfile.isActive && <button type="button" onClick={() => void activateActiveProfile()} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-extrabold text-emerald-700">Activate</button>}
-                    {onUpdateCoachProfile && <button type="button" onClick={() => startEdit(activeProfile)} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">Edit Profile</button>}
+                    {(onUpdateCoachProfile || (isLegacyProfile(activeProfile) && onCreateCoachProfile)) && <button type="button" onClick={() => startEdit(activeProfile)} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">Edit Profile</button>}
                     {onDeleteCoachProfile && activeProfile.isActive && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
+                    {onForceDeleteCoachProfile && <button type="button" onClick={() => void forceDeleteActiveProfile()} className="rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-extrabold text-red-700">Delete</button>}
                   </div>
                 )}
               </div>
