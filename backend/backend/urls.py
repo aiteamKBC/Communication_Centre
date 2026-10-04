@@ -26,6 +26,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/swagger/', swagger_ui, name='swagger-ui'),
     path('api/swagger.json', swagger_schema, name='swagger-schema'),
+    path('api/callcentre/', include('callcentre.urls')),
+    path('api/zoom/', include('callcentre.zoom_urls')),
     path('api/', include('api.urls')),
     path('api/auth/', include('login.urls')),
     path('', include('login.urls')),

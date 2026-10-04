@@ -25,3 +25,6 @@ backend/login/.env.login.local
 .DS_Store
 
 testsprite_tests\tmp\config.json
+
+# Local reference docs for the call-centre port (not committed)
+docs/callcentre-port/

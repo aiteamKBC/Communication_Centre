@@ -17,6 +17,7 @@ const MicrosoftPopupCallbackPage = lazy(() => import("../pages/login/microsoft-p
 const UrgentNoticePage = lazy(() => import("../pages/urgent-notice/page"));
 const LeadershipMessagePage = lazy(() => import("../pages/leadership-message/page"));
 const UserActivityPage = lazy(() => import("../pages/user-activity/page"));
+const CallCentrePage = lazy(() => import("../pages/call-centre/page"));
 
 function RouteFallback() {
   return (
@@ -49,6 +50,10 @@ const routes: RouteObject[] = [
   {
     path: "/dashboard",
     element: routeElement(DashboardPage),
+  },
+  {
+    path: "/dashboard/call-centre",
+    element: routeElement(CallCentrePage),
   },
   {
     path: "/user-activity",
