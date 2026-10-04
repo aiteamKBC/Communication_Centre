@@ -7,6 +7,7 @@ const rules: [string, string][] = [
   ['Off-the-job hours or EPA preparation: 5 working days', 'The source shows the learner back on track.'],
   ['Tomorrow’s appointment', 'Attendance confirmed or the session rebooked before it starts.'],
   ['Employer satisfaction: every quarter, 14 days', 'A survey response is recorded; a score of 2 or less is escalated.'],
+  ['Learner satisfaction: every three calendar months', 'Active and Onboarding only (LMS status first). Complete feedback after an answered Zoom call. Failed calls and email drafts do not restart the clock. Azure email sending is not connected.'],
   ['Unanswered calls', 'Retry after 2 hours, then 9am the next working day. After 3 attempts the case needs manager follow-up.'],
 ];
 

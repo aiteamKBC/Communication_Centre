@@ -10,6 +10,7 @@ from .db import DB
 from .emails import generate_surveys, process_emails
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
+from .learner_satisfaction import generate as generate_learner_satisfaction
 from .rules import MAX_MISSED_PROMISES
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_recording_links, source_health
@@ -91,6 +92,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             if bookings is not None:
                 result['reminders_created'] = generate_reminders(people, bookings)
             result['manager_surveys'] = generate_surveys(people)
+            result['learner_satisfaction'] = generate_learner_satisfaction(people)
         get_source('recording_links', refresh_recording_links)
         # Evidence wins over returning a promised-date case to the queue.
         result['resolved'] = evidence_cycle()

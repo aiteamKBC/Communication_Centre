@@ -3,6 +3,9 @@ import type { Overview } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
+import Dialog from './Dialog';
+import SatisfactionEmail from './SatisfactionEmail';
+import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
 import { casePurpose, human, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
@@ -19,6 +22,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
   const { detail, error, refresh } = useCase(id);
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
 
   if (error) return <article className="ec-card ed-learner" hidden={hidden}><p role="alert">{error}</p></article>;
   if (!detail) return <article className="ec-card ed-learner" hidden={hidden}><p role="status">Loading the learner’s workspace…</p></article>;
@@ -56,6 +60,9 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <div className="ec-buttons">
         <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>Call learner</button>
         {c.status !== 'resolved' && <BookSession caseId={c.id} session={session} notify={notify} onBooked={refresh} />}
+        {['satisfaction', 'learner_satisfaction'].includes(c.source_type) && <button type="button"
+          disabled={session.preview || !session.canAct || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
+          onClick={() => setEmailOpen(true)}>Email</button>}
       </div>
       {callReason && <p className="ec-muted ed-call-note">{session.preview ? `Calls are disabled in this director preview. ${session.name} must sign in to call.` : `${callReason}.`}</p>}
       {c.sla_breached
@@ -84,6 +91,12 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       </details>
 
       <NextStepForm compact detail={detail} session={session} onSaved={message => { refresh(); onSaved(message); }} onError={message => notify(message, true)} />
+      {c.source_type === 'learner_satisfaction' && c.status !== 'resolved' && <section className="ed-disclosure">
+        <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} session={session}
+          onSaved={() => { refresh(); onSaved('Feedback completed. Next review is due in three calendar months.'); }} />
+      </section>}
+      {c.source_type === 'learner_satisfaction' && c.status === 'resolved' && c.satisfaction_next_due_at &&
+        <p>Next satisfaction review: {longDate(c.satisfaction_next_due_at)}</p>}
       <div className="ec-buttons" style={{ marginTop: '.5rem' }}>
         <button type="button" disabled={!hasNext} onClick={onNext}>Next learner</button>
       </div>
@@ -94,6 +107,11 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         <Timeline detail={detail} limit={12} />
       </details>
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
+      <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
+        {emailOpen && <SatisfactionEmail key={c.id} employer={c.source_type === 'satisfaction'}
+          recipient={c.source_type === 'satisfaction' ? c.manager_email : c.learner_email}
+          name={c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name} />}
+      </Dialog>
     </article>
   );
 }

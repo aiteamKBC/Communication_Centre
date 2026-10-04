@@ -6,6 +6,8 @@ import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
+import SatisfactionFeedback from './SatisfactionFeedback';
+import SatisfactionEmail from './SatisfactionEmail';
 import type { CallTab } from './model';
 import { callGroups, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
 
@@ -21,10 +23,12 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [reason, setReason] = useState('all');
-  const [scope, setScope] = useState('all');
+  const [scope, setScope] = useState(tab.key === 'learner_satisfaction' ? 'due' : 'all');
   const [mode, setMode] = useState('coach');
   const [selected, setSelected] = useState('');
   const [emailCase, setEmailCase] = useState<number | null>(null);
+  const [feedbackCase, setFeedbackCase] = useState<OverviewCase | null>(null);
+  const [satisfactionEmail, setSatisfactionEmail] = useState<OverviewCase | null>(null);
 
   const eligible = useMemo(() => categoryCases(overview.cases, tab.key, overview.today), [overview, tab.key]);
   const groups = useMemo(() => callGroups(eligible, mode), [eligible, mode]);
@@ -58,7 +62,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       if (draft.outcome === 'callback' && !draft.next_contact) throw new Error('Choose the follow-up date for the callback.');
       await saveOutcome(session, c.id, {
         ...splitOutcome(draft.outcome), note: draft.notes.trim(),
-        callback_at: draft.outcome === 'callback' ? new Date(`${draft.next_contact}T09:00`).toISOString() : null,
+        callback_at: draft.next_contact && (draft.outcome === 'callback' || (c.source_type === 'learner_satisfaction' && draft.outcome === 'no_answer'))
+          ? new Date(`${draft.next_contact}T09:00`).toISOString() : null,
       });
       setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false, status: 'Saved' }));
       onSaved();
@@ -141,6 +146,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <th scope="row">
                       <strong>{c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name}</strong>
                       <span>{c.learner_phone || 'No phone recorded'}</span>
+                      {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
                       <details>
                         <summary>Contact details</summary>
                         <span>{c.learner_email || 'Email not recorded'}</span>
@@ -162,6 +168,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         {session.preview ? 'Preview' : 'Call'}
                       </button>
                       {callReason && <span className="ed-call-reason">{callReason}</span>}
+                      {['learner_satisfaction', 'satisfaction'].includes(c.source_type) && <button type="button"
+                        className="ed-sheet-link" disabled={disabled || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
+                        title="Prepare an email; Azure sending is not connected yet" onClick={() => setSatisfactionEmail(c)}>Email</button>}
                     </td>
                     <td className="ed-booking-cell">
                       <strong>{c.coach || 'Coach not recorded'}</strong>
@@ -175,6 +184,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         {outcomeChoices(c).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
                       {d?.outcome && <small>{outcomeHelp(d.outcome, c)}</small>}
+                      {c.source_type === 'learner_satisfaction' && <button type="button" className="ed-sheet-link"
+                        disabled={disabled} onClick={() => setFeedbackCase(c)}>Complete feedback</button>}
                     </td>
                     <td>
                       <textarea rows={2} maxLength={3500} aria-label={`Notes and action for ${c.learner_name}`} placeholder="What was agreed? Who will do what, by when?" disabled={disabled} value={d?.notes || ''} onChange={event => update(c, 'notes', event.target.value)} />
@@ -202,6 +213,15 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
 
       <Dialog open={emailCase !== null} onClose={() => setEmailCase(null)}>
         {emailCase !== null && <BookingEmail caseId={emailCase} session={session} />}
+      </Dialog>
+      <Dialog open={feedbackCase !== null} onClose={() => setFeedbackCase(null)}>
+        {feedbackCase && <SatisfactionFeedback key={feedbackCase.id} caseId={feedbackCase.id} name={feedbackCase.learner_name}
+          session={session} onSaved={() => { setFeedbackCase(null); onSaved(); notify('Feedback completed. Next review is due in three calendar months.'); }} />}
+      </Dialog>
+      <Dialog open={satisfactionEmail !== null} onClose={() => setSatisfactionEmail(null)}>
+        {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id} employer={satisfactionEmail.source_type === 'satisfaction'}
+          recipient={satisfactionEmail.source_type === 'satisfaction' ? satisfactionEmail.manager_email : satisfactionEmail.learner_email}
+          name={satisfactionEmail.source_type === 'satisfaction' ? satisfactionEmail.manager_name || satisfactionEmail.learner_name : satisfactionEmail.learner_name} />}
       </Dialog>
     </section>
   );

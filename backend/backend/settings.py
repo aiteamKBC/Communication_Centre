@@ -53,17 +53,23 @@ def parse_database_url(database_url: str) -> dict:
 
 DJANGO_ENV = os.getenv('DJANGO_ENV', '').strip().lower()
 IS_LOCAL_ENV = DJANGO_ENV == 'local'
+login_env = BASE_DIR / 'login' / '.env.login'
+# Older checkouts keep this tracked file beside manage.py. Prefer the login app's
+# private file, but retain the existing location so login_db is always configured.
+legacy_login_env = BASE_DIR / '.env.login'
 
 if IS_LOCAL_ENV:
     load_env_file(BASE_DIR / '.env.local')
     login_env_local = BASE_DIR / 'login' / '.env.login.local'
     if login_env_local.exists():
         load_env_file(login_env_local)
+    elif login_env.exists():
+        load_env_file(login_env)
     else:
-        load_env_file(BASE_DIR / 'login' / '.env.login')
+        load_env_file(legacy_login_env)
 else:
     load_env_file(BASE_DIR / '.env')
-    load_env_file(BASE_DIR / 'login' / '.env.login')
+    load_env_file(login_env if login_env.exists() else legacy_login_env)
 
 
 # Quick-start development settings - unsuitable for production
@@ -258,4 +264,8 @@ CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
 CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')
 CALLCENTRE_ESCALATION_EMAIL = os.getenv('CALLCENTRE_ESCALATION_EMAIL', '')
 CALLCENTRE_HOLIDAYS = [s.strip() for s in os.getenv('CALLCENTRE_HOLIDAYS', '').split(',') if s.strip()]
+# Explicitly confirmed test accounts only; e.g. lms:123,aptem:456,email:demo@example.test.
+CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS = [
+    s.strip().lower() for s in os.getenv('CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', '').split(',') if s.strip()
+]
 N8N_EMAIL_WEBHOOK = os.getenv('N8N_EMAIL_WEBHOOK', '')

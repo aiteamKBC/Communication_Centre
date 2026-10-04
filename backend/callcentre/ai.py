@@ -123,6 +123,12 @@ def apply_analysis(analysis):
             result = analysis.result
             ticket.ai_summary, ticket.ai_confidence = result['summary'], result['confidence']
             ticket.resolution_option = result['chosen_option']
+            if ticket.source_type == 'learner_satisfaction':
+                # AI summaries can assist the operator, but feedback needs explicit human completion.
+                ticket.save(update_fields=['ai_summary', 'ai_confidence'])
+                event(ticket, 'ai_analysis', {'analysis_id': analysis.pk, 'summary': result['summary'],
+                                             'automatic_resolution': False})
+                continue
             if result['outcome'] == 'resolved':
                 ticket.status = 'ai_suggested_close'
             elif result['promised_date']:

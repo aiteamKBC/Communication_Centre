@@ -26,6 +26,7 @@ def out_of_scope():
     from .sources import on_break_emails   # sources imports this module
     ready = missed_lectures_ready_until(datetime.now(LONDON).date())
     return (Q(source_type__in=PAUSED_CATEGORIES)
+            | Q(source_type='learner_satisfaction', source_data__eligible=False)
             | Q(learner_email__in=on_break_emails())
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
             | Q(source_type='attendance', overdue_since__gt=ready))

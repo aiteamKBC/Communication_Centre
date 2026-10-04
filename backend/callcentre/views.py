@@ -17,6 +17,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import lms_booking
+from .learner_satisfaction import complete as complete_learner_feedback
 from .ai import ai_enabled
 from .allocation import owners
 from .booking_email import readiness as booking_email_readiness, render as render_booking_email
@@ -37,6 +38,7 @@ ISSUE_NAMES = {
     'epa': 'EPA',
     'reminder': 'Reminder',
     'manual': 'Extra call',
+    'learner_satisfaction': 'Learner satisfaction',
 }
 
 
@@ -101,6 +103,9 @@ def ticket_json(ticket):
     return {
         **issue_json(ticket), 'source_id': ticket.source_id,
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
+        'contact_key': ticket.learner_email or f'case:{ticket.pk}',
+        'programme_status': ticket.source_data.get('programme_status', ''),
+        'satisfaction_next_due_at': ticket.source_data.get('next_due_at'),
         'coach': ticket.coach, 'organisation': ticket.organisation, 'programme': ticket.programme,
         'manager_name': ticket.manager_name, 'manager_email': ticket.manager_email,
         'status': ticket.status, 'risk': ticket.risk, 'claimed_by': ticket.claimed_by.display_name if active_claim else None,
@@ -266,7 +271,8 @@ def detail(request, pk):
         raise ValueError('Invalid timeline page.')
     events = ticket.events.order_by('-id')
     calls = ticket.calls.select_related('match__call', 'match__agent').order_by('-match__call__started_at')
-    issues = CaseTicket.objects.open().filter(learner_email=ticket.learner_email)
+    issues = (CaseTicket.objects.open().filter(learner_email=ticket.learner_email) if ticket.learner_email
+              else CaseTicket.objects.open().filter(pk=ticket.pk))
     return JsonResponse({'ticket': ticket_json(ticket),
         'issues': [issue_json(issue) for issue in issues],
         'events': list(events.values('id', 'kind', 'actor', 'data', 'call_id', 'created_at')[(page - 1) * 50:page * 50]),
@@ -296,7 +302,10 @@ def action(request, pk, command):
         if caller_id:
             zoom_url += '?' + urlencode({'callerid': caller_id})
         return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number})
-    if command == 'release':
+    if command == 'complete_feedback':
+        complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
+                                 action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
+    elif command == 'release':
         release(pk, request.user, acting_agent=agent)
     elif command == 'resolve':
         resolve(pk, request.user, note=str(data.get('note', ''))[:5000], option=data.get('option', 'other'), acting_agent=agent)

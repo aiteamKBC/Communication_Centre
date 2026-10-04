@@ -13,7 +13,7 @@ export const CALL_TABS: CallTab[] = [
   { key: 'nextday', label: 'Next Day', icon: 'calendar', reasons: [],
     hint: 'Confirm tomorrow’s coaching sessions and reviews with each learner.' },
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
-    hint: 'Speak with every learner at least once every three calendar months. Learner satisfaction cases are not generated yet.' },
+    hint: 'Active and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
     hint: 'Speak with each line manager every quarter. A survey link is emailed after the call; low scores are escalated.' },
   { key: 'manager', label: 'Extra Calls by Manager', icon: 'message', reasons: [],
@@ -26,6 +26,7 @@ export const ISSUE_LABELS: Record<string, string> = {
   attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue', otj: 'Off-the-job hours',
   epa: 'EPA preparation', reminder: 'Tomorrow’s appointment', satisfaction: 'Employer satisfaction',
   manual: 'Extra call by manager',
+  learner_satisfaction: 'Learner satisfaction',
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
@@ -36,6 +37,7 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   epa: 'Confirm the learner’s EPA preparation and next step.',
   reminder: 'Confirm attendance at tomorrow’s appointment or rebook it.',
   satisfaction: 'Record the line manager’s feedback and any agreed actions.',
+  learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
 };
 
 const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem: send to manager']];
@@ -58,8 +60,12 @@ export function outcomeChoices(c: Pick<OverviewCase, 'promises'>): [string, stri
   return [...reached, ...OUTCOMES.slice(1)];
 }
 /** What happens to the case after an outcome choice is saved. */
-export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | 'specialist_closes' | 'attempts'>) {
+export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | 'specialist_closes' | 'attempts'> & { source_type?: string }) {
   const { outcome, option } = splitOutcome(choice);
+  if (c.source_type === 'learner_satisfaction') {
+    if (outcome === 'reached') return 'Save the call outcome, then use Complete feedback. Only a completed review starts the next three-month period.';
+    if (outcome === 'no_answer') return 'The review stays open. Follow up on the chosen date, or the next working morning. Three failed calls need manager follow-up.';
+  }
   if (outcome === 'reached' && option) {
     const days = c.promises[option];
     return days === null
@@ -106,6 +112,7 @@ export const activeCase = (c: Pick<OverviewCase, 'status'>) => c.status !== 'res
 /** A case is due for a call unless it is waiting on evidence, an AI decision or a future callback. */
 export function dueForCall(c: OverviewCase, now = Date.now()) {
   if (!activeCase(c) || ['pending_verification', 'ai_suggested_close'].includes(c.status)) return false;
+  if (c.source_type === 'learner_satisfaction' && Date.parse(c.due_at) > now) return false;
   return !c.next_followup_at || Date.parse(c.next_followup_at) <= now;
 }
 
@@ -115,6 +122,7 @@ export function categoryFor(c: OverviewCase, today: string) {
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
   if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextDay(today) ? 'nextday' : null;
   if (c.source_type === 'satisfaction') return 'employer_satisfaction';
+  if (c.source_type === 'learner_satisfaction') return 'learner_satisfaction';
   if (c.source_type === 'manual') return 'manager';
   return null;
 }
@@ -122,7 +130,8 @@ export function categoryFor(c: OverviewCase, today: string) {
 export const categoryCases = (cases: OverviewCase[], key: string, today: string) =>
   cases.filter(c => activeCase(c) && categoryFor(c, today) === key);
 
-export const contactKey = (c: Pick<OverviewCase, 'learner_email'>) => c.learner_email.toLowerCase();
+export const contactKey = (c: Pick<OverviewCase, 'learner_email'> & { contact_key?: string; id?: number }) =>
+  c.contact_key || c.learner_email.toLowerCase() || `case:${c.id}`;
 
 /** The server already orders by priority; keep the first case per learner. */
 export function uniqueLearners(cases: OverviewCase[]) {
@@ -193,6 +202,7 @@ export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' 
     reminder: 'Can you confirm tomorrow’s appointment and whether you can attend? Do we need to arrange another time?',
     attendance: 'What prevented you from attending? Can we book you a catch-up session?',
     satisfaction: 'What is going well with teaching and coaching? What could we improve, and is there any support you need?',
+    learner_satisfaction: 'How satisfied are you with your learning and coaching, from 1 to 5? What is going well, what could improve, and what support would help?',
   };
   return [
     `Hello ${first}, it’s ${op} from Kent Business College. Is now a good time? Calls are recorded for quality and follow-up; confirm you are comfortable before continuing.`,
@@ -227,7 +237,9 @@ export const DESK_MENUS: [string, string, string][] = [
 export const deskLabel = (overview: Overview, key: string) => {
   const menu = DESK_MENUS.find(item => item[0] === key);
   if (!menu) return 'Call next';
-  return CALL_TABS.some(tab => tab.key === key) ? `${menu[1]} (${uniqueLearners(categoryCases(overview.cases, key, overview.today)).length})` : menu[1];
+  const cases = categoryCases(overview.cases, key, overview.today);
+  const counted = key === 'learner_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
+  return CALL_TABS.some(tab => tab.key === key) ? `${menu[1]} (${uniqueLearners(counted).length})` : menu[1];
 };
 
 export type AllocationChange = { email: string; agent_id: number | null; revision: number };

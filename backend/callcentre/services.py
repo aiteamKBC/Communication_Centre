@@ -121,11 +121,13 @@ def create_intent(ticket_id, agent, actor=None):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    tickets = list(CaseTicket.objects.open().filter(learner_email=ticket.learner_email, attempts__lt=3)
-                   .exclude(source_type='satisfaction').order_by('pk'))
+    candidates = CaseTicket.objects.open().filter(attempts__lt=3).exclude(source_type='satisfaction')
+    candidates = (candidates.filter(learner_email=ticket.learner_email) if ticket.learner_email
+                  else candidates.filter(pk=ticket.pk))
+    tickets = list(candidates.order_by('pk'))
     for item in tickets:
         claim(item.pk, agent, now, actor=actor)
-    prior = CallIntent.objects.filter(agent=agent, learner_email=ticket.learner_email, number=number,
+    prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=ticket.learner_email, number=number,
                                       matched_call__isnull=True, created_at__gte=now - timedelta(minutes=10)).first()
     if prior:
         return prior
@@ -141,6 +143,8 @@ def resolve(ticket_id, user=None, evidence=None, note='', option='other', acting
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     if ticket.status == 'resolved':
         return ticket
+    if ticket.source_type == 'learner_satisfaction':
+        raise ValueError('Complete the learner satisfaction feedback form to close this case.')
     if option not in OPTIONS:
         raise ValueError('Invalid resolution option.')
     agent = can_work(ticket, user, acting_agent=acting_agent) if user else None
@@ -192,6 +196,8 @@ def send_back(ticket_id, user, note):
 def reopen(ticket_id, user, note, acting_agent=None):
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
+    if ticket.source_type == 'learner_satisfaction':
+        raise ValueError('Completed satisfaction reviews are retained; the next case opens automatically when due.')
     if ticket.status != 'resolved' or not note.strip():
         raise ValueError('A resolved ticket and reopening reason are required.')
     ticket.status = 'new'
@@ -296,7 +302,8 @@ def apply_call_result(match):
             ticket.last_contact_at = last.started_at
             if last.result in FAILED_RESULTS:
                 # A missed call goes back to the list, flagged and at the bottom; enough of them go to a manager.
-                ticket.next_followup_at = None
+                ticket.next_followup_at = (next_workday_morning(last.ended_at)
+                                           if ticket.source_type == 'learner_satisfaction' else None)
                 ticket.status = 'unreachable' if ticket.attempts >= MAX_MISSED_CALLS else 'new'
                 ticket.escalated = ticket.escalated or ticket.attempts >= MAX_MISSED_CALLS
             elif not (ticket.promised_at and ticket.promised_at > timezone.now()):
@@ -331,6 +338,8 @@ def check_outcome(ticket, outcome, option, note, callback_at):
         raise ValueError('Choose a future callback time.')
     if outcome == 'wrong_number' and not note.strip():
         raise ValueError('Explain why this is the wrong number.')
+    if ticket.source_type == 'learner_satisfaction' and callback_at and callback_at <= timezone.now():
+        raise ValueError('Choose a future follow-up time.')
 
 
 def check_call_result(outcome, call):
@@ -349,6 +358,9 @@ def record_outcome(ticket_id, user, call_id, outcome, option='', note='', callba
     link = CaseCall.objects.select_related('match__call', 'match__agent').filter(ticket=ticket, match__call_id=call_id).first()
     if not link:
         raise ValueError('An actual linked Zoom call is required.')
+    if (ticket.source_type == 'learner_satisfaction'
+            and link.match.call.started_at < (ticket.evidence_after or ticket.created_at)):
+        raise ValueError('Use a call from the current satisfaction review cycle.')
     # can_work admits a manager without an Agent profile; only a non-manager is limited to their own calls.
     if not (user.is_staff or user.is_superuser) and link.match.agent_id != agent.pk:
         raise PermissionDenied('Only the calling agent or a manager can record this outcome.')
@@ -423,6 +435,8 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
             ticket.promised_at = promise_deadline(ticket.source_type, option, timezone.now())
         ticket.status = 'pending_verification'
         ticket.next_followup_at = ticket.promised_at if promises else next_workday_morning(timezone.now())
+    elif outcome == 'no_answer' and ticket.source_type == 'learner_satisfaction':
+        ticket.next_followup_at = callback_at or next_workday_morning(timezone.now())
     release_fields(ticket)
     ticket.save()
     event(ticket, 'outcome', {'outcome': outcome, 'option': option, 'note': note,

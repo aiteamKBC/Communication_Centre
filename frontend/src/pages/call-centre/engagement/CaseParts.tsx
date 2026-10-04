@@ -19,7 +19,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   const [callId, setCallId] = useState('');
   const [callback, setCallback] = useState('');
   // Only proof closes a case; a manager can close one by hand, a specialist only those with nothing to prove.
-  const canClose = session.isManager || ticket.specialist_closes;
+  const canClose = ticket.source_type !== 'learner_satisfaction' && (session.isManager || ticket.specialist_closes);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const blocked = session.preview || !session.canAct || (!!ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId);
@@ -91,7 +91,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
             <button type="button" disabled={!note.trim()} onClick={() => void run('send_back', { note }, 'Case sent back to the calling list.')}>Send back to the list</button>
           )}
           {ticket.status === 'ai_suggested_close' && <button type="button" onClick={() => void run('reject_ai', { note }, 'AI suggestion rejected.')}>Reject AI suggestion</button>}
-          {resolved && <button type="button" className="primary" disabled={!note.trim()} onClick={() => void run('reopen', { note }, 'Case reopened.')}>Reopen case</button>}
+          {resolved && ticket.source_type !== 'learner_satisfaction' && <button type="button" className="primary" disabled={!note.trim()} onClick={() => void run('reopen', { note }, 'Case reopened.')}>Reopen case</button>}
           {resolved && session.isManager && !ticket.archived && <button type="button" onClick={() => void run('archive', {}, 'Case archived.')}>Archive</button>}
           <button type="button" disabled={!note.trim()} onClick={() => void run('note', { note }, 'Note saved.')}>Save as note</button>
         </div>
@@ -102,7 +102,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
           : ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId ? <p className="ec-muted wide">{ticket.claimed_by} is working on this case.</p>
             : <p className="ec-muted wide">{ticket.promised_at && !resolved
               ? `${ticket.promise_missed ? 'Promise missed' : 'Waiting for the learner'}: ${promiseLabel(ticket.resolution_option)} by ${longDate(ticket.promised_at)}. `
-              : ''}{canClose
+              : ''}{ticket.source_type === 'learner_satisfaction' ? 'Use Complete feedback after the answered call; ordinary outcomes do not complete the review.' : canClose
               ? 'An outcome is recorded against a call Zoom has verified.'
               : 'The case closes by itself when the learner’s action shows up; if it does not by the deadline, it comes back to the queue.'}</p>}
     </form>
@@ -126,7 +126,8 @@ export function CallEvidence({ detail, onRecording }: { detail: CaseDetail; onRe
 }
 
 const eventText = (data: Record<string, unknown>) => {
-  const parts = ['note', 'outcome', 'option', 'reason', 'error'].map(key => data[key]).filter(Boolean).map(value => human(String(value)));
+  const parts = ['note', 'outcome', 'option', 'reason', 'error', 'problem', 'agreed_action', 'next_due_at'].map(key => data[key]).filter(Boolean).map(value => human(String(value)));
+  if (data.score) parts.unshift(`Satisfaction: ${data.score}/5`);
   return parts.join(' · ');
 };
 

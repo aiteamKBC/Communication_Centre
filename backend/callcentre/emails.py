@@ -107,6 +107,9 @@ def render_email(ticket, kind):
 @transaction.atomic(using=DB)
 def send_ticket_email(ticket_id, stage):
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+    # Learner satisfaction email has its own future Azure delivery path, never n8n.
+    if ticket.source_type == 'learner_satisfaction':
+        return None
     if (ticket.status == 'resolved' and stage != 'low_score') or ticket.archived:
         return None
     mode = settings.CALLCENTRE_EMAIL_MODE
@@ -170,7 +173,7 @@ def process_emails(limit=200):
     now = timezone.now()
     processed = 0
     # Manager-requested calls are follow-ups by a specialist, not automated learner reminders.
-    tickets = CaseTicket.objects.open().exclude(source_type='manual')
+    tickets = CaseTicket.objects.open().exclude(source_type__in=['manual', 'learner_satisfaction'])
     for ticket in tickets.order_by('created_at').iterator():
         age = (now.astimezone(LONDON).date() - (ticket.evidence_after or ticket.created_at).astimezone(LONDON).date()).days
         stages = ['initial']

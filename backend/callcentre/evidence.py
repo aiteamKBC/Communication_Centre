@@ -48,7 +48,7 @@ def valid_evidence(ticket, evidence):
         'mcm': {'mcm_booking', 'mcm_completed'}, 'otj': set(), 'epa': set(),
         'reminder': {'session_attended'}, 'satisfaction': {'survey_response'},
     }
-    if evidence.get('kind') not in allowed[ticket.source_type] or not evidence.get('table') or not evidence.get('row_key'):
+    if evidence.get('kind') not in allowed.get(ticket.source_type, set()) or not evidence.get('table') or not evidence.get('row_key'):
         return False
     try:
         observed = parse_moment(evidence['date'])
@@ -128,7 +128,8 @@ CHECKS = {'attendance': attendance_evidence, 'pr': review_evidence, 'mcm': revie
           'otj': undated_status_evidence, 'epa': undated_status_evidence,
           'reminder': reminder_evidence, 'satisfaction': satisfaction_evidence,
           # A manager's request closes only when a specialist resolves it.
-          'manual': lambda ticket, snapshot=None: None}
+          'manual': lambda ticket, snapshot=None: None,
+          'learner_satisfaction': lambda ticket, snapshot=None: None}
 
 
 def check_evidence(ticket, snapshot=None):

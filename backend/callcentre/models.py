@@ -153,7 +153,7 @@ class CaseQuerySet(RetainedQuerySet):
 class CaseTicket(Retained):
     objects = CaseQuerySet.as_manager()
     CATEGORIES = [(s, s.upper() if s in ('pr', 'mcm', 'otj', 'epa') else s.title())
-                  for s in ('attendance', 'pr', 'mcm', 'otj', 'epa', 'reminder', 'satisfaction', 'manual')]
+                  for s in ('attendance', 'pr', 'mcm', 'otj', 'epa', 'reminder', 'satisfaction', 'learner_satisfaction', 'manual')]
     STATES = [(s, s.replace('_', ' ').title()) for s in (
         'new', 'in_progress', 'pending_learner', 'pending_verification', 'ai_suggested_close',
         'resolved', 'unreachable', 'escalated',

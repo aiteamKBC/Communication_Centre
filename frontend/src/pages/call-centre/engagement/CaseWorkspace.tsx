@@ -3,6 +3,9 @@ import type { Overview } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
+import Dialog from './Dialog';
+import SatisfactionEmail from './SatisfactionEmail';
+import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
 import { casePurpose, caseTone, human, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
@@ -15,6 +18,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const { detail, error, refresh } = useCase(id);
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
 
   if (error) return <p role="alert">{error}</p>;
   if (!detail) return <p role="status">Loading the learner’s case…</p>;
@@ -75,6 +79,9 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
                 </button>
               )}
               {c.status !== 'resolved' && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
+              {['satisfaction', 'learner_satisfaction'].includes(c.source_type) && <button type="button"
+                disabled={session.preview || !session.canAct || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
+                onClick={() => setEmailOpen(true)}>Email</button>}
             </div>
             {callReason && <p className="ec-muted">{callReason}.</p>}
           </section>
@@ -102,6 +109,10 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
           <section className="ec-card"><h2>Call evidence</h2><CallEvidence detail={detail} onRecording={setRecording} /></section>
         </div>
         <div className="ec-stack">
+          {c.source_type === 'learner_satisfaction' && c.status !== 'resolved' && <section className="ec-card">
+            <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} session={session}
+              onSaved={() => saved('Feedback completed. Next review is due in three calendar months.')} />
+          </section>}
           <section className="ec-card">
             <h2>Next step</h2>
             <NextStepForm detail={detail} session={session} onSaved={saved} onError={message => notify(message, true)} />
@@ -110,6 +121,11 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
         </div>
       </div>
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
+      <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
+        {emailOpen && <SatisfactionEmail key={c.id} employer={c.source_type === 'satisfaction'}
+          recipient={c.source_type === 'satisfaction' ? c.manager_email : c.learner_email}
+          name={c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name} />}
+      </Dialog>
     </>
   );
 }

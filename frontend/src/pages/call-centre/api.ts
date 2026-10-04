@@ -8,6 +8,7 @@ export type Case = {
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
   issue_name: string; issue_date: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
+  contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
   status: string; risk: string; claimed_by: string | null; claimed_agent_id: number | null;
   last_actor: string; last_action_at: string; attempts: number; next_followup_at: string | null;
   due_at: string; sla_breached: boolean; sla_days_overdue: number; learner_days_overdue: number; misses: number;

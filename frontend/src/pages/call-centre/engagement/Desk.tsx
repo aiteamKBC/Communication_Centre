@@ -162,7 +162,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
   } else if (section === 'next') {
     body = <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={setDetailId} />;
   } else if (tab) {
-    body = <CallSheet overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
+    body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
   } else if (section === 'groups') {
     const groups = callGroups(active, mode);
     body = (
