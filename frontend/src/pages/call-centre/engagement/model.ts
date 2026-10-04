@@ -4,7 +4,6 @@ import type { AgentStats, Overview, OverviewCase } from '../api';
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
 export const CALL_TABS: CallTab[] = [
-  // Missed monthly coaching, missed progress reviews and missing signatures have no source connected yet, so they show 0.
   { key: 'missed', label: 'Missed', icon: 'calendar',
     reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
     hint: 'Check the missed activity and agree a new time. Request outstanding signatures without rebooking a completed meeting.' },
@@ -23,7 +22,8 @@ export const CALL_TABS: CallTab[] = [
 ];
 
 export const ISSUE_LABELS: Record<string, string> = {
-  attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue', otj: 'Off-the-job hours',
+  attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue',
+  pr_missed: 'Missed progress review', mcm_missed: 'Missed monthly coaching', signature: 'Missing signature', otj: 'Off-the-job hours',
   epa: 'EPA preparation', reminder: 'Tomorrow’s appointment', satisfaction: 'Employer satisfaction',
   manual: 'Extra call by manager',
   learner_satisfaction: 'Learner satisfaction',
@@ -33,6 +33,9 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   attendance: 'Agree a catch-up session.',
   pr: 'Book the overdue progress review with the coach.',
   mcm: 'Book the overdue monthly coaching meeting.',
+  pr_missed: 'Find out why the progress review was missed and agree to rebook it.',
+  mcm_missed: 'Find out why the monthly coaching meeting was missed and agree to rebook it.',
+  signature: 'Ask the learner to sign the review in the LMS.',
   otj: 'Agree support to record and recover off-the-job hours.',
   epa: 'Confirm the learner’s EPA preparation and next step.',
   reminder: 'Confirm attendance at tomorrow’s appointment or rebook it.',
@@ -44,7 +47,7 @@ const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No 
 const PROMISE_LABELS: Record<string, string> = {
   catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
-  epa_step: 'Complete the EPA step', other: 'Other',
+  epa_step: 'Complete the EPA step', sign_review: 'Sign the review', other: 'Other',
 };
 export const promiseLabel = (option: string) => PROMISE_LABELS[option] || human(option);
 
@@ -69,7 +72,7 @@ export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | '
   if (outcome === 'reached' && option) {
     const days = c.promises[option];
     return days === null
-      ? 'The case closes now: the learner has agreed to book it.'
+      ? 'The case closes now: the learner has agreed to do it.'
       : `The case waits ${days} day${days === 1 ? '' : 's'} for proof. If nothing shows up, it comes back to the top of the list.`;
   }
   return {
@@ -102,8 +105,16 @@ export const when = (value: string | null | undefined) => (value
   ? new Date(value).toLocaleString('en-GB', { timeZone: 'Europe/London' }) : 'Not yet');
 export const duration = (seconds: number | null | undefined) => `${Math.floor((Number(seconds) || 0) / 3600)}h ${Math.floor(((Number(seconds) || 0) % 3600) / 60)}m`;
 
-export const issueLabel = (c: Pick<OverviewCase, 'source_type' | 'issue_name'>) =>
-  (c.source_type === 'manual' ? c.issue_name : ISSUE_LABELS[c.source_type] || c.issue_name);
+// Review cases name their LMS review type; the two kinds of progress review are told apart this way.
+const REVIEW_CASES = new Set(['pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature']);
+const PLAIN_REVIEW_NAMES = new Set(['progress review', 'monthly coaching meeting']);
+export const issueLabel = (c: Pick<OverviewCase, 'source_type' | 'issue_name'>) => {
+  if (c.source_type === 'manual') return c.issue_name;
+  const label = ISSUE_LABELS[c.source_type] || c.issue_name;
+  const named = REVIEW_CASES.has(c.source_type) && c.issue_name
+    && (c.source_type === 'signature' || !PLAIN_REVIEW_NAMES.has(c.issue_name.toLowerCase()));
+  return named ? `${label}: ${c.issue_name}` : label;
+};
 /** What the specialist should achieve on the call. */
 export const casePurpose = (c: Pick<OverviewCase, 'source_type' | 'issue_name' | 'purpose'>) =>
   (c.source_type === 'manual' ? c.purpose : ISSUE_ACTIONS[c.source_type]) || c.issue_name;
@@ -118,7 +129,7 @@ export function dueForCall(c: OverviewCase, now = Date.now()) {
 
 export function categoryFor(c: OverviewCase, today: string) {
   if (c.status === 'ai_suggested_close') return 'ai';
-  if (c.source_type === 'attendance') return 'missed';
+  if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
   if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextDay(today) ? 'nextday' : null;
   if (c.source_type === 'satisfaction') return 'employer_satisfaction';
@@ -201,6 +212,9 @@ export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' 
     otj: 'What learning have you completed recently? What is making it difficult to record or complete your hours? What support would help this week?',
     reminder: 'Can you confirm tomorrow’s appointment and whether you can attend? Do we need to arrange another time?',
     attendance: 'What prevented you from attending? Can we book you a catch-up session?',
+    pr_missed: 'What stopped the progress review going ahead? Can we agree a new time with your coach?',
+    mcm_missed: 'What stopped the coaching meeting going ahead? Can we agree a new time with your coach?',
+    signature: 'Your review is waiting for your signature in the LMS. Can you sign it today? Do you need help finding it?',
     satisfaction: 'What is going well with teaching and coaching? What could we improve, and is there any support you need?',
     learner_satisfaction: 'How satisfied are you with your learning and coaching, from 1 to 5? What is going well, what could improve, and what support would help?',
   };

@@ -264,8 +264,17 @@ CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
 CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')
 CALLCENTRE_ESCALATION_EMAIL = os.getenv('CALLCENTRE_ESCALATION_EMAIL', '')
 CALLCENTRE_HOLIDAYS = [s.strip() for s in os.getenv('CALLCENTRE_HOLIDAYS', '').split(',') if s.strip()]
-# Explicitly confirmed test accounts only; e.g. lms:123,aptem:456,email:demo@example.test.
-CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS = [
-    s.strip().lower() for s in os.getenv('CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', '').split(',') if s.strip()
-]
-N8N_EMAIL_WEBHOOK = os.getenv('N8N_EMAIL_WEBHOOK', '')
+# Email goes out through Microsoft 365 as the no-reply mailbox (callcentre/mailer.py). The app registration is
+# CALLCENTRE_MAIL_TENANT_ID / CALLCENTRE_MAIL_CLIENT_ID / CALLCENTRE_MAIL_CLIENT_SECRET, read from .env.
+CALLCENTRE_MAIL_SENDER = os.getenv('CALLCENTRE_MAIL_SENDER', 'no-reply@kentbusinesscollege.com').strip()
+# Automatic reminder emails (callcentre/emails.py), sent by the case cycle on the college template.
+# These are only the DEFAULTS: a director manages them in Director -> Settings (callcenter_setting), which wins.
+# OFF unless switched on: nothing is emailed, written or escalated by them while off.
+CALLCENTRE_REMINDERS_ENABLED = os.getenv('CALLCENTRE_REMINDERS_ENABLED', '').lower() in ('1', 'true', 'yes')
+# Case age in days at which the learner is emailed: 0 = when the case opens, then each reminder day.
+CALLCENTRE_REMINDER_DAYS = sorted({int(d) for d in os.getenv('CALLCENTRE_REMINDER_DAYS', '0,2,5,7').split(',') if d.strip()})
+# Case age at which the line manager is emailed and the case goes to a manager (0 = never).
+CALLCENTRE_REMINDER_ESCALATE_DAY = int(os.getenv('CALLCENTRE_REMINDER_ESCALATE_DAY', '7'))
+# Case types that get reminders.
+CALLCENTRE_REMINDER_TYPES = {t.strip() for t in os.getenv(
+    'CALLCENTRE_REMINDER_TYPES', 'attendance,pr,mcm,pr_missed,mcm_missed,signature,satisfaction').split(',') if t.strip()}

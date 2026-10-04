@@ -14,6 +14,7 @@ import Imports from './engagement/Imports';
 import { DESK_MENUS, deskLabel, longDate } from './engagement/model';
 import { Calendar, Eventbrite } from './engagement/NotConnected';
 import RequestCall from './engagement/RequestCall';
+import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
 import type { NavGroup } from './engagement/Shell';
 import ZoomPhone from './engagement/ZoomPhone';
@@ -22,15 +23,17 @@ import './styles/engagement.css';
 const DIRECTOR_NAV: [string, string, string][] = [
   ['director', 'Director overview', 'chart'], ['calendar', 'Coach calendars', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
   ['allocations', 'Learner allocation', 'people'], ['imports', 'Import & export', 'upload'], ['phone', 'Zoom Phone', 'settings'],
-  ['eventbrite', 'Eventbrite', 'calendar'], ['connections', 'Connections & rules', 'check'],
+  ['eventbrite', 'Eventbrite', 'calendar'], ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
 ];
 const DIRECTOR_TABS: [string, string][] = [
   ['director', 'Director'], ['allocations', 'Learner allocation'], ['imports', 'Import & export'], ['phone', 'Zoom Phone'],
   ['bookings', 'Coach booking links'], ['operator', 'Calling workspace'], ['connections', 'Connections & call rules'],
+  ['settings', 'Settings'],
 ];
 const TITLES: Record<string, string> = {
   director: 'Director overview', calendar: 'Coach calendars', bookings: 'Coach booking links', allocations: 'Learner allocation',
   imports: 'Import & export', phone: 'Zoom Phone', eventbrite: 'Eventbrite', connections: 'Make every conversation count',
+  settings: 'Settings',
 };
 
 function signOut(navigate: ReturnType<typeof useNavigate>) {
@@ -176,6 +179,7 @@ export default function CallCentrePage() {
                   : view === 'connections' ? <Connections overview={overview} onView={key => setParam({ view: key })} />
                     : view === 'calendar' ? <Calendar />
                       : view === 'eventbrite' ? <Eventbrite />
+                        : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
                         : (
                           <Director
                             overview={overview} month={overview.month} onMonth={value => setParam({ month: value })} onView={key => setParam({ view: key })}

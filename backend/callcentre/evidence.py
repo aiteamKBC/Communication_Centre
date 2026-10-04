@@ -2,10 +2,11 @@ from datetime import datetime, time
 
 from django.utils import timezone
 
-from .aptem_summaries import normalize_attendance_value, parse_date_safe
-from .db import APTEM, DB
-from .rules import LONDON, email_key, parse_moment
-from .sources import rows
+from . import lms_reviews
+from .aptem_summaries import normalize_attendance_value
+from .db import DB, LMS
+from .rules import LONDON, REVIEW_CATEGORIES, email_key, parse_moment
+from .sources import rows, source_transaction
 
 
 def evidence_cutoff(ticket):
@@ -15,7 +16,7 @@ def evidence_cutoff(ticket):
 class EvidenceSnapshot:
     """Read each evidence source once per cycle; never treat a failed load as empty success."""
     def __init__(self, tickets):
-        self.attendance, self.reviews, self.errors = {}, {}, {}
+        self.attendance, self.review_states, self.errors = {}, {}, {}
         categories = {t.source_type for t in tickets}
         if 'attendance' in categories:
             since = min(evidence_cutoff(t).astimezone(LONDON).date() for t in tickets if t.source_type == 'attendance')
@@ -27,15 +28,14 @@ class EvidenceSnapshot:
                     self.attendance.setdefault((email_key(row['Email']), row['module']), []).append(row)
             except Exception as exc:
                 self.errors['attendance'] = type(exc).__name__
-        for category, table, column in [('pr', 'progress_review', 'Last Actually Completed PR'), ('mcm', 'MCR', 'Last Actually Completed  MCM')]:
-            if category not in categories:
-                continue
+        refs = [ref for t in tickets if t.source_type in REVIEW_CATEGORIES for ref in t.source_data.get('review_refs', [])]
+        if refs:
             try:
-                data = rows(APTEM, f'SELECT "ID", "Email", "{column}" AS completed FROM public."{table}"')
-                for row in data:
-                    self.reviews.setdefault((category, email_key(row['Email'])), []).append(row)
+                with source_transaction(LMS):
+                    self.review_states = lms_reviews.ref_states(refs)
             except Exception as exc:
-                self.errors[category] = type(exc).__name__
+                for category in REVIEW_CATEGORIES:
+                    self.errors[category] = type(exc).__name__
 
 
 def valid_evidence(ticket, evidence):
@@ -44,8 +44,9 @@ def valid_evidence(ticket, evidence):
     if email_key(evidence.get('learner_email')) != ticket.learner_email:
         return False
     allowed = {
-        'attendance': {'attendance_present'}, 'pr': {'pr_booking', 'pr_completed'},
-        'mcm': {'mcm_booking', 'mcm_completed'}, 'otj': set(), 'epa': set(),
+        'attendance': {'attendance_present'}, 'pr': {'pr_completed'}, 'mcm': {'mcm_completed'},
+        'pr_missed': {'pr_completed'}, 'mcm_missed': {'mcm_completed'}, 'signature': {'review_signed'},
+        'otj': set(), 'epa': set(),
         'reminder': {'session_attended'}, 'satisfaction': {'survey_response'},
     }
     if evidence.get('kind') not in allowed.get(ticket.source_type, set()) or not evidence.get('table') or not evidence.get('row_key'):
@@ -88,23 +89,26 @@ def attendance_evidence(ticket, snapshot=None):
 
 
 def review_evidence(ticket, snapshot=None):
-    # Completion dates in Aptem are the only evidence source; dashboard bookings were not ported.
-    category = ticket.source_type
-    table, column = ('progress_review', 'Last Actually Completed PR') if category == 'pr' else ('MCR', 'Last Actually Completed  MCM')
+    """A review on the case is done in the LMS: completed, or for a signature case, signed off."""
+    refs = ticket.source_data.get('review_refs') or []
+    if not refs:
+        return None
     if snapshot:
-        if category in snapshot.errors:
-            raise ValueError('Review completion evidence unavailable.')
-        result = snapshot.reviews.get((category, ticket.learner_email), [])
+        if ticket.source_type in snapshot.errors:
+            raise ValueError('LMS review evidence unavailable.')
+        states = snapshot.review_states
     else:
-        result = rows(APTEM, f'SELECT "ID", "{column}" AS completed FROM public."{table}" WHERE LOWER(TRIM("Email")) = %s',
-                      [ticket.learner_email])
-    if len(result) != 1:
-        return None
-    completed = parse_date_safe(result[0]['completed'])
-    if not completed or completed <= evidence_cutoff(ticket).astimezone(LONDON).date():
-        return None
-    return proof(ticket, category + '_completed', table, result[0]['ID'],
-                 datetime.combine(completed, time.min, tzinfo=LONDON), {'completed': completed.isoformat()})
+        with source_transaction(LMS):
+            states = lms_reviews.ref_states(refs)
+    kind = 'review_signed' if ticket.source_type == 'signature' else ticket.source_type.split('_')[0] + '_completed'
+    for ref in refs:
+        state = states.get(ref)
+        if state and lms_reviews.done(ticket.source_type, state):
+            # When the LMS recorded it: a completion date can predate the case (an Aptem meeting imported later).
+            moments = [parse_moment(value) for value in (state.get('completed'), state.get('updated_at')) if value]
+            table = 'Learner.reviews' if ref.startswith('reviews:') else 'curriculum.review_instances'
+            return proof(ticket, kind, table, ref, max(moments, default=timezone.now()), {'status': state.get('status')})
+    return None
 
 
 def reminder_evidence(ticket, snapshot=None):
@@ -125,6 +129,7 @@ def satisfaction_evidence(ticket, snapshot=None):
 
 
 CHECKS = {'attendance': attendance_evidence, 'pr': review_evidence, 'mcm': review_evidence,
+          'pr_missed': review_evidence, 'mcm_missed': review_evidence, 'signature': review_evidence,
           'otj': undated_status_evidence, 'epa': undated_status_evidence,
           'reminder': reminder_evidence, 'satisfaction': satisfaction_evidence,
           # A manager's request closes only when a specialist resolves it.

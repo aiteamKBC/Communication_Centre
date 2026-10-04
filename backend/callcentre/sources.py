@@ -18,9 +18,10 @@ from django.utils import timezone
 
 from . import aptem_summaries as summaries
 from . import learners
+from . import lms_reviews
 from .db import APTEM, DB, LMS
 from .models import CaseTicket, CycleState
-from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, due_at, email_key, missed_lectures_ready_until,
+from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, REVIEW_CATEGORIES, due_at, email_key, missed_lectures_ready_until,
                     normalize_phone, parse_moment)
 from .services import event
 
@@ -44,15 +45,21 @@ def rows(alias, sql, params=()):
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def _staff():
+    """Staff accounts, to find a case owner's email; empty when they cannot be read."""
+    try:
+        return rows(LMS, learners.STAFF_SQL)
+    except Exception:
+        return []
+
+
 def profiles():
     """The merged LMS + Aptem learner directory; works while either source is reachable."""
     lms = get_source('lms_learners', lambda: rows(LMS, learners.LMS_LEARNERS_SQL))
     aptem = get_source('aptem_learners', lambda: rows(APTEM, learners.APTEM_LEARNERS_SQL))
     if lms is None and aptem is None:
         raise RuntimeError('Neither learner source is available.')
-    people = learners.merge(lms or [], aptem or [])
-    people.sources_complete = lms is not None and aptem is not None
-    return people
+    return learners.merge(lms or [], aptem or [], _staff())
 
 
 def learner_directory():
@@ -65,33 +72,40 @@ def learner_directory():
             loaded.append(None)
     if all(item is None for item in loaded):
         raise DatabaseError('Neither learner source is available.')
-    people = learners.merge(*(item or [] for item in loaded))
-    people.sources_complete = all(item is not None for item in loaded)
-    return people
+    return learners.merge(*(item or [] for item in loaded), _staff())
 
 
-ON_BREAK_REFRESH_SECONDS = 300
-_on_break = {'emails': frozenset(), 'next_refresh': 0.0}
+DIRECTORY_REFRESH_SECONDS = 300
+_cached = {'directory': learners.Learners({}, {}), 'next_refresh': 0.0}
 
 
-def on_break_emails():
-    """Emails of learners the LMS has on a break, refreshed every 5 minutes.
-
-    The LMS decides who is on a break, so while it cannot be read the last known list is kept.
+def cached_directory():
+    """The directory, refreshed at most every 5 minutes, for what every page asks of the LMS:
+    who is on a break and each coach's email. While the LMS cannot be read the last one is kept.
     """
     now = time.monotonic()
-    if now >= _on_break['next_refresh']:
-        _on_break['next_refresh'] = now + ON_BREAK_REFRESH_SECONDS
+    if now >= _cached['next_refresh']:
+        _cached['next_refresh'] = now + DIRECTORY_REFRESH_SECONDS
         try:
             lms = rows(LMS, learners.LMS_LEARNERS_SQL)
         except Exception:
-            return _on_break['emails']
+            return _cached['directory']
         try:
             aptem = rows(APTEM, learners.APTEM_LEARNERS_SQL)
         except Exception:
             aptem = []
-        _on_break['emails'] = learners.merge(lms, aptem).on_break
-    return _on_break['emails']
+        _cached['directory'] = learners.merge(lms, aptem, _staff())
+    return _cached['directory']
+
+
+def on_break_emails():
+    """Emails of learners the LMS has on a break."""
+    return cached_directory().on_break
+
+
+def coach_email(name):
+    """The email of the coach with this name, as the LMS enrolment records give it; '' if unknown."""
+    return cached_directory().coach_emails.get(' '.join(str(name or '').split()).casefold(), '')
 
 
 def source_health(name, error='', count=0):
@@ -154,7 +168,9 @@ def generate_risks(people):
     total = 0
     existing = list(CaseTicket.objects.exclude(status='resolved').values('source_type', 'learner_email', 'overdue_since', 'source_data'))
     open_reasons = {(c['source_type'], c['learner_email'], c['overdue_since'] if c['source_type'] == 'attendance' else None,
-                     c['source_data'].get('module', '') if c['source_type'] == 'attendance' else '') for c in existing}
+                     c['source_data'].get('module', '') if c['source_type'] == 'attendance'
+                     else c['source_data'].get('review_type', '') if c['source_type'] in REVIEW_CATEGORIES else '')
+                    for c in existing}
 
     def attendance():
         # Rows newer than the delay are not read at all, so a fresh absence cannot hide an older one in its week.
@@ -167,8 +183,6 @@ def generate_risks(people):
         return output
 
     loaders = {
-        'pr': _read(summaries.progress_review_rows, APTEM),
-        'mcm': _read(summaries.mcm_rows, APTEM),
         'otj': _read(summaries.otj_rows, APTEM),
         'epa': _read(summaries.epa_overdue_rows, APTEM),
         'attendance': _read(attendance, DB),
@@ -184,14 +198,7 @@ def generate_risks(people):
             if email not in people:
                 continue
             count, risk, overdue, module = 1, 'amber', None, ''
-            if category == 'pr':
-                count = item.get('overduePrCount', 0)
-                overdue = summaries.parse_date_safe(item.get('duePrDate'))
-                risk = 'red' if item.get('reviewStatus') == 'Due' else 'amber'
-            elif category == 'mcm':
-                count, risk = item['overdue_count'], item['risk']
-                overdue = summaries.parse_date_safe(item['next_mcm_date'])
-            elif category == 'otj':
+            if category == 'otj':
                 count = int(str(item.get('otjHoursStatus', '')).lower() == 'at risk')
             elif category == 'epa':
                 end = summaries.parse_date_safe(item.get('endDate'))
@@ -215,6 +222,30 @@ def generate_risks(people):
                                    misses=count, data={'module': module, 'source_learner_id': str(item.get('id', ''))})
             total += fresh
             open_reasons.add(open_key)
+    return total + generate_review_cases(people, today, open_reasons)
+
+
+def generate_review_cases(people, today, open_reasons):
+    """Overdue, missed and unsigned reviews from the LMS: one case per learner, case type and review type."""
+    items = get_source('lms_reviews', _read(lambda: lms_reviews.review_items(today), LMS))
+    if items is None:
+        return 0
+    total = 0
+    for (email, category, review_type), group in lms_reviews.group_items(items).items():
+        # Only learners the LMS has as Active or Delivery: withdrawn and completed learners get no review calls.
+        if email not in people or email not in people.active:
+            continue
+        open_key = (category, email, None, review_type)
+        if open_key in open_reasons:
+            continue
+        count, overdue = len(group), max(item['day'] for item in group)
+        risk = ('red' if summaries.overdue_status(count) == 'Due' else 'amber') if category == 'pr' else (
+            summaries.mcm_risk(count) if category == 'mcm' else 'amber')
+        _, fresh = upsert_case(category, people[email], f'{overdue}:{review_type}', risk=risk, overdue=overdue,
+                               misses=count, data={'review_type': review_type,
+                                                   'review_refs': sorted(item['ref'] for item in group)[:50]})
+        total += fresh
+        open_reasons.add(open_key)
     return total
 
 

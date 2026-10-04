@@ -19,4 +19,5 @@ urlpatterns = [
     path('learners/', manage_views.learners),
     path('requests/', manage_views.call_requests),
     path('allocations/', manage_views.allocations),
+    path('settings/', manage_views.settings_view),
 ]

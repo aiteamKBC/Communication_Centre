@@ -175,7 +175,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <td className="ed-booking-cell">
                       <strong>{c.coach || 'Coach not recorded'}</strong>
                       <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />
-                      {c.source_type !== 'satisfaction' && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
+                      {!['satisfaction', 'signature'].includes(c.source_type) && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
                       <small>{session.preview ? 'Read-only preview' : c.bookable.includes('catch-up') ? 'Catch-up or support, in the LMS calendar' : 'Support session, in the LMS calendar'}</small>
                     </td>
                     <td>

@@ -6,9 +6,13 @@ from django.conf import settings
 from django.db.models import Q
 
 LONDON = ZoneInfo('Europe/London')
-# Missed lectures before this date are too old to call about: no case is opened for them and older open
-# cases are left out of every list. Change the date here; the database is not touched.
-MISSED_LECTURES_SINCE = date(2026, 9, 1)
+# The system cutoff: missed lectures and reviews dated before it are too old to call about. No case is opened
+# for them and older open cases are left out of every list. Change the date here; the database is not touched.
+SYSTEM_CUTOFF = date(2026, 9, 1)
+MISSED_LECTURES_SINCE = SYSTEM_CUTOFF
+REVIEWS_SINCE = SYSTEM_CUTOFF
+# Cases made from the LMS reviews (lms_reviews.py): overdue, missed and unsigned reviews.
+REVIEW_CATEGORIES = {'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature'}
 # A missed lecture waits this many calendar days after the lecture date before it becomes a case,
 # so late attendance corrections land first. Absent on the 1st → on the list on the 4th.
 MISSED_LECTURE_DELAY_DAYS = 3
@@ -29,9 +33,14 @@ def out_of_scope():
             | Q(source_type='learner_satisfaction', source_data__eligible=False)
             | Q(learner_email__in=on_break_emails())
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
-            | Q(source_type='attendance', overdue_since__gt=ready))
+            | Q(source_type='attendance', overdue_since__gt=ready)
+            | Q(source_type__in=REVIEW_CATEGORIES, overdue_since__lt=REVIEWS_SINCE)
+            # Progress review / monthly coaching cases from Aptem's old tables, replaced by the LMS reviews.
+            | (Q(source_type__in=('pr', 'mcm')) & ~Q(source_data__has_key='review_type')))
 
-SLA_DAYS = {'attendance': 2, 'mcm': 3, 'pr': 3, 'otj': 5, 'epa': 5, 'satisfaction': 14}
+
+SLA_DAYS = {'attendance': 2, 'mcm': 3, 'pr': 3, 'mcm_missed': 3, 'pr_missed': 3, 'signature': 3, 'otj': 5, 'epa': 5,
+            'satisfaction': 14}
 FAILED_RESULTS = {'no_answer', 'missed', 'busy', 'voicemail', 'rejected'}
 WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unreachable', 'escalated'}
 # What a learner can agree to on a call, per case type, and the calendar days they have to do it.
@@ -41,6 +50,9 @@ PROMISES = {
     'attendance': {'catch_up_session': None},
     'pr': {'book_pr': None},
     'mcm': {'book_mcm': None},
+    'pr_missed': {'book_pr': None},
+    'mcm_missed': {'book_mcm': None},
+    'signature': {'sign_review': None},
     'otj': {'log_hours': 7},
     'epa': {'epa_step': 7},
     'reminder': {},

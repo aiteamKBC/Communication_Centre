@@ -99,3 +99,14 @@
 .ed-email-checks li strong{display:inline-block;min-width:4.2rem}
 .ed-email-checks li small{display:block;color:var(--muted);overflow-wrap:anywhere}
 @media(max-width:900px){.ed-email-grid,.ed-email-checks{grid-template-columns:1fr}.ed-email-preview{height:420px}}
+/* Director settings: plain grouped controls, one card per subject. */
+.ec-settings fieldset{border:0;padding:0;margin:0 0 1rem;min-width:0}
+.ec-settings legend{font-weight:600;font-size:.9rem;margin-bottom:.5rem}
+.ec-settings .ec-choice{display:flex;align-items:center;gap:.6rem;font-weight:400;margin:.4rem 0}
+.ec-settings .ec-choice input,.ec-settings .ec-checks input{width:auto;margin:0;accent-color:var(--purple)}
+.ec-settings .ec-form{margin:1rem 0}
+.ec-settings small{display:block;margin-top:.3rem}
+.ec-settings-history{list-style:none;padding:0;margin:0}
+.ec-settings-history>li{padding:.7rem 0;border-top:1px solid var(--line);font-size:.9rem}
+.ec-settings-history>li:first-child{border-top:0}
+.ec-settings-history ul{margin:.3rem 0 0;padding-left:1.2rem;color:var(--muted)}

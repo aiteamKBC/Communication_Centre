@@ -1,9 +1,9 @@
 """Read-only learner risk signals for case generation.
 
-Ported from the legacy dashboard's summary views (``progress_review_summary``,
-``mcr_summary``, ``otj_at_risk_summary``, ``epa_summary`` and the weekly
-attendance check), keeping only the fields the case generator consumes. The
-thresholds and date rules are unchanged. Aptem tables are read through the
+Ported from the legacy dashboard's summary views (``otj_at_risk_summary``,
+``epa_summary`` and the weekly attendance check), keeping only the fields the
+case generator consumes. Progress reviews and monthly coaching now come from the
+LMS (``lms_reviews.py``); their risk thresholds stay here. Aptem tables are read through the
 ``APTEM`` alias and ``public.kbc_attendance`` through ``DB``; the caller wraps
 each loader in a read-only transaction.
 """
@@ -40,19 +40,6 @@ def parse_date_safe(value):
             except ValueError:
                 continue
     return None
-
-
-def is_completed_status(value):
-    return 'completed' in str(value or '').strip().lower()
-
-
-def is_archived_status(value):
-    return 'archived' in str(value or '').strip().lower()
-
-
-def is_countable_progress_review_slot(planned_value):
-    text = str(planned_value or '').strip().lower()
-    return 'personal support plan' not in text and 'gateway review' not in text
 
 
 def normalize_attendance_value(value):
@@ -99,53 +86,6 @@ def _fetch(alias, sql, params=()):
         cursor.execute(sql, params)
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-
-def _overdue_slots(row, date_key, status_key, count, today):
-    """Past, uncompleted, unarchived planned dates: (count, latest overdue date)."""
-    overdue, latest = 0, None
-    for i in range(1, count + 1):
-        planned = row.get(f'{date_key}{i}')
-        planned_date = parse_date_safe(planned)
-        status = str(row.get(f'{status_key}{i}') or '').strip()
-        if not planned_date or (date_key.startswith('Review') and not is_countable_progress_review_slot(planned)):
-            continue
-        if planned_date < today and not is_completed_status(status) and not is_archived_status(status):
-            overdue += 1
-            latest = max(latest or planned_date, planned_date)
-    return overdue, latest
-
-
-def progress_review_rows(today=None):
-    today = today or date.today()
-    columns = ', '.join(f'"Review Planned Date{i}", "Review Status{i}"' for i in range(1, 17))
-    rows = _fetch(APTEM, f'''SELECT "ID", "Email", {columns} FROM public.progress_review
-        WHERE LOWER(COALESCE("Status", '')) = 'active' ''')
-    result = []
-    for row in rows:
-        overdue, latest = _overdue_slots(row, 'Review Planned Date', 'Review Status', 16, today)
-        result.append({
-            'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
-            'overduePrCount': overdue, 'duePrDate': latest.isoformat() if latest else '',
-            'reviewStatus': overdue_status(overdue),
-        })
-    return result
-
-
-def mcm_rows(today=None):
-    today = today or date.today()
-    columns = ', '.join(f'"MCM{i}", "Status{i}"' for i in range(1, 23))
-    rows = _fetch(APTEM, f'''SELECT "ID", "Email", {columns} FROM public."MCR"
-        WHERE LOWER(COALESCE("Status", '')) = 'active' ''')
-    result = []
-    for row in rows:
-        overdue, latest = _overdue_slots(row, 'MCM', 'Status', 22, today)
-        result.append({
-            'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
-            'overdue_count': overdue, 'risk': mcm_risk(overdue),
-            'next_mcm_date': latest.isoformat() if latest else '',
-        })
-    return result
 
 
 def otj_rows():

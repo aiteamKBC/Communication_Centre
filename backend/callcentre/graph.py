@@ -1,9 +1,11 @@
-"""App-only Microsoft Graph client for coach bookings.
+"""App-only Microsoft Graph client, with one app registration per job.
 
-Mirrors the LMS (``coach_api.views.get_graph_settings`` / ``microsoft_graph_request``) so a meeting the
-call centre creates is indistinguishable from one the LMS creates. ``MICROSOFT_GRAPH_*`` wins over the
-bare ``MICROSOFT_*`` names for the same reason it does in the LMS: the bare names may belong to a
-delegated-auth app with no application roles.
+* ``calendar`` (default) — coach bookings. Mirrors the LMS (``coach_api.views.get_graph_settings`` /
+  ``microsoft_graph_request``) so a meeting the call centre creates is indistinguishable from one the LMS
+  creates. ``MICROSOFT_GRAPH_*`` wins over the bare ``MICROSOFT_*`` names for the same reason it does in the
+  LMS: the bare names may belong to a delegated-auth app with no application roles.
+* ``mail`` — the no-reply sending app (``CALLCENTRE_MAIL_*``), used by ``mailer.py``. It never falls back to
+  the calendar app, which has no ``Mail.Send``.
 """
 import json
 import os
@@ -20,8 +22,17 @@ DEFAULT_BASE_URL = 'https://graph.microsoft.com/v1.0'
 TIMEZONE = 'GMT Standard Time'
 TIMEOUT = 20
 
+# Env names per credential, most preferred first, for each app registration.
+PROFILES = {
+    'calendar': {'tenant_id': ('MICROSOFT_GRAPH_TENANT_ID', 'MICROSOFT_TENANT_ID'),
+                 'client_id': ('MICROSOFT_GRAPH_CLIENT_ID', 'MICROSOFT_CLIENT_ID'),
+                 'client_secret': ('MICROSOFT_GRAPH_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET')},
+    'mail': {'tenant_id': ('CALLCENTRE_MAIL_TENANT_ID',), 'client_id': ('CALLCENTRE_MAIL_CLIENT_ID',),
+             'client_secret': ('CALLCENTRE_MAIL_CLIENT_SECRET',)},
+}
+
 _lock = threading.Lock()
-_token = {'key': None, 'value': None, 'expires_at': 0.0}
+_tokens = {}   # credentials -> (token, expires_at)
 
 
 class GraphError(RuntimeError):
@@ -34,29 +45,33 @@ def _env(*names):
     return next((os.environ[n].strip() for n in names if os.environ.get(n, '').strip()), '')
 
 
-def settings():
+def settings(profile='calendar'):
     return {
-        'tenant_id': _env('MICROSOFT_GRAPH_TENANT_ID', 'MICROSOFT_TENANT_ID'),
-        'client_id': _env('MICROSOFT_GRAPH_CLIENT_ID', 'MICROSOFT_CLIENT_ID'),
-        'client_secret': _env('MICROSOFT_GRAPH_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET'),
+        **{key: _env(*names) for key, names in PROFILES[profile].items()},
         'scope': _env('MICROSOFT_GRAPH_SCOPE') or DEFAULT_SCOPE,
         'base_url': _env('MICROSOFT_GRAPH_BASE_URL') or DEFAULT_BASE_URL,
     }
 
 
-def configured():
-    values = settings()
-    return all(values[k] for k in ('tenant_id', 'client_id', 'client_secret'))
+def missing(profile='calendar'):
+    """Env names still to set for this app registration (names only, never values)."""
+    values = settings(profile)
+    return [' or '.join(names) for key, names in PROFILES[profile].items() if not values[key]]
 
 
-def _access_token():
-    values = settings()
-    if not configured():
-        raise GraphError('Microsoft Graph is not configured for the call centre.')
+def configured(profile='calendar'):
+    return not missing(profile)
+
+
+def _access_token(profile='calendar'):
+    values = settings(profile)
+    if not configured(profile):
+        raise GraphError(f'Microsoft Graph ({profile}) is not configured for the call centre.')
     key = (values['tenant_id'], values['client_id'], values['client_secret'], values['scope'])
     with _lock:
-        if _token['key'] == key and _token['expires_at'] > monotonic():
-            return _token['value']
+        cached = _tokens.get(key)
+        if cached and cached[1] > monotonic():
+            return cached[0]
         try:
             response = requests.post(
                 f"https://login.microsoftonline.com/{values['tenant_id']}/oauth2/v2.0/token",
@@ -67,17 +82,16 @@ def _access_token():
         if response.status_code != 200 or not response.json().get('access_token'):
             raise GraphError(f'Microsoft sign-in refused ({response.status_code}).', response.status_code)
         data = response.json()
-        _token.update(key=key, value=data['access_token'],
-                      expires_at=monotonic() + max(int(data.get('expires_in', 3600)) - 120, 60))
-        return _token['value']
+        _tokens[key] = (data['access_token'], monotonic() + max(int(data.get('expires_in', 3600)) - 120, 60))
+        return data['access_token']
 
 
-def request(method, path, payload=None, headers=None):
+def request(method, path, payload=None, headers=None, profile='calendar'):
     """One Graph call. Raises GraphError (never with credentials or response bodies containing them)."""
-    url = f"{settings()['base_url'].rstrip('/')}/{path.lstrip('/')}"
+    url = f"{settings(profile)['base_url'].rstrip('/')}/{path.lstrip('/')}"
     try:
         response = requests.request(method, url, json=payload, timeout=TIMEOUT, headers={
-            'Authorization': f'Bearer {_access_token()}', 'Accept': 'application/json', **(headers or {})})
+            'Authorization': f'Bearer {_access_token(profile)}', 'Accept': 'application/json', **(headers or {})})
     except requests.RequestException as exc:
         raise GraphError(f'Microsoft Graph unavailable ({type(exc).__name__}).') from exc
     if response.status_code >= 400:
