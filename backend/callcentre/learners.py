@@ -5,8 +5,9 @@ learners who never reach Aptem all come from it. Aptem (``aptem_auto_extracting`
 gaps and supplies phone numbers and line managers. Neither database is written; when one
 source is unavailable the directory is built from the other.
 
-Field rules: coach, name, programme and organisation come from the LMS first; the learner's
-phone comes from Aptem first; line-manager details come from Aptem.
+Field rules: name, programme and organisation come from the LMS first; the learner's phone comes
+from Aptem first; line-manager details come from Aptem. The coach follows ``pick_coach``, from
+``enrolment`` only (never ``"Learner".learners``) with Aptem as the last resort.
 
 Learners the LMS has on a break in learning are left out entirely (Aptem cannot add them back);
 their emails are kept in ``Learners.on_break`` so their open cases can be hidden too.
@@ -29,9 +30,39 @@ def program_status(raw):
         return 'active'
     return normalized
 
-LMS_LEARNERS_SQL = '''SELECT id, "Username", "Email", "Phone_number", aptem_id, "Coach_name",
-    "Programme", "Programme_status", "Orgnization", "Employer", "Line_manager", "Cohort", "Group"
+
+# Owner names that are not a coach: a learner showing one of these needs the next source.
+PLACEHOLDER_COACHES = {'default owner'}
+
+LMS_LEARNERS_SQL = '''SELECT id, "Username", "Email", "Phone_number", aptem_id, "Coach_name", "Coach_email",
+    "Case_owner", "Programme", "Programme_status", "Orgnization", "Employer", "Line_manager", "Cohort", "Group"
     FROM enrolment."Created_users"'''
+STAFF_SQL = 'SELECT "Username", "Email" FROM enrolment."Staff_users"'
+
+
+def staff_emails(staff_rows):
+    """Staff name -> email, only where the name is unique (as the LMS's case_owner_coach)."""
+    found = {}
+    for row in staff_rows:
+        name = ' '.join(_text(row.get('Username')).split()).casefold()
+        if name:
+            found.setdefault(name, set()).add(email_key(row.get('Email')))
+    return {name: next(iter(emails)) for name, emails in found.items() if len(emails) == 1 and all(emails)}
+
+
+def pick_coach(coach_name, coach_email, case_owner, aptem_owner, staff):
+    """(name, email) of the learner's coach: Coach_name, else Case_owner, else Aptem's owner.
+
+    Blank and placeholder names ("Default Owner") fall through to the next source. The email is the
+    Created_users Coach_email for Coach_name, otherwise the unique staff account with that name.
+    """
+    for name, email in ((coach_name, coach_email), (case_owner, ''), (aptem_owner, '')):
+        name = ' '.join(_text(name).split())
+        if name and name.casefold() not in PLACEHOLDER_COACHES:
+            return name, email_key(email) or staff.get(name.casefold(), '')
+    return '', ''
+
+
 APTEM_LEARNERS_SQL = '''SELECT "ID", "FullName", "Email", "Learner Phone", "OwnerName",
     "OrganizationName", "Program Name", "ManagerName", "ManagerEmail"
     FROM public.aptem_auto_extracting'''
@@ -43,14 +74,18 @@ class Learners(dict):
     Iteration (``values()``/``items()``) yields each learner once, so phone directories and
     survey grouping never double count; ``in`` and ``[]`` accept every known email so source
     rows recorded under the Aptem email still find the learner. ``cohorts`` holds each LMS
-    learner's cohort and group, kept apart from the profile because profiles are copied onto cases.
+    learner's cohort and group, kept apart from the profile because profiles are copied onto cases;
+    ``coach_emails`` maps each coach name (casefolded) to its email where only one email is known;
+    ``active`` holds every email of the learners the LMS has as Active or Delivery.
     """
 
-    def __init__(self, profiles, aliases, cohorts=None, on_break=frozenset()):
+    def __init__(self, profiles, aliases, cohorts=None, on_break=frozenset(), coach_emails=None, active=frozenset()):
         super().__init__(profiles)
         self.aliases = aliases
         self.cohorts = cohorts or {}
         self.on_break = on_break
+        self.coach_emails = coach_emails or {}
+        self.active = active
 
     def __contains__(self, key):
         return dict.__contains__(self, key) or key in self.aliases
@@ -87,14 +122,23 @@ def _aptem_profile(row):
     }
 
 
-def merge(lms_rows, aptem_rows):
+def merge(lms_rows, aptem_rows, staff_rows=()):
     """Build the directory. Either input may be empty when its source is unavailable."""
+    staff = staff_emails(staff_rows)
+    coaches = {}
+
+    def coach(*sources):
+        name, email = pick_coach(*sources, staff)
+        if name and email:
+            coaches.setdefault(name.casefold(), set()).add(email)
+        return name
+
     aptem_by_email = _unique_by_email(aptem_rows, 'Email')
     aptem_by_id = {str(row['ID']): row for row in aptem_by_email.values() if row.get('ID') is not None}
     lms_by_email = _unique_by_email(
         [row for row in lms_rows if _text(row.get('Programme_status')).lower() not in SKIPPED_LMS_STATUSES], 'Email')
 
-    profiles, aliases, used, cohorts, on_break = {}, {}, set(), {}, set()
+    profiles, aliases, used, cohorts, on_break, active = {}, {}, set(), {}, set(), set()
     for email, row in lms_by_email.items():
         if program_status(row.get('Programme_status')) == 'break':
             aptem = aptem_by_id.get(_text(row.get('aptem_id'))) or aptem_by_email.get(email)
@@ -107,21 +151,27 @@ def merge(lms_rows, aptem_rows):
             'learner_email': email,
             'learner_name': _text(row.get('Username')) or fallback.get('learner_name', ''),
             'learner_phone': fallback.get('learner_phone') or normalize_phone(row.get('Phone_number')),
-            'coach': _text(row.get('Coach_name')) or fallback.get('coach', ''),
+            'coach': coach(row.get('Coach_name'), row.get('Coach_email'), row.get('Case_owner'), fallback.get('coach')),
             'organisation': _text(row.get('Orgnization')) or _text(row.get('Employer')) or fallback.get('organisation', ''),
             'programme': _text(row.get('Programme')) or fallback.get('programme', ''),
             'manager_name': fallback.get('manager_name') or _text(row.get('Line_manager')),
             'manager_email': fallback.get('manager_email', ''),
         }
+        lms_active = program_status(row.get('Programme_status')) == 'active'
+        if lms_active:
+            active.add(email)
         if aptem:
             aptem_email = email_key(aptem['Email'])
             used.add(aptem_email)
             if aptem_email != email:
                 aliases[aptem_email] = email
+            if lms_active:
+                active.add(aptem_email)
 
     # Aptem learners the LMS does not have yet (or no longer lists) keep their cases.
     for email, row in aptem_by_email.items():
         if email not in used and email not in profiles and email not in aliases and email not in on_break:
-            profiles[email] = _aptem_profile(row)
+            profiles[email] = {**_aptem_profile(row), 'coach': coach('', '', '', row['OwnerName'])}
     return Learners(profiles, {alias: email for alias, email in aliases.items() if alias not in profiles}, cohorts,
-                    frozenset(on_break))
+                    frozenset(on_break), {name: next(iter(emails)) for name, emails in coaches.items() if len(emails) == 1},
+                    frozenset(active))

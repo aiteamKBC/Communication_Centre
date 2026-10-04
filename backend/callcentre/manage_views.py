@@ -23,6 +23,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from . import email_settings, mailer
 from .db import DB
 from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
@@ -205,6 +206,29 @@ def call_requests(request):
             event(case, 'created', {'source': 'manual', 'title': title, 'purpose': purpose}, actor=actor)
     return JsonResponse({'id': case.pk, 'created': created}, status=201 if created else 200)
 
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def settings_view(request):
+    """Director settings (Settings tab): the automatic reminder emails and the sending mode."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        if type(data.get('revision')) is not int:
+            raise ValueError('Reload the settings and try again.')
+        revision = email_settings.save(data.get('values'), data['revision'], data.get('reason'),
+                                       request.user.get_username(), mailer.configured())
+        return JsonResponse({'ok': True, 'revision': revision})
+    values, revision, set_up = email_settings.stored()
+    return JsonResponse({
+        'values': values, 'defaults': email_settings.defaults(), 'revision': revision, 'set_up': set_up,
+        'not_set_up': '' if set_up else email_settings.NOT_SET_UP,
+        'reminder_types': [{'key': key, 'label': label} for key, label in email_settings.REMINDER_TYPES.items()],
+        'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing()},
+        'history': email_settings.history(),
+    })
 
 
 ALLOCATION_NOT_SET_UP = 'Learner allocation is not set up yet. Run docs/callcentre-port/allocation.sql on the call-centre database.'

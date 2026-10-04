@@ -19,8 +19,8 @@ from django.utils import timezone
 
 from . import graph
 from .aptem_summaries import normalize_attendance_value
-from .db import DB, LMS
-from .learners import program_status
+from .db import APTEM, DB, LMS
+from .learners import STAFF_SQL, pick_coach, program_status, staff_emails
 from .rules import LONDON, email_key
 from .services import Conflict
 
@@ -46,8 +46,6 @@ BANK_HOLIDAYS = {
 }
 COVERED_YEARS = range(2026, 2029)
 ACTIVE_STATUSES = ('not-scheduled', 'scheduled', 'in-progress', 'awaiting-signature')
-# Learner profiles the call centre books for. "delivery" learners are active, still on the old LMS.
-BOOKABLE_LIFECYCLES = ('active', 'delivery')
 LOCK_SCOPE = '__calendar_booking__'
 KBC_REPORT_ID_BASE = 8_000_000_000_000_000_000
 KBC_REPORT_ID_RANGE = 1_000_000_000_000_000_000
@@ -79,56 +77,41 @@ def _fetch(cursor, sql, params=()):
 
 
 def lms_learner(email):
-    """The learner as the LMS books them: their Created_users row and Active profile (coach from the profile)."""
-    with connections[LMS].cursor() as cursor:
-        rows = _fetch(cursor, '''SELECT cu.id, cu.aptem_id, cu."Username" AS source_name, cu."Email" AS source_email,
-                l.id AS profile_id, l.full_name, l.email AS profile_email, l.coach_name, l.coach_email
-            FROM enrolment."Created_users" cu
-            JOIN "Learner".learners l ON l.lifecycle_status = ANY(%s)
-             AND (l.enrolment_id = cu.id OR (l.enrolment_id IS NULL AND lower(l.email) = lower(cu."Email")))
-            WHERE lower(trim(cu."Email")) = %s AND coalesce(cu."Programme_status", '') <> 'duplicate - merged'
-            ORDER BY (l.enrolment_id = cu.id) DESC''', [list(BOOKABLE_LIFECYCLES), email_key(email)])
-    if not rows:
-        raise ValueError(not_bookable_reason(lms_standing(email)))
-    if len({row['id'] for row in rows}) > 1:
+    """The learner and their coach as the LMS enrolment record (enrolment."Created_users") gives them.
+
+    "Learner".learners is never read. The calendar row is filed under Created_users.id, which the LMS
+    accepts for catch-up and support sessions (learner_api.calendar._record_owner_ids).
+    """
+    from .sources import rows
+    found = rows(LMS, '''SELECT id, aptem_id, "Username", "Email", "Programme_status", "Coach_name", "Coach_email",
+            "Case_owner" FROM enrolment."Created_users"
+        WHERE lower(trim("Email")) = %s AND lower(coalesce("Programme_status", '')) <> 'duplicate - merged' ''',
+                 [email_key(email)])
+    if not found:
+        raise ValueError('This learner is not in the LMS (Aptem only), so the LMS cannot take a booking for them.')
+    if len(found) > 1:
         raise ValueError('More than one LMS learner uses this email. Book from the LMS instead.')
-    row = rows[0]
-    coach = email_key(row['coach_email'])
-    if not coach:
-        raise ValueError('The learner has no coach email in the LMS. Ask for their coach to be set first.')
-    return {
-        'source_id': row['id'], 'aptem_id': row['aptem_id'], 'profile_id': row['profile_id'],
-        'name': (row['full_name'] or row['source_name'] or '').strip() or 'Learner',
-        'email': email_key(row['profile_email'] or row['source_email']),
-        'source_name': (row['source_name'] or '').strip(), 'source_email': email_key(row['source_email']),
-        'coach_email': coach, 'coach_name': (row['coach_name'] or '').strip() or 'Coach',
-    }
-
-
-def lms_standing(email):
-    """The learner's LMS programme status and whether they have a bookable profile; None if not in the LMS."""
-    with connections[LMS].cursor() as cursor:
-        rows = _fetch(cursor, '''SELECT cu."Programme_status" AS status,
-                EXISTS (SELECT 1 FROM "Learner".learners l WHERE l.lifecycle_status = ANY(%s)
-                    AND (l.enrolment_id = cu.id OR (l.enrolment_id IS NULL AND lower(l.email) = lower(cu."Email")))) AS active
-            FROM enrolment."Created_users" cu
-            WHERE lower(trim(cu."Email")) = %s AND lower(coalesce(cu."Programme_status", '')) <> 'duplicate - merged'
-            ORDER BY 2 DESC''', [list(BOOKABLE_LIFECYCLES), email_key(email)])
-    return {'status': (rows[0]['status'] or '').strip(), 'active': rows[0]['active']} if rows else None
-
-
-def not_bookable_reason(standing):
-    """Why the LMS will not take a booking for a learner without an Active (or Delivery) profile."""
-    if not standing:
-        return 'This learner is not in the LMS (Aptem only), so the LMS cannot take a booking for them.'
-    status = program_status(standing['status'])
+    row = found[0]
+    status = program_status(row['Programme_status'])
     if status == 'break':
-        return 'This learner is on a break in learning in the LMS, so no session can be booked for them.'
+        raise ValueError('This learner is on a break in learning in the LMS, so no session can be booked for them.')
     if status != 'active':
-        return (f'This learner’s LMS status is “{standing["status"] or "not set"}”, not Active, so the LMS cannot take '
-                'a booking for them. Check their status with the LMS team before booking.')
-    return ('This learner is Active but has no LMS learner profile yet, so the LMS cannot take a booking for '
-            'them. Ask the LMS team to sync their profile.')
+        raise ValueError(f'This learner’s LMS status is “{(row["Programme_status"] or "").strip() or "not set"}”, '
+                         'not Active, so the LMS cannot take a booking for them. Check their status with the LMS team.')
+    try:
+        owners = rows(APTEM, '''SELECT DISTINCT "OwnerName" FROM public.aptem_auto_extracting
+            WHERE "ID"::text = %s OR lower(trim("Email")) = %s''', [str(row['aptem_id'] or '').strip(), email_key(email)])
+    except Exception:
+        owners = []
+    aptem_owner = owners[0]['OwnerName'] if len(owners) == 1 else ''
+    coach_name, coach_email = pick_coach(row['Coach_name'], row['Coach_email'], row['Case_owner'], aptem_owner,
+                                         staff_emails(rows(LMS, STAFF_SQL)))
+    if not coach_email:
+        raise ValueError(f'No email is recorded in the LMS for the learner’s coach ({coach_name or "none set"}). '
+                         'Ask for their coach to be set in the LMS first.')
+    name = (row['Username'] or '').strip() or 'Learner'
+    return {'source_id': row['id'], 'aptem_id': row['aptem_id'], 'name': name, 'email': email_key(row['Email']),
+            'coach_email': coach_email, 'coach_name': coach_name}
 
 
 def missed_lecture(ticket):
@@ -220,7 +203,7 @@ def _reserve(person, session_type, start, notes, idempotency_key):
     """Insert the LMS calendar row under the LMS's per-learner lock and rules; returns (row, created)."""
     local = start.astimezone(LONDON)
     day, at = local.date(), local.time().replace(second=0, microsecond=0)
-    learner_id, coach = person['profile_id'], person['coach_email']
+    learner_id, coach = person['source_id'], person['coach_email']
     with transaction.atomic(using=LMS), connections[LMS].cursor() as cursor:
         cursor.execute('''INSERT INTO "Coach".coach_calendar_sequence (learner_id, event_type, last_sequence, updated_at)
             VALUES (%s, %s, 0, now()) ON CONFLICT (learner_id, event_type) DO NOTHING''', [learner_id, LOCK_SCOPE])
@@ -234,11 +217,12 @@ def _reserve(person, session_type, start, notes, idempotency_key):
                     or row['scheduled_date'] != day or row['scheduled_time'] != at):
                 raise ValueError('This booking request was already used for a different session.')
             return row, False
+        # By email: LMS rows carry a profile id or a Created_users id, two unrelated number ranges.
         nearby = _fetch(cursor, '''SELECT event_type, sequence, scheduled_date, scheduled_time, duration_minutes, status
             FROM "Coach".coach_calendar_event
-            WHERE (learner_id = %s OR lower(learner_email) = %s) AND scheduled_time IS NOT NULL
+            WHERE lower(learner_email) = %s AND scheduled_time IS NOT NULL
               AND scheduled_date BETWEEN %s AND %s AND status = ANY(%s)''',
-                        [learner_id, person['email'], min(day - timedelta(days=1), day - timedelta(days=day.weekday())),
+                        [person['email'], min(day - timedelta(days=1), day - timedelta(days=day.weekday())),
                          max(day + timedelta(days=1), day + timedelta(days=6 - day.weekday())), list(ACTIVE_STATUSES)])
         week = (day - timedelta(days=day.weekday()), day + timedelta(days=6 - day.weekday()))
         for other in nearby:
@@ -354,8 +338,8 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 'approved', true, '', now(), now(), NULL, '', 'text',
                 %s, %s, 'catch-up', %s) RETURNING id''',
                    [kbc_report_id(lecture['key']), person['coach_email'], person['coach_name'], person['source_id'],
-                    person['source_name'] or person['name'], person['source_email'] or person['email'], lecture['title'][:255],
-                    lecture['date'], reason_category, reason, person['source_email'] or person['email'],
+                    person['name'], person['email'], lecture['title'][:255],
+                    lecture['date'], reason_category, reason, person['email'],
                     f'Told the call centre by phone (taken by {agent_name}).', previous, row['event_key']])
     return cursor.fetchone()[0], ''
 

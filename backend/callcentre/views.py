@@ -3,7 +3,6 @@ from datetime import date, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
-from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.db import DatabaseError, transaction
@@ -16,7 +15,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import lms_booking
+from . import email_settings, lms_booking
 from .ai import ai_enabled
 from .allocation import owners
 from .booking_email import readiness as booking_email_readiness, render as render_booking_email
@@ -25,7 +24,8 @@ from .db import DB
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
 from .reports import performance
-from .rules import LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, missed_call, normalize_phone, parse_moment, priority, promise_missed
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, missed_call, normalize_phone, parse_moment,
+                    priority, promise_missed)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, send_back
 
 
@@ -33,6 +33,9 @@ ISSUE_NAMES = {
     'attendance': 'Lecture',
     'pr': 'Progress review',
     'mcm': 'MCM',
+    'pr_missed': 'Missed progress review',
+    'mcm_missed': 'Missed MCM',
+    'signature': 'Missing signature',
     'otj': 'OTJ',
     'epa': 'EPA',
     'reminder': 'Reminder',
@@ -49,6 +52,8 @@ def issue_json(ticket):
         name = str(data.get('session_type') or '').strip()
     elif ticket.source_type == 'manual':
         name = str(data.get('title') or '').strip()
+    elif ticket.source_type in REVIEW_CATEGORIES:
+        name = str(data.get('review_type') or '').strip()
     return {
         'id': ticket.pk,
         'source_type': ticket.source_type,
@@ -134,7 +139,7 @@ def config(request):
         'is_manager': request.user.is_staff, 'is_superuser': request.user.is_superuser,
         'agents': list(agents.order_by('zoom_account').values(
             'id', 'display_name', 'zoom_account', 'zoom_phone_number')),
-        'email_mode': settings.CALLCENTRE_EMAIL_MODE, 'ai_enabled': ai_enabled(),
+        'email_mode': email_settings.current()['email_mode'], 'ai_enabled': ai_enabled(),
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details', 'locked_until').first(),
     })
@@ -198,7 +203,7 @@ def overview(request):
         'resolutions': report['resolutions'], 'unclaimed_breaches': report['unclaimed_breaches'],
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details').first(),
-        'connections': {'calling': bool(agent), 'email_mode': settings.CALLCENTRE_EMAIL_MODE, 'ai': ai_enabled()},
+        'connections': {'calling': bool(agent), 'email_mode': email_settings.current()['email_mode'], 'ai': ai_enabled()},
     })
 
 
@@ -390,8 +395,8 @@ def booking(request, pk):
 def booking_email(request, pk):
     """Render the booking email for this case (default or reworded) with what it still needs to be sent. Sends nothing."""
     ticket = CaseTicket.objects.get(pk=pk)
-    if ticket.source_type == 'satisfaction':
-        raise ValueError('Employer feedback cases have no booking email.')
+    if ticket.source_type in ('satisfaction', 'signature'):
+        raise ValueError('This case has no booking email.')
     data = body(request)
     agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
     if not agent and not request.user.is_staff:

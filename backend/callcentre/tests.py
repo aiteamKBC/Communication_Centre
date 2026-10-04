@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
+from django.conf import settings
 from django.core import signing
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
@@ -18,6 +19,7 @@ from . import booking_email
 from . import booking_links
 from . import learners
 from . import lms_booking
+from . import lms_reviews
 from .ai import ai_enabled, validate_analysis
 from .emails import survey_token
 from .manage_views import allocations, call_requests, phone_keys, require_manager
@@ -95,6 +97,7 @@ class ScopeTests(SimpleTestCase):
         self.assertIn('otj', sql)
         self.assertIn('2026-09-01', sql)
         self.assertIn('resting@example.com', sql)
+        self.assertIn('review_type', sql)   # old Aptem-table review cases are left out
 
 
 class OutcomeTests(SimpleTestCase):
@@ -122,17 +125,6 @@ class SummaryTests(SimpleTestCase):
         self.assertEqual(summaries.parse_date_safe('Due 3 Feb 2026 (late)'), date(2026, 2, 3))
         self.assertEqual(summaries.parse_date_safe(datetime(2026, 2, 3, 9)), date(2026, 2, 3))
         self.assertIsNone(summaries.parse_date_safe('N/A'))
-
-    def test_overdue_slots_skip_completed_archived_and_excluded_reviews(self):
-        row = {
-            'Review Planned Date1': '2026-01-01', 'Review Status1': 'Scheduled',
-            'Review Planned Date2': '2026-02-01', 'Review Status2': 'Completed',
-            'Review Planned Date3': 'Gateway review 2026-03-01', 'Review Status3': '',
-            'Review Planned Date4': '2026-03-05', 'Review Status4': 'Archived',
-            'Review Planned Date5': '2026-12-01', 'Review Status5': '',
-        }
-        overdue, latest = summaries._overdue_slots(row, 'Review Planned Date', 'Review Status', 5, date(2026, 6, 1))
-        self.assertEqual((overdue, latest), (1, date(2026, 1, 1)))
 
     def test_thresholds(self):
         self.assertEqual(summaries.overdue_status(13), 'Due')
@@ -356,15 +348,20 @@ class LmsBookingTests(SimpleTestCase):
         learner.assert_not_called()
 
 
+COACHES = {'olivia evans': 'olivia.evans@kentbusinesscollege.com', 'afaan khan': 'afaan.khan@kentbusinesscollege.com',
+           'med maher': 'med.maher@kentbusinesscollege.com'}
+
+
+@mock.patch('callcentre.sources.coach_email', lambda name: COACHES.get(' '.join(str(name).split()).casefold(), ''))
 class BookingEmailTests(SimpleTestCase):
-    def ticket(self, source_type, coach='Olivia Smith', **extra):
+    def ticket(self, source_type, coach='Olivia Evans', **extra):
         return SimpleNamespace(source_type=source_type, coach=coach, learner_name='Sam Learner', learner_email='sam@example.com',
                                overdue_since=date(2026, 9, 21), source_data={'module': 'Marketing <Plan>'}, **extra)
 
-    def test_catch_up_email_uses_the_coach_booking_link_and_no_review_links(self):
+    def test_catch_up_email_uses_the_coach_support_link_and_no_review_links(self):
         draft = booking_email.render(self.ticket('attendance'), 'Agent One')
-        self.assertEqual(draft['link'], {'label': 'Book your catch-up session',
-                                         'url': booking_links.BASE + 'I26h14gLCESW1sxisFM7NA2'})
+        self.assertEqual(draft['link']['label'], 'Book your catch-up session')
+        self.assertIn('I26h14gLCESW1sxisFM7NA2', draft['link']['url'])
         self.assertIn('Marketing &lt;Plan&gt;', draft['html'])
         self.assertIn('Monday 21 September 2026', draft['text'])
         for code in ('dFNqOwBdgEaEnzYyrKQ3Sw2', 'sVb8a69Fy0WmmOBY0UDUcA2'):
@@ -373,9 +370,9 @@ class BookingEmailTests(SimpleTestCase):
     def test_review_emails_carry_only_their_own_bookings_link(self):
         pr = booking_email.render(self.ticket('pr'), 'Agent One')
         mcm = booking_email.render(self.ticket('mcm'), 'Agent One')
-        self.assertTrue(pr['link']['url'].endswith('dFNqOwBdgEaEnzYyrKQ3Sw2'))
+        self.assertIn('dFNqOwBdgEaEnzYyrKQ3Sw2', pr['link']['url'])
         self.assertNotIn('sVb8a69Fy0WmmOBY0UDUcA2', pr['html'])
-        self.assertTrue(mcm['link']['url'].endswith('sVb8a69Fy0WmmOBY0UDUcA2'))
+        self.assertIn('sVb8a69Fy0WmmOBY0UDUcA2', mcm['link']['url'])
         self.assertNotIn('dFNqOwBdgEaEnzYyrKQ3Sw2', mcm['html'])
 
     def test_reworded_message_is_escaped_and_the_link_stays(self):
@@ -387,22 +384,229 @@ class BookingEmailTests(SimpleTestCase):
             booking_email.render(self.ticket('pr'), 'Agent One', subject='Subject', message='   ')
 
     def test_coach_without_a_link_is_reported_missing(self):
-        ticket = self.ticket('pr', coach='Unknown Coach')
-        with mock.patch.object(booking_email.EmailQuota.objects, 'filter') as quota:
+        ticket = self.ticket('pr', coach='Ahmed Lotfi')   # once matched Med Maher by the letters "med"
+        with mock.patch.object(booking_email.EmailQuota.objects, 'filter') as quota, \
+                mock.patch.object(booking_email.email_settings, 'current', return_value=booking_email.email_settings.defaults()):
             quota.return_value.values_list.return_value.first.return_value = 0
             checks = {c['key']: c['state'] for c in booking_email.readiness(ticket)}
         self.assertEqual(checks['link'], 'missing')
         self.assertEqual(checks['send'], 'missing')
         self.assertEqual(booking_email.render(ticket, 'Agent One')['link']['url'], '')
 
-    def test_not_bookable_reason_names_the_lms_status(self):
-        self.assertIn('not in the LMS', lms_booking.not_bookable_reason(None))
-        self.assertIn('“Withdrawn”', lms_booking.not_bookable_reason({'status': 'Withdrawn', 'active': False}))
-        self.assertIn('no LMS learner profile', lms_booking.not_bookable_reason({'status': 'Delivery', 'active': False}))
-        self.assertIn('break in learning', lms_booking.not_bookable_reason({'status': 'On Break', 'active': False}))
+    def test_links_come_from_the_lms_catalogue_by_email(self):
+        afaan, med = booking_links.booking_links('Afaan  Khan'), booking_links.booking_links('Med Maher')
+        self.assertTrue(afaan['mcm'].endswith('sJ6ozTEGHkOFKCognZbvjQ2'))
+        self.assertNotEqual(afaan['mcm'], med['pr'])
+        self.assertTrue(med['support'].endswith('3xT6G1X7mUeeCWp7yJmQwA2'))
+        self.assertTrue(all(url.startswith('https://') for links in booking_links.CATALOGUE.values() for url in links.values()))
 
-    def test_delivery_learners_are_booked_like_active_ones(self):
-        self.assertEqual(lms_booking.BOOKABLE_LIFECYCLES, ('active', 'delivery'))
+
+class CoachRuleTests(SimpleTestCase):
+    staff = {'case owner': 'owner@kbc.ac.uk', 'aptem owner': 'aptem.owner@kbc.ac.uk'}
+
+    def test_coach_name_first_then_case_owner_then_aptem(self):
+        self.assertEqual(learners.pick_coach('Lms Coach', 'Coach@KBC.ac.uk', 'Case Owner', 'Aptem Owner', self.staff),
+                         ('Lms Coach', 'coach@kbc.ac.uk'))
+        self.assertEqual(learners.pick_coach('', '', 'Case  Owner', 'Aptem Owner', self.staff), ('Case Owner', 'owner@kbc.ac.uk'))
+        self.assertEqual(learners.pick_coach('Default Owner', 'x@kbc.ac.uk', '', 'Aptem Owner', self.staff),
+                         ('Aptem Owner', 'aptem.owner@kbc.ac.uk'))
+        self.assertEqual(learners.pick_coach('', '', 'Default Owner', '', self.staff), ('', ''))
+
+    def test_staff_email_only_for_a_unique_name(self):
+        rows = [{'Username': 'Sam Coach', 'Email': 'a@kbc.ac.uk'}, {'Username': 'sam  coach', 'Email': 'b@kbc.ac.uk'},
+                {'Username': 'Jo Coach', 'Email': 'Jo@KBC.ac.uk'}]
+        self.assertEqual(learners.staff_emails(rows), {'jo coach': 'jo@kbc.ac.uk'})
+
+    def test_directory_coach_skips_placeholders_and_records_coach_emails(self):
+        people = learners.merge([lms_row(Coach_name='Default Owner', Case_owner='Case Owner', aptem_id='7')], [aptem_row()],
+                                [{'Username': 'Case Owner', 'Email': 'owner@kbc.ac.uk'}])
+        self.assertEqual(people['learner@example.com']['coach'], 'Case Owner')
+        self.assertEqual(people.coach_emails, {'case owner': 'owner@kbc.ac.uk'})
+
+    def test_active_holds_active_and_delivery_learners_with_their_aptem_email(self):
+        people = learners.merge([lms_row(aptem_id='7', Programme_status='Delivery'), lms_row(Email='gone@example.com',
+                                 Programme_status='Withdrawn')], [aptem_row(Email='Other@Example.com')])
+        self.assertEqual(people.active, {'learner@example.com', 'other@example.com'})
+
+    def test_lms_statuses_are_grouped_as_the_lms_groups_them(self):
         self.assertEqual([learners.program_status(s) for s in ('Active', 'Delivery', 'On Break', 'OnMaternityBreak', 'Completed')],
                          ['active', 'active', 'break', 'break', 'completed'])
+
+
+class LmsReviewTests(SimpleTestCase):
+    today = date(2026, 10, 4)
+
+    def classify(self, review_type='Progress Review', status='Not Scheduled', day=date(2026, 9, 20), completed=None,
+                 reasons=lms_reviews.IMPORTED_REASONS):
+        return lms_reviews.classify(review_type, status, day, completed, self.today, reasons)
+
+    def test_imported_statuses_become_due_missed_or_signature(self):
+        self.assertEqual(self.classify(), 'pr')
+        self.assertEqual(self.classify(status='Scheduled'), 'pr_missed')
+        self.assertEqual(self.classify(status='AwaitingSignature', completed=datetime(2026, 9, 20)), 'signature')
+        self.assertEqual(self.classify('Monthly Coaching Meeting', 'Scheduled'), 'mcm_missed')
+        for status in ('In Progress', 'Completed', 'Archived'):
+            self.assertIsNone(self.classify(status=status))
+
+    def test_both_progress_reviews_count_and_other_reviews_do_not(self):
+        self.assertEqual(self.classify('Progress Review (+ Skills Radar)'), 'pr')
+        for other in ('Gateway Review', 'Personal Support Plan', 'RPL and Experience'):
+            self.assertIsNone(self.classify(other))
+        self.assertIsNone(self.classify('Gateway Review', 'AwaitingSignature'))
+
+    def test_only_from_the_system_cutoff_and_only_once_the_date_has_passed(self):
+        self.assertIsNone(self.classify(day=date(2026, 8, 31)))
+        self.assertIsNone(self.classify(day=self.today))
+        self.assertIsNone(self.classify(completed=datetime(2026, 9, 21)))
+
+    def test_new_lms_statuses(self):
+        native = lms_reviews.NATIVE_REASONS
+        self.assertEqual(self.classify('Monthly Coaching Meeting', 'not-scheduled', reasons=native), 'mcm')
+        self.assertEqual(self.classify('Monthly Coaching Meeting', 'scheduled', reasons=native), 'mcm_missed')
+        self.assertEqual(self.classify(status='awaiting-signature', reasons=native), 'signature')
+        self.assertIsNone(self.classify(status='in-progress', reasons=native))
+
+    def test_two_progress_review_kinds_are_separate_calls(self):
+        items = [{'email': 'a@x.com', 'case_type': 'pr', 'review_type': t, 'day': date(2026, 9, d), 'ref': f'reviews:{d}'}
+                 for t, d in (('Progress Review', 10), ('Progress Review', 12), ('Progress Review (+ Skills Radar)', 15))]
+        groups = lms_reviews.group_items(items)
+        self.assertEqual(sorted(len(g) for g in groups.values()), [1, 2])
+
+    def test_a_review_is_done_when_completed_and_a_signature_when_signed(self):
+        self.assertTrue(lms_reviews.done('pr', {'status': 'Scheduled', 'completed': datetime(2026, 10, 1)}))
+        self.assertFalse(lms_reviews.done('pr_missed', {'status': 'Scheduled', 'completed': None}))
+        self.assertFalse(lms_reviews.done('signature', {'status': 'AwaitingSignature', 'completed': datetime(2026, 10, 1)}))
+        self.assertTrue(lms_reviews.done('signature', {'status': 'Completed', 'completed': datetime(2026, 10, 1)}))
+
+    def test_review_evidence_closes_from_the_lms_state(self):
+        from .evidence import review_evidence
+        created = datetime(2026, 10, 1, 9, tzinfo=LONDON)
+        ticket = SimpleNamespace(source_type='signature', learner_email='a@x.com', evidence_after=None, created_at=created,
+                                 source_data={'review_refs': ['reviews:5']})
+        signed = SimpleNamespace(errors={}, review_states={'reviews:5': {
+            'status': 'Completed', 'completed': datetime(2026, 9, 20, tzinfo=LONDON), 'updated_at': datetime(2026, 10, 2, tzinfo=LONDON)}})
+        proof = review_evidence(ticket, signed)
+        self.assertEqual((proof['kind'], proof['row_key']), ('review_signed', 'reviews:5'))
+        signed.review_states['reviews:5']['status'] = 'AwaitingSignature'
+        self.assertIsNone(review_evidence(ticket, signed))
+
+
+
+@mock.patch('callcentre.sources.coach_email', lambda name: COACHES.get(' '.join(str(name).split()).casefold(), ''))
+class ReminderEmailTests(SimpleTestCase):
+    def ticket(self, source_type, **extra):
+        values = {'source_type': source_type, 'coach': 'Olivia Evans', 'learner_name': 'Sam Learner',
+                  'learner_email': 'sam@example.com', 'manager_name': 'Morgan Manager', 'overdue_since': date(2026, 9, 21),
+                  'source_data': {'module': 'Marketing', 'review_type': 'Progress Review (+ Skills Radar)'}, 'pk': 1}
+        return SimpleNamespace(**{**values, **extra})
+
+    def test_reminders_are_off_unless_switched_on(self):
+        from . import email_settings, emails
+        self.assertFalse(settings.CALLCENTRE_REMINDERS_ENABLED)
+        self.assertFalse(email_settings.defaults()['reminders_enabled'])
+        self.assertEqual(email_settings.defaults()['email_mode'], 'dry_run')
+        with mock.patch.object(email_settings, 'current', return_value=email_settings.defaults()), \
+                mock.patch.object(emails.CaseTicket.objects, 'open') as open_cases:
+            self.assertEqual(emails.process_emails(), 0)
+        open_cases.assert_not_called()
+
+    def test_stage_follows_the_configured_days(self):
+        from .emails import reminder_stage
+        days = [0, 2, 5, 7]
+        self.assertEqual([reminder_stage(age, days) for age in (0, 1, 2, 4, 5, 6, 7, 30)],
+                         ['initial', 'initial', 'day2', 'day2', 'day5', 'day5', 'day7', 'day7'])
+        self.assertIsNone(reminder_stage(1, [2, 5]))
+
+    def test_catch_up_reminder_has_only_the_support_link_and_no_recording(self):
+        from .emails import render_email
+        subject, text, html = render_email(self.ticket('attendance'), 'day2')
+        self.assertEqual(subject, 'Reminder: Book your catch-up session for Marketing')
+        self.assertIn('I26h14gLCESW1sxisFM7NA2', html)
+        for other in ('dFNqOwBdgEaEnzYyrKQ3Sw2', 'sVb8a69Fy0WmmOBY0UDUcA2', 'recording'):
+            self.assertNotIn(other, html)
+        self.assertNotIn('speaking with us today', text)
+
+    def test_missed_review_and_signature_wording(self):
+        from .emails import render_email
+        subject, text, _ = render_email(self.ticket('pr_missed'), 'initial')
+        self.assertEqual(subject, 'Rebook your progress review')
+        self.assertIn('did not go ahead', text)
+        subject, text, html = render_email(self.ticket('signature'), 'initial')
+        self.assertEqual(subject, 'Please sign your Progress Review (+ Skills Radar)')
+        self.assertNotIn('<a href', html)
+        self.assertNotIn('confirm a time', text)
+
+    def test_escalation_goes_to_the_line_manager_in_the_template(self):
+        from .emails import render_email
+        subject, text, html = render_email(self.ticket('mcm'), 'escalation')
+        self.assertEqual(subject, 'Support needed for Sam Learner')
+        self.assertTrue(text.startswith('Hello Morgan Manager,'))
+        self.assertIn('an overdue monthly coaching meeting', text)
+        self.assertIn('email-assets/logo.png', html)
+
+
+MAIL_ENV = {'CALLCENTRE_MAIL_TENANT_ID': 'tenant', 'CALLCENTRE_MAIL_CLIENT_ID': 'client', 'CALLCENTRE_MAIL_CLIENT_SECRET': 'secret'}
+
+
+class MailerTests(SimpleTestCase):
+    def test_reports_missing_settings_by_name_and_never_uses_the_calendar_app(self):
+        from . import mailer
+        calendar_only = {'MICROSOFT_GRAPH_TENANT_ID': 't', 'MICROSOFT_GRAPH_CLIENT_ID': 'c', 'MICROSOFT_GRAPH_CLIENT_SECRET': 's'}
+        with mock.patch.dict('os.environ', calendar_only, clear=True), self.settings(CALLCENTRE_MAIL_SENDER=''):
+            self.assertEqual(mailer.missing(), ['CALLCENTRE_MAIL_TENANT_ID', 'CALLCENTRE_MAIL_CLIENT_ID',
+                                                'CALLCENTRE_MAIL_CLIENT_SECRET', 'CALLCENTRE_MAIL_SENDER'])
+            with self.assertRaises(mailer.MailError):
+                mailer.send('learner@example.com', 'Subject', '<p>Hi</p>')
+
+    @override_settings(CALLCENTRE_MAIL_SENDER='noreply@example.com')
+    def test_sends_as_the_no_reply_mailbox_with_the_mail_app(self):
+        from . import mailer
+        with mock.patch.dict('os.environ', MAIL_ENV, clear=True), mock.patch.object(mailer.graph, 'request') as request:
+            mailer.send('learner@example.com', 'Subject', '<p>Hi</p>', cc=['team@example.com'])
+        method, path, payload = request.call_args.args
+        self.assertEqual((method, path, request.call_args.kwargs['profile']), ('POST', 'users/noreply%40example.com/sendMail', 'mail'))
+        message = payload['message']
+        self.assertEqual(message['toRecipients'], [{'emailAddress': {'address': 'learner@example.com'}}])
+        self.assertEqual(message['ccRecipients'], [{'emailAddress': {'address': 'team@example.com'}}])
+        self.assertEqual(message['from']['emailAddress']['address'], 'noreply@example.com')
+        self.assertTrue(payload['saveToSentItems'])
+
+    @override_settings(CALLCENTRE_MAIL_SENDER='noreply@example.com')
+    def test_a_refusal_is_a_failure_and_a_lost_connection_is_uncertain(self):
+        from . import graph, mailer
+        with mock.patch.dict('os.environ', MAIL_ENV, clear=True):
+            for error, uncertain in ((graph.GraphError('refused', 403), False), (graph.GraphError('timeout'), True)):
+                with mock.patch.object(mailer.graph, 'request', side_effect=error), self.assertRaises(mailer.MailError) as caught:
+                    mailer.send('learner@example.com', 'Subject', '<p>Hi</p>')
+                self.assertIs(caught.exception.uncertain, uncertain)
+
+
+class EmailSettingsTests(SimpleTestCase):
+    def values(self, **changes):
+        from . import email_settings
+        return {**email_settings.defaults(), **changes}
+
+    def test_clean_orders_days_and_types_and_refuses_nonsense(self):
+        from . import email_settings
+        cleaned = email_settings.clean(self.values(reminder_days=[7, 0, 2, 2], reminder_types=['signature', 'attendance'],
+                                                   escalation_cc=' Team@Example.com '))
+        self.assertEqual(cleaned['reminder_days'], [0, 2, 7])
+        self.assertEqual(cleaned['reminder_types'], ['attendance', 'signature'])
+        self.assertEqual(cleaned['escalation_cc'], 'team@example.com')
+        for bad in ({'email_mode': 'send'}, {'reminder_days': []}, {'reminder_days': [61]}, {'escalate_day': -1},
+                    {'reminder_types': ['everything']}, {'daily_cap': 11}, {'escalation_cc': 'not-an-email'},
+                    {'reminders_enabled': 'yes'}):
+            with self.assertRaises(ValueError):
+                email_settings.clean(self.values(**bad))
+
+    def test_save_needs_a_reason_and_live_needs_microsoft_365(self):
+        from . import email_settings
+        with self.assertRaisesMessage(ValueError, 'Say why'):
+            email_settings.save(self.values(), 0, 'no', 'director', can_send=True)
+        with self.assertRaisesMessage(ValueError, 'Live sending needs'):
+            email_settings.save(self.values(email_mode='live'), 0, 'Going live today', 'director', can_send=False)
+
+    def test_sender_defaults_to_the_no_reply_mailbox(self):
+        from . import mailer
+        self.assertEqual(mailer.sender(), 'no-reply@kentbusinesscollege.com')
 

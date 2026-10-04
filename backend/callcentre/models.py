@@ -152,8 +152,9 @@ class CaseQuerySet(RetainedQuerySet):
 
 class CaseTicket(Retained):
     objects = CaseQuerySet.as_manager()
-    CATEGORIES = [(s, s.upper() if s in ('pr', 'mcm', 'otj', 'epa') else s.title())
-                  for s in ('attendance', 'pr', 'mcm', 'otj', 'epa', 'reminder', 'satisfaction', 'manual')]
+    CATEGORIES = [(s, s.upper() if s in ('pr', 'mcm', 'otj', 'epa') else s.replace('_', ' ').title())
+                  for s in ('attendance', 'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature', 'otj', 'epa', 'reminder',
+                            'satisfaction', 'manual')]
     STATES = [(s, s.replace('_', ' ').title()) for s in (
         'new', 'in_progress', 'pending_learner', 'pending_verification', 'ai_suggested_close',
         'resolved', 'unreachable', 'escalated',
@@ -376,4 +377,30 @@ class AllocationHistory(Retained):
 
     class Meta:
         db_table = 'callcenter_allocation_history'
+        managed = False
+
+
+class Setting(models.Model):
+    """A director-managed setting group (e.g. 'email'); the value overrides the .env defaults."""
+    key = models.CharField(max_length=64, primary_key=True)
+    value = models.JSONField()
+    revision = models.PositiveIntegerField(default=1)
+    updated_by = models.CharField(max_length=255)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_setting'
+        managed = False
+
+
+class SettingHistory(Retained):
+    key = models.CharField(max_length=64)
+    previous = models.JSONField(null=True)
+    value = models.JSONField()
+    reason = models.TextField()
+    actor = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_setting_history'
         managed = False
