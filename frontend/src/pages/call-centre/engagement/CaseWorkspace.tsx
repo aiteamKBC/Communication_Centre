@@ -123,8 +123,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
         {emailOpen && <SatisfactionEmail key={c.id} employer={c.source_type === 'satisfaction'}
-          recipient={c.source_type === 'satisfaction' ? c.manager_email : c.learner_email}
-          name={c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name} />}
+          caseId={c.id} session={session} />}
       </Dialog>
     </>
   );

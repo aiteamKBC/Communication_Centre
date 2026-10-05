@@ -144,6 +144,8 @@ def main():
         assert CaseTicket.objects.filter(learner_email='').count() == 2
         checked += 1
 
+    from callcentre.check_satisfaction_email_sqlite import check_email
+    checked += check_email(user, agent)
     print(f'Passed {checked} isolated SQLite workflow scenarios. No external databases accessed.')
 
 

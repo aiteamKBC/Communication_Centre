@@ -110,7 +110,8 @@ def generate(people, now=None):
         if not allowed and old_eligible:
             release_fields(ticket)
             event(ticket, 'satisfaction_ineligible', {'programme_status': person['programme_status']})
-        ticket.save()
+        ticket.save(update_fields=[*person['profile'], 'source_data', 'claimed_by', 'claimed_at',
+                                   'last_activity_at', 'updated_at'])
         for identity in identifiers:
             index.setdefault(identity, set()).add(ticket.pk)
     # A successful full snapshot can hide leavers, without resolving or deleting their history.

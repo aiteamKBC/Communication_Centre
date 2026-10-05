@@ -15,7 +15,8 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, lms_booking
+from . import email_settings, lms_booking, satisfaction_email
+from .learner_satisfaction import complete as complete_learner_feedback
 from .ai import ai_enabled
 from .allocation import owners
 from .booking_email import readiness as booking_email_readiness, render as render_booking_email
@@ -129,6 +130,20 @@ def ticket_json(ticket):
         'requested_by': str(ticket.source_data.get('requested_by') or '') if isinstance(ticket.source_data, dict) else '',
         'priority_why': f"Risk: {ticket.risk}; SLA: {'overdue' if score[2] else 'within due date'}; learner overdue: {score[3]} days; misses: {ticket.misses}; tomorrow: {bool(score[5])}; failed attempts: {ticket.attempts}",
     }
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def satisfaction_email_view(request, pk):
+    data = body(request) if request.method == 'POST' else {}
+    agent_id = data.get('agent_id') if request.method == 'POST' else request.GET.get('agent_id')
+    agent = operating_agent(request.user, int(agent_id) if agent_id else None)
+    if request.method == 'POST':
+        return JsonResponse(satisfaction_email.send(pk, request.user, data, acting_agent=agent))
+    ticket = CaseTicket.objects.get(pk=pk)
+    can_work(ticket, request.user, acting_agent=agent)
+    return JsonResponse(satisfaction_email.draft(ticket))
 
 
 @authenticated

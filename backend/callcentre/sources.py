@@ -59,7 +59,9 @@ def profiles():
     aptem = get_source('aptem_learners', lambda: rows(APTEM, learners.APTEM_LEARNERS_SQL))
     if lms is None and aptem is None:
         raise RuntimeError('Neither learner source is available.')
-    return learners.merge(lms or [], aptem or [], _staff())
+    people = learners.merge(lms or [], aptem or [], _staff())
+    people.sources_complete = lms is not None and aptem is not None
+    return people
 
 
 def learner_directory():
@@ -72,7 +74,9 @@ def learner_directory():
             loaded.append(None)
     if all(item is None for item in loaded):
         raise DatabaseError('Neither learner source is available.')
-    return learners.merge(*(item or [] for item in loaded), _staff())
+    people = learners.merge(*(item or [] for item in loaded), _staff())
+    people.sources_complete = all(item is not None for item in loaded)
+    return people
 
 
 DIRECTORY_REFRESH_SECONDS = 300

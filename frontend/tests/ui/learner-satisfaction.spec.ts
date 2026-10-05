@@ -58,6 +58,13 @@ async function mockDesk(page: Page) {
       cases = cases.filter(c => c.id !== 1);
       return json({ ok: true });
     }
+    if (path.endsWith('/satisfaction-email/')) {
+      const employer = path.includes('/3/');
+      const recipient = employer ? 'manager@example.org' : 'learner1@example.org';
+      if (request.method() === 'POST') return json({ id: 1, status: 'accepted', recipient, error: '' });
+      return json({ recipient, sender: 'no-reply@example.org', name: 'Test Contact', subject: 'Feedback request',
+        message: 'Please contact your coach with feedback.', can_send: true, reason: '' });
+    }
     if (path === '/api/auth/access/') return json({ id: 1, email: 'operator@example.org', access: {}, groups: [] });
     return json({}); // No request in these UI tests reaches a real backend or mail provider.
   });
@@ -77,18 +84,44 @@ test('counts only due open reviews and keeps contacts with no phone', async ({ p
   await expect(page.locator('[data-sheet-row="2"]')).toBeVisible();
 });
 
-test('email drafts use the right contact and never send or queue', async ({ page }) => {
+test('email drafts use the right contact and only send on explicit click', async ({ page }) => {
   const posts = await mockDesk(page);
   await page.getByRole('button', { name: 'Email', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('learner1@example.org');
-  await expect(dialog.getByRole('button', { name: 'Send via Azure — not connected' })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Send via Azure', exact: true })).toBeEnabled();
   await dialog.getByLabel('Message').fill('Draft feedback request');
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
   await page.getByRole('button', { name: 'Email', exact: true }).click();
   await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('manager@example.org');
   expect(posts.filter(post => post.path.startsWith('/api/callcentre/'))).toEqual([]);
+  await dialog.getByRole('button', { name: 'Send via Azure', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365 for manager@example.org');
+  await expect(dialog.getByRole('button', { name: 'Request recorded', exact: true })).toBeDisabled();
+  expect(posts.filter(post => post.path.endsWith('/satisfaction-email/'))).toHaveLength(1);
+  expect(posts.at(-1)?.data).toMatchObject({ agent_id: 1, subject: 'Feedback request' });
+  expect(posts.at(-1)?.data.request_id).toBeTruthy();
+  await expect(page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true })).toBeVisible();
+});
+
+test('a network retry reuses the same request ID and does not complete feedback', async ({ page }) => {
+  await mockDesk(page);
+  const requests: Record<string, unknown>[] = [];
+  await page.route('**/api/callcentre/tickets/1/satisfaction-email/', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) return route.abort('failed');
+    return route.fulfill({ json: { id: 9, status: 'accepted', recipient: 'learner1@example.org', error: '' } });
+  });
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Send via Azure', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Check / retry request', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365');
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toEqual(requests[1]);
+  await expect(page.getByRole('button', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
 });
 
 test('completion records rating, issue and agreed action then refreshes the count', async ({ page }) => {

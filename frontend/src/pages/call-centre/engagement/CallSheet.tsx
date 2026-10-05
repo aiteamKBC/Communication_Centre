@@ -170,7 +170,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       {callReason && <span className="ed-call-reason">{callReason}</span>}
                       {['learner_satisfaction', 'satisfaction'].includes(c.source_type) && <button type="button"
                         className="ed-sheet-link" disabled={disabled || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
-                        title="Prepare an email; Azure sending is not connected yet" onClick={() => setSatisfactionEmail(c)}>Email</button>}
+                        title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
                     </td>
                     <td className="ed-booking-cell">
                       <strong>{c.coach || 'Coach not recorded'}</strong>
@@ -220,8 +220,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       </Dialog>
       <Dialog open={satisfactionEmail !== null} onClose={() => setSatisfactionEmail(null)}>
         {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id} employer={satisfactionEmail.source_type === 'satisfaction'}
-          recipient={satisfactionEmail.source_type === 'satisfaction' ? satisfactionEmail.manager_email : satisfactionEmail.learner_email}
-          name={satisfactionEmail.source_type === 'satisfaction' ? satisfactionEmail.manager_name || satisfactionEmail.learner_name : satisfactionEmail.learner_name} />}
+          caseId={satisfactionEmail.id} session={session} />}
       </Dialog>
     </section>
   );
