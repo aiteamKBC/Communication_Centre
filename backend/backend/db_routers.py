@@ -3,6 +3,32 @@ import sys
 from django.conf import settings
 
 
+class CallCentreRouter:
+    """Send the call-centre app to login_db, the database that already holds its tables.
+
+    The tables were created by the legacy dashboard and are shared with auth_user, so
+    Django must never migrate them from here.
+    """
+
+    app_label = 'callcentre'
+    using = 'login_db'
+
+    def db_for_read(self, model, **hints):
+        return self.using if model._meta.app_label == self.app_label else None
+
+    def db_for_write(self, model, **hints):
+        return self.using if model._meta.app_label == self.app_label else None
+
+    def allow_relation(self, obj1, obj2, **hints):
+        labels = {obj1._meta.app_label, obj2._meta.app_label}
+        if self.app_label in labels and labels <= {self.app_label, 'auth'}:
+            return True
+        return None
+
+    def allow_migrate(self, db, app_label, model_name=None, **hints):
+        return False if app_label == self.app_label else None
+
+
 class ExternalDbRouter:
     """Route read-only external models to their configured databases."""
 

@@ -1,0 +1,154 @@
+"""Read-only learner risk signals for case generation.
+
+Ported from the legacy dashboard's summary views (``otj_at_risk_summary``,
+``epa_summary`` and the weekly attendance check), keeping only the fields the
+case generator consumes. Progress reviews and monthly coaching now come from the
+LMS (``lms_reviews.py``); their risk thresholds stay here. Aptem tables are read through the
+``APTEM`` alias and ``public.kbc_attendance`` through ``DB``; the caller wraps
+each loader in a read-only transaction.
+"""
+import re
+from datetime import date, datetime, timedelta
+
+from django.db import connections
+
+from .db import APTEM, DB
+
+DATE_FORMATS = ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d', '%d-%m-%y', '%d/%m/%y', '%d %b %Y', '%d %B %Y')
+DATE_IN_TEXT = re.compile(
+    r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})')
+
+
+def parse_date_safe(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    value = str(value).strip()
+    if not value or value.upper() == 'N/A':
+        return None
+    candidates = [value]
+    match = DATE_IN_TEXT.search(value)
+    if match:
+        candidates.append(match.group(1).strip())
+    for candidate in candidates:
+        for fmt in DATE_FORMATS:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def normalize_attendance_value(value):
+    if value is True or value == 1:
+        return 1
+    if value is False or value == 0:
+        return 0
+    normalized = str(value or '').strip().lower()
+    if normalized in {'1', 'present', 'attended', 'yes', 'true'}:
+        return 1
+    if normalized in {'0', 'absent', 'missed', 'no', 'false'}:
+        return 0
+    return None
+
+
+def attendance_risk(missed_count):
+    try:
+        count = int(missed_count or 0)
+    except (TypeError, ValueError):
+        count = 0
+    return 'red' if count >= 3 else 'amber'
+
+
+def overdue_status(overdue_count):
+    if overdue_count <= 0:
+        return 'Ahead'
+    if overdue_count > 12:
+        return 'Due'
+    if overdue_count > 10:
+        return 'At Risk'
+    return 'Normal'
+
+
+def mcm_risk(overdue_count):
+    if overdue_count >= 3:
+        return 'red'
+    if overdue_count >= 1:
+        return 'amber'
+    return 'green'
+
+
+def _fetch(alias, sql, params=()):
+    with connections[alias].cursor() as cursor:
+        cursor.execute(sql, params)
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def otj_rows():
+    rows = _fetch(APTEM, '''SELECT "ID", "Email", "OTJHoursStatus" FROM public.aptem_auto_extracting
+        WHERE "Program-Status" = 'Active' AND "OTJHoursStatus" IS NOT NULL AND "OTJHoursStatus" != '' ''')
+    return [{'id': str(row.get('ID') or ''), 'email': str(row.get('Email') or '').strip().lower(),
+             'otjHoursStatus': row.get('OTJHoursStatus') or ''} for row in rows]
+
+
+def epa_overdue_rows(today=None):
+    """Active learners still open more than 7 days after their End-Date."""
+    today = today or date.today()
+    rows = _fetch(APTEM, '''SELECT "ID", "Email", "Program-Status", "Subscription Status", "End-Date"
+        FROM public.aptem_auto_extracting''')
+    result = []
+    for row in rows:
+        active = 'active' in {str(row.get('Program-Status') or '').strip().lower(),
+                              str(row.get('Subscription Status') or '').strip().lower()}
+        end_date = parse_date_safe(row.get('End-Date'))
+        if active and end_date and today > end_date + timedelta(days=7):
+            result.append({'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
+                           'endDate': end_date.isoformat()})
+    return result
+
+
+def attendance_missed_for_week(week_start, week_end):
+    """Each unambiguous missed learner/date/module session in the requested week.
+
+    The count is the number of distinct missed (email, module, date) sessions up
+    to that date across all history; a date counts as missed if any row for it is.
+    """
+    rows = _fetch(DB, '''SELECT "key", "Email", "date", "Attendance", "module" FROM public.kbc_attendance
+        WHERE "date" >= %s AND "date" <= %s ORDER BY "Email", "date" ASC''', [week_start, week_end])
+    sessions = {}
+    register_keys = {}
+    for row in rows:
+        email = str(row['Email'] or '').strip().lower()
+        if email and row['date']:
+            key = (email, row['date'], str(row['module'] or '').strip())
+            sessions.setdefault(key, set()).add(normalize_attendance_value(row['Attendance']))
+            if row.get('key'):
+                register_keys.setdefault(key, set()).add(str(row['key']))
+    # Every dated module is independent. Missing or contradictory attendance
+    # needs review, never an automatic absence call.
+    learners = [{'email': email, 'attendance_date': day.isoformat(), 'attendance_module': module,
+                 'attendance_key': next(iter(register_keys.get((email, day, module), {''})))}
+                for (email, day, module), states in sessions.items()
+                if states == {0} and len(register_keys.get((email, day, module), set())) <= 1]
+    if not learners:
+        return []
+    emails = sorted({item['email'] for item in learners})
+    placeholders = ','.join(['%s'] * len(emails))
+    history = _fetch(DB, f'''SELECT "Email", "module", "date", "Attendance" FROM public.kbc_attendance
+        WHERE lower("Email") IN ({placeholders})''', emails)
+    missed = {}
+    for row in history:
+        key = (str(row['Email'] or '').strip().lower(), str(row['module'] or '').strip(), str(row['date']))
+        missed[key] = missed.get(key, False) or normalize_attendance_value(row['Attendance']) == 0
+    dates = {}
+    for (email, module, day), is_missed in missed.items():
+        if is_missed:
+            dates.setdefault((email, module), set()).add(day)
+    for item in learners:
+        session_dates = dates.get((item['email'], item['attendance_module']), set())
+        item['missed_count'] = sum(1 for day in session_dates if day <= item['attendance_date']) or 1
+    return learners

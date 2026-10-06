@@ -5486,10 +5486,22 @@ def serialize_module_learner_mapping(item: ModuleLearnerMapping, aptem_by_identi
 
 
 def aptem_source_unavailable_response(error: DatabaseError) -> JsonResponse:
-	logger.warning('Aptem data source is unavailable: %s', error)
+	logger.warning('Aptem data source is unavailable (%s)', type(error).__name__)
 	return JsonResponse({
-		'detail': 'Aptem data source is unavailable. Check APTEM_DATABASE_URL and the aptem_auto_extracting table on the live server.',
+		'detail': 'Aptem data source is unavailable. Check the configured identity source and connection health.',
 	}, status=503)
+
+
+def aptem_source_records():
+	"""Explicit read adapter: no row_number requirement or writes to the LMS table."""
+	from callcentre.identity import enabled, APTEM_SQL
+	if not enabled():
+		return list(AptemAutoExtracting.objects.all().order_by('full_name', 'email', 'learner_id'))
+	from types import SimpleNamespace
+	from callcentre.sources import rows
+	from callcentre.db import LMS
+	return [SimpleNamespace(**{field.name: row.get(field.column) for field in AptemAutoExtracting._meta.fields})
+			for row in rows(LMS, APTEM_SQL + ' ORDER BY "FullName", "Email", "ID"')]
 
 
 def aptem_identity_lookup() -> dict:
@@ -5497,7 +5509,7 @@ def aptem_identity_lookup() -> dict:
 		item['learnerIdentity']: item
 		for item in (
 			serialize_aptem_learner(aptem_item)
-			for aptem_item in AptemAutoExtracting.objects.filter(subprogramme__isnull=False)
+			for aptem_item in aptem_source_records()
 		)
 		if item.get('learnerIdentity')
 	}
@@ -5544,7 +5556,10 @@ def aptem_subprogrammes(request):
 	module_name = normalize_aptem_text(request.GET.get('moduleName', ''))
 	values_by_key: dict[str, dict] = {}
 	try:
-		for raw in AptemAutoExtracting.objects.values_list('subprogramme', flat=True):
+		from callcentre.identity import enabled
+		raw_values = ([record.subprogramme for record in aptem_source_records()] if enabled()
+					  else AptemAutoExtracting.objects.values_list('subprogramme', flat=True))
+		for raw in raw_values:
 			for clean in normalize_aptem_subprogramme_values(raw):
 				key = normalize_aptem_lookup(clean)
 				if key not in values_by_key:
@@ -5589,7 +5604,7 @@ def aptem_learners(request):
 	try:
 		learners = [
 			serialize_aptem_learner(item)
-			for item in AptemAutoExtracting.objects.all().order_by('full_name', 'email', 'learner_id')
+			for item in aptem_source_records()
 			if any(normalize_aptem_lookup(value) == target for value in normalize_aptem_subprogramme_values(item.subprogramme))
 		]
 	except DatabaseError as error:

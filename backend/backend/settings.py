@@ -53,17 +53,23 @@ def parse_database_url(database_url: str) -> dict:
 
 DJANGO_ENV = os.getenv('DJANGO_ENV', '').strip().lower()
 IS_LOCAL_ENV = DJANGO_ENV == 'local'
+login_env = BASE_DIR / 'login' / '.env.login'
+# Older checkouts keep this tracked file beside manage.py. Prefer the login app's
+# private file, but retain the existing location so login_db is always configured.
+legacy_login_env = BASE_DIR / '.env.login'
 
 if IS_LOCAL_ENV:
     load_env_file(BASE_DIR / '.env.local')
     login_env_local = BASE_DIR / 'login' / '.env.login.local'
     if login_env_local.exists():
         load_env_file(login_env_local)
+    elif login_env.exists():
+        load_env_file(login_env)
     else:
-        load_env_file(BASE_DIR / 'login' / '.env.login')
+        load_env_file(legacy_login_env)
 else:
     load_env_file(BASE_DIR / '.env')
-    load_env_file(BASE_DIR / 'login' / '.env.login')
+    load_env_file(login_env if login_env.exists() else legacy_login_env)
 
 
 # Quick-start development settings - unsuitable for production
@@ -89,6 +95,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'api',
     'login',
+    'callcentre',
 ]
 
 MIDDLEWARE = [
@@ -153,8 +160,23 @@ aptem_database_url = os.getenv('APTEM_DATABASE_URL') or os.getenv('aptem_DATABAS
 if aptem_database_url:
     DATABASES['aptem_db'] = parse_database_url(aptem_database_url)
 
+# Read-only Aptem source for the call centre. Kept apart from `aptem_db` so setting it does
+# not reroute the existing /api/aptem/* endpoints.
+callcentre_aptem_database_url = os.getenv('CALLCENTRE_APTEM_DATABASE_URL')
+if callcentre_aptem_database_url:
+    DATABASES['callcentre_aptem'] = parse_database_url(callcentre_aptem_database_url)
 
-DATABASE_ROUTERS = ['backend.db_routers.ExternalDbRouter', 'backend.db_routers.AuthAdminRouter']
+# Read-only LMS database: the call centre's master learner list (enrolment."Created_users").
+callcentre_lms_database_url = os.getenv('CALLCENTRE_LMS_DATABASE_URL')
+if callcentre_lms_database_url:
+    DATABASES['callcentre_lms'] = parse_database_url(callcentre_lms_database_url)
+
+
+DATABASE_ROUTERS = [
+    'backend.db_routers.CallCentreRouter',
+    'backend.db_routers.ExternalDbRouter',
+    'backend.db_routers.AuthAdminRouter',
+]
 
 
 # Password validation
@@ -215,3 +237,52 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Sessions: login sets a Django session so endpoints can identify the caller server-side.
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+# The Vite dev server proxies /api with changeOrigin, so its Origin must be trusted explicitly.
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv(
+    'CSRF_TRUSTED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000',
+).split(',') if origin.strip()]
+
+
+# Call Centre (callcentre app). Zoom credentials are read directly from ZOOM_<ACCOUNT>_* env vars.
+ZOOM_REPORT_TIME_ZONE = os.getenv('ZOOM_REPORT_TIME_ZONE', 'Europe/London')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', '')
+OPENAI_TRANSCRIPTION_MODEL = os.getenv('OPENAI_TRANSCRIPTION_MODEL', 'gpt-transcribe')
+ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').lower() in ('1', 'true', 'yes')
+ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
+# Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
+CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')
+# Rollback: set to legacy and restart. Shadow keeps existing readers; the read-only
+# check_identity command evaluates the unified candidate without changing cases.
+CALLCENTRE_IDENTITY_MODE = os.getenv('CALLCENTRE_IDENTITY_MODE', 'shadow').strip().lower()
+if CALLCENTRE_IDENTITY_MODE not in {'legacy', 'shadow', 'unified'}:
+    raise ValueError('CALLCENTRE_IDENTITY_MODE must be legacy, shadow or unified.')
+CALLCENTRE_EMAIL_MODE = os.getenv('CALLCENTRE_EMAIL_MODE', 'dry_run')
+CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
+CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')
+CALLCENTRE_ESCALATION_EMAIL = os.getenv('CALLCENTRE_ESCALATION_EMAIL', '')
+CALLCENTRE_HOLIDAYS = [s.strip() for s in os.getenv('CALLCENTRE_HOLIDAYS', '').split(',') if s.strip()]
+CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS = [
+    s.strip().lower() for s in os.getenv('CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', '').split(',') if s.strip()
+]
+# Email goes out through Microsoft 365 as the no-reply mailbox (callcentre/mailer.py). The app registration is
+# CALLCENTRE_MAIL_TENANT_ID / CALLCENTRE_MAIL_CLIENT_ID / CALLCENTRE_MAIL_CLIENT_SECRET, read from .env.
+CALLCENTRE_MAIL_SENDER = os.getenv('CALLCENTRE_MAIL_SENDER', 'no-reply@kentbusinesscollege.com').strip()
+# Automatic reminder emails (callcentre/emails.py), sent by the case cycle on the college template.
+# These are only the DEFAULTS: a director manages them in Director -> Settings (callcenter_setting), which wins.
+# OFF unless switched on: nothing is emailed, written or escalated by them while off.
+CALLCENTRE_REMINDERS_ENABLED = os.getenv('CALLCENTRE_REMINDERS_ENABLED', '').lower() in ('1', 'true', 'yes')
+# Case age in days at which the learner is emailed: 0 = when the case opens, then each reminder day.
+CALLCENTRE_REMINDER_DAYS = sorted({int(d) for d in os.getenv('CALLCENTRE_REMINDER_DAYS', '0,2,5,7').split(',') if d.strip()})
+# Case age at which the line manager is emailed and the case goes to a manager (0 = never).
+CALLCENTRE_REMINDER_ESCALATE_DAY = int(os.getenv('CALLCENTRE_REMINDER_ESCALATE_DAY', '7'))
+# Case types that get reminders.
+CALLCENTRE_REMINDER_TYPES = {t.strip() for t in os.getenv(
+    'CALLCENTRE_REMINDER_TYPES', 'attendance,pr,mcm,pr_missed,mcm_missed,signature,satisfaction').split(',') if t.strip()}

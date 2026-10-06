@@ -7,6 +7,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth import login as auth_login
+from django.contrib.auth import logout as auth_logout
 from django.contrib.auth.hashers import check_password
 from django.core import signing
 from django.db.models import Sum
@@ -160,6 +162,11 @@ def _user_payload(user, auth_provider: str, activity_session: UserActivitySessio
 	return payload
 
 
+def _start_server_session(request, user) -> None:
+	# Server-side identity for endpoints that must not trust client headers (the call centre).
+	auth_login(request, user, backend='login.backends.LoginDBModelBackend')
+
+
 def _decode_json_response(error: HTTPError) -> dict:
 	try:
 		body = error.read().decode('utf-8')
@@ -262,6 +269,7 @@ def login_view(request):
 	if not user or not check_password(password, user.password) or not user.is_active:
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)
 
+	_start_server_session(request, user)
 	activity_session = _safe_create_activity_session(request, user, 'password')
 	return JsonResponse(_user_payload(user, 'password', activity_session))
 
@@ -286,6 +294,7 @@ def logout_view(request):
 		_sync_session_totals(session, now)
 		emit_realtime_resource_change_on_commit('user_activity', 'activity', 'auth_activity', 'page_visits')
 
+	auth_logout(request)
 	return JsonResponse({'detail': 'Logged out.'})
 
 
@@ -563,6 +572,7 @@ def microsoft_callback(request):
 	if not db_user:
 		return _redirect_to_url(result_target, {'ms_auth': 'error', 'ms_error': "This email isn't in the database."})
 
+	_start_server_session(request, db_user)
 	activity_session = _safe_create_activity_session(request, db_user, 'microsoft')
 	user_payload = _user_payload(db_user, 'microsoft', activity_session)
 	user_payload['firstName'] = db_user.first_name or first_name
