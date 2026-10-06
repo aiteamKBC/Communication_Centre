@@ -67,10 +67,6 @@ interface TutorPlanExportRow {
 interface TutorPlanExportData {
   profiles: TutorProfile[];
   rows: TutorPlanExportRow[];
-  suggestedCount: number;
-  manualCount: number;
-  upcomingCount: number;
-  programmeCount: number;
 }
 
 interface TutorConflict {
@@ -142,40 +138,13 @@ function escapePrintHtml(value: string): string {
 }
 
 function buildTutorDeliveryPlanPrintHtml(data: TutorPlanExportData): string {
-  const generatedAt = new Date().toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
   const tutorNames = data.profiles.map(profile => profile.name).join(', ');
-  const renderTutorPills = (names: string[], emptyText = 'None') => names.length
-    ? names.map(name => `<span class="tutor-pill">${escapePrintHtml(name)}</span>`).join('')
-    : `<span class="muted">${escapePrintHtml(emptyText)}</span>`;
-  const subjectRows = data.rows.length
-    ? data.rows.map(row => `
-      <tr>
-        <td class="subject-cell">
-          <span class="subject-dot" style="background:${escapePrintHtml(row.color)}"></span>
-          <strong>${escapePrintHtml(row.label)}</strong>
-          <span class="subject-value">${escapePrintHtml(row.value)}</span>
-        </td>
-        <td>${row.suggestedFor.length ? '<span class="type-pill type-suggested">Suggested</span>' : ''}${row.manualFor.length ? '<span class="type-pill type-manual">Manual</span>' : ''}</td>
-        <td>${renderTutorPills(Array.from(new Set([...row.suggestedFor, ...row.manualFor])))}</td>
-        <td><strong>${row.sessionCount}</strong><span class="muted detail-line">${row.upcomingCount} upcoming</span></td>
-        <td><span class="programme-list">${escapePrintHtml(row.programmes.join(' · ') || 'Training Plan')}</span></td>
-      </tr>
-    `).join('')
-    : '<tr><td colspan="5" class="empty-cell">No subjects selected for this export.</td></tr>';
   const tutorRows = data.profiles.map(profile => {
     const rows = data.rows.filter(row => row.suggestedFor.includes(profile.name) || row.manualFor.includes(profile.name));
     return `
       <tr>
         <td><strong>${escapePrintHtml(profile.name)}</strong>${profile.email ? `<span class="muted detail-line">${escapePrintHtml(profile.email)}</span>` : ''}</td>
         <td>${rows.length ? rows.map(row => `<span class="subject-mini"><span class="subject-dot" style="background:${escapePrintHtml(row.color)}"></span>${escapePrintHtml(row.label)}</span>`).join('') : '<span class="muted">No subjects assigned</span>'}</td>
-        <td>${rows.filter(row => row.suggestedFor.includes(profile.name)).length}</td>
-        <td>${rows.filter(row => row.manualFor.includes(profile.name)).length}</td>
       </tr>
     `;
   }).join('');
@@ -192,49 +161,24 @@ function buildTutorDeliveryPlanPrintHtml(data: TutorPlanExportData): string {
     .report-shell { width: 100%; }
     .top-rule { height: 4px; border-radius: 999px; background: #172f50; margin: -2mm 0 9px; }
     .header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding-bottom: 9px; border-bottom: 1px solid #dbe3ee; }
-    .brand { display: flex; align-items: center; gap: 8px; }
-    .brand-mark { width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; border: 2px solid #6d42c4; border-radius: 50%; color: #6d42c4; font-weight: 900; font-size: 12px; }
-    .brand-name { color: #6d42c4; font-size: 9px; font-weight: 900; line-height: 1.05; text-transform: uppercase; }
+    .brand { display: flex; align-items: center; gap: 11px; }
+    .brand-logo { width: 112px; height: auto; padding-right: 11px; border-right: 1px solid #dbe3ee; }
     h1 { margin: 0; font-size: 18px; line-height: 1.1; }
     .subtitle { margin-top: 4px; color: #64748b; font-size: 9.5px; line-height: 1.35; }
-    .generated { text-align: right; color: #64748b; white-space: nowrap; font-size: 8.5px; line-height: 1.35; }
-    .generated strong { display: block; color: #17233d; font-size: 10px; }
-    .info-panel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 10px; padding: 11px 13px; border-radius: 8px; background: #f3f6f8; }
-    .info-item { min-height: 32px; padding: 0 12px; border-right: 1px solid #d9e1e8; }
-    .info-item:first-child { padding-left: 0; }
-    .info-item:last-child { padding-right: 0; border-right: 0; }
-    .label { display: block; color: #63738a; font-size: 7px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 5px; }
-    .value { display: block; color: #172f50; font-size: 10px; font-weight: 800; line-height: 1.25; }
-    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 11px 0 14px; }
-    .metric { min-height: 46px; padding: 8px 9px 8px 12px; border-radius: 7px; border-left: 5px solid #172f50; background: #f4f6f8; }
-    .metric:nth-child(2) { border-left-color: #6d42c4; }
-    .metric:nth-child(3) { border-left-color: #c43d43; }
-    .metric:nth-child(4) { border-left-color: #17845b; }
-    .metric-label { display: block; color: #63738a; font-size: 7px; font-weight: 800; text-transform: uppercase; margin-bottom: 4px; }
-    .metric-value { display: block; color: #172f50; font-size: 13px; font-weight: 900; }
     h2 { margin: 14px 0 3px; color: #172f50; font-size: 12px; }
-    .section-note { margin: 0 0 6px; color: #64748b; font-size: 8.5px; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #dbe3ee; border-radius: 7px; overflow: visible; page-break-inside: auto; }
     thead { display: table-header-group; }
     thead th { padding: 6px 7px; background: #172f50; color: #fff; font-size: 7.4px; font-weight: 800; text-align: left; text-transform: uppercase; }
     tbody td { padding: 6px 7px; vertical-align: top; border-top: 1px solid #e7edf5; line-height: 1.35; }
     tbody tr:nth-child(even) td { background: #f7f9fb; }
     tbody tr { break-inside: avoid; page-break-inside: avoid; }
-    .subject-cell { width: 27%; }
+    th:first-child { width: 27%; }
     .subject-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 2px; vertical-align: middle; }
-    .subject-value { display: block; margin: 2px 0 0 12px; color: #8a98aa; font-size: 7.5px; }
-    .tutor-pill, .type-pill { display: inline-block; margin: 0 3px 3px 0; padding: 3px 5px; border-radius: 4px; font-size: 7.2px; font-weight: 800; }
-    .tutor-pill { border: 1px solid #dbe3ee; background: #fff; color: #334155; }
-    .type-pill { border: 1px solid transparent; }
-    .type-suggested { color: #5431a2; border-color: #d9c9f4; background: #f1ebfb; }
-    .type-manual { color: #176d4f; border-color: #b7e4d2; background: #e9f8f0; }
     .detail-line { display: block; margin-top: 2px; font-size: 7.5px; }
-    .programme-list { color: #536882; font-size: 8px; }
     .subject-mini { display: inline-block; width: 48%; margin: 0 1% 4px 0; color: #334155; font-size: 8px; vertical-align: top; }
     .subject-mini .subject-dot { width: 6px; height: 6px; }
     .empty-cell { padding: 14px; color: #8a98aa; text-align: center; }
     .muted { color: #8a98aa; }
-    .footer { display: flex; justify-content: space-between; margin-top: 14px; padding-top: 7px; border-top: 1px solid #dbe3ee; color: #71829a; font-size: 7.5px; }
     @media print { .no-print { display: none !important; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style>
 </head>
@@ -243,39 +187,17 @@ function buildTutorDeliveryPlanPrintHtml(data: TutorPlanExportData): string {
     <div class="top-rule"></div>
     <div class="header">
       <div class="brand">
-        <div class="brand-mark">KBC</div>
+        <img class="brand-logo" src="/kent-business-college-logo.png" alt="Kent Business College" />
         <div>
-          <div class="brand-name">Kent<br />Business College</div>
           <h1>Tutor Delivery Plan</h1>
-          <div class="subtitle">Training Plan subject allocation and tutor capability overview</div>
+          <div class="subtitle">Tutors and their Training Plan subjects</div>
         </div>
       </div>
-      <div class="generated"><strong>TRAINING PLAN EXPORT</strong>Generated ${escapePrintHtml(generatedAt)}</div>
     </div>
-    <div class="info-panel">
-      <div class="info-item"><span class="label">Selected tutors</span><span class="value">${escapePrintHtml(tutorNames || 'None selected')}</span></div>
-      <div class="info-item"><span class="label">Subjects in plan</span><span class="value">${data.rows.length}</span></div>
-      <div class="info-item"><span class="label">Source</span><span class="value">Training Plan</span></div>
-    </div>
-    <div class="metrics">
-      <div class="metric"><span class="metric-label">Suggested subjects</span><span class="metric-value">${data.suggestedCount}</span></div>
-      <div class="metric"><span class="metric-label">Manual additions</span><span class="metric-value">${data.manualCount}</span></div>
-      <div class="metric"><span class="metric-label">Upcoming sessions</span><span class="metric-value">${data.upcomingCount}</span></div>
-      <div class="metric"><span class="metric-label">Programmes</span><span class="metric-value">${data.programmeCount}</span></div>
-    </div>
-    <h2>Subject allocation</h2>
-    <p class="section-note">Suggested subjects are inferred from the selected tutors' existing Training Plan assignments. Manual additions are saved on the tutor profiles.</p>
     <table>
-      <thead><tr><th>Subject</th><th>Source</th><th>Tutors</th><th>Training Plan activity</th><th>Programmes</th></tr></thead>
-      <tbody>${subjectRows}</tbody>
+      <thead><tr><th>Tutor</th><th>Subjects</th></tr></thead>
+      <tbody>${tutorRows || '<tr><td colspan="2" class="empty-cell">No tutors selected for this export.</td></tr>'}</tbody>
     </table>
-    <h2>Tutor overview</h2>
-    <p class="section-note">A tutor-by-tutor view of the selected delivery plan.</p>
-    <table>
-      <thead><tr><th>Tutor</th><th>Subjects</th><th>Suggested</th><th>Manual</th></tr></thead>
-      <tbody>${tutorRows || '<tr><td colspan="4" class="empty-cell">No tutors selected for this export.</td></tr>'}</tbody>
-    </table>
-    <div class="footer"><span>Kent Business College&nbsp; | &nbsp;Tutor profile export</span><span>Generated ${escapePrintHtml(generatedAt)}</span></div>
   </div>
   <script>window.addEventListener('load', function () { window.focus(); window.print(); });</script>
 </body>
@@ -874,10 +796,6 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
     const data: TutorPlanExportData = {
       profiles: targetProfiles,
       rows,
-      suggestedCount: rows.filter(row => row.suggestedFor.length > 0).length,
-      manualCount: rows.filter(row => row.manualFor.length > 0).length,
-      upcomingCount: rows.reduce((total, row) => total + row.upcomingCount, 0),
-      programmeCount: new Set(rows.flatMap(row => row.programmes)).size,
     };
     const printWindow = window.open('', '_blank', 'width=1200,height=900');
     if (!printWindow) {
@@ -1147,14 +1065,6 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
                 <i className="ri-group-line" />
                 Choose tutors
                 {plannerTargetTutorIds.length > 0 && <span className="rounded-full bg-[#6d42c4] px-1.5 py-0.5 text-[10px] text-white">{plannerTargetTutorIds.length}</span>}
-              </button>
-              <button
-                type="button"
-                onClick={exportSubjectPlanner}
-                className="inline-flex items-center gap-2 rounded-lg bg-[#1B2A4A] px-3 py-2 text-xs font-extrabold text-white shadow-sm transition-colors hover:bg-[#10213d]"
-              >
-                <i className="ri-file-pdf-2-line" />
-                Export PDF
               </button>
               {canEdit && activeTutorProfile && !activeTutorProfile.id.startsWith('legacy:') && (
                 <>
@@ -1456,10 +1366,15 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
           <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[5px]" onClick={() => { if (!plannerSaving) setSubjectPlannerOpen(false); }} />
           <div className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ background: '#1B2A4A' }}>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/60">Tutor delivery plan</p>
-                <h3 className="mt-1 text-lg font-extrabold text-white">Choose tutors and build their subject plan</h3>
-                <p className="mt-1 text-xs text-white/70">Suggested subjects come from existing Training Plan assignments. Add more subjects from the same plan and save them to the selected tutor profiles.</p>
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="flex h-14 w-40 shrink-0 items-center justify-center rounded-xl border border-white/70 bg-white px-3 py-2 shadow-sm">
+                  <img src="/kent-business-college-logo.png" alt="Kent Business College" className="h-full w-full object-contain" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/60">Tutor delivery plan</p>
+                  <h3 className="mt-1 text-lg font-extrabold text-white">Choose tutors and build their subject plan</h3>
+                  <p className="mt-1 text-xs text-white/70">Suggested subjects come from existing Training Plan assignments. Add more subjects from the same plan and save them to the selected tutor profiles.</p>
+                </div>
               </div>
               <button disabled={plannerSaving} onClick={() => setSubjectPlannerOpen(false)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white disabled:cursor-not-allowed disabled:opacity-50" aria-label="Close subject planner">
                 <i className="ri-close-line text-lg" />
@@ -1509,13 +1424,21 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
                   <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Upcoming sessions</p><p className="mt-1 text-2xl font-extrabold text-kbc-navy">{plannerRows.reduce((total, row) => total + row.upcomingCount, 0)}</p></div>
                 </div>
 
+                <div className="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-900">
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700"><i className="ri-information-line text-base" /></span>
+                  <div>
+                    <p className="font-extrabold">How are suggestions calculated?</p>
+                    <p className="mt-1 leading-relaxed text-sky-800"><strong>Suggested</strong> means the tutor is already assigned to that subject in one or more current Training Plan blocks. It is a planning recommendation based on existing assignments, not an automatic qualification check. <strong>Manual additions</strong> are subjects you explicitly add from the Training Plan list and save on the selected tutor profiles.</p>
+                  </div>
+                </div>
+
                 {plannerTargetTutorIds.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center"><i className="ri-group-line text-3xl text-slate-300" /><p className="mt-2 text-sm font-extrabold text-kbc-navy">Select at least one tutor</p><p className="mt-1 text-xs text-gray-500">The suggested subjects and manual assignment controls will appear here.</p></div>
                 ) : (
                   <>
                     <section className="rounded-xl border border-[#d9c9f4] bg-white">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#eee5fa] px-4 py-3">
-                        <div><p className="text-sm font-extrabold text-[#5431a2]">Suggested subjects</p><p className="mt-0.5 text-xs text-gray-500">Already present in the selected tutors' Training Plan assignments.</p></div>
+                        <div><p className="text-sm font-extrabold text-[#5431a2]">Suggested subjects</p><p className="mt-0.5 text-xs text-gray-500">Subjects already assigned to the selected tutors in current Training Plan blocks.</p></div>
                         <span className="rounded-full bg-[#f1ebfb] px-2.5 py-1 text-xs font-extrabold text-[#5431a2]">{plannerSuggestedRows.length}</span>
                       </div>
                       <div className="grid gap-2 p-3 sm:grid-cols-2">
@@ -1531,7 +1454,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
 
                     <section className="rounded-xl border border-[#b7e4d2] bg-white">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e5f5ed] px-4 py-3">
-                        <div><p className="text-sm font-extrabold text-[#176d4f]">Manual additions</p><p className="mt-0.5 text-xs text-gray-500">Subjects already added to at least one selected tutor but not suggested by their current sessions.</p></div>
+                        <div><p className="text-sm font-extrabold text-[#176d4f]">Manual additions</p><p className="mt-0.5 text-xs text-gray-500">Subjects explicitly added to a tutor profile from the Training Plan list.</p></div>
                         <span className="rounded-full bg-[#e9f8f0] px-2.5 py-1 text-xs font-extrabold text-[#176d4f]">{plannerManualRows.length}</span>
                       </div>
                       <div className="grid gap-2 p-3 sm:grid-cols-2">
