@@ -13,7 +13,7 @@ from .db import DB
 from .models import CaseTicket, CycleState, EmailDelivery, EmailQuota, EmployerSatisfaction, TicketEvent
 from .rules import LONDON, due_at, email_key, normalize_phone
 from .services import event, release_fields
-from .sources import reason_key
+from .sources import manager_phone_directory, reason_key
 
 
 def survey_token(survey):
@@ -42,6 +42,9 @@ def generate_surveys(people):
         except ValidationError:
             continue
         managers.setdefault(email, []).append(person)
+    # Fallback manager numbers (one unambiguous number per manager email) for managers whose
+    # learners carry no number themselves; never used when the learner path already has one.
+    fallback_phones = manager_phone_directory()
     issued = set(EmployerSatisfaction.objects.filter(quarter=quarter).values_list('manager_email', flat=True))
     existing = {c.reason_key: c for c in CaseTicket.objects.select_for_update().filter(source_type='satisfaction')}
     # Keep the most recently worked task; archive duplicates, never fake a
@@ -74,6 +77,11 @@ def generate_surveys(people):
                             'coach': learner['coach'], 'programme': learner['programme'],
                             'organisation': learner['organisation']})
         phone = normalize_phone(next(iter(numbers))) if len(numbers) == 1 else ''
+        phone_source = 'LMS.Aptem_users'
+        # No learner under this manager carries the number, but a single unambiguous one is on
+        # record for the manager's email: use it. A conflict (len(numbers) > 1) still stays blank.
+        if not numbers and fallback_phones.get(email):
+            phone, phone_source = fallback_phones[email], 'Aptem manager lookup (single match)'
         # Refresh open quarterly contact snapshots, not survey answers or history.
         for current in existing.values():
             if current.manager_email == email and current.status != 'resolved' and not current.archived:
@@ -82,7 +90,7 @@ def generate_surveys(people):
                 current.learner_phone = phone
                 current.source_data = {**current.source_data, 'learners': details, 'learner_count': len(details),
                                        'manager_phone_conflict': len(numbers) > 1,
-                                       'contact_sources': {'phone': 'LMS.Aptem_users', 'email': 'LMS.Aptem_users'}}
+                                       'contact_sources': {'phone': phone_source, 'email': 'LMS.Aptem_users'}}
                 if hasattr(people, 'resolve'):
                     current.source_data.update(eligible=True, eligibility_reason='Linked to current learner directory')
                 if previous_phone != phone or previous_data != current.source_data:
@@ -102,7 +110,7 @@ def generate_surveys(people):
                 reason_key=key, due_at=due_at('satisfaction', now),
                 source_data={'quarter': quarter, 'learner_count': len(learners), 'learners': details,
                              'manager_phone_conflict': len(numbers) > 1,
-                             'contact_sources': {'phone': 'LMS.Aptem_users', 'email': 'LMS.Aptem_users'}})
+                             'contact_sources': {'phone': phone_source, 'email': 'LMS.Aptem_users'}})
             new.append(case)
         pending.append((email, case))
     if hasattr(people, 'resolve'):

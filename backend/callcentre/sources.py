@@ -140,6 +140,32 @@ def coach_email(name):
     return cached_directory().coach_emails.get(' '.join(str(name or '').split()).casefold(), '')
 
 
+def manager_phone_directory():
+    """Manager email -> the one unambiguous manager phone across every Aptem source we read.
+
+    Deliberately conservative like the learner-derived path: a manager email is included only
+    when all sources agree on a single number, so a shared or conflicting number is never
+    attributed to the wrong person. Used only as a fallback when no learner supplies the number.
+    """
+    phones = {}
+
+    def add(email, value):
+        key, number = email_key(email), normalize_phone(value)
+        if key and number:
+            phones.setdefault(key, set()).add(number)
+
+    for row in rows(APTEM, 'SELECT "ManagerEmail", "Manager Phone", "manager_phone" FROM public.aptem_auto_extracting'):
+        add(row.get('ManagerEmail'), row.get('Manager Phone'))
+        add(row.get('ManagerEmail'), row.get('manager_phone'))
+    if identity.enabled():
+        try:
+            for row in rows(LMS, 'SELECT "ManagerEmail", "Manager Phone" FROM "LMS"."Aptem_users"'):
+                add(row.get('ManagerEmail'), row.get('Manager Phone'))
+        except DatabaseError:
+            pass
+    return {email: next(iter(numbers)) for email, numbers in phones.items() if len(numbers) == 1}
+
+
 def source_health(name, error='', count=0):
     state, _ = CycleState.objects.get_or_create(name='source:' + name)
     state.details = {'error': error, 'count': count, 'checked_at': timezone.now().isoformat()}
@@ -346,6 +372,51 @@ def refresh_recording_links():
             CaseTicket.objects.filter(pk=ticket.pk).update(source_data=data)
             changed += 1
     return list(links)
+
+
+# EPA readiness figures surfaced on the case card, read live from the Aptem extract.
+# (label, column) pairs; numeric/date values are coerced to JSON-safe strings below.
+EPA_METRIC_COLUMNS = (
+    ('gateway_review_date', 'Gateway Review Date'), ('end_date', 'End-Date'),
+    ('ksb_completed', 'TotalCompletedKSB'), ('ksb_total', 'TotalTargetKSB'), ('ksb_status', 'KSBStatus'),
+    ('otj_completed', 'Completed'), ('otj_planned', 'Planned'), ('otj_status', 'OTJHoursStatus'),
+    ('components_completed', 'TotalCompCount'), ('components_target', 'TargetCompCount'), ('components_status', 'CompStatus'),
+    ('progress_variance', 'ProgressVariance'), ('coach_rag', 'Coach-RAG'),
+)
+
+
+def _epa_metric_value(value):
+    """JSON-safe scalar for source_data: '' for blanks, ISO for dates, plain number/str otherwise."""
+    if value is None:
+        return ''
+    from datetime import date as _date
+    if isinstance(value, _date):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    return text
+
+
+def refresh_epa_metrics():
+    """Attach live EPA readiness figures (KSB, off-the-job hours, components, gateway date)
+    to open EPA cases from ``aptem_auto_extracting``. Keeps the card showing real progress,
+    and clears figures for learners who have left the extract."""
+    cols = ', '.join('"%s"' % column for _, column in EPA_METRIC_COLUMNS)
+    rows_by_email = {}
+    for row in rows(APTEM, f'SELECT "Email", {cols} FROM public.aptem_auto_extracting'):
+        key = email_key(row.get('Email'))
+        if key:
+            rows_by_email[key] = row
+    changed = 0
+    for ticket in CaseTicket.objects.filter(source_type='epa', archived=False).exclude(status='resolved'):
+        row = rows_by_email.get(email_key(ticket.learner_email))
+        metrics = {label: _epa_metric_value(row.get(column)) for label, column in EPA_METRIC_COLUMNS} if row else {}
+        if ticket.source_data.get('epa_metrics', {}) != metrics:
+            data = {**ticket.source_data, 'epa_metrics': metrics}
+            CaseTicket.objects.filter(pk=ticket.pk).update(source_data=data)
+            changed += 1
+    return changed
 
 
 def decode_json(value):

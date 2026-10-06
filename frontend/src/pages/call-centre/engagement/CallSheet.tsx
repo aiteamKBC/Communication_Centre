@@ -9,7 +9,7 @@ import Dialog from './Dialog';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import type { CallTab } from './model';
-import { callGroups, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
+import { callGroups, coachLabel, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 type Props = {
@@ -167,7 +167,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     </th>
                     <td>
                       <strong>{issueLabel(c)}</strong>
-                      <span>{c.coach || 'Coach not recorded'}</span>
+                      <span>{coachLabel(c)}</span>
                       {c.source_type === 'attendance' && c.issue_date && <span>{c.issue_date} · {c.issue_name}</span>}
                       {c.booking_at && <span>{shortDate(c.booking_at)} · {c.issue_name}</span>}
                       <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} of 3` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
@@ -183,7 +183,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
                     </td>
                     <td className="ed-booking-cell">
-                      <strong>{c.coach || 'Coach not recorded'}</strong>
+                      <strong>{coachLabel(c)}</strong>
                       <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />
                       {!['satisfaction', 'signature'].includes(c.source_type) && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
                       <small>{session.preview ? 'Read-only preview' : c.bookable.includes('catch-up') ? 'Catch-up or support, in the LMS calendar' : 'Support session, in the LMS calendar'}</small>

@@ -13,7 +13,7 @@ from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction
 from .rules import MAX_MISSED_PROMISES
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
-from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_recording_links, source_health
+from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
 from .zoom_phone import ACCOUNT_LABELS, sync_account
 from .zoom_views import current_account_filter
 
@@ -103,6 +103,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         else:
             result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
+        result['epa_metrics'] = get_source('epa_metrics', refresh_epa_metrics)
         # Evidence wins over returning a promised-date case to the queue.
         result['resolved'] = evidence_cycle()
         maintenance(timezone.now())

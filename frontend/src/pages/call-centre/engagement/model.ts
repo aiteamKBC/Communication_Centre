@@ -201,6 +201,16 @@ export function badges(today: AgentStats['today'], target: number) {
   ];
 }
 
+/** Coach to show on a case. Employer-satisfaction cases have no coach of their own, so show the
+ *  distinct coach(es) of the learners under that line manager instead. */
+export function coachLabel(c: Pick<OverviewCase, 'source_type' | 'coach' | 'employer_learners'>) {
+  if (c.source_type === 'satisfaction') {
+    const coaches = [...new Set((c.employer_learners || []).map(p => p.coach).filter(Boolean))];
+    return coaches.join(', ') || 'Coach not recorded';
+  }
+  return c.coach || 'Coach not recorded';
+}
+
 export const caseTone = (c: Pick<OverviewCase, 'status' | 'sla_breached'>) =>
   c.status === 'resolved' ? 'green' : c.status === 'escalated' ? 'red' : c.sla_breached ? 'amber' : '';
 
