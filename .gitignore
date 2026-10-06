@@ -4,6 +4,7 @@ frontend/.vite/
 frontend/out/
 frontend/.DS_Store
 frontend/*.log
+frontend/test-results/audit/
 
 # Python
 backend/__pycache__/

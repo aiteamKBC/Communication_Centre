@@ -9,6 +9,7 @@ export type Case = {
   issue_name: string; issue_date: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
   contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
+  employer_learners?: { person_id: string; name: string; email: string; coach: string; programme: string; organisation: string }[];
   status: string; risk: string; claimed_by: string | null; claimed_agent_id: number | null;
   last_actor: string; last_action_at: string; attempts: number; next_followup_at: string | null;
   due_at: string; sla_breached: boolean; sla_days_overdue: number; learner_days_overdue: number; misses: number;
@@ -30,7 +31,7 @@ export type Case = {
 export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>;
 
 /** A case as listed by overview/ (no source_data). */
-export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null };
+export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null; contact_sources?: Record<string, string> };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
 
 export type DayStats = { day: string; attempts: number; connected: number; seconds: number };
@@ -45,7 +46,7 @@ export type AgentStats = {
 };
 
 export type Overview = {
-  today: string; month: string; generated_at: string;
+  today: string; next_workday: string; month: string; generated_at: string;
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;

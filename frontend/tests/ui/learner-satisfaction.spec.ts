@@ -20,7 +20,7 @@ function sample(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
   };
 }
 
-async function mockDesk(page: Page) {
+async function mockDesk(page: Page, agentId = 1, suppliedCases?: OverviewCase[]) {
   await page.addInitScript(() => {
     localStorage.setItem('kbc-auth-user', JSON.stringify({
       id: 1, email: 'operator@example.org', username: 'operator', displayName: 'Operator',
@@ -29,8 +29,12 @@ async function mockDesk(page: Page) {
   });
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
-  let cases = [sample(1), sample(2, { next_followup_at: future }), sample(3, {
+  let cases = suppliedCases || [sample(1), sample(2, { next_followup_at: future }), sample(3, {
     source_type: 'satisfaction', learner_name: 'Manager One', learner_email: 'wrong-fallback@example.org',
+    learner_phone: '+447700900123', employer_learners: [
+      { person_id: 'lms:1', name: 'Student Alpha', email: 'alpha@example.org', coach: 'Coach Alpha', programme: 'Marketing', organisation: 'Company' },
+      { person_id: 'lms:2', name: 'Student Beta', email: 'beta@example.org', coach: 'Coach Beta', programme: 'Management', organisation: 'Company' },
+    ],
   })];
   const posts: { path: string; data: Record<string, unknown> }[] = [];
   await page.route('**/api/**', async route => {
@@ -39,13 +43,13 @@ async function mockDesk(page: Page) {
     if (!path.startsWith('/api/')) return route.continue(); // Vite also serves /src/api/*.ts modules.
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
     if (request.method() === 'POST') posts.push({ path, data: request.postDataJSON() });
-    if (path === '/api/callcentre/config/') return json({ csrf_token: 'test-token', agent_id: 1, is_manager: false,
+    if (path === '/api/callcentre/config/') return json({ csrf_token: 'test-token', agent_id: agentId, is_manager: false,
       is_superuser: false, email_mode: 'dry_run', ai_enabled: false, agents: [], sources: [], cycle: null });
     if (path === '/api/callcentre/overview/') {
       const overview: Overview = {
-        today, month: today.slice(0, 7), generated_at: new Date().toISOString(),
-        access: { role: 'operator', agent_id: 1, is_superuser: false, display_name: 'Operator', email: 'operator@example.org' },
-        agents: [{ id: 1, display_name: 'Operator', zoom_account: 'student', zoom_phone_number: '', target_seconds: 10800,
+        today, next_workday: future.slice(0, 10), month: today.slice(0, 7), generated_at: new Date().toISOString(),
+        access: { role: 'operator', agent_id: agentId, is_superuser: false, display_name: 'Operator', email: 'operator@example.org' },
+        agents: [{ id: agentId, display_name: agentId === 1 ? 'Alice' : 'Liza', zoom_account: 'student', zoom_phone_number: '', target_seconds: 10800,
           today: { attempts: 0, connected: 0, seconds: 0 }, month: { attempts: 0, connected: 0, seconds: 0,
             resolved: 0, pending: 0, sla_breaches: 0, unique_learners: 0, emails: 0, daily: [] },
           sync: { last_success_at: null, error: '', recordings_error: '' } }],
@@ -83,6 +87,18 @@ test('counts only due open reviews and keeps contacts with no phone', async ({ p
   await page.getByLabel('Follow-up timing').selectOption('all');
   await expect(page.locator('[data-sheet-row="2"]')).toBeVisible();
 });
+
+for (const agentId of [1, 2]) {
+  test(`specialist ${agentId} sees only their allocated contacts and shared queue`, async ({ page }) => {
+    await mockDesk(page, agentId, [sample(1, { allocated_agent_id: 1 }),
+      sample(2, { allocated_agent_id: 2 }), sample(4)]);
+    await expect(page.getByRole('button', { name: 'Learner Satisfaction (2)', exact: true })).toBeVisible();
+    await expect(page.locator(`[data-sheet-row="${agentId}"]`)).toBeVisible();
+    await expect(page.locator('[data-sheet-row="4"]')).toBeVisible();
+    await expect(page.locator(`[data-sheet-row="${agentId === 1 ? 2 : 1}"]`)).toHaveCount(0);
+    await expect(page.getByText('Synchronization is overdue or has not completed.', { exact: false })).toBeVisible();
+  });
+}
 
 test('email drafts use the right contact and only send on explicit click', async ({ page }) => {
   const posts = await mockDesk(page);
@@ -137,4 +153,17 @@ test('completion records rating, issue and agreed action then refreshes the coun
   expect(posts.find(post => post.path.endsWith('/complete_feedback/'))?.data).toMatchObject({
     score: 4, problem: 'None', agreed_action: 'No action needed', agent_id: 1,
   });
+});
+
+test('employer row shows each learner with their own coach and permits calling a recorded number', async ({ page }) => {
+  const posts = await mockDesk(page);
+  await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
+  await page.getByText('Learners (2)', { exact: true }).click();
+  const row = page.locator('[data-sheet-row="3"]');
+  await expect(row.getByText('Student Alpha', { exact: true })).toBeVisible();
+  await expect(row.getByText('Coach Alpha · Marketing', { exact: true })).toBeVisible();
+  await expect(row.getByText('Student Beta', { exact: true })).toBeVisible();
+  await expect(row.getByText('Coach Beta · Management', { exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Call Manager One', exact: true })).toBeEnabled();
+  expect(posts.filter(post => post.path.startsWith('/api/callcentre/'))).toEqual([]);
 });

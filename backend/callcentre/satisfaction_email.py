@@ -25,6 +25,7 @@ def contact(ticket):
 
 def check_open(ticket):
     if (ticket.archived or ticket.status == 'resolved'
+            or ticket.source_data.get('eligible') is False
             or (ticket.source_type == 'learner_satisfaction' and not ticket.source_data.get('eligible'))):
         raise Conflict('This satisfaction case is closed or no longer eligible.')
 

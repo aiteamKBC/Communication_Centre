@@ -41,7 +41,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const [busy, setBusy] = useState(false);
 
   // Same order as the server's priority: missed calls are already at the bottom.
-  const queue = useMemo(() => uniqueLearners(overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today) !== null
+  const queue = useMemo(() => uniqueLearners(overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
     && c.source_type !== 'satisfaction' && !!c.learner_phone && c.attempts < 3 && dueForCall(c)
     && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId))).filter(c => !done.has(contactKey(c))),
   [overview, session.agentId, done]);

@@ -259,6 +259,11 @@ ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').l
 ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
 # Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
 CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')
+# Rollback: set to legacy and restart. Shadow keeps existing readers; the read-only
+# check_identity command evaluates the unified candidate without changing cases.
+CALLCENTRE_IDENTITY_MODE = os.getenv('CALLCENTRE_IDENTITY_MODE', 'shadow').strip().lower()
+if CALLCENTRE_IDENTITY_MODE not in {'legacy', 'shadow', 'unified'}:
+    raise ValueError('CALLCENTRE_IDENTITY_MODE must be legacy, shadow or unified.')
 CALLCENTRE_EMAIL_MODE = os.getenv('CALLCENTRE_EMAIL_MODE', 'dry_run')
 CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
 CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')

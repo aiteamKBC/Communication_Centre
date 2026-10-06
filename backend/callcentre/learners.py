@@ -95,6 +95,9 @@ class Learners(dict):
     def __missing__(self, key):
         return dict.__getitem__(self, self.aliases[key])
 
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
 
 def _text(value):
     return str(value or '').strip()

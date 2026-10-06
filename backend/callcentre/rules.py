@@ -6,6 +6,11 @@ from django.conf import settings
 from django.db.models import Q
 
 LONDON = ZoneInfo('Europe/London')
+BANK_HOLIDAYS = {
+    '2026-01-01', '2026-04-03', '2026-04-06', '2026-05-04', '2026-05-25', '2026-08-31', '2026-12-25', '2026-12-28',
+    '2027-01-01', '2027-03-26', '2027-03-29', '2027-05-03', '2027-05-31', '2027-08-30', '2027-12-27', '2027-12-28',
+    '2028-01-03', '2028-04-14', '2028-04-17', '2028-05-01', '2028-05-29', '2028-08-28', '2028-12-25', '2028-12-26',
+}
 # The system cutoff: missed lectures and reviews dated before it are too old to call about. No case is opened
 # for them and older open cases are left out of every list. Change the date here; the database is not touched.
 SYSTEM_CUTOFF = date(2026, 9, 1)
@@ -30,7 +35,8 @@ def out_of_scope():
     from .sources import on_break_emails   # sources imports this module
     ready = missed_lectures_ready_until(datetime.now(LONDON).date())
     return (Q(source_type__in=PAUSED_CATEGORIES)
-            | Q(source_type='learner_satisfaction', source_data__eligible=False)
+            | Q(source_type__in=['learner_satisfaction', 'satisfaction', 'reminder'],
+                source_data__has_key='eligible', source_data__eligible=False)
             | Q(learner_email__in=on_break_emails())
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
             | Q(source_type='attendance', overdue_since__gt=ready)
@@ -47,7 +53,7 @@ WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unr
 # The case stays open until source evidence proves it; a missed deadline returns it to the queue.
 # None: agreeing closes the case straight away (MVP — booking proof is not connected yet).
 PROMISES = {
-    'attendance': {'catch_up_session': None},
+    'attendance': {'catch_up_session': 7},
     'pr': {'book_pr': None},
     'mcm': {'book_mcm': None},
     'pr_missed': {'book_pr': None},
@@ -92,17 +98,23 @@ def normalize_phone(value):
 
 
 def working_day(day):
-    holidays = getattr(settings, 'CALLCENTRE_HOLIDAYS', [])
+    holidays = BANK_HOLIDAYS | set(getattr(settings, 'CALLCENTRE_HOLIDAYS', []))
     return day.weekday() < 5 and day.isoformat() not in holidays
+
+
+def next_workday(day):
+    candidate = day + timedelta(days=1)
+    while not working_day(candidate):
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def add_workdays(moment, count):
     local = moment.astimezone(LONDON)
     day = local.date()
     while count:
-        day += timedelta(days=1)
-        if working_day(day):
-            count -= 1
+        day = next_workday(day)
+        count -= 1
     return datetime.combine(day, local.timetz(), tzinfo=LONDON)
 
 
@@ -123,7 +135,7 @@ def promise_deadline(category, option, now):
 def priority(ticket, now):
     today = now.astimezone(LONDON).date()
     overdue = max(0, (today - ticket.overdue_since).days) if ticket.overdue_since else 0
-    tomorrow = bool(ticket.booking_at and ticket.booking_at.astimezone(LONDON).date() == today + timedelta(days=1))
+    tomorrow = bool(ticket.booking_at and ticket.booking_at.astimezone(LONDON).date() == next_workday(today))
     # A missed call drops to the bottom; a broken promise ranks with red risk at the top.
     return (not missed_call(ticket), promise_missed(ticket, now) or ticket.risk == 'red', ticket.due_at < now,
             overdue, ticket.misses, tomorrow, -ticket.attempts)

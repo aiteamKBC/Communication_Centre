@@ -25,7 +25,7 @@ from .db import DB
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
 from .reports import performance
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, missed_call, normalize_phone, parse_moment,
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, missed_call, next_workday, normalize_phone, parse_moment,
                     priority, promise_missed)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, send_back
 
@@ -50,6 +50,8 @@ def issue_json(ticket):
     name = ''
     if ticket.source_type == 'attendance':
         name = str(data.get('module') or '').strip()
+        if data.get('catchup_no_show'):
+            name = 'Missed catch-up' + (f' — {name}' if name else '')
     elif ticket.source_type == 'reminder':
         name = str(data.get('session_type') or '').strip()
     elif ticket.source_type == 'manual':
@@ -108,11 +110,13 @@ def ticket_json(ticket):
     return {
         **issue_json(ticket), 'source_id': ticket.source_id,
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
-        'contact_key': ticket.learner_email or f'case:{ticket.pk}',
+        'contact_key': ticket.source_data.get('person_id') or ticket.learner_email or f'case:{ticket.pk}',
         'programme_status': ticket.source_data.get('programme_status', ''),
+        'contact_sources': ticket.source_data.get('contact_sources', {}),
         'satisfaction_next_due_at': ticket.source_data.get('next_due_at'),
         'coach': ticket.coach, 'organisation': ticket.organisation, 'programme': ticket.programme,
         'manager_name': ticket.manager_name, 'manager_email': ticket.manager_email,
+        'employer_learners': ticket.source_data.get('learners', []) if ticket.source_type == 'satisfaction' else [],
         'status': ticket.status, 'risk': ticket.risk, 'claimed_by': ticket.claimed_by.display_name if active_claim else None,
         'claimed_agent_id': ticket.claimed_by_id if active_claim else None, 'last_actor': ticket.last_actor,
         'last_action_at': ticket.last_action_at, 'attempts': ticket.attempts, 'next_followup_at': ticket.next_followup_at,
@@ -211,7 +215,7 @@ def overview(request):
         })
 
     return JsonResponse({
-        'today': today.isoformat(), 'month': month, 'generated_at': now,
+        'today': today.isoformat(), 'next_workday': next_workday(today).isoformat(), 'month': month, 'generated_at': now,
         'access': {
             'role': 'director' if is_manager else 'operator' if agent else 'viewer',
             'agent_id': agent.pk if agent else None, 'is_superuser': request.user.is_superuser,
@@ -245,7 +249,7 @@ def queue(request):
         if view == 'ai':
             qs = qs.filter(status='ai_suggested_close')
         if view == 'tomorrow':
-            tomorrow = timezone.now().astimezone(LONDON).date() + timedelta(days=1)
+            tomorrow = next_workday(timezone.now().astimezone(LONDON).date())
             from datetime import datetime, time
             qs = qs.filter(source_type='reminder', booking_at__gte=datetime.combine(tomorrow, time.min, tzinfo=LONDON),
                            booking_at__lt=datetime.combine(tomorrow + timedelta(days=1), time.min, tzinfo=LONDON))
@@ -404,11 +408,16 @@ def booking(request, pk):
     actor = None if agent else request.user.get_username()
     with transaction.atomic(using=DB):
         ticket = CaseTicket.objects.select_for_update().get(pk=pk)
-        if not booked['replayed']:
+        if not booked['replayed'] or not ticket.events.filter(kind='session_booked', data__event_key=record['event_key']).exists():
             event(ticket, 'session_booked', record, agent, actor)
-        # A booked catch-up is the proof a missed-lecture case waits for.
+        # Booking completes the calling task; a no-show creates a separate case.
         if data['session_type'] == lms_booking.CATCH_UP and ticket.status != 'resolved':
-            close(ticket, agent, 'agent', 'catch_up_session', {'note': 'Catch-up booked in the LMS.', 'booking': record}, actor)
+            previous_booking = ticket.source_data.get('catchup_booking') or {}
+            if booked['replayed'] and previous_booking.get('event_key') == record['event_key']:
+                record = previous_booking  # Replay does not carry the report linkage.
+            ticket.source_data = {**ticket.source_data, 'catchup_booking': record}
+            close(ticket, agent, 'agent', 'catch_up_session',
+                  {'note': 'Catch-up booked in the LMS.', 'booking': record}, actor)
     return JsonResponse({'booking': record, 'warning': booked['link_warning'] or booked.get('option_warning', '')}, status=201)
 
 

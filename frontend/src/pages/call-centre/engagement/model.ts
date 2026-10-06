@@ -12,7 +12,7 @@ export const CALL_TABS: CallTab[] = [
   { key: 'nextday', label: 'Next Day', icon: 'calendar', reasons: [],
     hint: 'Confirm tomorrow’s coaching sessions and reviews with each learner.' },
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
-    hint: 'Active and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
+    hint: 'Active, Delivery and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
     hint: 'Speak with each line manager every quarter. A survey link is emailed after the call; low scores are escalated.' },
   { key: 'manager', label: 'Extra Calls by Manager', icon: 'message', reasons: [],
@@ -92,7 +92,6 @@ export function splitOutcome(choice: string) {
 
 const londonFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' });
 export const londonDate = (value: string | null | undefined) => (value ? londonFormat.format(new Date(value)) : '');
-export const nextDay = (today: string) => new Date(Date.parse(`${today}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
 
 export const human = (value: string | null | undefined) => String(value || '').replaceAll('_', ' ');
 export const longDate = (value: string | null | undefined) => (value
@@ -127,19 +126,19 @@ export function dueForCall(c: OverviewCase, now = Date.now()) {
   return !c.next_followup_at || Date.parse(c.next_followup_at) <= now;
 }
 
-export function categoryFor(c: OverviewCase, today: string) {
+export function categoryFor(c: OverviewCase, today: string, nextWorkday: string) {
   if (c.status === 'ai_suggested_close') return 'ai';
   if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
-  if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextDay(today) ? 'nextday' : null;
+  if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextWorkday ? 'nextday' : null;
   if (c.source_type === 'satisfaction') return 'employer_satisfaction';
   if (c.source_type === 'learner_satisfaction') return 'learner_satisfaction';
   if (c.source_type === 'manual') return 'manager';
   return null;
 }
 
-export const categoryCases = (cases: OverviewCase[], key: string, today: string) =>
-  cases.filter(c => activeCase(c) && categoryFor(c, today) === key);
+export const categoryCases = (cases: OverviewCase[], key: string, today: string, nextWorkday: string) =>
+  cases.filter(c => activeCase(c) && categoryFor(c, today, nextWorkday) === key);
 
 export const contactKey = (c: Pick<OverviewCase, 'learner_email'> & { contact_key?: string; id?: number }) =>
   c.contact_key || c.learner_email.toLowerCase() || `case:${c.id}`;
@@ -251,7 +250,7 @@ export const DESK_MENUS: [string, string, string][] = [
 export const deskLabel = (overview: Overview, key: string) => {
   const menu = DESK_MENUS.find(item => item[0] === key);
   if (!menu) return 'Call next';
-  const cases = categoryCases(overview.cases, key, overview.today);
+  const cases = categoryCases(overview.cases, key, overview.today, overview.next_workday);
   const counted = key === 'learner_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
   return CALL_TABS.some(tab => tab.key === key) ? `${menu[1]} (${uniqueLearners(counted).length})` : menu[1];
 };

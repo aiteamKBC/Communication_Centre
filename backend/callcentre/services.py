@@ -111,7 +111,7 @@ def expire_claims(now):
 def create_intent(ticket_id, agent, actor=None):
     now = timezone.now()
     ticket = CaseTicket.objects.get(pk=ticket_id)
-    if ticket.source_type == 'satisfaction' or ticket.attempts >= 3:
+    if ticket.attempts >= 3:
         raise Conflict('This case needs email or manager follow-up, not another automatic call.')
     if ticket.next_followup_at and ticket.next_followup_at > now:
         raise Conflict('The next follow-up is not due yet.')
@@ -121,10 +121,21 @@ def create_intent(ticket_id, agent, actor=None):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    candidates = CaseTicket.objects.open().filter(attempts__lt=3).exclude(source_type='satisfaction')
-    candidates = (candidates.filter(learner_email=ticket.learner_email) if ticket.learner_email
-                  else candidates.filter(pk=ticket.pk))
+    candidates = CaseTicket.objects.open().filter(attempts__lt=3)
+    candidates = (candidates.filter(pk=ticket.pk) if ticket.source_type == 'satisfaction'
+                  else candidates.exclude(source_type='satisfaction'))
+    person_id = ticket.source_data.get('person_id') if ticket.source_type != 'satisfaction' else None
+    if person_id:
+        same_person = Q(source_data__person_id=person_id)
+        if ticket.learner_email:
+            same_person |= Q(learner_email=ticket.learner_email)
+        candidates = candidates.filter(same_person)
+    else:
+        candidates = (candidates.filter(learner_email=ticket.learner_email) if ticket.learner_email
+                      else candidates.filter(pk=ticket.pk))
     tickets = list(candidates.order_by('pk'))
+    if not tickets:
+        raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')
     for item in tickets:
         claim(item.pk, agent, now, actor=actor)
     prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=ticket.learner_email, number=number,
@@ -245,7 +256,7 @@ def match_call(call_id):
     intent = intents[0] if intents else None
     candidates = CaseTicket.objects.filter(created_at__lte=call.started_at)
     if intent:
-        candidates = candidates.filter(intents=intent, learner_email=intent.learner_email)
+        candidates = candidates.filter(intents=intent)
         learner_email = intent.learner_email
     else:
         candidates = candidates.filter(Q(status='resolved', resolved_at__gte=call.started_at) | ~Q(status='resolved'))
@@ -263,7 +274,9 @@ def match_call(call_id):
         if directory.details.get(number) != [learner_email]:
             return None
         candidates = candidates.filter(learner_phone=number, learner_email=learner_email)
-    tickets = list(candidates.exclude(source_type='satisfaction').order_by('pk'))
+    # A deliberate call intent identifies the employer contact too. Without an
+    # intent keep the stricter learner-only, unique-number fallback.
+    tickets = list((candidates if intent else candidates.exclude(source_type='satisfaction')).order_by('pk'))
     if not tickets:
         return None
     match = CallMatch.objects.create(call=call, agent=agent, learner_email=learner_email, manual=intent is None)

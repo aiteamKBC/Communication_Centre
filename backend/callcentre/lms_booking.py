@@ -21,7 +21,7 @@ from . import graph
 from .aptem_summaries import normalize_attendance_value
 from .db import APTEM, DB, LMS
 from .learners import STAFF_SQL, pick_coach, program_status, staff_emails
-from .rules import LONDON, email_key
+from .rules import LONDON, email_key, working_day
 from .services import Conflict
 
 CATCH_UP, SUPPORT = 'catch-up', 'student-support'
@@ -37,12 +37,6 @@ REASONS = {
     'travel': 'Travel disruption',
     'technical': 'Technical issue',
     'other': 'Other',
-}
-# GOV.UK england-and-wales, as the LMS (learner_api.booking_calendar). Other years fail closed.
-BANK_HOLIDAYS = {
-    '2026-01-01', '2026-04-03', '2026-04-06', '2026-05-04', '2026-05-25', '2026-08-31', '2026-12-25', '2026-12-28',
-    '2027-01-01', '2027-03-26', '2027-03-29', '2027-05-03', '2027-05-31', '2027-08-30', '2027-12-27', '2027-12-28',
-    '2028-01-03', '2028-04-14', '2028-04-17', '2028-05-01', '2028-05-29', '2028-08-28', '2028-12-25', '2028-12-26',
 }
 COVERED_YEARS = range(2026, 2029)
 ACTIVE_STATUSES = ('not-scheduled', 'scheduled', 'in-progress', 'awaiting-signature')
@@ -61,7 +55,7 @@ def session_types(ticket):
 
 
 def bookable_day(day):
-    return day.weekday() < 5 and day.isoformat() not in BANK_HOLIDAYS and day.year in COVERED_YEARS
+    return working_day(day) and day.year in COVERED_YEARS
 
 
 def kbc_report_id(key):
@@ -79,10 +73,27 @@ def _fetch(cursor, sql, params=()):
 def lms_learner(email):
     """The learner and their coach as the LMS enrolment record (enrolment."Created_users") gives them.
 
-    "Learner".learners is never read. The calendar row is filed under Created_users.id, which the LMS
-    accepts for catch-up and support sessions (learner_api.calendar._record_owner_ids).
+    Unified mode resolves source aliases through the shared directory. The calendar row
+    is still filed under Created_users.id, not a profile ID or an Aptem ID. Legacy mode
+    retains the original direct enrolment lookup for reader rollback.
     """
-    from .sources import rows
+    from .sources import rows, learner_directory
+    from .identity import enabled
+    if enabled():
+        people = learner_directory()
+        if not people.sources_complete:
+            raise Unavailable('Learner identity could not be verified; no booking was made.')
+        person = people.resolve(email=email)
+        if not person or not person['enrolment']:
+            raise ValueError('No unique LMS enrolment is linked to this contact. Review their identity before booking.')
+        if program_status(person['programme_status']) != 'active':
+            raise ValueError('Only an Active or Delivery LMS enrolment can currently book this session type.')
+        if not person['coach_email']:
+            raise ValueError('No verified coach email is available for this learner.')
+        aptem_ids = [value for source, value in person['source_ids'] if source == 'aptem']
+        return {'source_id': person['enrolment']['id'], 'aptem_id': aptem_ids[0] if aptem_ids else None,
+                'name': person['profile']['learner_name'], 'email': person['profile']['learner_email'],
+                'coach_email': person['coach_email'], 'coach_name': person['profile']['coach']}
     found = rows(LMS, '''SELECT id, aptem_id, "Username", "Email", "Programme_status", "Coach_name", "Coach_email",
             "Case_owner" FROM enrolment."Created_users"
         WHERE lower(trim("Email")) = %s AND lower(coalesce("Programme_status", '')) <> 'duplicate - merged' ''',
@@ -118,10 +129,21 @@ def missed_lecture(ticket):
     """The register row this missed-lecture case is about, read-only from kbc_attendance."""
     from .sources import rows
     module = str((ticket.source_data or {}).get('module') or '').strip()
+    from .identity import enabled
+    emails = [ticket.learner_email]
+    if enabled():
+        from .sources import learner_directory
+        person = learner_directory().resolve(email=ticket.learner_email)
+        if not person:
+            raise Conflict('Learner identity requires review before linking a missed lecture.')
+        emails = person['emails']
     found = rows(DB, '''SELECT "ID", "key", "date", "Attendance", "module", "lecture_name" FROM public.kbc_attendance
-        WHERE lower(trim("Email")) = %s AND "date" = %s AND trim(coalesce("module", '')) = %s''',
-                 [ticket.learner_email, ticket.overdue_since, module])
+        WHERE lower(trim("Email")) = ANY(%s) AND "date" = %s AND trim(coalesce("module", '')) = %s''',
+                 [emails, ticket.overdue_since, module])
     missed = [r for r in found if normalize_attendance_value(r['Attendance']) == 0 and str(r['key'] or '').strip()]
+    recorded_key = ticket.source_data.get('attendance_key')
+    if recorded_key:
+        missed = [r for r in missed if str(r['key']) == str(recorded_key)]
     if not missed:
         raise Conflict('The register no longer shows this lecture as missed.')
     if len({str(r['key']).strip() for r in missed}) > 1:
@@ -190,10 +212,25 @@ def _existing_report(cursor, lecture, lock=False):
     return rows[0] if rows else None
 
 
+def _missed_previous_catchup(cursor, report, lecture):
+    key = lecture.get('previous_catchup')
+    if not key or report.get('catchup_event_key') != key:
+        return False
+    from .catchup import confirmed_absence
+    from .sources import cached_directory
+    people = cached_directory()
+    if not hasattr(people, 'resolve') or not people.sources_complete:
+        return False
+    person = people.resolve(email=lecture.get('learner_email'))
+    return bool(person and confirmed_absence(key, people, person,
+                read=lambda alias, sql, params: _fetch(cursor, sql, params)))
+
+
 def check_lecture_free(cursor, lecture):
     """Refuse before any meeting exists if this lecture already has a catch-up in the LMS."""
     report = _existing_report(cursor, lecture)
-    if report and report['status'] != 'declined' and report['event_status'] in (*ACTIVE_STATUSES, 'completed'):
+    if (report and report['status'] != 'declined' and report['event_status'] in (*ACTIVE_STATUSES, 'completed')
+            and not _missed_previous_catchup(cursor, report, lecture)):
         when = f" on {report['scheduled_date']:%d %b %Y} at {report['scheduled_time']:%H:%M}" if report['scheduled_date'] else ''
         raise Conflict(f'This lecture already has a catch-up in the LMS{when}.')
     return report
@@ -323,7 +360,8 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
     if report:
         if report['status'] == 'declined':
             return None, 'The coach declined the learner’s absence report for this lecture; it was left as it is.'
-        if report['event_status'] in (*ACTIVE_STATUSES, 'completed'):
+        if (report['event_status'] in (*ACTIVE_STATUSES, 'completed')
+                and not _missed_previous_catchup(cursor, report, lecture)):
             return None, 'The lecture was linked to another catch-up a moment ago.'
         cursor.execute('''UPDATE "Coach".coach_absence_report SET catchup_event_key = %s, recovery_method = 'catch-up',
             status = 'approved', updated_at = now() WHERE id = %s''', [row['event_key'], report['id']])
@@ -360,6 +398,10 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
         if reason_category == 'other' and len(reason_note) < 3:
             raise ValueError('Say what the reason was.')
         lecture = missed_lecture(ticket)
+        missed = ticket.source_data.get('catchup_no_show') or {}
+        if missed.get('event_key'):
+            lecture = {**lecture, 'previous_catchup': missed['event_key'],
+                       'learner_email': ticket.learner_email}
     person = lms_learner(ticket.learner_email)
     start = start.astimezone(LONDON)
     if start.date() < (lecture['date'] if lecture else start.date()):

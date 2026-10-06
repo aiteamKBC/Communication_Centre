@@ -112,21 +112,28 @@ def epa_overdue_rows(today=None):
 
 
 def attendance_missed_for_week(week_start, week_end):
-    """Learners whose latest attendance row in the week is a miss, with their missed count.
+    """Each unambiguous missed learner/date/module session in the requested week.
 
     The count is the number of distinct missed (email, module, date) sessions up
     to that date across all history; a date counts as missed if any row for it is.
     """
-    rows = _fetch(DB, '''SELECT "Email", "date", "Attendance", "module" FROM public.kbc_attendance
+    rows = _fetch(DB, '''SELECT "key", "Email", "date", "Attendance", "module" FROM public.kbc_attendance
         WHERE "date" >= %s AND "date" <= %s ORDER BY "Email", "date" ASC''', [week_start, week_end])
-    latest = {}
+    sessions = {}
+    register_keys = {}
     for row in rows:
         email = str(row['Email'] or '').strip().lower()
         if email and row['date']:
-            latest[email] = row
-    learners = [{'email': email, 'attendance_date': row['date'].isoformat(),
-                 'attendance_module': str(row['module'] or '').strip()}
-                for email, row in latest.items() if normalize_attendance_value(row['Attendance']) == 0]
+            key = (email, row['date'], str(row['module'] or '').strip())
+            sessions.setdefault(key, set()).add(normalize_attendance_value(row['Attendance']))
+            if row.get('key'):
+                register_keys.setdefault(key, set()).add(str(row['key']))
+    # Every dated module is independent. Missing or contradictory attendance
+    # needs review, never an automatic absence call.
+    learners = [{'email': email, 'attendance_date': day.isoformat(), 'attendance_module': module,
+                 'attendance_key': next(iter(register_keys.get((email, day, module), {''})))}
+                for (email, day, module), states in sessions.items()
+                if states == {0} and len(register_keys.get((email, day, module), set())) <= 1]
     if not learners:
         return []
     emails = sorted({item['email'] for item in learners})

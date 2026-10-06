@@ -17,7 +17,6 @@ export const loadCase = (id: number) => api<CaseDetail>(`tickets/${id}/`);
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {
   if (session.preview) return 'Read-only preview';
   if (c.status === 'resolved') return 'Case is not active';
-  if (c.source_type === 'satisfaction') return 'Survey is sent by email';
   if (c.attempts >= 3) return '3 attempts made: manager follow-up';
   if (c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;

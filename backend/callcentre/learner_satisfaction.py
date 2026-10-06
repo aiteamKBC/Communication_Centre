@@ -29,7 +29,7 @@ def next_review_at(completed_at):
 def eligible(person):
     # Explicit confirmations only. Suspected test names are not evidence of a test account.
     confirmed = set(getattr(settings, 'CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', []))
-    return (person['programme_status'].strip().lower() in {'active', 'onboarding'}
+    return (person['programme_status'].strip().lower() in {'active', 'delivery', 'onboarding'}
             and not confirmed.intersection(person['identifiers']))
 
 
@@ -58,6 +58,7 @@ def generate(people, now=None):
     by_pk = {ticket.pk: ticket for ticket in existing}
     seen, conflicts = set(), 0
     counts = {'created': 0, 'renewed': 0, 'eligible': 0}
+    updates = {}
     # An ambiguous source identity must not merge people or randomly choose the first row.
     frequencies = {}
     for person in people.satisfaction:
@@ -105,13 +106,16 @@ def generate(people, now=None):
         identifiers = sorted(set(ticket.source_data.get('identifiers', [])) | set(ids))
         ticket.source_data = {**ticket.source_data, 'identifiers': identifiers, 'eligible': allowed,
                               'programme_status': person['programme_status'], 'status_source': person['status_source']}
+        if person.get('person_id'):
+            ticket.source_data['person_id'] = person['person_id']
+            ticket.source_data['contact_sources'] = person.get('provenance', {})
         for name, value in person['profile'].items():
             setattr(ticket, name, value)
         if not allowed and old_eligible:
             release_fields(ticket)
             event(ticket, 'satisfaction_ineligible', {'programme_status': person['programme_status']})
-        ticket.save(update_fields=[*person['profile'], 'source_data', 'claimed_by', 'claimed_at',
-                                   'last_activity_at', 'updated_at'])
+        ticket.updated_at = now
+        updates[ticket.pk] = ticket
         for identity in identifiers:
             index.setdefault(identity, set()).add(ticket.pk)
     # A successful full snapshot can hide leavers, without resolving or deleting their history.
@@ -119,8 +123,12 @@ def generate(people, now=None):
         if ticket.pk not in seen and ticket.status != 'resolved' and ticket.source_data.get('eligible', True):
             ticket.source_data = {**ticket.source_data, 'eligible': False}
             release_fields(ticket)
-            ticket.save()
+            ticket.updated_at = now
+            updates[ticket.pk] = ticket
             event(ticket, 'satisfaction_ineligible', {'reason': 'Not in current learner directory'})
+    CaseTicket.objects.bulk_update(list(updates.values()), [
+        'learner_email', 'learner_name', 'learner_phone', 'coach', 'organisation', 'programme',
+        'manager_name', 'manager_email', 'source_data', 'claimed_by', 'claimed_at', 'last_activity_at', 'updated_at'], batch_size=100)
     counts['identity_conflicts'] = conflicts
     CycleState.objects.filter(name=SOURCE).update(last_success_at=now, details=counts)
     return counts

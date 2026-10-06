@@ -10,8 +10,8 @@ from django.utils import timezone
 
 from . import booking_email, email_settings, mailer
 from .db import DB
-from .models import CaseTicket, EmailDelivery, EmailQuota, EmployerSatisfaction, TicketEvent
-from .rules import LONDON, due_at, email_key
+from .models import CaseTicket, CycleState, EmailDelivery, EmailQuota, EmployerSatisfaction, TicketEvent
+from .rules import LONDON, due_at, email_key, normalize_phone
 from .services import event, release_fields
 from .sources import reason_key
 
@@ -22,11 +22,20 @@ def survey_token(survey):
 
 @transaction.atomic(using=DB)
 def generate_surveys(people):
+    if not getattr(people, 'sources_complete', True):
+        return 0
     now = timezone.now()
     today = now.astimezone(LONDON).date()
     quarter = f'{today.year}-Q{(today.month - 1) // 3 + 1}'
+    CycleState.objects.get_or_create(name='employer_satisfaction')
+    CycleState.objects.select_for_update().get(name='employer_satisfaction')
     managers = {}
     for person in people.values():
+        if hasattr(people, 'resolve'):
+            from .learner_satisfaction import eligible
+            resolved = people.resolve(email=person['learner_email'])
+            if not resolved or not eligible(resolved):
+                continue
         email = email_key(person.get('manager_email'))
         try:
             validate_email(email)
@@ -34,21 +43,82 @@ def generate_surveys(people):
             continue
         managers.setdefault(email, []).append(person)
     issued = set(EmployerSatisfaction.objects.filter(quarter=quarter).values_list('manager_email', flat=True))
-    existing = {c.reason_key: c for c in CaseTicket.objects.filter(source_type='satisfaction')}
-    new, pending = [], []
+    existing = {c.reason_key: c for c in CaseTicket.objects.select_for_update().filter(source_type='satisfaction')}
+    # Keep the most recently worked task; archive duplicates, never fake a
+    # completed survey or delete its calls, answers, notes or quarter history.
+    groups = {}
+    for case in existing.values():
+        if case.status != 'resolved' and not case.archived:
+            groups.setdefault(email_key(case.manager_email or case.learner_email), []).append(case)
+    for group in groups.values():
+        group.sort(key=lambda c: (bool(c.claimed_by_id), bool(c.last_contact_at),
+                                 c.last_contact_at or c.created_at, c.pk), reverse=True)
+        kept = group[0]
+        for duplicate in group[1:]:
+            duplicate.archived = True
+            duplicate.source_data = {**duplicate.source_data, 'superseded_by': kept.pk}
+            release_fields(duplicate)
+            duplicate.save()
+            event(duplicate, 'duplicate_task_archived', {'retained_case_id': kept.pk,
+                  'reason': 'One open employer contact task across quarters; history retained.'})
+    new, pending, refreshed, audits = [], [], [], []
     for email, learners in managers.items():
-        if email in issued:
+        details = []
+        numbers = set()
+        for learner in learners:
+            person = people.resolve(email=learner['learner_email']) if hasattr(people, 'resolve') else None
+            if person and person['manager_phone']:
+                numbers.add(person['manager_phone'])
+            details.append({'person_id': person['person_id'] if person else '',
+                            'name': learner['learner_name'], 'email': learner['learner_email'],
+                            'coach': learner['coach'], 'programme': learner['programme'],
+                            'organisation': learner['organisation']})
+        phone = normalize_phone(next(iter(numbers))) if len(numbers) == 1 else ''
+        # Refresh open quarterly contact snapshots, not survey answers or history.
+        for current in existing.values():
+            if current.manager_email == email and current.status != 'resolved' and not current.archived:
+                previous_phone = current.learner_phone
+                previous_data = current.source_data
+                current.learner_phone = phone
+                current.source_data = {**current.source_data, 'learners': details, 'learner_count': len(details),
+                                       'manager_phone_conflict': len(numbers) > 1,
+                                       'contact_sources': {'phone': 'LMS.Aptem_users', 'email': 'LMS.Aptem_users'}}
+                if hasattr(people, 'resolve'):
+                    current.source_data.update(eligible=True, eligibility_reason='Linked to current learner directory')
+                if previous_phone != phone or previous_data != current.source_data:
+                    current.updated_at, current.last_actor, current.last_action_at = now, 'System', now
+                    refreshed.append(current)
+                    audits.append(TicketEvent(ticket=current, kind='identity_contacts_refreshed', actor='System',
+                                  data={'previous_contact': {'learner_phone': previous_phone}, 'learner_count': len(details)}))
+        if email in issued or any(c.manager_email == email and c.status != 'resolved' and not c.archived
+                                 for c in existing.values()):
             continue
         key = reason_key('satisfaction', email, quarter)
         case = existing.get(key)
         if not case:
-            case = CaseTicket(learner_email=email, learner_name=learners[0]['manager_name'] or email,
+            case = CaseTicket(learner_email=email, learner_name=learners[0]['manager_name'] or email, learner_phone=phone,
                 organisation=', '.join(sorted({p['organisation'] for p in learners}))[:255],
                 manager_email=email, manager_name=learners[0]['manager_name'], source_type='satisfaction',
                 reason_key=key, due_at=due_at('satisfaction', now),
-                source_data={'quarter': quarter, 'learner_count': len(learners)})
+                source_data={'quarter': quarter, 'learner_count': len(learners), 'learners': details,
+                             'manager_phone_conflict': len(numbers) > 1,
+                             'contact_sources': {'phone': 'LMS.Aptem_users', 'email': 'LMS.Aptem_users'}})
             new.append(case)
         pending.append((email, case))
+    if hasattr(people, 'resolve'):
+        for current in existing.values():
+            if (current.manager_email not in managers and current.status != 'resolved' and not current.archived
+                    and current.source_data.get('eligible', True)):
+                # Successful full snapshot only: retain history, but do not call/email
+                # a historical contact with no current verified learner relationship.
+                current.source_data = {**current.source_data, 'eligible': False,
+                                       'eligibility_reason': 'No verified relationship in current directory'}
+                current.updated_at, current.last_actor, current.last_action_at = now, 'System', now
+                refreshed.append(current)
+                audits.append(TicketEvent(ticket=current, kind='employer_contact_unverified', actor='System',
+                                          data={'reason': 'No current learner relationship; history retained.'}))
+    CaseTicket.objects.bulk_update(refreshed, ['learner_phone', 'source_data', 'updated_at', 'last_actor', 'last_action_at'], batch_size=100)
+    TicketEvent.objects.bulk_create(audits, batch_size=200)
     CaseTicket.objects.bulk_create(new, batch_size=200)
     TicketEvent.objects.bulk_create([TicketEvent(ticket=case, kind='created', data={'quarter': quarter}) for case in new], batch_size=200)
     EmployerSatisfaction.objects.bulk_create([EmployerSatisfaction(ticket=case, manager_email=email,

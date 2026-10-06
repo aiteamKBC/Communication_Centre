@@ -24,7 +24,7 @@ from .ai import ai_enabled, validate_analysis
 from .emails import survey_token
 from .manage_views import allocations, call_requests, phone_keys, require_manager
 from .models import Agent, CaseTicket
-from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, due_at, missed_call, missed_lectures_ready_until, normalize_phone,
+from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, due_at, missed_call, missed_lectures_ready_until, next_workday, normalize_phone,
                     priority, promise_deadline, promise_missed)
 from .zoom_views import can_view_call, zoom_transcript_report
 
@@ -42,6 +42,14 @@ class RulesTests(SimpleTestCase):
         friday = datetime(2026, 10, 2, 10, tzinfo=LONDON)
         self.assertEqual(due_at('attendance', friday).date(), date(2026, 10, 6))
 
+    def test_next_workday_skips_weekend_and_registered_bank_holiday(self):
+        self.assertEqual(next_workday(date(2026, 10, 2)), date(2026, 10, 5))  # Friday -> Monday
+        self.assertEqual(next_workday(date(2026, 12, 24)), date(2026, 12, 29))  # Christmas closures
+
+    @override_settings(CALLCENTRE_HOLIDAYS=['2026-10-05'])
+    def test_next_workday_also_skips_college_closures(self):
+        self.assertEqual(next_workday(date(2026, 10, 2)), date(2026, 10, 6))
+
     def test_missed_lecture_waits_three_days(self):
         # Absent on the 1st: not ready on the 3rd, ready on the 4th.
         self.assertLess(missed_lectures_ready_until(date(2026, 10, 3)), date(2026, 10, 1))
@@ -58,8 +66,8 @@ class PromiseTests(SimpleTestCase):
         now = datetime(2026, 10, 2, 10, tzinfo=LONDON)
         self.assertEqual(promise_deadline('epa', 'epa_step', now), datetime(2026, 10, 9, 17, tzinfo=LONDON))
 
-    def test_agreeing_to_book_closes_the_case(self):
-        self.assertEqual(PROMISES['attendance'], {'catch_up_session': None})
+    def test_catchup_waits_for_evidence_while_legacy_review_promises_are_unchanged(self):
+        self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7})
         self.assertIsNone(PROMISES['pr']['book_pr'])
         self.assertIsNone(PROMISES['mcm']['book_mcm'])
 

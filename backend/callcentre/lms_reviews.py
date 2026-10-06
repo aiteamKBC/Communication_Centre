@@ -1,11 +1,11 @@
 """Progress reviews and monthly coaching from the LMS; replaces Aptem's ``progress_review`` and ``"MCR"`` tables.
 
-Two LMS sources, one per learner, as the LMS itself splits them (``coach_api.resolve_coach_review_events``):
+Two LMS sources. Legacy mode keeps the LMS's original per-learner source selection;
+unified mode includes both, with distinct source-qualified review references:
 
 * ``"Learner".reviews`` — the reviews imported from Aptem, matched to the learner by its own ``learner_email``.
-* ``curriculum.review_instances`` — the new LMS's own reviews, used only for learners with no imported review.
-  Its ``learner_id`` is a profile id, so the learner is found through the review's calendar row
-  (``"Coach".coach_calendar_event.learner_email``); ``"Learner".learners`` is never read.
+* ``curriculum.review_instances`` — the new LMS's own reviews. Unified mode checks
+  its profile ID against the shared identity directory and corroborates the calendar email.
 
 Each review is one of three call reasons: ``due`` (date passed, never booked), ``missed`` (booked, date passed,
 not completed) or ``signature`` (waiting for a signature). Reviews in progress are the coach's to finish and are
@@ -37,7 +37,7 @@ IMPORTED_SQL = '''SELECT id, lower(trim(learner_email)) AS email, trim(review_ty
       AND (planned_scheduled_date AT TIME ZONE 'Europe/London')::date BETWEEN %s AND %s'''
 IMPORTED_EMAILS_SQL = '''SELECT DISTINCT lower(trim(learner_email)) FROM "Learner".reviews
     WHERE nullif(trim(learner_email), '') IS NOT NULL'''
-NATIVE_SQL = '''SELECT i.id, lower(trim(e.learner_email)) AS email, trim(t.name) AS review_type, i.status,
+NATIVE_SQL = '''SELECT i.id, i.learner_id AS profile_id, lower(trim(e.learner_email)) AS email, trim(t.name) AS review_type, i.status,
         coalesce(e.scheduled_date, i.target_date) AS day, i.completed_at
     FROM curriculum.review_instances i
     JOIN curriculum.review_templates t ON t.id = i.review_template_id
@@ -71,7 +71,7 @@ def classify(review_type, status, day, completed, today, reasons):
     return CASE_TYPES[(kind, reason)]
 
 
-def review_items(today):
+def review_items(today, people=None):
     """Every review needing a call: {email, case_type, review_type, day, ref}. ``ref`` names the LMS row."""
     kinds = list(REVIEW_KINDS)
     with connections[LMS].cursor() as cursor:
@@ -83,7 +83,13 @@ def review_items(today):
                                         (native, NATIVE_REASONS, 'instance', 'completed_at')):
         for row in rows:
             email = email_key(row['email'])
-            if prefix == 'instance' and email in has_imported:
+            if people is not None:
+                if email not in people:
+                    continue
+                if prefix == 'instance' and (row.get('profile_id') is None or not people.resolve('profile', row.get('profile_id'), email)):
+                    continue
+                email = people[email]['learner_email']
+            if people is None and prefix == 'instance' and email in has_imported:
                 continue   # the LMS's rule: a learner with imported reviews is never read from Curriculum
             case_type = classify(row['review_type'], row['status'], row['day'], row[done], today, reasons)
             if case_type:

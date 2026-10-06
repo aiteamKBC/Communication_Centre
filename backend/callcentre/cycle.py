@@ -81,11 +81,16 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                 except Exception as exc:
                     result['zoom_' + account] = f'Unavailable ({type(exc).__name__}); inspect Zoom account status.'
         people = get_source('profiles', profiles)
-        if people is not None:
+        if people is not None and people.sources_complete:
+            from .sources import refresh_contacts
+            result['contacts_refreshed'] = refresh_contacts(people)
             directory = {}
             for person in people.values():
                 if person['learner_phone']:
                     directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
+            if hasattr(people, 'phone_contacts'):
+                directory = {phone: [entry['email']] for phone, entry in people.phone_contacts().items()
+                             if entry['role'] == 'learner' and entry['email']}
             CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
             result['source_created'] = generate_risks(people)
             bookings = get_source('bookings', lambda: load_bookings(people))
@@ -93,6 +98,10 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                 result['reminders_created'] = generate_reminders(people, bookings)
             result['manager_surveys'] = generate_surveys(people)
             result['learner_satisfaction'] = generate_learner_satisfaction(people)
+            from .catchup import sync as sync_catchups
+            result['catchup_followups'] = get_source('catchup_followups', lambda: sync_catchups(people))
+        else:
+            result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
         # Evidence wins over returning a promised-date case to the queue.
         result['resolved'] = evidence_cycle()
@@ -109,7 +118,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                     result['matched'] += 1
         if not skip_ai:
             result['analyses'] = process_ai()
-        if not skip_emails:
+        if not skip_emails and people is not None and people.sources_complete:
             result['emails_processed'] = process_emails()
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result

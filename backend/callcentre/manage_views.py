@@ -91,7 +91,12 @@ def agent_detail(request, pk):
 
 
 def phone_keys(value):
-    """Match the legacy Activity report: UK national form, then the last 10 and 9 digits."""
+    """Unified mode uses exact normalized numbers, never ambiguous suffixes."""
+    from .identity import enabled
+    from .rules import normalize_phone
+    if enabled():
+        phone = normalize_phone(value)
+        return [phone] if phone else []
     digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
     if digits.startswith('0044'):
         digits = digits[2:]
@@ -102,8 +107,13 @@ def phone_keys(value):
     return [key for key in (digits, digits[-10:], digits[-9:]) if key]
 
 
-def activity_phone_directory():
+def activity_phone_directory(people=None):
     """Coach caseloads keyed by phone, for labelling calls in the activity log."""
+    from .identity import enabled
+    if enabled():
+        people = people if people is not None else learner_directory()
+        return {phone: {'learner_name': p['name'], 'learner_email': p['email'], 'coach': p['coach']}
+                for phone, p in people.phone_contacts().items()}
     directory = {}
     for coach in rows(DB, 'SELECT case_owner, learners_json FROM public.coaches_data'):
         learners = coach['learners_json']
@@ -136,7 +146,10 @@ def activity_log(request):
         reverse=True)
     calls = outbound.filter(started_at__gte=datetime.combine(start, time.min, tzinfo=LONDON),
                             started_at__lt=datetime.combine(end, time.min, tzinfo=LONDON)).exclude(callee_number='')
-    directory = activity_phone_directory()
+    from .identity import enabled
+    people = learner_directory() if enabled() else None
+    directory = activity_phone_directory(people)
+    linked = dict(CallMatch.objects.filter(call__in=calls).values_list('call_id', 'learner_email')) if people is not None else {}
     daily, details = {}, []
     for call in calls.order_by('started_at').values('id', 'callee_number', 'started_at', 'result'):
         day = call['started_at'].astimezone(LONDON).date().isoformat()
@@ -145,6 +158,10 @@ def activity_log(request):
         totals['calls'] += 1
         totals['answered' if answered else 'not_answered'] += 1
         learner = next((directory[key] for key in phone_keys(call['callee_number']) if key in directory), {})
+        if call['id'] in linked:
+            person = people.resolve(email=linked[call['id']])
+            # Existing call attribution wins over a phone that may have changed owner.
+            learner = person['profile'] if person else {'learner_email': linked[call['id']]}
         details.append({'id': call['id'], 'date': day, 'phone': call['callee_number'], 'answered': answered,
                         'learner_name': learner.get('learner_name', ''), 'learner_email': learner.get('learner_email', ''),
                         'coach': learner.get('coach', '')})
@@ -162,6 +179,19 @@ def learners(request):
         'email': p['learner_email'], 'name': p['learner_name'], 'phone': p['learner_phone'],
         'programme': p['programme'], 'coach': p['coach'], 'organisation': p['organisation'],
     } for p in people]})
+
+
+@authenticated
+@require_GET
+def identity_status(request):
+    """Manager-only, read-only identity provenance and review queue (no secret values)."""
+    require_manager(request.user)
+    from .sources import unified_directory
+    try:
+        people = unified_directory()
+    except Exception:
+        return JsonResponse({'detail': 'Identity sources unavailable; no records were changed.'}, status=503)
+    return JsonResponse(people.summary())
 
 
 @authenticated
