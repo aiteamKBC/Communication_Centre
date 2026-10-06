@@ -19,6 +19,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -238,13 +239,24 @@ export default function LoginPage() {
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-kbc-navy">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition-colors focus:border-kbc-navy"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-11 text-sm text-slate-700 outline-none transition-colors focus:border-kbc-navy"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(current => !current)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-slate-400 transition-colors hover:text-kbc-navy focus:outline-none focus:ring-2 focus:ring-kbc-navy/20"
+                  >
+                    <i className={showPassword ? 'ri-eye-off-line text-lg' : 'ri-eye-line text-lg'} />
+                  </button>
+                </div>
               </div>
 
               <button
