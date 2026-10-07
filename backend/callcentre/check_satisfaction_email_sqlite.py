@@ -103,7 +103,7 @@ def check_email(user, agent):
         viewer = type(user).objects.using('login_db').get(username='viewer')
         raises(PermissionDenied, lambda: satisfaction_email.send(case().pk, viewer, payload()))
         other_claim = case(claimed_by=agent, last_activity_at=timezone.now())
-        manager = type(user).objects.using('login_db').create(username='email-manager', is_staff=True)
+        manager = type(user).objects.using('login_db').create(username='email-manager', is_superuser=True)
         raises(Conflict, lambda: satisfaction_email.send(other_claim.pk, manager, payload()))
         assert not deliver.called
     return 11

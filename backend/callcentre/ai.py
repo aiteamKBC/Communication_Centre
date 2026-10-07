@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from .db import DB
 from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneRecording
-from .rules import LONDON, OPTIONS
+from .rules import LONDON, OPTIONS, SATISFACTION_TYPES
 from .services import event, release_fields
 from .zoom_views import current_account_filter
 
@@ -123,7 +123,7 @@ def apply_analysis(analysis):
             result = analysis.result
             ticket.ai_summary, ticket.ai_confidence = result['summary'], result['confidence']
             ticket.resolution_option = result['chosen_option']
-            if ticket.source_type == 'learner_satisfaction':
+            if ticket.source_type in SATISFACTION_TYPES:
                 # AI summaries can assist the operator, but feedback needs explicit human completion.
                 ticket.save(update_fields=['ai_summary', 'ai_confidence'])
                 event(ticket, 'ai_analysis', {'analysis_id': analysis.pk, 'summary': result['summary'],

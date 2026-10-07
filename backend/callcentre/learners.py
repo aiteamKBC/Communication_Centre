@@ -12,6 +12,8 @@ from Aptem first; line-manager details come from Aptem. The coach follows ``pick
 Learners the LMS has on a break in learning are left out entirely (Aptem cannot add them back);
 their emails are kept in ``Learners.on_break`` so their open cases can be hidden too.
 """
+from functools import cached_property
+
 from .rules import email_key, normalize_phone
 
 # LMS rows that were folded into another row; the surviving row carries the learner.
@@ -64,7 +66,7 @@ def pick_coach(coach_name, coach_email, case_owner, aptem_owner, staff):
 
 
 APTEM_LEARNERS_SQL = '''SELECT "ID", "FullName", "Email", "Learner Phone", "OwnerName",
-    "OrganizationName", "Program Name", "ManagerName", "ManagerEmail", "Program-Status"
+    "OrganizationName", "Program Name", "ManagerName", "ManagerEmail", "Manager Phone", "Program-Status"
     FROM public.aptem_auto_extracting'''
 
 
@@ -77,9 +79,12 @@ class Learners(dict):
     learner's cohort and group, kept apart from the profile because profiles are copied onto cases;
     ``coach_emails`` maps each coach name (casefolded) to its email where only one email is known;
     ``active`` holds every email of the learners the LMS has as Active or Delivery.
+    ``manager_phones`` maps each line-manager (employer) email to the one phone Aptem gives them,
+    left out when their rows disagree.
     """
 
-    def __init__(self, profiles, aliases, cohorts=None, on_break=frozenset(), coach_emails=None, active=frozenset(), satisfaction=None):
+    def __init__(self, profiles, aliases, cohorts=None, on_break=frozenset(), coach_emails=None, active=frozenset(),
+                 satisfaction=None, manager_phones=None):
         super().__init__(profiles)
         self.aliases = aliases
         self.cohorts = cohorts or {}
@@ -87,6 +92,7 @@ class Learners(dict):
         self.coach_emails = coach_emails or {}
         self.active = active
         self.satisfaction = satisfaction or []
+        self.manager_phones = manager_phones or {}
         self.sources_complete = True
 
     def __contains__(self, key):
@@ -94,6 +100,15 @@ class Learners(dict):
 
     def __missing__(self, key):
         return dict.__getitem__(self, self.aliases[key])
+
+    @cached_property
+    def managers(self):
+        """Line-manager (employer) email -> the main emails of their learners in the directory."""
+        found = {}
+        for profile in self.values():
+            if profile['manager_email']:
+                found.setdefault(profile['manager_email'], []).append(profile['learner_email'])
+        return found
 
 
 def _text(value):
@@ -224,6 +239,12 @@ def merge(lms_rows, aptem_rows, staff_rows=()):
         if not set(person['identifiers']) & known_ids and len(aptem_ids[_text(row['ID'])]) == 1:
             satisfaction.append(person)
             known_ids.update(person['identifiers'])
+    manager_phones = {}
+    for row in aptem_rows:
+        manager, phone = email_key(row.get('ManagerEmail')), normalize_phone(row.get('Manager Phone'))
+        if manager and phone:
+            manager_phones.setdefault(manager, set()).add(phone)
     return Learners(profiles, {alias: email for alias, email in aliases.items() if alias not in profiles}, cohorts,
                     frozenset(on_break), {name: next(iter(emails)) for name, emails in coaches.items() if len(emails) == 1},
-                    frozenset(active), satisfaction=satisfaction)
+                    frozenset(active), satisfaction=satisfaction,
+                    manager_phones={manager: next(iter(phones)) for manager, phones in manager_phones.items() if len(phones) == 1})

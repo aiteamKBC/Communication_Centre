@@ -11,7 +11,7 @@ type Change = { id: number; previous: Values | null; value: Values; reason: stri
 type Data = {
   values: Values; defaults: Values; revision: number; set_up: boolean; not_set_up: string;
   reminder_types: { key: string; label: string }[];
-  sending: { configured: boolean; sender: string; missing: string[] };
+  sending: { configured: boolean; sender: string; missing: string[]; live_allowed: boolean };
   history: Change[];
 };
 
@@ -107,10 +107,13 @@ export default function Settings({ csrf }: { csrf: string }) {
             ? `Microsoft 365 is ready. Emails go out as ${data.sending.sender}.`
             : `Microsoft 365 is not ready: add ${data.sending.missing.join(', ')} to the server settings (.env).`}
         </p>
+        {!data.sending.live_allowed && (
+          <p className="ec-alert" role="note">This server only records emails: CALLCENTRE_EMAIL_LIVE_ALLOWED is not set in its .env. Change the sending mode on the production server.</p>
+        )}
         <fieldset disabled={readOnly}>
           <legend>When an email is due</legend>
           <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'dry_run'} onChange={() => update({ email_mode: 'dry_run' })} /> Record only (dry run): nothing is sent, the email is kept on the case</label>
-          <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'live'} disabled={!data.sending.configured} onChange={() => update({ email_mode: 'live' })} /> Send for real (live)</label>
+          <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'live'} disabled={!data.sending.configured || !data.sending.live_allowed} onChange={() => update({ email_mode: 'live' })} /> Send for real (live)</label>
         </fieldset>
       </section>
 
@@ -154,7 +157,7 @@ export default function Settings({ csrf }: { csrf: string }) {
         <section className="ec-card">
           <h2>Save changes</h2>
           {pending.length ? <ul>{pending.map(line => <li key={line}>{line}</li>)}</ul> : <p className="ec-muted">No changes yet.</p>}
-          {goingLive && pending.length > 0 && <p className="ec-alert" role="alert">Learners and line managers will receive real emails from {data.sending.sender}.</p>}
+          {goingLive && pending.length > 0 && <p className="ec-alert" role="alert">Learners and line managers will receive real emails from {data.sending.sender}. Only reminders that fall due from today are sent, not the backlog.</p>}
           <label>Why are you changing this?
             <input value={reason} maxLength={1000} onChange={event => setReason(event.target.value)} placeholder="For example: start reminders for missed lectures" />
           </label>

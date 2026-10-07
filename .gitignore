@@ -19,6 +19,8 @@ backend/.env
 backend/.env.local
 backend/login/.env.login
 backend/login/.env.login.local
+backend/.env.login
+backend/.env.login.local
 
 # Logs and OS files
 *.log

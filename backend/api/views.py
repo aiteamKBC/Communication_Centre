@@ -20,7 +20,6 @@ from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.db import DatabaseError, models, transaction
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
@@ -59,14 +58,20 @@ def _header_text(request, name: str) -> str:
 	return str(request.headers.get(name, '') or '').strip()
 
 
-def _header_int(request, name: str) -> int | None:
-	value = _header_text(request, name)
-	if not value:
-		return None
-	try:
-		return int(value)
-	except ValueError:
-		return None
+def _request_user(request) -> dict:
+	"""Who made the request, from the signed-in session (the API login gate guarantees one)."""
+	user = request.user
+	return {
+		'user_id': user.id,
+		'username': user.username or '',
+		'email': user.email or '',
+		'display_name': f'{user.first_name or ""} {user.last_name or ""}'.strip() or user.username or user.email or '',
+	}
+
+
+def _request_user_label(request) -> str:
+	user = _request_user(request)
+	return user['email'] or user['username'] or user['display_name']
 
 
 def _audit_log(
@@ -86,10 +91,7 @@ def _audit_log(
 			entity=entity,
 			object_id=str(object_id or ''),
 			object_label=str(object_label or '')[:1000],
-			user_id=_header_int(request, 'X-KBC-User-Id'),
-			username=_header_text(request, 'X-KBC-Username'),
-			email=_header_text(request, 'X-KBC-User-Email'),
-			display_name=_header_text(request, 'X-KBC-Display-Name'),
+			**_request_user(request),
 			path=request.get_full_path(),
 			method=request.method,
 			ip_address=_client_ip(request),
@@ -219,7 +221,6 @@ def serialize_event(event: EventData) -> dict:
 	}
 
 
-@csrf_exempt
 def events(request):
 	if request.method == 'GET':
 		records = EventData.objects.all().order_by('event_date', 'event_time')
@@ -253,7 +254,6 @@ def events(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def event_detail(request, event_id: int):
 	try:
 		event = EventData.objects.get(pk=event_id)
@@ -367,7 +367,6 @@ def _save_uploaded_image(uploaded_file, folder: str) -> str:
 	return f'{settings.MEDIA_URL}{stored_path}'.replace('//', '/')
 
 
-@csrf_exempt
 def news(request):
 	if request.method == 'GET':
 		records = News.objects.all().order_by('-publication_date', '-id')
@@ -413,7 +412,6 @@ def news(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def news_detail(request, news_id: int):
 	try:
 		record = News.objects.get(pk=news_id)
@@ -474,7 +472,6 @@ def news_detail(request, news_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def urgent_notice(request):
 	if request.method == 'GET':
 		if request.GET.get('list') == '1':
@@ -522,7 +519,6 @@ def urgent_notice(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def urgent_notice_detail(request, notice_id: int):
 	try:
 		record = UrgentNotice.objects.get(pk=notice_id)
@@ -578,7 +574,6 @@ def urgent_notice_detail(request, notice_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def leadership_message(request):
 	if request.method == 'GET':
 		if request.GET.get('list') == '1':
@@ -635,7 +630,6 @@ def leadership_message(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def leadership_message_detail(request, message_id: int):
 	try:
 		record = LeadershipMessage.objects.get(pk=message_id)
@@ -694,7 +688,6 @@ def leadership_message_detail(request, message_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def upload_image(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1443,10 +1436,7 @@ def log_legacy_training_plan_full_save(
 	logger.warning(
 		'LEGACY_TRAINING_PLAN_FULL_SAVE_TRIGGERED %s',
 		json.dumps({
-			'userId': _header_int(request, 'X-KBC-User-Id'),
-			'username': _header_text(request, 'X-KBC-Username'),
-			'email': _header_text(request, 'X-KBC-User-Email'),
-			'displayName': _header_text(request, 'X-KBC-Display-Name'),
+			**_request_user(request),
 			'path': request.get_full_path(),
 			'method': request.method,
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
@@ -2405,7 +2395,6 @@ def serialize_feedback(item: Feedback) -> dict:
 	}
 
 
-@csrf_exempt
 def feedback(request):
 	if request.method == 'GET':
 		records = Feedback.objects.all().order_by('-submitted_at', '-id')
@@ -2445,7 +2434,6 @@ def feedback(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
 		include_archived = str(request.GET.get('includeArchived', '')).strip().lower() in {'1', 'true', 'yes'}
@@ -2595,7 +2583,6 @@ def training_plan(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_reorder_programmes(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -2681,7 +2668,6 @@ def training_plan_reorder_programmes(request):
 	return JsonResponse(training_plan_order_response({'programmeOrder': programme_ids}))
 
 
-@csrf_exempt
 def training_plan_reorder_cohorts(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -2792,7 +2778,6 @@ def training_plan_reorder_cohorts(request):
 	return JsonResponse(training_plan_order_response({'programmeId': programme_id, 'cohortOrder': cohort_ids}))
 
 
-@csrf_exempt
 def training_plan_move_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -2900,7 +2885,6 @@ def training_plan_move_cohort(request, cohort_id: str):
 	return JsonResponse(training_plan_order_response({'cohortId': target_cohort_id, 'fromProgrammeId': from_programme_id, 'toProgrammeId': to_programme_id}))
 
 
-@csrf_exempt
 def training_plan_cohort_detail(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3076,7 +3060,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			if int(row.id) in missing_id_set:
 				row.is_archived = True
 				row.archived_at = timezone.now()
-				row.archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+				row.archived_by = _request_user_label(request)
 				row.archive_reason = 'Module removed from cohort editor'
 				row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
 				continue
@@ -3201,7 +3185,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			'createdCount': len(created_rows),
 			'archivedCount': len(missing_ids),
 			'note': f'User edited cohort {target_cohort_id} in programme {programme_id}: updated {len(scope_rows) - len(missing_ids)} module row(s), created {len(created_rows)}, archived {len(missing_ids)}.',
-			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'requestUser': _request_user_label(request),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
 		logger.info('cohort_edit_partial_update %s', json.dumps(metadata, sort_keys=True))
@@ -3224,7 +3208,6 @@ def training_plan_cohort_detail(request, cohort_id: str):
 	}))
 
 
-@csrf_exempt
 def training_plan_create_cohort(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3267,7 +3250,7 @@ def training_plan_create_cohort(request):
 					'identifiers': identifiers,
 					'createdCount': 0,
 					'skippedCount': len(duplicate_rows),
-					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'requestUser': _request_user_label(request),
 					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 				}, sort_keys=True),
 			)
@@ -3322,7 +3305,7 @@ def training_plan_create_cohort(request):
 				'identifiers': identifiers,
 				'createdCount': len(created_rows),
 				'skippedCount': len(skipped_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -3342,7 +3325,7 @@ def training_plan_create_cohort(request):
 				'createdIds': [int(row.id) for row in created_rows],
 				'skippedIds': [int(row.id) for row in skipped_rows],
 				'identifiers': identifiers,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -3358,7 +3341,6 @@ def training_plan_create_cohort(request):
 	return JsonResponse(result, status=201 if created_rows else 200)
 
 
-@csrf_exempt
 def training_plan_archive_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3422,7 +3404,7 @@ def training_plan_archive_cohort(request, cohort_id: str):
 
 		before = [serialize_training_plan(row) for row in scope_rows]
 		now = timezone.now()
-		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archived_by = _request_user_label(request)
 		archive_reason = str(payload.get('archiveReason') or 'Cohort archived from Training Plan UI').strip()
 		for row in scope_rows:
 			row.is_archived = True
@@ -3444,7 +3426,6 @@ def training_plan_archive_cohort(request, cohort_id: str):
 	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'programmeId': programme_id, 'cohortId': target_cohort_id}))
 
 
-@csrf_exempt
 def training_plan_archive_module(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3505,7 +3486,7 @@ def training_plan_archive_module(request):
 
 		before = [serialize_training_plan(row) for row in scope_rows]
 		now = timezone.now()
-		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archived_by = _request_user_label(request)
 		archive_reason = str(payload.get('archiveReason') or 'Linked module archived from Training Plan UI').strip()
 		for row in scope_rows:
 			row.is_archived = True
@@ -3527,7 +3508,6 @@ def training_plan_archive_module(request):
 	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id}))
 
 
-@csrf_exempt
 def training_plan_restore_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3581,14 +3561,13 @@ def training_plan_restore_cohort(request, cohort_id: str):
 				'programmeId': programme_id,
 				'cohortId': target_cohort_id,
 				'restoredCount': len(scope_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 			},
 		)
 
 	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'cohort_id': target_cohort_id, 'programmeId': programme_id}))
 
 
-@csrf_exempt
 def training_plan_restore_module(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3669,14 +3648,13 @@ def training_plan_restore_module(request):
 				'moduleCatalogueId': module_catalogue_id,
 				'trainingPlanIds': row_ids,
 				'restoredCount': len(scope_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 			},
 		)
 
 	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id, 'trainingPlanIds': row_ids}))
 
 
-@csrf_exempt
 def training_plan_session_detail(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3795,7 +3773,6 @@ def training_plan_session_detail(request, session_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_module_detail(request, module_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3884,7 +3861,6 @@ def training_plan_module_detail(request, module_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_linked_module_rows(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3986,7 +3962,7 @@ def training_plan_linked_module_rows(request):
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
 				'skippedAmbiguousRows': skipped_ambiguous_rows,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -4005,7 +3981,7 @@ def training_plan_linked_module_rows(request):
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
 				'skippedAmbiguousRows': skipped_ambiguous_rows,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -4022,7 +3998,6 @@ def training_plan_linked_module_rows(request):
 	return JsonResponse(response)
 
 
-@csrf_exempt
 def training_plan_linked_programme_rows(request, programme_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4103,7 +4078,7 @@ def training_plan_linked_programme_rows(request, programme_id: str):
 			'programmeId': target_programme_id,
 			'changedFields': changed_fields,
 			'updatedCount': len(scope_rows),
-			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'requestUser': _request_user_label(request),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
 		logger.info('programme_edit_linked_timeline_rows_partial_update %s', json.dumps(metadata, sort_keys=True))
@@ -4126,7 +4101,6 @@ def training_plan_linked_programme_rows(request, programme_id: str):
 	return JsonResponse(response)
 
 
-@csrf_exempt
 def training_plan_add_module_for_tutor(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4168,7 +4142,7 @@ def training_plan_add_module_for_tutor(request):
 					'identifiers': identifiers,
 					'createdCount': 0,
 					'skippedCount': 1,
-					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'requestUser': _request_user_label(request),
 					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 				}, sort_keys=True),
 			)
@@ -4228,7 +4202,7 @@ def training_plan_add_module_for_tutor(request):
 				'identifiers': identifiers,
 				'createdCount': len(created_rows),
 				'skippedCount': len(skipped_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -4248,7 +4222,7 @@ def training_plan_add_module_for_tutor(request):
 				'createdIds': [int(row.id) for row in created_rows],
 				'skippedIds': [int(row.id) for row in skipped_rows],
 				'identifiers': identifiers,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -4264,7 +4238,6 @@ def training_plan_add_module_for_tutor(request):
 	return JsonResponse(result, status=201 if created_rows else 200)
 
 
-@csrf_exempt
 def training_plan_session_coverage(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4361,7 +4334,6 @@ def training_plan_session_coverage(request, session_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_session_ksb(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4442,7 +4414,6 @@ def health(request):
 	return JsonResponse({'status': 'ok', 'service': 'communication-centre-backend'})
 
 
-@csrf_exempt
 def tutor_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4491,7 +4462,6 @@ def tutor_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def tutor_profile_detail(request, profile_id: int):
 	try:
 		record = TutorProfile.objects.get(pk=profile_id)
@@ -4587,7 +4557,6 @@ def tutor_profile_duplicates(request):
 	return JsonResponse({'items': sorted(pairs, key=lambda item: -item['score'])})
 
 
-@csrf_exempt
 def coach_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4626,7 +4595,6 @@ def coach_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def coach_profile_detail(request, profile_id: int):
 	try:
 		record = CoachProfile.objects.get(pk=profile_id)
@@ -4692,7 +4660,6 @@ def coach_profile_detail(request, profile_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def ksb_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4708,7 +4675,7 @@ def ksb_profiles(request):
 		values, error = ksb_profile_values_from_payload(payload)
 		if error:
 			return HttpResponseBadRequest(error)
-		values['created_by'] = _header_text(request, 'X-KBC-Display-Name') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-User-Email')
+		values['created_by'] = _request_user(request)['display_name']
 		record = KsbProfile.objects.create(**values)
 		serialized = serialize_ksb_profile(record)
 		_audit_log(request, action='create', entity='KsbProfile', object_id=record.id, object_label=record.name, after=serialized)
@@ -4717,7 +4684,6 @@ def ksb_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def ksb_profile_detail(request, profile_id: int):
 	try:
 		record = KsbProfile.objects.get(pk=profile_id)
@@ -4757,7 +4723,6 @@ def ksb_profile_detail(request, profile_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_holidays(request):
 	if request.method == 'GET':
 		records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
@@ -4822,7 +4787,6 @@ def training_plan_holidays(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_holiday_detail(request, holiday_id: int):
 	if request.method not in {'PATCH', 'DELETE'}:
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4881,7 +4845,6 @@ def training_plan_holiday_detail(request, holiday_id: int):
 		return training_plan_holidays_response({'item': serialized, 'items': training_plan_holidays_snapshot(), 'version': training_plan_holidays_version()})
 
 
-@csrf_exempt
 def training_plan_holiday_types(request):
 	if request.method == 'GET':
 		return training_plan_holiday_types_response(training_plan_holiday_types_snapshot())
@@ -5066,7 +5029,6 @@ def training_plan_holiday_types(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_modules(request):
 	if request.method == 'GET':
 		records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
@@ -5132,7 +5094,6 @@ def training_plan_modules(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_module_definition_detail(request, module_id: str):
 	module_id = str(module_id or '').strip()
 	if not module_id:
@@ -5194,7 +5155,6 @@ def training_plan_module_definition_detail(request, module_id: str):
 		return training_plan_module_definitions_response({'item': serialized, 'version': training_plan_module_definitions_version()})
 
 
-@csrf_exempt
 def training_plan_program_configs(request):
 	if request.method == 'GET':
 		records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
@@ -5260,7 +5220,6 @@ def training_plan_program_configs(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_program_config_detail(request, config_id: str):
 	config_id = str(config_id or '').strip()
 	if not config_id:
@@ -5597,7 +5556,6 @@ def aptem_learners(request):
 	return JsonResponse({'items': learners, 'subprogramme': subprogramme})
 
 
-@csrf_exempt
 def training_plan_module_assignment_learners(request, cohort_id: str, module_block_id: str):
 	row, module_catalogue_id, error = validate_module_assignment_scope(cohort_id, module_block_id)
 	if error:
@@ -5721,7 +5679,6 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_module_learners(request, module_catalogue_id: str):
 	module, error = validate_module_catalogue_id(str(module_catalogue_id or '').strip())
 	if error:
@@ -5843,7 +5800,6 @@ def _apply_session_data(record, session_names: list, session_descriptions: list,
 		setattr(record, field, session_descriptions[i] if i < len(session_descriptions) else '')
 
 
-@csrf_exempt
 def modules(request):
 	if request.method == 'GET':
 		records = Module.objects.all().order_by('module_name', 'module_id')
@@ -5880,7 +5836,6 @@ def modules(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def module_detail(request, module_id: int):
 	try:
 		record = Module.objects.get(module_id=module_id)
@@ -6399,7 +6354,6 @@ def serialize_employee(emp: Employee) -> dict:
 	}
 
 
-@csrf_exempt
 def employees(request):
 	if request.method == 'GET':
 		records = Employee.objects.all().order_by('pk')
@@ -6429,7 +6383,6 @@ def employees(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def employee_detail(request, employee_id: int):
 	try:
 		emp = Employee.objects.get(pk=employee_id)
@@ -6821,7 +6774,6 @@ def audit_logs(request):
 	)
 
 
-@csrf_exempt
 def training_plan_bootstrap(request):
 	"""Single GET endpoint returning every dataset the Training Plan page loads on
 	mount. Replaces ~8 parallel requests (training-plan, holidays, modules,

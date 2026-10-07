@@ -16,6 +16,7 @@ import { Calendar, Eventbrite } from './engagement/NotConnected';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
+import SmartEmbedPhone from './engagement/SmartEmbedPhone';
 import type { NavGroup } from './engagement/Shell';
 import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
@@ -54,7 +55,7 @@ export default function CallCentrePage() {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [requesting, setRequesting] = useState(false);
   const month = params.get('month') || '';
-  const config = useCallCentre<Config>('config/');
+  const config = useCallCentre<Config>('config/', false);
   const overviewState = useCallCentre<Overview>(`overview/${month ? `?month=${month}` : ''}`);
   const overview = overviewState.data;
 
@@ -71,8 +72,11 @@ export default function CallCentrePage() {
   const refresh = overviewState.refresh;
 
   useEffect(() => {
-    if (overviewState.error && overview) setMessage({ text: overviewState.error, error: true });
+    if (overviewState.error && overview) setMessage({ text: `Could not refresh: ${overviewState.error} Showing the last loaded list.`, error: true });
   }, [overviewState.error, overview]);
+  useEffect(() => {
+    if (config.error && config.status !== 401) setMessage({ text: `The Engagement Centre settings could not load (${config.error}). Saving will fail until you reload the page.`, error: true });
+  }, [config.error, config.status]);
 
   const role = overview?.access.role;
   const director = role === 'director';
@@ -132,7 +136,9 @@ export default function CallCentrePage() {
       </div>
     );
   } else if (!overview) {
-    content = overviewState.error ? <p role="alert">{overviewState.error}</p> : <p>Loading your Engagement Centre…</p>;
+    content = overviewState.error
+      ? <div role="alert"><p>{overviewState.error}</p><button type="button" onClick={refresh}>Try again</button></div>
+      : <p>Loading your Engagement Centre…</p>;
   } else if (inDesk && deskOverview) {
     content = (
       <div id="engagement-centre" className="ec ed">
@@ -174,7 +180,7 @@ export default function CallCentrePage() {
             <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
           ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
-              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
+              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} smartEmbed={!!config.data?.smart_embed} />
                 : view === 'bookings' ? <BookingLinksView overview={overview} />
                   : view === 'connections' ? <Connections overview={overview} onView={key => setParam({ view: key })} />
                     : view === 'calendar' ? <Calendar />
@@ -207,6 +213,9 @@ export default function CallCentrePage() {
       >
         {content}
       </Shell>
+      {config.data?.smart_embed && ownAgent !== null && (
+        <SmartEmbedPhone csrf={config.data.csrf_token} notify={notify} onCallLogged={refresh} />
+      )}
     </div>
   );
 }

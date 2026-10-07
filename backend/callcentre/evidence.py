@@ -134,7 +134,8 @@ CHECKS = {'attendance': attendance_evidence, 'pr': review_evidence, 'mcm': revie
           'reminder': reminder_evidence, 'satisfaction': satisfaction_evidence,
           # A manager's request closes only when a specialist resolves it.
           'manual': lambda ticket, snapshot=None: None,
-          'learner_satisfaction': lambda ticket, snapshot=None: None}
+          'learner_satisfaction': lambda ticket, snapshot=None: None,
+          'employer_feedback': lambda ticket, snapshot=None: None}
 
 
 def check_evidence(ticket, snapshot=None):

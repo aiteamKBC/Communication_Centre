@@ -32,10 +32,10 @@ class LearnerSatisfactionRulesTests(SimpleTestCase):
         self.assertEqual((due.month, due.hour, due.utcoffset().total_seconds()), (4, 10, 3600))
 
     @override_settings(CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS=[])
-    def test_only_exact_active_and_onboarding(self):
-        for status in ('Active', ' Onboarding ', 'active'):
+    def test_only_active_delivery_and_onboarding(self):
+        for status in ('Active', ' Onboarding ', 'active', 'Delivery'):
             self.assertTrue(eligible({'programme_status': status, 'identifiers': ['lms:1']}))
-        for status in ('Delivery', 'Withdrawn', 'Completed', 'OnBreak', '', 'ReadyToEnrol'):
+        for status in ('Withdrawn', 'Completed', 'OnBreak', '', 'ReadyToEnrol'):
             self.assertFalse(eligible({'programme_status': status, 'identifiers': ['lms:1']}))
 
     @override_settings(CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS=['lms:1'])

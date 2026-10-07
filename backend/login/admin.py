@@ -48,6 +48,10 @@ class AccessCheckboxForm(forms.ModelForm):
 	access_marketing = forms.BooleanField(required=False, label='Marketing access')
 	access_support = forms.BooleanField(required=False, label='Support access')
 	access_coach = forms.BooleanField(required=False, label='Coach access')
+	access_call_centre = forms.BooleanField(
+		required=False, label='Call centre access',
+		help_text='Engagement Centre specialist: sees only the call-centre dashboards. Saving creates (or switches off) their specialist profile.',
+	)
 
 	class Meta:
 		model = get_user_model()
@@ -100,6 +104,7 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 					'access_marketing',
 					'access_support',
 					'access_coach',
+					'access_call_centre',
 					'groups',
 					'user_permissions',
 				)
@@ -205,6 +210,11 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 
 		final_groups = list(Group.objects.using(self.using).filter(id__in=final_group_ids))
 		user.groups.set(final_groups)
+
+		from callcentre.access import sync_agent
+		warning = sync_agent(user, bool(form.cleaned_data.get('access_call_centre')))
+		if warning:
+			admin_messages.warning(request, warning)
 
 
 @admin.register(Group)

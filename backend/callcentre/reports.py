@@ -3,6 +3,7 @@ from datetime import datetime, time, timedelta
 from django.db.models import Q
 from django.utils import timezone
 
+from . import test_learner
 from .models import Agent, CallMatch, CaseTicket, TicketEvent, ZoomPhoneCall, ZoomSyncState
 from .rules import FAILED_RESULTS, LONDON, working_day
 from .services import identify_agent
@@ -35,12 +36,18 @@ def performance(start, end):
     now = timezone.now()
     report = []
     agents = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name'))
+    events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper)
+    breaches = list(events.filter(kind='sla_breached').values('ticket_id', 'data'))
+    # Calls to the test learner and its case are testing, not work.
+    test_calls = CallMatch.objects.filter(cases__ticket__reason_key=test_learner.KEY).values('call_id')
+    cases = CaseTicket.objects.exclude(reason_key=test_learner.KEY)
     for agent in agents:
         identity = Q(caller_email__iexact=agent.zoom_email)
         if agent.zoom_user_id:
             identity |= Q(caller_user_id=agent.zoom_user_id)
         calls = list(ZoomPhoneCall.objects.filter(current_account_filter(), identity, source_account=agent.zoom_account,
-                     direction='outbound', started_at__gte=lower, started_at__lt=upper).order_by('started_at'))
+                     direction='outbound', started_at__gte=lower, started_at__lt=upper).exclude(pk__in=test_calls)
+                     .order_by('started_at'))
         calls = [call for call in calls if (identified := identify_agent(call, agents)) and identified.pk == agent.pk]
         daily = []
         day = start
@@ -57,8 +64,6 @@ def performance(start, end):
             day += timedelta(days=1)
         state = ZoomSyncState.objects.filter(source_account=agent.zoom_account,
                                             zoom_account_id=account_config(agent.zoom_account)['account_id']).first()
-        events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper)
-        breaches = list(events.filter(kind='sla_breached').values('ticket_id', 'data'))
         worked_ids = TicketEvent.objects.filter(agent=agent).values_list('ticket_id', flat=True).distinct()
         report.append({
             'id': agent.pk, 'name': agent.display_name, 'account': agent.zoom_account,
@@ -71,16 +76,16 @@ def performance(start, end):
             'answered_missing_duration': sum(d['missing_duration'] for d in daily),
             'unique_learners': CallMatch.objects.filter(agent=agent, call_id__in=[c.pk for c in calls if c.result == 'answered'])
                 .exclude(cases__outcome='wrong_number').values('learner_email').distinct().count(),
-            'resolved': CaseTicket.objects.filter(resolved_agent=agent, resolved_at__gte=lower, resolved_at__lt=upper).count(),
-            'pending': CaseTicket.objects.open().filter(pk__in=worked_ids).count(),
+            'resolved': cases.filter(resolved_agent=agent, resolved_at__gte=lower, resolved_at__lt=upper).count(),
+            'pending': cases.open().filter(pk__in=worked_ids).count(),
             'sla_breaches': len({b['ticket_id'] for b in breaches if agent.pk in b['data'].get('agent_ids', [])}),
             'emails': events.filter(ticket_id__in=worked_ids, kind='email_accepted').count(),
-            'reminders': events.filter(ticket_id__in=worked_ids, kind='email_accepted', data__stage__in=['day2', 'day5', 'day7']).count(),
+            'reminders': events.filter(ticket_id__in=worked_ids, kind='email_accepted', data__stage__startswith='day').count(),
             'sync': {'last_success_at': state.last_success_at if state else None,
                      'error': state.last_error if state else 'Account has not synced.',
                      'recordings_error': state.recordings_error if state else ''},
         })
-    resolved = CaseTicket.objects.filter(resolved_at__gte=lower, resolved_at__lt=upper)
+    resolved = cases.filter(resolved_at__gte=lower, resolved_at__lt=upper)
     return {'agents': report, 'from': start, 'to': end, 'timezone': 'Europe/London',
             'resolutions': {kind: resolved.filter(resolved_by=kind).count() for kind in ('agent', 'ai', 'system')},
             'unclaimed_breaches': TicketEvent.objects.filter(kind='sla_breached', created_at__gte=lower,

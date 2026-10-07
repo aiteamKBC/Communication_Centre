@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -75,11 +77,13 @@ else:
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-dev-key')
+# SECURITY WARNING: don't run with debug turned on in production! Off unless DJANGO_DEBUG=1 (local .env sets it).
+DEBUG = os.getenv('DJANGO_DEBUG', '0') == '1'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DJANGO_DEBUG', '1') == '1'
+# SECURITY WARNING: keep the secret key used in production secret! The dev fallback only works with DEBUG on.
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '') or ('django-insecure-dev-key' if DEBUG else '')
+if not SECRET_KEY:
+    raise ImproperlyConfigured('DJANGO_SECRET_KEY is required when DJANGO_DEBUG is not 1.')
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
 
@@ -105,6 +109,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'login.middleware.ApiLoginRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -245,6 +250,11 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 # The Vite dev server proxies /api with changeOrigin, so its Origin must be trusted explicitly.
+# Behind a proxy that ends HTTPS (and sets X-Forwarded-Proto itself), Django must know the request was secure,
+# or every CSRF-checked POST from the https site is refused. Only enable it behind such a proxy.
+if os.getenv('DJANGO_BEHIND_HTTPS_PROXY', '').lower() in ('1', 'true', 'yes'):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv(
     'CSRF_TRUSTED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000',
 ).split(',') if origin.strip()]
@@ -256,14 +266,25 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', '')
 OPENAI_TRANSCRIPTION_MODEL = os.getenv('OPENAI_TRANSCRIPTION_MODEL', 'gpt-transcribe')
 ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').lower() in ('1', 'true', 'yes')
+# In-page calling with Zoom Phone Smart Embed (the Zoom admin installs the Smart Embed app first). Off: the Call
+# button opens the Zoom desktop app.
+CALLCENTRE_SMART_EMBED = os.getenv('CALLCENTRE_SMART_EMBED', '').lower() in ('1', 'true', 'yes')
 ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
 # Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
 CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')
 CALLCENTRE_EMAIL_MODE = os.getenv('CALLCENTRE_EMAIL_MODE', 'dry_run')
+# Live email needs this server's own permission: the mode itself is shared through the database, so a local
+# or test copy without it only records emails (dry run). Set it to true on the production server only.
+CALLCENTRE_EMAIL_LIVE_ALLOWED = os.getenv('CALLCENTRE_EMAIL_LIVE_ALLOWED', '').lower() in ('1', 'true', 'yes')
 CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
 CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')
 CALLCENTRE_ESCALATION_EMAIL = os.getenv('CALLCENTRE_ESCALATION_EMAIL', '')
 CALLCENTRE_HOLIDAYS = [s.strip() for s in os.getenv('CALLCENTRE_HOLIDAYS', '').split(',') if s.strip()]
+# The test learner (callcentre/test_learner.py): a phone you can answer turns on one always-first missed-lecture
+# case for testing calls. Leave empty in production; removing it takes the case off every list.
+CALLCENTRE_TEST_LEARNER_PHONE = os.getenv('CALLCENTRE_TEST_LEARNER_PHONE', '').strip()
+# Optional email for the test learner (default: a non-deliverable address).
+CALLCENTRE_TEST_LEARNER_EMAIL = os.getenv('CALLCENTRE_TEST_LEARNER_EMAIL', '').strip()
 CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS = [
     s.strip().lower() for s in os.getenv('CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', '').split(',') if s.strip()
 ]

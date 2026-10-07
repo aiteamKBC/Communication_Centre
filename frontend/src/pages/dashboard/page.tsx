@@ -18,6 +18,10 @@ type DashboardLink = {
   expireSoon?: boolean;
   expireMessage?: string;
   adminOnly?: boolean;
+  /** Open to call-centre agents; an agent without admin rights sees only these. */
+  callCentre?: boolean;
+  /** The Engagement Centre itself: only call-centre agents and super admins can use it. */
+  engagementCentre?: boolean;
 };
 
 const dashboardLinks: DashboardLink[] = [
@@ -30,6 +34,8 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#1B2A4A] to-[#2E4482]',
     soft: 'bg-[#eef2ff]',
     text: 'text-[#2E4482]',
+    callCentre: true,
+    engagementCentre: true,
   },
   {
     title: 'Tutor Dashboard',
@@ -70,6 +76,7 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#0ea5e9] to-[#2563eb]',
     soft: 'bg-[#eff6ff]',
     text: 'text-[#2563eb]',
+    callCentre: true,
   },
   {
     title: 'Bulk Attendance',
@@ -81,6 +88,7 @@ const dashboardLinks: DashboardLink[] = [
     soft: 'bg-[#ecfdf5]',
     text: 'text-[#047857]',
     adminOnly: true,
+    callCentre: true,
   },
   {
     title: 'Engagement Dashboard',
@@ -111,6 +119,7 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#8b5cf6] to-[#a855f7]',
     soft: 'bg-[#f1eaff]',
     text: 'text-[#6d36b3]',
+    callCentre: true,
   },
   {
     title: 'Quality Management System',
@@ -155,8 +164,12 @@ const dashboardLinks: DashboardLink[] = [
 ];
 
 export default function DashboardPage() {
-  const { adminAccess } = useAccessControl();
-  const visibleDashboardLinks = dashboardLinks.filter(link => !link.adminOnly || adminAccess);
+  const { adminAccess, callCentreAccess, callCentreOnly, superuser } = useAccessControl();
+  const visibleDashboardLinks = dashboardLinks.filter(link => {
+    if (link.engagementCentre && !callCentreAccess && !superuser) return false;
+    if (callCentreOnly) return !!link.callCentre;
+    return !link.adminOnly || adminAccess || (!!link.callCentre && callCentreAccess);
+  });
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans flex flex-col">

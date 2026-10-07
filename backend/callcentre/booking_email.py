@@ -6,18 +6,23 @@ A signature case has no link: the learner signs in the LMS. The specialist may r
 the greeting, button and sign-off stay fixed. ``automatic`` words the email for a reminder sent without a call.
 """
 from html import escape
+from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
-from django.db import DatabaseError
+from django.db import DatabaseError, transaction
 from django.utils import timezone
 
 from . import email_settings, mailer
 from .booking_links import booking_links
-from .models import EmailQuota
+from .db import DB
+from .models import CaseTicket, EmailDelivery, EmailQuota
 from .rules import LONDON, email_key
+from .services import Conflict, can_work, event
 
 SUBJECT_MAX, MESSAGE_MAX = 180, 5000
+# Case types with no booking email: employer calls, and signatures (the learner signs in the LMS).
+NO_BOOKING_EMAIL = ('satisfaction', 'employer_feedback', 'signature')
 SERVICES = {
     'pr': ('pr', 'Book your progress review', 'progress review'),
     'mcm': ('mcm', 'Book your monthly coaching session', 'monthly coaching session'),
@@ -151,9 +156,10 @@ def readiness(ticket):
 
     config = email_settings.current()
     live = config['email_mode'] == 'live'
-    checks.append(_check('mode', 'Email sending switched on', 'ok' if live else 'missing',
+    checks.append(_check('mode', 'Email sending switched on', 'ok' if live else 'warning',
                          'Live sending is on (Director → Settings).' if live else
-                         'Emails are recorded only (dry run). A director can switch to live in Settings.'))
+                         'Dry run: Send records the email on the case but does not send it. '
+                         'A director can switch to live in Settings.'))
     checks.append(_check('gateway', 'Microsoft 365 sending (no-reply mailbox)', 'ok' if mailer.configured() else 'missing',
                          f'Sends as {mailer.sender()}.' if mailer.configured() else f'Set {", ".join(mailer.missing())}.'))
     try:
@@ -164,6 +170,72 @@ def readiness(ticket):
                              f'{sent} of {cap} emails sent today (limit set in Director → Settings).'))
     except DatabaseError:
         checks.append(_check('quota', 'Daily email limit for this learner', 'warning', 'Could not be checked.'))
-    checks.append(_check('send', 'Send button in the call centre', 'missing',
-                         'Not built yet: needs your go-ahead to send through the gateway and record it on the case.'))
     return checks
+
+
+def delivery_result(delivery):
+    return {'id': delivery.pk, 'status': delivery.status, 'mode': delivery.mode, 'recipient': delivery.recipient,
+            'error': delivery.error}
+
+
+def send(ticket_id, user, sender, data, acting_agent=None):
+    """Send this case's booking email to the learner and record it on the case. Dry run records it only.
+
+    The delivery is committed BEFORE Microsoft 365 is called, so a retry with the same request id returns it and an
+    email is never sent twice. A crash or timeout after that leaves it 'sending'/'unknown' for a mailbox check.
+    """
+    try:
+        request_id = str(UUID(str(data.get('request_id', ''))))
+    except ValueError:
+        raise ValueError('A valid email request ID is required.') from None
+    key = f'booking-email:{ticket_id}:{request_id}'
+    # durable=True: the external send can never sit inside a transaction that rolls back afterwards.
+    with transaction.atomic(using=DB, durable=True):
+        ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+        agent = can_work(ticket, user, acting_agent=acting_agent)
+        if ticket.source_type in NO_BOOKING_EMAIL or ticket.archived:
+            raise ValueError('This case has no booking email.')
+        draft = render(ticket, sender, data.get('subject'), data.get('message'))
+        recipient = email_key(ticket.learner_email)
+        previous = EmailDelivery.objects.filter(dedupe_key=key).first()
+        if previous:
+            if previous.subject != draft['subject'] or previous.text != draft['text'] or previous.recipient != recipient:
+                raise Conflict('This request ID was already used for another message.')
+            return delivery_result(previous)
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            raise ValueError('No valid email address is recorded for this learner.') from None
+        config = email_settings.current()
+        mode = config['email_mode']
+        if mode == 'live' and not mailer.configured():
+            raise Conflict(f"Email sending is not configured: {', '.join(mailer.missing())}.")
+        if EmailDelivery.objects.filter(ticket=ticket, kind='booking_manual', status__in=['sending', 'unknown']).exists():
+            raise Conflict('An earlier booking email has an uncertain result. Check Sent Items before sending again.')
+        quota, _ = EmailQuota.objects.select_for_update().get_or_create(
+            recipient=recipient, day=timezone.now().astimezone(LONDON).date())
+        if quota.count >= max(0, config['daily_cap']):
+            raise Conflict('The daily email limit for this learner has been reached.')
+        quota.count += 1
+        quota.save(update_fields=['count'])
+        delivery = EmailDelivery.objects.create(
+            ticket=ticket, dedupe_key=key, recipient=recipient, kind='booking_manual', mode=mode,
+            status='dry_run' if mode == 'dry_run' else 'sending', subject=draft['subject'], html=draft['html'],
+            text=draft['text'])
+        actor = None if agent else user.get_username()
+        event(ticket, 'email_dry_run' if mode == 'dry_run' else 'email_requested',
+              {'delivery_id': delivery.pk, 'stage': 'booking', 'recipient': recipient, 'mode': mode}, agent, actor)
+    if mode == 'dry_run':
+        return delivery_result(delivery)
+    try:
+        mailer.send(recipient, delivery.subject, delivery.html)
+        delivery.status, delivery.sent_at = 'accepted', timezone.now()
+    except mailer.MailError as exc:
+        delivery.status = 'unknown' if exc.uncertain else 'failed'
+        delivery.error = ('Microsoft acceptance is uncertain. Check Sent Items before retrying.' if exc.uncertain
+                          else 'Microsoft refused the email. Check the mail app permission and sender mailbox.')
+    with transaction.atomic(using=DB):
+        delivery.save(update_fields=['status', 'sent_at', 'error'])
+        event(ticket, 'email_' + delivery.status,
+              {'delivery_id': delivery.pk, 'stage': 'booking', 'recipient': recipient, 'mode': mode}, agent, actor)
+    return delivery_result(delivery)

@@ -22,6 +22,7 @@ from . import lms_booking
 from . import lms_reviews
 from .ai import ai_enabled, validate_analysis
 from .emails import survey_token
+from .access import refused
 from .manage_views import allocations, call_requests, phone_keys, require_manager
 from .models import Agent, CaseTicket
 from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, due_at, missed_call, missed_lectures_ready_until, normalize_phone,
@@ -168,22 +169,32 @@ class AccessTests(SimpleTestCase):
     def test_activity_phone_keys(self):
         self.assertEqual(phone_keys('+44 7700 900123'), ['07700900123', '7700900123', '700900123'])
 
-    def test_only_managers_manage_agents(self):
-        require_manager(SimpleNamespace(is_staff=True))
+    def test_only_directors_manage_agents(self):
+        require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True))
         with self.assertRaises(Exception):
-            require_manager(SimpleNamespace(is_staff=False))
+            require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False))
 
-    def test_managers_can_view_any_call(self):
-        self.assertTrue(can_view_call(SimpleNamespace(is_staff=True, is_superuser=False), object()))
+    def test_directors_can_view_any_call(self):
+        self.assertTrue(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True), object()))
 
     def test_user_without_agent_cannot_view_call(self):
         with mock.patch('callcentre.services.agent_for', return_value=None):
-            self.assertFalse(can_view_call(SimpleNamespace(is_staff=False, is_superuser=False), object()))
+            self.assertFalse(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False), object()))
 
-    def test_transcript_overview_is_manager_only(self):
+    @mock.patch('callcentre.access.has_access', return_value=True)
+    def test_transcript_overview_is_manager_only(self, _access):
         request = RequestFactory().get('/api/zoom/transcripts/')
-        request.user = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
+        request.user = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False)
         self.assertEqual(zoom_transcript_report(request).status_code, 403)
+
+    def test_engagement_centre_needs_call_centre_access(self):
+        groups = mock.Mock()
+        groups.using.return_value.filter.return_value.exists.return_value = False
+        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=groups)
+        self.assertEqual(refused(staff).status_code, 403)
+        groups.using.return_value.filter.return_value.exists.return_value = True
+        self.assertIsNone(refused(staff))
+        self.assertIsNone(refused(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True)))
 
 
 def lms_row(**values):
@@ -259,11 +270,12 @@ class CallRequestTests(SimpleTestCase):
         request._dont_enforce_csrf_checks = True
         request.user = user
         directory = learners.merge([lms_row()], [])
-        with mock.patch('callcentre.manage_views.learner_directory', return_value=directory),                 mock.patch('callcentre.manage_views.timezone.now', return_value=datetime(date.today().year, date.today().month, date.today().day, 12, tzinfo=LONDON)):
+        with mock.patch('callcentre.access.has_access', return_value=True), \
+                mock.patch('callcentre.manage_views.learner_directory', return_value=directory),                 mock.patch('callcentre.manage_views.timezone.now', return_value=datetime(date.today().year, date.today().month, date.today().day, 12, tzinfo=LONDON)):
             response = call_requests(request)
         return response.status_code, json.loads(response.content)
 
-    manager = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, get_username=lambda: 'manager')
+    manager = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=True, get_username=lambda: 'manager')
 
     def test_only_managers_can_request_calls(self):
         agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
@@ -288,7 +300,8 @@ class AllocationTests(SimpleTestCase):
         request = RequestFactory().post('/api/callcentre/allocations/', data=json.dumps(payload), content_type='application/json')
         request._dont_enforce_csrf_checks = True
         request.user = user
-        with mock.patch('callcentre.manage_views.learner_directory', return_value=learners.merge([lms_row()], [])):
+        with mock.patch('callcentre.access.has_access', return_value=True), \
+                mock.patch('callcentre.manage_views.learner_directory', return_value=learners.merge([lms_row()], [])):
             response = allocations(request)
         return response.status_code, json.loads(response.content)
 
@@ -610,3 +623,33 @@ class EmailSettingsTests(SimpleTestCase):
         from . import mailer
         self.assertEqual(mailer.sender(), 'no-reply@kentbusinesscollege.com')
 
+
+    @override_settings(CALLCENTRE_EMAIL_LIVE_ALLOWED=False)
+    def test_a_server_without_permission_never_sends_live(self):
+        from . import email_settings
+        with mock.patch.object(email_settings, 'stored', return_value=(self.values(email_mode='live'), 1, True)):
+            self.assertEqual(email_settings.current()['email_mode'], 'dry_run')
+        with self.assertRaisesMessage(ValueError, 'not allowed to send live email'):
+            email_settings.save(self.values(email_mode='live'), 0, 'Going live today', 'director', can_send=True)
+
+    def test_reminders_only_from_when_sending_started(self):
+        from . import email_settings
+        from .emails import reminder_day
+        self.assertEqual(reminder_day(6, [0, 2, 5, 7]), 5)
+        self.assertIsNone(reminder_day(-1, [0, 2]))
+        self.assertEqual(email_settings.sending_since({'sending_since': '2026-10-05T23:30:00+00:00'}), date(2026, 10, 6))
+        self.assertIsNone(email_settings.sending_since({}))
+
+
+class EmployerAllocationTests(SimpleTestCase):
+    def test_an_employer_follows_the_specialist_of_most_of_their_learners(self):
+        from .allocation import manager_owners
+        directory = SimpleNamespace(managers={'boss@example.org': ['a@x', 'b@x', 'c@x'], 'tie@example.org': ['d@x', 'e@x'],
+                                              'none@example.org': ['f@x']})
+        with mock.patch('callcentre.sources.cached_directory', return_value=directory):
+            owners_ = manager_owners({'a@x': 2, 'b@x': 2, 'c@x': 1, 'd@x': 2, 'e@x': 1})
+        self.assertEqual(owners_, {'boss@example.org': 2, 'tie@example.org': 1})
+
+    def test_employers_are_never_booked_coach_sessions(self):
+        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='employer_feedback')), [])
+        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='learner_satisfaction')), ['student-support'])

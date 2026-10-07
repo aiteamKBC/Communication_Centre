@@ -1,4 +1,6 @@
+import logging
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 
 from django.db import transaction
@@ -7,15 +9,18 @@ from django.utils import timezone
 
 from .ai import process_ai
 from .db import DB
-from .emails import generate_surveys, process_emails
+from .emails import process_emails
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
-from .learner_satisfaction import generate as generate_learner_satisfaction
+from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
 from .rules import MAX_MISSED_PROMISES
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
+from . import test_learner
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_recording_links, source_health
 from .zoom_phone import ACCOUNT_LABELS, sync_account
 from .zoom_views import current_account_filter
+
+logger = logging.getLogger(__name__)
 
 
 def maintenance(now):
@@ -47,7 +52,7 @@ def maintenance(now):
 
 def evidence_cycle():
     resolved, errors = 0, {}
-    tickets = list(CaseTicket.objects.open().select_related('survey'))
+    tickets = list(CaseTicket.objects.open().exclude(reason_key=test_learner.KEY).select_related('survey'))
     snapshot = EvidenceSnapshot(tickets)
     for ticket in tickets:
         if ticket.source_type in errors:
@@ -65,15 +70,74 @@ def evidence_cycle():
     return resolved
 
 
-def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
+def step(result, name, fn):
+    """Run one cycle step. A failure is logged and recorded under ``name``; the remaining steps still run."""
+    try:
+        value = fn()
+    except Exception as exc:
+        logger.exception('Call Centre cycle step %s failed', name)
+        result[name] = f'Failed ({type(exc).__name__}); see the worker log.'
+        return None
+    if value is not None:
+        result[name] = value
+    return value
+
+
+def update_phone_directory(people):
+    directory = {}
+    for person in people.values():
+        if person['learner_phone']:
+            directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
+    CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
+
+
+def match_calls():
+    earliest = CaseTicket.objects.order_by('created_at').values_list('created_at', flat=True).first()
+    matched = 0
+    if earliest:
+        # Calls before the module's first case cannot be its contact attempts.
+        changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('result'))
+        calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
+            needs_result=Exists(changed_result)).filter(Q(callmatch__isnull=True) | Q(needs_result=True)).order_by('started_at')
+        for pk in calls.values_list('pk', flat=True).iterator():
+            if match_call(pk):
+                matched += 1
+    return matched
+
+
+@contextmanager
+def cycle_lock(duration):
+    """The cycle's database lock: yields its token, or None when another cycle holds it."""
     token = str(uuid.uuid4())
     now = timezone.now()
     CycleState.objects.get_or_create(name='cycle')
-    if not CycleState.objects.filter(Q(locked_until__isnull=True) | Q(locked_until__lt=now), name='cycle').update(
-            token=token, locked_until=now + timedelta(hours=2)):
-        return {'skipped': 'Another cycle is running.'}
-    result = {}
+    held = CycleState.objects.filter(Q(locked_until__isnull=True) | Q(locked_until__lt=now), name='cycle').update(
+        token=token, locked_until=now + duration)
     try:
+        yield token if held else None
+    finally:
+        if held:
+            CycleState.objects.filter(name='cycle', token=token).update(locked_until=None, token='')
+
+
+def run_call_sync():
+    """The quick cycle after an in-page call: new Zoom calls (no recordings), then call matching, so the call and its
+    result reach the case within a minute instead of at the next full cycle. The evidence is Zoom's own call history."""
+    with cycle_lock(timedelta(minutes=10)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
+        for account in ACCOUNT_LABELS:
+            step(result, 'zoom_' + account, lambda account=account: sync_account(account))
+        step(result, 'matched', match_calls)
+        return result
+
+
+def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
+    with cycle_lock(timedelta(hours=2)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
         if not skip_zoom:
             for account in ACCOUNT_LABELS:
                 try:
@@ -82,36 +146,22 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                     result['zoom_' + account] = f'Unavailable ({type(exc).__name__}); inspect Zoom account status.'
         people = get_source('profiles', profiles)
         if people is not None:
-            directory = {}
-            for person in people.values():
-                if person['learner_phone']:
-                    directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
-            CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
-            result['source_created'] = generate_risks(people)
+            step(result, 'phone_directory', lambda: update_phone_directory(people))
+            step(result, 'source_created', lambda: generate_risks(people))
             bookings = get_source('bookings', lambda: load_bookings(people))
             if bookings is not None:
-                result['reminders_created'] = generate_reminders(people, bookings)
-            result['manager_surveys'] = generate_surveys(people)
-            result['learner_satisfaction'] = generate_learner_satisfaction(people)
+                step(result, 'reminders_created', lambda: generate_reminders(people, bookings))
+            step(result, 'learner_satisfaction', lambda: generate_learner_satisfaction(people))
+            step(result, 'employer_feedback', lambda: generate_employers(people))
         get_source('recording_links', refresh_recording_links)
+        step(result, 'test_learner', test_learner.ensure)
         # Evidence wins over returning a promised-date case to the queue.
-        result['resolved'] = evidence_cycle()
-        maintenance(timezone.now())
-        earliest = CaseTicket.objects.order_by('created_at').values_list('created_at', flat=True).first()
-        result['matched'] = 0
-        if earliest:
-            # Calls before the module's first case cannot be its contact attempts.
-            changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('result'))
-            calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
-                needs_result=Exists(changed_result)).filter(Q(callmatch__isnull=True) | Q(needs_result=True)).order_by('started_at')
-            for pk in calls.values_list('pk', flat=True).iterator():
-                if match_call(pk):
-                    result['matched'] += 1
+        step(result, 'resolved', evidence_cycle)
+        step(result, 'maintenance', lambda: maintenance(timezone.now()))
+        step(result, 'matched', match_calls)
         if not skip_ai:
-            result['analyses'] = process_ai()
+            step(result, 'analyses', process_ai)
         if not skip_emails:
-            result['emails_processed'] = process_emails()
+            step(result, 'emails_processed', process_emails)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result
-    finally:
-        CycleState.objects.filter(name='cycle', token=token).update(locked_until=None, token='')

@@ -11,6 +11,12 @@ export interface AccessControl {
   canManageEvents: boolean;
   canManageCohorts: boolean;
   canManageNews: boolean;
+  /** Engagement Centre specialist ("Call centre access" in Django admin). */
+  callCentreAccess: boolean;
+  /** Django super admin: the Engagement Centre director. */
+  superuser: boolean;
+  /** A call-centre agent without admin rights: sees only the call-centre dashboards. */
+  callCentreOnly: boolean;
   sessionInvalid: boolean;
 }
 
@@ -23,6 +29,9 @@ const EMPTY_ACCESS: AccessControl = {
   canManageEvents: false,
   canManageCohorts: false,
   canManageNews: false,
+  callCentreAccess: false,
+  superuser: false,
+  callCentreOnly: false,
   sessionInvalid: false,
 };
 
@@ -65,6 +74,9 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
     ? (adminAccess || groups.has('Marketing Access'))
     : (adminAccess || Boolean(access.marketingAccess));
 
+  const callCentreAccess = hasGroupData ? groups.has('Call Centre Access') : Boolean(access.callCentreAccess);
+  const superuser = Boolean(user.isSuperuser) || Boolean(access.isSuperuser);
+
   return {
     adminAccess,
     eventManagerAccess,
@@ -74,6 +86,9 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
     canManageEvents: eventManagerAccess,
     canManageCohorts: operationsAccess,
     canManageNews: adminAccess || itAccess || marketingAccess,
+    callCentreAccess,
+    superuser,
+    callCentreOnly: callCentreAccess && !adminAccess && !superuser,
     sessionInvalid: false,
   };
 }

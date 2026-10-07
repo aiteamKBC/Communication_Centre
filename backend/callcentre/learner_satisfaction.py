@@ -1,21 +1,27 @@
-"""Recurring learner feedback, using existing cases/events (no source DB writes).
+"""Recurring learner and employer feedback calls, using existing cases/events (no source DB writes).
 
-One open case per learner; completed cycles remain separate, immutable history.
-Only an explicit feedback completion advances the three-calendar-month clock.
+One open case per learner (``learner_satisfaction``) and per employer (``employer_feedback``: a line
+manager from Aptem, with their learners listed); completed cycles remain separate, immutable history.
+Only an explicit feedback completion after an answered call, or a manager closing a review that cannot
+be done (wrong number, refused, unreachable), starts the three-calendar-month clock.
 """
 import calendar
 import hashlib
 
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 
+from .access import is_director
 from .db import DB
+from .learners import program_status
 from .models import CaseTicket, CycleState
-from .rules import LONDON, parse_moment
+from .rules import LONDON, due_at, parse_moment
 from .services import Conflict, can_work, close, event, release_fields
 
 SOURCE = 'learner_satisfaction'
+EMPLOYER = 'employer_feedback'
 
 
 def next_review_at(completed_at):
@@ -27,17 +33,29 @@ def next_review_at(completed_at):
 
 
 def eligible(person):
+    # Active (including Delivery, still on the old LMS) and onboarding learners, grouped as the LMS groups them.
     # Explicit confirmations only. Suspected test names are not evidence of a test account.
     confirmed = set(getattr(settings, 'CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', []))
-    return (person['programme_status'].strip().lower() in {'active', 'onboarding'}
+    return (program_status(person['programme_status']) in {'active', 'onboarding'}
             and not confirmed.intersection(person['identifiers']))
+
+
+def cycle_start(ticket):
+    """When a finished review's three-month clock started: completed feedback, or a manager closing it without."""
+    value = ticket.source_data.get('last_completed_at') or ticket.source_data.get('last_closed_at')
+    return parse_moment(value) if value else None
 
 
 def cycle_due(ticket, now):
     if ticket.status != 'resolved':
         return False
-    completed = ticket.source_data.get('last_completed_at')
-    return bool(completed and next_review_at(parse_moment(completed)) <= now)
+    start = cycle_start(ticket)
+    return bool(start and next_review_at(start) <= now)
+
+
+def callable_from(previous, now):
+    """A new review can be called straight away; its SLA runs from then (``rules.SLA_DAYS``)."""
+    return next_review_at(cycle_start(previous)) if previous else now
 
 
 @transaction.atomic(using=DB)
@@ -86,7 +104,7 @@ def generate(people, now=None):
                    SOURCE + ':' + hashlib.sha256(ids[0].encode()).hexdigest())
             inherited_ids = previous.source_data.get('identifiers', []) if previous else []
             identifiers = sorted(set(inherited_ids) | set(ids))
-            due = next_review_at(parse_moment(previous.source_data['last_completed_at'])) if previous else now
+            due = due_at(SOURCE, callable_from(previous, now))
             ticket, fresh = CaseTicket.objects.get_or_create(reason_key=key, defaults={
                 **person['profile'], 'source_type': SOURCE, 'due_at': due,
                 'source_data': {'identifiers': identifiers, 'eligible': allowed,
@@ -126,12 +144,80 @@ def generate(people, now=None):
     return counts
 
 
+def employer_contacts(people):
+    """{manager email: (case fields, learners)}: each line manager with the learners satisfaction calls cover.
+
+    A manager whose learners have all left, are on a break or are confirmed test accounts is not called.
+    """
+    current = {person['profile']['learner_email'] for person in people.satisfaction if eligible(person)}
+    contacts = {}
+    for manager, emails in people.managers.items():
+        learners = [people[email] for email in emails if email in current]
+        if not learners:
+            continue
+        name = next((item['manager_name'] for item in learners if item['manager_name']), '') or manager
+        profile = {'learner_email': manager, 'learner_name': name[:255], 'manager_email': manager, 'manager_name': name[:255],
+                   'learner_phone': people.manager_phones.get(manager, ''),
+                   'organisation': ', '.join(sorted({item['organisation'] for item in learners} - {''}))[:255]}
+        listed = sorted(({'name': item['learner_name'] or item['learner_email'], 'email': item['learner_email'],
+                          'programme': item['programme']} for item in learners), key=lambda item: item['name'].casefold())
+        contacts[manager] = (profile, listed)
+    return contacts
+
+
+@transaction.atomic(using=DB)
+def generate_employers(people, now=None):
+    """One open feedback call per employer; due again three months after the last completed one."""
+    if not getattr(people, 'sources_complete', False):
+        return {'skipped': 'Both learner sources must load successfully; existing cases retained.'}
+    now = now or timezone.now()
+    CycleState.objects.get_or_create(name=EMPLOYER)
+    CycleState.objects.select_for_update().get(name=EMPLOYER)
+    latest = {}
+    for ticket in CaseTicket.objects.select_for_update().filter(source_type=EMPLOYER).order_by('pk'):
+        latest[ticket.manager_email] = ticket   # a renewal is newer than the cycle it follows
+    contacts = employer_contacts(people)
+    counts = {'created': 0, 'renewed': 0, 'employers': len(contacts)}
+    for manager, (profile, listed) in contacts.items():
+        ticket = latest.get(manager)
+        if ticket is None or cycle_due(ticket, now):
+            previous = ticket
+            key = (f'{EMPLOYER}:after:{previous.pk}' if previous else
+                   f'{EMPLOYER}:' + hashlib.sha256(manager.encode()).hexdigest())
+            due = due_at(EMPLOYER, callable_from(previous, now))
+            ticket, fresh = CaseTicket.objects.get_or_create(reason_key=key, defaults={
+                **profile, 'source_type': EMPLOYER, 'due_at': due,
+                'source_data': {'eligible': True, 'learners': listed, 'previous_case_id': previous.pk if previous else None},
+            })
+            if fresh:
+                counts['created'] += 1
+                counts['renewed'] += int(previous is not None)
+                event(ticket, 'created', {'source': EMPLOYER, 'reason': 'Quarterly employer feedback call',
+                                          'previous_case_id': previous.pk if previous else None})
+            latest[manager] = ticket
+        if ticket.status == 'resolved':
+            continue   # completed: hidden until the next cycle is due
+        for name, value in profile.items():
+            setattr(ticket, name, value)
+        ticket.source_data = {**ticket.source_data, 'eligible': True, 'learners': listed}
+        ticket.save(update_fields=[*profile, 'source_data', 'updated_at'])
+    # An employer with no current learner drops off the list; their history stays.
+    for manager, ticket in latest.items():
+        if manager not in contacts and ticket.status != 'resolved' and ticket.source_data.get('eligible', True):
+            ticket.source_data = {**ticket.source_data, 'eligible': False}
+            release_fields(ticket)
+            ticket.save()
+            event(ticket, 'satisfaction_ineligible', {'reason': 'No current learners'})
+    CycleState.objects.filter(name=EMPLOYER).update(last_success_at=now, details=counts)
+    return counts
+
+
 @transaction.atomic(using=DB)
 def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None):
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
-    if ticket.source_type != SOURCE or ticket.archived or not ticket.source_data.get('eligible', True):
-        raise Conflict('This is not an active learner satisfaction case.')
+    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived or not ticket.source_data.get('eligible', True):
+        raise Conflict('This is not an active satisfaction case.')
     if ticket.status == 'resolved':
         raise Conflict('This satisfaction review has already been completed.')
     if type(score) is not int or score not in range(1, 6):
@@ -144,7 +230,7 @@ def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None
     # Sending a message, dialing, or a failed Zoom call is never completion evidence.
     calls = ticket.calls.filter(processed_result='answered', match__call__ended_at__lte=timezone.now())
     calls = calls.filter(match__call__started_at__gte=ticket.evidence_after or ticket.created_at)
-    if not (user.is_staff or user.is_superuser):
+    if not is_director(user):
         calls = calls.filter(match__agent=agent)
     call = calls.select_related('match__call').order_by('-match__call__started_at').first()
     if not call:
@@ -155,8 +241,31 @@ def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None
                 'next_due_at': next_review_at(now).isoformat()}
     ticket.source_data = {**ticket.source_data, 'feedback': feedback, 'last_completed_at': now.isoformat(),
                           'next_due_at': feedback['next_due_at']}
-    event(ticket, 'learner_feedback_completed', feedback, agent,
-          None if agent else user.get_username(), call=call.match.call)
-    close(ticket, agent, 'agent', 'learner_feedback_completed', feedback,
-          None if agent else user.get_username())
+    kind = 'employer_feedback_completed' if ticket.source_type == EMPLOYER else 'learner_feedback_completed'
+    event(ticket, kind, feedback, agent, None if agent else user.get_username(), call=call.match.call)
+    close(ticket, agent, 'agent', kind, feedback, None if agent else user.get_username())
+    return ticket
+
+
+CLOSE_REASONS = {'wrong_number': 'Wrong number', 'refused': 'Refused feedback', 'unreachable': 'Could not be reached'}
+
+
+@transaction.atomic(using=DB)
+def close_without_feedback(ticket_id, user, reason, note):
+    """A manager closes a review that cannot be done; the next one is due three months later, like completed feedback."""
+    if not is_director(user):
+        raise PermissionDenied('Only managers can close a satisfaction review without feedback.')
+    ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived:
+        raise Conflict('This is not a satisfaction review.')
+    if ticket.status == 'resolved':
+        raise Conflict('This satisfaction review is already closed.')
+    note = str(note or '').strip()
+    if reason not in CLOSE_REASONS or not note:
+        raise ValueError('Choose why the review cannot be done and add a note.')
+    now = timezone.now()
+    closed = {'reason': reason, 'note': note[:3500], 'closed_at': now.isoformat(), 'next_due_at': next_review_at(now).isoformat()}
+    ticket.source_data = {**ticket.source_data, 'closed_without_feedback': closed, 'last_closed_at': now.isoformat(),
+                          'next_due_at': closed['next_due_at']}
+    close(ticket, None, 'agent', 'closed_without_feedback', closed, user.get_username())
     return ticket

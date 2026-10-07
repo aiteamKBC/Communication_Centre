@@ -3,10 +3,11 @@ from datetime import date, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
+from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.db import DatabaseError, transaction
-from django.db.models import Avg, Count, OuterRef, Q, Subquery
+from django.db.models import Avg, Count, F, Max, OuterRef, Q, Subquery
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.shortcuts import render
@@ -15,18 +16,21 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, lms_booking, satisfaction_email
-from .learner_satisfaction import complete as complete_learner_feedback
+from . import email_settings, lms_booking, satisfaction_email, test_learner
+from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback
+from .access import is_director, refused
 from .ai import ai_enabled
-from .allocation import owners
-from .booking_email import readiness as booking_email_readiness, render as render_booking_email
+from .cycle_requests import request_call_sync
+from .allocation import manager_owners, owners
+from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
+                            send as send_booking_email)
 from .booking_links import booking_links
 from .db import DB
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
 from .reports import performance
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, missed_call, normalize_phone, parse_moment,
-                    priority, promise_missed)
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, missed_call, normalize_phone,
+                    parse_moment, priority, promise_missed, same_contact)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, send_back
 
 
@@ -42,6 +46,7 @@ ISSUE_NAMES = {
     'reminder': 'Reminder',
     'manual': 'Extra call',
     'learner_satisfaction': 'Learner satisfaction',
+    'employer_feedback': 'Employer satisfaction',
 }
 
 
@@ -70,6 +75,9 @@ def authenticated(fn):
     def wrapper(request, *args, **kwargs):
         if not request.user.is_authenticated or not request.user.is_active:
             return JsonResponse({'detail': 'An active signed-in account is required.'}, status=401)
+        denied = refused(request.user)
+        if denied:
+            return denied
         try:
             return fn(request, *args, **kwargs)
         except ObjectDoesNotExist:
@@ -101,6 +109,11 @@ def with_last_call(cases):
     return cases.annotate(last_call_result=Subquery(latest.values('processed_result')[:1]))
 
 
+def rank(ticket, now):
+    """List order: the test learner first, then the case priority."""
+    return test_learner.is_test(ticket), priority(ticket, now)
+
+
 def ticket_json(ticket):
     now = timezone.now()
     active_claim = bool(ticket.claimed_by_id and ticket.last_activity_at and ticket.last_activity_at > now - timedelta(minutes=30))
@@ -108,9 +121,10 @@ def ticket_json(ticket):
     return {
         **issue_json(ticket), 'source_id': ticket.source_id,
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
-        'contact_key': ticket.learner_email or f'case:{ticket.pk}',
+        'contact_key': contact_key(ticket),
         'programme_status': ticket.source_data.get('programme_status', ''),
         'satisfaction_next_due_at': ticket.source_data.get('next_due_at'),
+        'employer_learners': ticket.source_data.get('learners', []) if ticket.source_type == 'employer_feedback' else [],
         'coach': ticket.coach, 'organisation': ticket.organisation, 'programme': ticket.programme,
         'manager_name': ticket.manager_name, 'manager_email': ticket.manager_email,
         'status': ticket.status, 'risk': ticket.risk, 'claimed_by': ticket.claimed_by.display_name if active_claim else None,
@@ -147,6 +161,20 @@ def satisfaction_email_view(request, pk):
 
 
 @authenticated
+@require_POST
+@csrf_protect
+def call_sync(request):
+    """An in-page (Smart Embed) call ended: the worker syncs Zoom's call history straight away.
+
+    Only a nudge: nothing the browser reports is stored. The call, its result and the case evidence still come
+    from Zoom's own call history.
+    """
+    if not agent_for(request.user) and not is_director(request.user):
+        raise PermissionDenied('An active agent profile is required.')
+    return JsonResponse({'queued': request_call_sync(request.user.get_username())})
+
+
+@authenticated
 @require_GET
 def config(request):
     agent = agent_for(request.user)
@@ -155,10 +183,11 @@ def config(request):
         agents = agents.filter(user=request.user)
     return JsonResponse({
         'csrf_token': get_token(request), 'agent_id': agent.pk if agent else None,
-        'is_manager': request.user.is_staff, 'is_superuser': request.user.is_superuser,
+        'is_manager': is_director(request.user), 'is_superuser': request.user.is_superuser,
         'agents': list(agents.order_by('zoom_account').values(
             'id', 'display_name', 'zoom_account', 'zoom_phone_number')),
         'email_mode': email_settings.current()['email_mode'], 'ai_enabled': ai_enabled(),
+        'smart_embed': settings.CALLCENTRE_SMART_EMBED,
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details', 'locked_until').first(),
     })
@@ -181,17 +210,18 @@ def overview(request):
     end = min(following - timedelta(days=1), today)
     report = performance(start, end)
     agent = agent_for(request.user)
-    is_manager = request.user.is_staff or request.user.is_superuser
+    is_manager = is_director(request.user)
 
     tickets = list(with_last_call(CaseTicket.objects.open().select_related('claimed_by')))
-    tickets.sort(key=lambda ticket: priority(ticket, now), reverse=True)
+    tickets.sort(key=lambda ticket: rank(ticket, now), reverse=True)
     allocated = owners()
+    employers = manager_owners(allocated)
     cases = []
     for ticket in tickets[:OVERVIEW_CASE_LIMIT]:
         item = ticket_json(ticket)
         item.pop('source_data')
         item.pop('priority_why')
-        item['allocated_agent_id'] = allocated.get(ticket.learner_email)
+        item['allocated_agent_id'] = (employers if ticket.source_type == 'employer_feedback' else allocated).get(ticket.learner_email)
         cases.append(item)
 
     agents = []
@@ -235,9 +265,9 @@ def queue(request):
     page = int(request.GET.get('page', 1))
     if not 1 <= page <= 100000:
         raise ValueError('Invalid page.')
-    qs = with_last_call(CaseTicket.objects.select_related('claimed_by').exclude(source_type='satisfaction'))
+    qs = CaseTicket.objects.select_related('claimed_by').exclude(source_type='satisfaction')
     if view == 'history':
-        qs = qs.filter(Q(status='resolved') | Q(archived=True))
+        qs = qs.filter(Q(status='resolved') | Q(archived=True)).exclude(test_learner.hidden())
     else:
         qs = qs.open()
         if view == 'due':
@@ -265,20 +295,31 @@ def queue(request):
         qs = qs.filter(claimed)
     elif request.GET.get('claimed') == 'no':
         qs = qs.exclude(claimed)
+    emails = None
+    if view == 'history':
+        latest = (qs.values('learner_email').annotate(latest=Max('resolved_at'))
+                  .order_by(F('latest').desc(nulls_last=True), 'learner_email'))
+        total = latest.count()
+        emails = [row['learner_email'] for row in latest[(page - 1) * 30:page * 30]]
+        qs = qs.filter(learner_email__in=emails)
     groups = {}
     now = timezone.now()
-    for ticket in qs:
+    for ticket in with_last_call(qs):
         group = groups.setdefault(ticket.learner_email, {'learner_email': ticket.learner_email,
             'learner_name': ticket.learner_name, 'coach': ticket.coach, 'learner_phone': ticket.learner_phone,
-            'tickets': [], '_priority': priority(ticket, now)})
+            'tickets': [], '_priority': rank(ticket, now)})
         group['tickets'].append(ticket_json(ticket))
-        group['_priority'] = max(group['_priority'], priority(ticket, now))
-    ordered = sorted(groups.values(), key=lambda g: (g['_priority'], g['learner_email']), reverse=True)
-    selected = ordered[(page - 1) * 30:page * 30]
+        group['_priority'] = max(group['_priority'], rank(ticket, now))
+    if emails is not None:
+        selected = sorted(groups.values(), key=lambda g: emails.index(g['learner_email']))
+    else:
+        ordered = sorted(groups.values(), key=lambda g: (g['_priority'], g['learner_email']), reverse=True)
+        total = len(groups)
+        selected = ordered[(page - 1) * 30:page * 30]
     for group in selected:
         group.pop('_priority')
     coaches = list(CaseTicket.objects.exclude(coach='').values_list('coach', flat=True).distinct().order_by('coach'))
-    return JsonResponse({'groups': selected, 'total': len(groups), 'page': page, 'has_next': page * 30 < len(groups), 'coaches': coaches})
+    return JsonResponse({'groups': selected, 'total': total, 'page': page, 'has_next': page * 30 < total, 'coaches': coaches})
 
 
 @authenticated
@@ -290,15 +331,15 @@ def detail(request, pk):
         raise ValueError('Invalid timeline page.')
     events = ticket.events.order_by('-id')
     calls = ticket.calls.select_related('match__call', 'match__agent').order_by('-match__call__started_at')
-    issues = (CaseTicket.objects.open().filter(learner_email=ticket.learner_email) if ticket.learner_email
-              else CaseTicket.objects.open().filter(pk=ticket.pk))
+    issues = CaseTicket.objects.open().filter(same_contact(ticket) if ticket.learner_email else Q(pk=ticket.pk))
     return JsonResponse({'ticket': ticket_json(ticket),
         'issues': [issue_json(issue) for issue in issues],
         'events': list(events.values('id', 'kind', 'actor', 'data', 'call_id', 'created_at')[(page - 1) * 50:page * 50]),
         'has_more_events': events.count() > page * 50,
-        'calls': [{'call_id': item.match.call_id, 'agent': item.match.agent.display_name, 'manual': item.match.manual,
-                   'result': item.match.call.result, 'started_at': item.match.call.started_at,
-                   'duration_seconds': item.match.call.duration_seconds, 'outcome': item.outcome} for item in calls],
+        'calls': [{'call_id': item.match.call_id, 'agent': item.match.agent.display_name, 'agent_id': item.match.agent_id,
+                   'manual': item.match.manual, 'result': item.match.call.result, 'started_at': item.match.call.started_at,
+                   'duration_seconds': item.match.call.duration_seconds, 'outcome': item.outcome,
+                   'current': item.match.call.started_at >= (ticket.evidence_after or ticket.created_at)} for item in calls],
         'emails': list(ticket.emails.order_by('-id').values('id', 'kind', 'status', 'mode', 'subject', 'text', 'error', 'created_at')[:30]),
     })
 
@@ -320,7 +361,9 @@ def action(request, pk, command):
         caller_id = normalize_phone(agent.zoom_phone_number)
         if caller_id:
             zoom_url += '?' + urlencode({'callerid': caller_id})
-        return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number})
+        # number + caller_id dial in the page (Smart Embed); zoom_url opens the desktop app.
+        return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number,
+                             'number': intent.number, 'caller_id': caller_id})
     if command == 'complete_feedback':
         complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
                                  action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
@@ -336,6 +379,8 @@ def action(request, pk, command):
         return JsonResponse({'ok': True, 'applied': applied})
     elif command == 'send_back':
         send_back(pk, request.user, str(data.get('note', ''))[:5000])
+    elif command == 'close_review':
+        close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''))
     elif command == 'reopen':
         reopen(pk, request.user, str(data.get('note', ''))[:5000], acting_agent=agent)
     elif command == 'outcome':
@@ -348,7 +393,7 @@ def action(request, pk, command):
             agent = can_work(ticket, request.user, acting_agent=agent)
             note = str(data.get('note', '')).strip()[:5000]
             if command == 'archive':
-                if not request.user.is_staff or ticket.status != 'resolved':
+                if not is_director(request.user) or ticket.status != 'resolved':
                     raise PermissionDenied('Only managers can archive resolved cases.')
                 ticket.archived = True
             elif command == 'reject_ai':
@@ -379,6 +424,14 @@ def booking(request, pk):
     can_work(ticket, request.user, acting_agent=agent)
     if ticket.status == 'resolved' or ticket.archived:
         raise Conflict('This case is closed.')
+    if not lms_booking.session_types(ticket):
+        raise Conflict('Coach sessions are not booked from employer calls.')
+    if test_learner.is_test(ticket):
+        if request.method == 'GET':
+            return JsonResponse(test_learner.booking_preview(ticket))
+        booked = test_learner.book(ticket, str(data.get('session_type', '')), parse_moment(data['start']),
+                                   str(data.get('reason_category', '')))
+        return booked_response(request, pk, data, agent, booked)
     try:
         if request.method == 'GET':
             person = lms_booking.lms_learner(ticket.learner_email)
@@ -398,6 +451,11 @@ def booking(request, pk):
                                   str(data.get('reason_category', '')), str(data.get('reason_note', '')))
     except lms_booking.Unavailable as exc:
         return JsonResponse({'detail': str(exc)}, status=503)
+    return booked_response(request, pk, data, agent, booked)
+
+
+def booked_response(request, pk, data, agent, booked):
+    """Record a made booking on the case; a booked catch-up closes a missed-lecture case."""
     record = {'session_type': data['session_type'], 'event_key': booked['event_key'], 'start': booked['start'].isoformat(),
               'coach': booked['coach'], 'join_url': booked['join_url'], 'lms_report_id': booked['report_id'],
               'link_warning': booked['link_warning']}
@@ -418,15 +476,29 @@ def booking(request, pk):
 def booking_email(request, pk):
     """Render the booking email for this case (default or reworded) with what it still needs to be sent. Sends nothing."""
     ticket = CaseTicket.objects.get(pk=pk)
-    if ticket.source_type in ('satisfaction', 'signature'):
+    if ticket.source_type in NO_BOOKING_EMAIL:
         raise ValueError('This case has no booking email.')
     data = body(request)
     agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
-    if not agent and not request.user.is_staff:
+    if not agent and not is_director(request.user):
         raise PermissionDenied('An active agent profile or manager permission is required.')
     sender = agent.display_name if agent else (request.user.get_full_name() or request.user.get_username())
     draft = render_booking_email(ticket, sender, data.get('subject'), data.get('message'))
-    return JsonResponse({**draft, 'recipient': ticket.learner_email, 'checks': booking_email_readiness(ticket)})
+    return JsonResponse({**draft, 'recipient': ticket.learner_email, 'checks': booking_email_readiness(ticket),
+                         'mode': email_settings.current()['email_mode']})
+
+
+@authenticated
+@require_POST
+@csrf_protect
+def booking_email_send(request, pk):
+    """Send the booking email (as shown in the preview) to the learner and record it on the case."""
+    data = body(request)
+    agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
+    if not agent and not is_director(request.user):
+        raise PermissionDenied('An active agent profile or manager permission is required.')
+    sender = agent.display_name if agent else (request.user.get_full_name() or request.user.get_username())
+    return JsonResponse(send_booking_email(pk, request.user, sender, data, acting_agent=agent))
 
 
 @authenticated

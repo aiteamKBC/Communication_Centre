@@ -9,9 +9,11 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, ProgrammingError, transaction
+from django.utils import timezone
 
 from .db import DB
 from .models import Setting, SettingHistory
+from .rules import LONDON, PAUSED_CATEGORIES, parse_moment
 from .services import Conflict
 
 KEY = 'email'
@@ -20,7 +22,7 @@ NOT_SET_UP = 'Settings are not set up yet. Run docs/callcentre-port/settings.sql
 REMINDER_TYPES = {
     'attendance': 'Missed lecture', 'pr': 'Progress review overdue', 'mcm': 'Monthly coaching overdue',
     'pr_missed': 'Missed progress review', 'mcm_missed': 'Missed monthly coaching', 'signature': 'Missing signature',
-    'satisfaction': 'Employer feedback survey', 'epa': 'EPA preparation', 'otj': 'Off-the-job hours',
+    'epa': 'EPA preparation', 'otj': 'Off-the-job hours',
     'reminder': 'Tomorrow’s appointment',
 }
 MAX_DAY = 60
@@ -53,8 +55,20 @@ def stored():
 
 
 def current():
-    """The email settings in force now."""
-    return stored()[0]
+    """The email settings in force now. Without CALLCENTRE_EMAIL_LIVE_ALLOWED this server only records (dry run)."""
+    values = stored()[0]
+    if values['email_mode'] == 'live' and not settings.CALLCENTRE_EMAIL_LIVE_ALLOWED:
+        return {**values, 'email_mode': 'dry_run', 'live_blocked': True}
+    return values
+
+
+def sending_since(config):
+    """The London date automatic reminders started really sending (live and switched on), or None.
+
+    Reminder stages that fell due before it are not sent: switching on must not email the whole backlog.
+    """
+    value = config.get('sending_since')
+    return parse_moment(value).astimezone(LONDON).date() if value else None
 
 
 def clean(data):
@@ -72,7 +86,8 @@ def clean(data):
     if type(escalate) is not int or not 0 <= escalate <= MAX_DAY:
         raise ValueError(f'Manager escalation day: a whole number from 0 (never) to {MAX_DAY}.')
     types = data.get('reminder_types')
-    if not isinstance(types, list) or any(t not in REMINDER_TYPES for t in types):
+    # A retired type still in the saved settings is dropped, not refused.
+    if not isinstance(types, list) or any(t not in REMINDER_TYPES and t not in PAUSED_CATEGORIES for t in types):
         raise ValueError('Choose the reminder case types from the list.')
     cap = data.get('daily_cap')
     if type(cap) is not int or not 0 <= cap <= 10:
@@ -98,12 +113,19 @@ def save(data, revision, reason, actor, can_send):
         raise ValueError('Say why you are changing the settings (5 to 1,000 characters).')
     if values['email_mode'] == 'live' and not can_send:
         raise ValueError('Live sending needs the Microsoft 365 mail settings in .env first.')
+    if values['email_mode'] == 'live' and not settings.CALLCENTRE_EMAIL_LIVE_ALLOWED:
+        raise ValueError('This server is not allowed to send live email (CALLCENTRE_EMAIL_LIVE_ALLOWED is not set). '
+                         'Change the sending mode on the production server.')
     try:
         with transaction.atomic(using=DB):
             row = Setting.objects.select_for_update().filter(key=KEY).first()
             if (row.revision if row else 0) != revision:
                 raise Conflict('Someone changed the settings since you opened them. Reload and check again.')
             previous = {**defaults(), **row.value} if row else None
+            sending = values['email_mode'] == 'live' and values['reminders_enabled']
+            was_sending = bool(previous and previous['email_mode'] == 'live' and previous['reminders_enabled'])
+            values['sending_since'] = ((previous.get('sending_since') if was_sending else timezone.now().isoformat())
+                                       if sending else None)
             if row:
                 row.value, row.revision, row.updated_by = values, row.revision + 1, actor
                 row.save()

@@ -1,7 +1,8 @@
 """Call-centre endpoints that replace legacy dashboard pieces not ported as-is.
 
 * ``agents`` / ``agent_detail`` replace the Django admin page managers used to set up
-  Zoom agent profiles (``is_staff`` only, as in the legacy admin).
+  Zoom agent profiles (directors only: Django super admins). Profiles are created by ticking
+  Call centre access in Django admin (``access.sync_agent``).
 * ``activity_log`` replaces ``GET /api/coaches/all``: instead of shipping every
   ``coaches_data`` column to the browser, it returns one month of outbound Zoom calls
   already matched to learners and coaches.
@@ -12,11 +13,11 @@ import json
 import uuid
 from datetime import date, datetime, time, timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import Count, Max, Min
-from django.db.models.functions import Coalesce
+from django.db.models import Count
 from django.db.models.functions import TruncMonth
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
@@ -24,8 +25,9 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import email_settings, mailer
+from .access import is_director
 from .db import DB
-from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, ZoomPhoneCall
+from .models import Agent, Allocation, AllocationHistory, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
 from .services import Conflict, event
 from .sources import learner_directory, rows
@@ -36,7 +38,7 @@ AGENT_FIELDS = ('display_name', 'zoom_email', 'zoom_user_id', 'zoom_phone_number
 
 
 def require_manager(user):
-    if not user.is_staff:
+    if not is_director(user):
         raise PermissionDenied('Only managers can manage agents.')
 
 
@@ -226,7 +228,8 @@ def settings_view(request):
         'values': values, 'defaults': email_settings.defaults(), 'revision': revision, 'set_up': set_up,
         'not_set_up': '' if set_up else email_settings.NOT_SET_UP,
         'reminder_types': [{'key': key, 'label': label} for key, label in email_settings.REMINDER_TYPES.items()],
-        'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing()},
+        'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing(),
+                    'live_allowed': settings.CALLCENTRE_EMAIL_LIVE_ALLOWED},
         'history': email_settings.history(),
     })
 
@@ -254,36 +257,28 @@ def allocations(request):
         return people[email]['learner_email'] if email in people else email
 
     work = {}
-    for row in (CaseTicket.objects.open().values('learner_email')
-                .annotate(cases=Count('id'), next_contact=Min(Coalesce('next_followup_at', 'due_at')))):
-        entry = work.setdefault(main_email(row['learner_email']), {'cases': 0, 'next_contact': None})
-        entry['cases'] += row['cases']
-        entry['next_contact'] = min(filter(None, [entry['next_contact'], row['next_contact']]), default=None)
-    # Modules of open missed-lecture cases, so a whole class can be allocated together.
-    modules = {}
-    for email, data in CaseTicket.objects.open().filter(source_type='attendance').values_list(
-            'learner_email', 'source_data'):
-        module = str((data or {}).get('module') or '').strip() if isinstance(data, dict) else ''
-        if module:
-            modules.setdefault(main_email(email), set()).add(module)
-    last_calls = {}
-    for row in CallMatch.objects.values('learner_email').annotate(last=Max('call__started_at')):
+    for row in CaseTicket.objects.open().values('learner_email').annotate(cases=Count('id')):
         key = main_email(row['learner_email'])
-        last_calls[key] = max(filter(None, [last_calls.get(key), row['last']]), default=None)
+        work[key] = work.get(key, 0) + row['cases']
     names = {p['learner_email']: p['learner_name'] for p in people.values()}
+    operators = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name').values('id', 'display_name'))
+    active = {operator['id'] for operator in operators}
+
+    def owner(email):
+        # A switched-off specialist's learners are in the shared queue (allocation.owners).
+        agent_id = current[email].agent_id if email in current else None
+        return agent_id if agent_id in active else None
+
     return JsonResponse({
         'learners': [{
             'email': p['learner_email'], 'name': p['learner_name'], 'programme': p['programme'],
             'organisation': p['organisation'], 'coach': p['coach'],
-            **people.cohorts.get(p['learner_email'], {'cohort': '', 'group': ''}),
-            'modules': sorted(modules.get(p['learner_email'], ())),
-            'agent_id': current[p['learner_email']].agent_id if p['learner_email'] in current else None,
+            'manager_email': p['manager_email'], 'manager_name': p['manager_name'],
+            'agent_id': owner(p['learner_email']),
             'revision': current[p['learner_email']].revision if p['learner_email'] in current else 0,
-            'active_cases': work.get(p['learner_email'], {}).get('cases', 0),
-            'next_contact': work.get(p['learner_email'], {}).get('next_contact'),
-            'last_call': last_calls.get(p['learner_email']),
+            'active_cases': work.get(p['learner_email'], 0),
         } for p in sorted(people.values(), key=lambda p: (p['learner_name'].lower(), p['learner_email']))],
-        'operators': list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name').values('id', 'display_name')),
+        'operators': operators,
         'history': [{**h, 'learner_name': names.get(h['learner_email'], h['learner_email'])} for h in history],
     })
 

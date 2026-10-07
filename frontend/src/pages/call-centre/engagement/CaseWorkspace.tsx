@@ -7,7 +7,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, caseTone, human, issueLabel, longDate, shortGuide } from './model';
+import { MAX_MISSED_CALLS, casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -26,6 +26,15 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const listed = overview.cases.find(item => item.id === c.id);
   const callReason = listed ? callDisabledReason(listed, session) : 'Case is not active';
   const mine = !!c.claimed_agent_id && c.claimed_agent_id === session.agentId;
+  const employer = c.source_type === 'employer_feedback';
+  const facts = employer
+    ? [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Employer phone', c.learner_phone], ['Employer email', c.learner_email],
+      ['Organisation', c.organisation], ['Learners', c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'],
+      ['Due', longDate(c.due_at)], ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`]]
+    : [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Learner phone', c.learner_phone],
+      ['Learner email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name],
+      ['Line manager email', c.manager_email], ['Coach', c.coach], ['Due', longDate(c.due_at)],
+      ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`]];
 
   async function run(command: string, message: string) {
     setBusy(true);
@@ -50,7 +59,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   return (
     <>
       <div className="ec-head">
-        <div><h2 style={{ margin: 0 }}>{c.learner_name}</h2><span className="ec-muted">{c.programme || 'Programme not recorded'} · {c.organisation || 'Employer not recorded'}</span></div>
+        <div><h2 style={{ margin: 0 }}>{c.learner_name}</h2><span className="ec-muted">{employer ? `Employer · ${c.organisation || 'Organisation not recorded'}` : `${c.programme || 'Programme not recorded'} · ${c.organisation || 'Employer not recorded'}`}</span></div>
         <span className={`ec-tag ${caseTone(c)}`}>{human(c.status)}</span>
       </div>
       <div className="ec-split">
@@ -59,28 +68,23 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
             <h2>{issueLabel(c)}</h2>
             <p>{casePurpose(c)}</p>
             <dl className="ec-dl">
-              {[
-                ['Engagement specialist', c.claimed_by || 'Not in progress'], ['Learner phone', c.learner_phone],
-                ['Learner email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name],
-                ['Line manager email', c.manager_email], ['Coach', c.coach], ['Due', longDate(c.due_at)],
-                ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of 3`],
-              ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
+              {facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
             </dl>
             <div className="ec-alert">
               {c.sla_breached ? `Overdue by ${c.sla_days_overdue} days. ` : ''}
               {c.learner_days_overdue ? `The learner’s activity has been outstanding for ${c.learner_days_overdue} days. ` : ''}
-              Check the learner’s current position before discussing a recorded gap.
+              {employer ? 'Ask how each of their learners is getting on.' : 'Check the learner’s current position before discussing a recorded gap.'}
             </div>
             <div className="ec-buttons">
-              <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void run('call', 'Zoom Phone opened. Record the outcome once Zoom reports the call.')}>Call learner</button>
+              <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void run('call', 'Zoom Phone opened. Record the outcome once Zoom reports the call.')}>{employer ? 'Call employer' : 'Call learner'}</button>
               {!session.preview && c.status !== 'resolved' && (
                 <button type="button" disabled={busy || !session.agentId || (!!c.claimed_agent_id && !mine)} onClick={() => void run(mine ? 'release' : 'claim', mine ? 'Case released.' : 'Case claimed.')}>
                   {mine ? 'Release case' : 'Claim case'}
                 </button>
               )}
-              {c.status !== 'resolved' && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
-              {['satisfaction', 'learner_satisfaction'].includes(c.source_type) && <button type="button"
-                disabled={session.preview || !session.canAct || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
+              {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
+              {c.source_type === 'learner_satisfaction' && <button type="button"
+                disabled={session.preview || !session.canAct || !c.learner_email}
                 onClick={() => setEmailOpen(true)}>Email</button>}
             </div>
             {callReason && <p className="ec-muted">{callReason}.</p>}
@@ -109,8 +113,8 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
           <section className="ec-card"><h2>Call evidence</h2><CallEvidence detail={detail} onRecording={setRecording} /></section>
         </div>
         <div className="ec-stack">
-          {c.source_type === 'learner_satisfaction' && c.status !== 'resolved' && <section className="ec-card">
-            <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} session={session}
+          {isSatisfaction(c) && c.status !== 'resolved' && <section className="ec-card">
+            <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={c.source_type === 'employer_feedback'} session={session}
               onSaved={() => saved('Feedback completed. Next review is due in three calendar months.')} />
           </section>}
           <section className="ec-card">
@@ -122,8 +126,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
       </div>
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
-        {emailOpen && <SatisfactionEmail key={c.id} employer={c.source_type === 'satisfaction'}
-          caseId={c.id} session={session} />}
+        {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} />}
       </Dialog>
     </>
   );

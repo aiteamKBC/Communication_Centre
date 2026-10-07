@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import email_settings, mailer
-from .booking_email import layout
+from .booking_email import delivery_result as result, layout
 from .db import DB
 from .models import CaseTicket, EmailDelivery, EmailQuota
 from .rules import LONDON
@@ -62,11 +62,6 @@ def draft(ticket):
                     'Please do not reply to this no-reply mailbox.'),
         'can_send': not reason, 'reason': reason,
     }
-
-
-def result(delivery):
-    return {'id': delivery.pk, 'status': delivery.status, 'recipient': delivery.recipient,
-            'error': delivery.error}
 
 
 def send(ticket_id, user, data, acting_agent=None):

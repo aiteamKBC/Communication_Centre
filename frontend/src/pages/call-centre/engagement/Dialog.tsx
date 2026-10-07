@@ -16,7 +16,12 @@ export default function Dialog({ open, onClose, children }: { open: boolean; onC
     <dialog
       ref={ref}
       onClose={onClose}
-      onClick={event => { if (event.target === ref.current) onClose(); }}
+      onClick={event => {
+        if (event.target !== ref.current) return;
+        const box = ref.current.getBoundingClientRect();
+        const inside = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+        if (!inside) onClose();
+      }}
     >
       {open && children}
       <div className="ec-buttons" style={{ marginTop: '1rem' }}>

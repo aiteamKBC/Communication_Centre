@@ -9,6 +9,8 @@ export type Case = {
   issue_name: string; issue_date: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
   contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
+  /** Employer feedback calls: the line manager's learners in the directory. */
+  employer_learners?: { name: string; email: string; programme: string }[];
   status: string; risk: string; claimed_by: string | null; claimed_agent_id: number | null;
   last_actor: string; last_action_at: string; attempts: number; next_followup_at: string | null;
   due_at: string; sla_breached: boolean; sla_days_overdue: number; learner_days_overdue: number; misses: number;
@@ -53,7 +55,11 @@ export type Overview = {
   connections: { calling: boolean; email_mode: string; ai: boolean };
 };
 
-export type CaseCall = { call_id: number; agent: string; manual: boolean; result: string; started_at: string; duration_seconds: number | null; outcome: string };
+export type CaseCall = {
+  call_id: number; agent: string; agent_id: number; manual: boolean; result: string; started_at: string; duration_seconds: number | null; outcome: string;
+  /** Made since the case (or its current satisfaction cycle) was opened, reopened or sent back. */
+  current: boolean;
+};
 export type CaseDetail = {
   ticket: Case & { booking_links: BookingLinks }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
   events: { id: number; kind: string; actor: string; data: Record<string, unknown>; call_id: number | null; created_at: string }[];
@@ -62,6 +68,8 @@ export type CaseDetail = {
 
 export type Config = {
   csrf_token: string; agent_id: number | null; is_manager: boolean; is_superuser: boolean; email_mode: string; ai_enabled: boolean;
+  /** In-page calling with Zoom Phone Smart Embed is switched on for this server. */
+  smart_embed: boolean;
   agents: { id: number; display_name: string; zoom_account: string; zoom_phone_number: string }[];
   sources: { name: string; last_success_at: string | null; details: { error?: string } }[];
   cycle: { last_success_at: string | null } | null;
@@ -95,8 +103,9 @@ export function post<T>(path: string, csrfToken: string, payload: Record<string,
   });
 }
 
-/** Loads a call-centre resource and refreshes it every 60 s while the browser tab is visible. */
-export function useCallCentre<T>(path: string | null) {
+/** Loads a call-centre resource and (with `poll`) refreshes it every 60 s while the browser tab is visible.
+ * A failed refresh keeps the last data on screen; only a sign-in or permission failure clears it. */
+export function useCallCentre<T>(path: string | null, poll = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState(0);
@@ -122,8 +131,9 @@ export function useCallCentre<T>(path: string | null) {
       .catch(reason => {
         if (controller.signal.aborted) return;
         setError(reason instanceof Error ? reason.message : 'Request failed.');
-        setStatus(reason instanceof ApiError ? reason.status : 0);
-        setData(null);
+        const status = reason instanceof ApiError ? reason.status : 0;
+        setStatus(status);
+        if (status === 401 || status === 403) setData(null);
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -132,38 +142,19 @@ export function useCallCentre<T>(path: string | null) {
   }, [path, revision]);
 
   useEffect(() => {
+    if (!poll) return undefined;
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') refresh();
     }, 60000);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, poll]);
 
   return { data, error, status, loading, refresh };
 }
 
-export const stamp = (value: string | null | undefined) => (value
-  ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/London' }).format(new Date(value))
-  : '--');
-
-export const category = (value: string) => ({
-  attendance: 'Lecture', pr: 'PR', mcm: 'MCM', otj: 'OTJ', epa: 'EPA', reminder: 'Reminder', satisfaction: 'Satisfaction',
-}[value] || value);
-
-export function issueLabel(issue: Pick<Case, 'source_type' | 'issue_name' | 'issue_date'>) {
-  const name = issue.issue_name?.trim() || category(issue.source_type);
-  if (issue.source_type !== 'attendance' || !issue.issue_date) return name;
-  const date = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Europe/London' })
-    .format(new Date(`${issue.issue_date}T12:00:00Z`));
-  return `${name} - ${date}`;
-}
-
-export const statusLabel = (value: string) => value.replace(/_/g, ' ');
-
 export const londonDay = () => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
 }).format(new Date());
-
-export const hours = (seconds: number) => `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 
 export const accountLabel = (key: string) => (key === 'office' ? 'Office (Accountant)' : 'Student');
 

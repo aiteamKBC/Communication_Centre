@@ -10,6 +10,8 @@ ACCESS_GROUPS: dict[str, str] = {
     'access_marketing': 'Marketing Access',
     'access_support': 'Support Access',
     'access_coach': 'Coach Access',
+    # Engagement Centre specialist (call-centre agent); see callcentre/access.py.
+    'access_call_centre': 'Call Centre Access',
 }
 
 
@@ -44,6 +46,8 @@ def get_user_access_payload(user) -> dict:
     marketing_access = admin_access or ACCESS_GROUPS['access_marketing'] in group_names
     support_access = admin_access or ACCESS_GROUPS['access_support'] in group_names
     coach_access = admin_access or ACCESS_GROUPS['access_coach'] in group_names
+    # Not implied by admin access: a call-centre agent is a specific job, and it limits the dashboards shown.
+    call_centre_access = ACCESS_GROUPS['access_call_centre'] in group_names
 
     return {
         'adminAccess': admin_access,
@@ -53,6 +57,8 @@ def get_user_access_payload(user) -> dict:
         'marketingAccess': marketing_access,
         'supportAccess': support_access,
         'coachAccess': coach_access,
+        'callCentreAccess': call_centre_access,
+        'isSuperuser': bool(user.is_superuser),
         'canManageEvents': event_manager_access,
         'canManageCohorts': operations_access,
         'canManageNews': admin_access or it_access or marketing_access,

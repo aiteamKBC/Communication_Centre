@@ -131,7 +131,8 @@ def fetch_transcript(client, recording_id):
 
 
 def ai_transcription_enabled():
-    return bool(settings.ZOOM_AI_TRANSCRIPTION_ENABLED and settings.OPENAI_API_KEY
+    """Call audio is sent to OpenAI only when AI is switched on (CALLCENTRE_AI_ENABLED) as well as transcription."""
+    return bool(settings.CALLCENTRE_AI_ENABLED and settings.ZOOM_AI_TRANSCRIPTION_ENABLED and settings.OPENAI_API_KEY
                 and settings.OPENAI_TRANSCRIPTION_MODEL)
 
 

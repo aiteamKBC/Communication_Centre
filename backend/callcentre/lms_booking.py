@@ -57,6 +57,9 @@ class Unavailable(RuntimeError):
 
 
 def session_types(ticket):
+    # Employers are not learners: no coach session is booked from an employer call.
+    if ticket.source_type in ('employer_feedback', 'satisfaction'):
+        return []
     return [CATCH_UP, SUPPORT] if ticket.source_type == 'attendance' else [SUPPORT]
 
 
@@ -164,14 +167,19 @@ def coach_busy(coach, start, end):
     return busy
 
 
-def free_slots(coach, now=None, day=None):
-    """Hour-long UK slots the coach is free for: weekdays, no bank holidays, 09-17, an hour's notice."""
+def slot_starts(now=None, day=None):
+    """Hour-long UK slots on offer before the coach's calendar is checked: weekdays, no bank holidays, 09-17,
+    an hour's notice."""
     earliest = (now or timezone.now()) + LEAD
     first = earliest.astimezone(LONDON).date()
     days = [day] if day else [first + timedelta(days=n) for n in range(DAYS_AHEAD)]
-    starts = [datetime.combine(d, time(hour), LONDON) for d in days if bookable_day(d)
-              for hour in range(FIRST_HOUR, LAST_HOUR + 1)]
-    starts = [s for s in starts if s >= earliest]
+    return [s for d in days if bookable_day(d) for hour in range(FIRST_HOUR, LAST_HOUR + 1)
+            if (s := datetime.combine(d, time(hour), LONDON)) >= earliest]
+
+
+def free_slots(coach, now=None, day=None):
+    """The offered slots (slot_starts) the coach is free for."""
+    starts = slot_starts(now, day)
     if not starts:
         return []
     busy = coach_busy(coach, starts[0], starts[-1] + timedelta(minutes=DURATION))
@@ -217,6 +225,16 @@ def _reserve(person, session_type, start, notes, idempotency_key):
                     or row['scheduled_date'] != day or row['scheduled_time'] != at):
                 raise ValueError('This booking request was already used for a different session.')
             return row, False
+        # One coach, one slot: the free times were read before this transaction, so bookings for this coach and
+        # day are serialized here and the slot is checked again.
+        cursor.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [f'callcentre-coach:{coach.lower()}:{day.isoformat()}'])
+        for other in _fetch(cursor, '''SELECT scheduled_time, duration_minutes FROM "Coach".coach_calendar_event
+            WHERE lower(owner_email) = lower(%s) AND scheduled_date = %s AND scheduled_time IS NOT NULL
+              AND status = ANY(%s)''', [coach, day, list(ACTIVE_STATUSES)]):
+            other_start = datetime.combine(day, other['scheduled_time'])
+            mine = datetime.combine(day, at)
+            if mine < other_start + timedelta(minutes=other['duration_minutes'] or DURATION) and mine + timedelta(minutes=DURATION) > other_start:
+                raise Conflict('That time has just been taken in the coach’s calendar. Pick another time.')
         # By email: LMS rows carry a profile id or a Created_users id, two unrelated number ranges.
         nearby = _fetch(cursor, '''SELECT event_type, sequence, scheduled_date, scheduled_time, duration_minutes, status
             FROM "Coach".coach_calendar_event
@@ -311,7 +329,11 @@ def _fail(row, message):
 
 
 def _link_report(cursor, row, lecture, person, reason_category, reason_note, agent_name):
-    """Create the lecture's LMS absence report, or attach this catch-up to the one already there."""
+    """Create the lecture's LMS absence report, or attach this catch-up to the one already there.
+
+    A new report is 'pending' with no evidence: the call centre took the reason by phone, the coach approves it.
+    An existing report keeps its status.
+    """
     # Created_users.aptem_id is text; the register "ID" is a number.
     if str(lecture['register_id']).strip() != str(person['aptem_id'] or '').strip():
         return None, 'The register id does not match the learner’s LMS Aptem id, so the LMS cannot show the link.'
@@ -326,7 +348,7 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
         if report['event_status'] in (*ACTIVE_STATUSES, 'completed'):
             return None, 'The lecture was linked to another catch-up a moment ago.'
         cursor.execute('''UPDATE "Coach".coach_absence_report SET catchup_event_key = %s, recovery_method = 'catch-up',
-            status = 'approved', updated_at = now() WHERE id = %s''', [row['event_key'], report['id']])
+            updated_at = now() WHERE id = %s''', [row['event_key'], report['id']])
         return report['id'], ''
     cursor.execute('SELECT count(*) FROM "Coach".coach_absence_report WHERE learner_id = %s', [person['source_id']])
     previous = cursor.fetchone()[0]
@@ -335,7 +357,7 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
             learner_name, learner_email, session_title, session_date, session_time, reason_category, reason, reported_by,
             status, evidence_provided, coach_note, created_at, updated_at, attendance_rate, evidence_image_url,
             evidence_kind, evidence_text, previous_absences, recovery_method, catchup_event_key)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 'approved', true, '', now(), now(), NULL, '', 'text',
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 'pending', false, '', now(), now(), NULL, '', 'text',
                 %s, %s, 'catch-up', %s) RETURNING id''',
                    [kbc_report_id(lecture['key']), person['coach_email'], person['coach_name'], person['source_id'],
                     person['name'], person['email'], lecture['title'][:255],

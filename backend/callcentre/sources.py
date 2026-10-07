@@ -80,12 +80,14 @@ def learner_directory():
 
 
 DIRECTORY_REFRESH_SECONDS = 300
-_cached = {'directory': learners.Learners({}, {}), 'next_refresh': 0.0}
+_cached = {'directory': learners.Learners({}, {}), 'next_refresh': 0.0, 'complete': False}
 
 
 def cached_directory():
     """The directory, refreshed at most every 5 minutes, for what every page asks of the LMS:
-    who is on a break and each coach's email. While the LMS cannot be read the last one is kept.
+    who is on a break, each coach's email and each employer's learners. While the LMS cannot be read
+    the last one is kept; while Aptem cannot, the last directory built from both is kept, because line
+    managers (employer allocation) come only from Aptem.
     """
     now = time.monotonic()
     if now >= _cached['next_refresh']:
@@ -97,8 +99,11 @@ def cached_directory():
         try:
             aptem = rows(APTEM, learners.APTEM_LEARNERS_SQL)
         except Exception:
-            aptem = []
-        _cached['directory'] = learners.merge(lms, aptem, _staff())
+            if _cached['complete']:
+                return _cached['directory']
+            aptem = None
+        _cached['directory'] = learners.merge(lms, aptem or [], _staff())
+        _cached['complete'] = aptem is not None
     return _cached['directory']
 
 

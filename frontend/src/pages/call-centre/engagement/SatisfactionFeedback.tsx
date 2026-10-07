@@ -3,9 +3,10 @@ import type { FormEvent } from 'react';
 import { caseAction } from './actions';
 import type { Session } from './actions';
 
-export default function SatisfactionFeedback({ caseId, name, session, onSaved }: {
-  caseId: number; name: string; session: Session; onSaved: () => void;
+export default function SatisfactionFeedback({ caseId, name, employer = false, session, onSaved }: {
+  caseId: number; name: string; employer?: boolean; session: Session; onSaved: () => void;
 }) {
+  const who = employer ? 'Employer' : 'Learner';
   const [score, setScore] = useState('');
   const [note, setNote] = useState('');
   const [problem, setProblem] = useState('');
@@ -31,7 +32,7 @@ export default function SatisfactionFeedback({ caseId, name, session, onSaved }:
   }
 
   return <>
-    <h2>Complete learner feedback</h2>
+    <h2>Complete {who.toLowerCase()} feedback</h2>
     <p>{name}: an answered, synced Zoom call is required. Saving completes this review; the next is due in three calendar months.</p>
     <form className="ec-form" onSubmit={event => void submit(event)}>
       <fieldset disabled={busy || session.preview || !session.canAct} style={{ display: 'contents' }}>
@@ -42,7 +43,7 @@ export default function SatisfactionFeedback({ caseId, name, session, onSaved }:
               <option key={value} value={value}>{value} — {label}</option>)}
           </select>
         </label>
-        <label className="wide">Learner feedback
+        <label className="wide">{who} feedback
           <textarea required minLength={10} maxLength={3500} rows={3} value={note} onChange={event => setNote(event.target.value)} />
         </label>
         <label className="wide">Issue raised (write None if there is no issue)

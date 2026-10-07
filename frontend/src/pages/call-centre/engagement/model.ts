@@ -3,6 +3,9 @@ import type { AgentStats, Overview, OverviewCase } from '../api';
 
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
+/** Recurring feedback calls: completed by the feedback form after an answered call, due again three months later. */
+export const isSatisfaction = (c: { source_type?: string }) => c.source_type === 'learner_satisfaction' || c.source_type === 'employer_feedback';
+
 export const CALL_TABS: CallTab[] = [
   { key: 'missed', label: 'Missed', icon: 'calendar',
     reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
@@ -14,19 +17,21 @@ export const CALL_TABS: CallTab[] = [
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
     hint: 'Active and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
-    hint: 'Speak with each line manager every quarter. A survey link is emailed after the call; low scores are escalated.' },
+    hint: 'Each employer (line manager) with their learners: complete a feedback call every three calendar months. Unanswered calls do not complete a review.' },
   { key: 'manager', label: 'Extra Calls by Manager', icon: 'message', reasons: [],
     hint: 'Additional calls requested by a manager. Follow the request’s purpose and record the agreed outcome; the case closes when a specialist resolves it.' },
   { key: 'ai', label: 'AI suggestions', icon: 'check', reasons: [],
     hint: 'Cases the AI review suggests closing. Approve to resolve, or reject to return the case to the calling list.' },
 ];
 
+/** Unanswered calls before a case goes to a manager (backend rules.MAX_MISSED_CALLS). */
+export const MAX_MISSED_CALLS = 3;
+
 export const ISSUE_LABELS: Record<string, string> = {
   attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue',
   pr_missed: 'Missed progress review', mcm_missed: 'Missed monthly coaching', signature: 'Missing signature', otj: 'Off-the-job hours',
-  epa: 'EPA preparation', reminder: 'Tomorrow’s appointment', satisfaction: 'Employer satisfaction',
-  manual: 'Extra call by manager',
-  learner_satisfaction: 'Learner satisfaction',
+  epa: 'EPA preparation', reminder: 'Tomorrow’s appointment', manual: 'Extra call by manager',
+  learner_satisfaction: 'Learner satisfaction', employer_feedback: 'Employer satisfaction',
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
@@ -39,7 +44,7 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   otj: 'Agree support to record and recover off-the-job hours.',
   epa: 'Confirm the learner’s EPA preparation and next step.',
   reminder: 'Confirm attendance at tomorrow’s appointment or rebook it.',
-  satisfaction: 'Record the line manager’s feedback and any agreed actions.',
+  employer_feedback: 'Record the employer’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
   learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
 };
 
@@ -65,7 +70,7 @@ export function outcomeChoices(c: Pick<OverviewCase, 'promises'>): [string, stri
 /** What happens to the case after an outcome choice is saved. */
 export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | 'specialist_closes' | 'attempts'> & { source_type?: string }) {
   const { outcome, option } = splitOutcome(choice);
-  if (c.source_type === 'learner_satisfaction') {
+  if (isSatisfaction(c)) {
     if (outcome === 'reached') return 'Save the call outcome, then use Complete feedback. Only a completed review starts the next three-month period.';
     if (outcome === 'no_answer') return 'The review stays open. Follow up on the chosen date, or the next working morning. Three failed calls need manager follow-up.';
   }
@@ -92,6 +97,22 @@ export function splitOutcome(choice: string) {
 
 const londonFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' });
 export const londonDate = (value: string | null | undefined) => (value ? londonFormat.format(new Date(value)) : '');
+const londonClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+
+/** `hour`:00 London time, `workdays` working days (Mon-Fri) after today London time. */
+export function londonWorkdayAt(workdays: number, hour: number) {
+  const day = new Date(`${londonDate(new Date().toISOString())}T12:00:00Z`);
+  for (let left = workdays; left > 0;) {
+    day.setUTCDate(day.getUTCDate() + 1);
+    if (day.getUTCDay() % 6 !== 0) left -= 1;
+  }
+  // London wall time to an instant: take it as UTC, then subtract London's offset from UTC at that moment.
+  const guess = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour);
+  const part = Object.fromEntries(londonClock.formatToParts(new Date(guess)).map(p => [p.type, Number(p.value)]));
+  const offset = Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute, part.second) - guess;
+  return new Date(guess - offset);
+}
+
 export const nextDay = (today: string) => new Date(Date.parse(`${today}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
 
 export const human = (value: string | null | undefined) => String(value || '').replaceAll('_', ' ');
@@ -123,7 +144,6 @@ export const activeCase = (c: Pick<OverviewCase, 'status'>) => c.status !== 'res
 /** A case is due for a call unless it is waiting on evidence, an AI decision or a future callback. */
 export function dueForCall(c: OverviewCase, now = Date.now()) {
   if (!activeCase(c) || ['pending_verification', 'ai_suggested_close'].includes(c.status)) return false;
-  if (c.source_type === 'learner_satisfaction' && Date.parse(c.due_at) > now) return false;
   return !c.next_followup_at || Date.parse(c.next_followup_at) <= now;
 }
 
@@ -132,7 +152,7 @@ export function categoryFor(c: OverviewCase, today: string) {
   if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
   if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextDay(today) ? 'nextday' : null;
-  if (c.source_type === 'satisfaction') return 'employer_satisfaction';
+  if (c.source_type === 'employer_feedback') return 'employer_satisfaction';
   if (c.source_type === 'learner_satisfaction') return 'learner_satisfaction';
   if (c.source_type === 'manual') return 'manager';
   return null;
@@ -205,8 +225,8 @@ export function badges(today: AgentStats['today'], target: number) {
 export const caseTone = (c: Pick<OverviewCase, 'status' | 'sla_breached'>) =>
   c.status === 'resolved' ? 'green' : c.status === 'escalated' ? 'red' : c.sla_breached ? 'amber' : '';
 
-export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' | 'manager_name' | 'purpose'>, operator: string) {
-  const first = (c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name).split(' ')[0];
+export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose'>, operator: string) {
+  const first = c.learner_name.split(' ')[0];
   const op = operator.split(' ')[0];
   const questions: Record<string, string> = {
     otj: 'What learning have you completed recently? What is making it difficult to record or complete your hours? What support would help this week?',
@@ -215,7 +235,7 @@ export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' 
     pr_missed: 'What stopped the progress review going ahead? Can we agree a new time with your coach?',
     mcm_missed: 'What stopped the coaching meeting going ahead? Can we agree a new time with your coach?',
     signature: 'Your review is waiting for your signature in the LMS. Can you sign it today? Do you need help finding it?',
-    satisfaction: 'What is going well with teaching and coaching? What could we improve, and is there any support you need?',
+    employer_feedback: 'How satisfied are you with the apprenticeship and our coaching, from 1 to 5? How are your learners progressing, what could we improve, and what support would help?',
     learner_satisfaction: 'How satisfied are you with your learning and coaching, from 1 to 5? What is going well, what could improve, and what support would help?',
   };
   return [
@@ -252,58 +272,43 @@ export const deskLabel = (overview: Overview, key: string) => {
   const menu = DESK_MENUS.find(item => item[0] === key);
   if (!menu) return 'Call next';
   const cases = categoryCases(overview.cases, key, overview.today);
-  const counted = key === 'learner_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
+  const counted = key === 'learner_satisfaction' || key === 'employer_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
   return CALL_TABS.some(tab => tab.key === key) ? `${menu[1]} (${uniqueLearners(counted).length})` : menu[1];
 };
 
 export type AllocationChange = { email: string; agent_id: number | null; revision: number };
+/** Learners who must stay with one specialist: an employer's (line manager's) learners, or one learner on their own. */
+export type AllocationUnit = { key: string; emails: string[] };
 
 /**
- * Who each selected learner moves to. "even" balances total learners per specialist, counting existing
- * allocations and keeping a learner's current specialist on a tie; unselected learners never move.
+ * Hands whole units to specialists so each gets a similar number of learners. A unit stays with the
+ * specialist who has most of it while that stays within a fair share, so as few learners as possible move;
+ * the rest go, largest first, to whoever has the fewest so far. Returns learner email -> specialist.
  */
-export function allocationPlan(learners: AllocationChange[], selected: Set<string>, operators: number[], target: 'even' | number | null) {
-  if (target === 'even' && !operators.length) throw new Error('There are no active specialists.');
-  if (typeof target === 'number' && !operators.includes(target)) throw new Error('Choose an active specialist.');
-  const counts = new Map(operators.map(id => [id, learners.filter(l => !selected.has(l.email) && l.agent_id === id).length]));
-  return learners.filter(l => selected.has(l.email)).sort((a, b) => a.email.localeCompare(b.email)).flatMap(l => {
-    let owner = target === 'even' ? null : target;
-    if (target === 'even') {
-      const fewest = Math.min(...counts.values());
-      const choices = operators.filter(id => counts.get(id) === fewest);
-      owner = l.agent_id !== null && choices.includes(l.agent_id) ? l.agent_id : choices[0];
-      counts.set(owner, (counts.get(owner) || 0) + 1);
-    }
-    return owner === l.agent_id ? [] : [{ email: l.email, agent_id: owner, revision: l.revision }];
-  });
-}
-
-export type AllocationGroup = { key: string; emails: string[] };
-export type GroupChoice = 'even' | number | null;
-
-/** Hands each whole group to one specialist: largest groups first, always to whoever has the fewest learners so far. */
-export function balanceGroups(groups: AllocationGroup[], operators: number[]) {
+export function balanceUnits(units: AllocationUnit[], current: Map<string, number | null>, operators: number[]) {
+  const owners = new Map<string, number>();
+  if (!operators.length) return owners;
   const load = new Map(operators.map(id => [id, 0]));
-  const choices = new Map<string, GroupChoice>();
-  if (!operators.length) return choices;
-  for (const group of [...groups].sort((a, b) => b.emails.length - a.emails.length || a.key.localeCompare(b.key))) {
-    const id = operators.reduce((best, next) => ((load.get(next) || 0) < (load.get(best) || 0) ? next : best));
-    choices.set(group.key, id);
-    load.set(id, (load.get(id) || 0) + group.emails.length);
+  const share = Math.ceil(units.reduce((sum, unit) => sum + unit.emails.length, 0) / operators.length);
+  const give = (unit: AllocationUnit, id: number) => {
+    unit.emails.forEach(email => owners.set(email, id));
+    load.set(id, (load.get(id) || 0) + unit.emails.length);
+  };
+  const rest: AllocationUnit[] = [];
+  for (const unit of [...units].sort((a, b) => b.emails.length - a.emails.length || a.key.localeCompare(b.key))) {
+    const counts = new Map<number, number>();
+    for (const email of unit.emails) {
+      const id = current.get(email);
+      if (id != null && load.has(id)) counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    const keep = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+    if (keep !== undefined && (load.get(keep) || 0) + unit.emails.length <= share) give(unit, keep);
+    else rest.push(unit);
   }
-  return choices;
+  for (const unit of rest) give(unit, operators.reduce((best, next) => ((load.get(next) || 0) < (load.get(best) || 0) ? next : best)));
+  return owners;
 }
 
-/** One plan from per-group choices. A learner in several groups (several modules) follows the first group listed. */
-export function groupedPlan(learners: AllocationChange[], groups: AllocationGroup[], choices: Map<string, GroupChoice>, operators: number[]) {
-  const planned = new Set<string>();
-  const changes: AllocationChange[] = [];
-  for (const group of groups) {
-    const choice = choices.get(group.key);
-    if (choice === undefined) continue;
-    const fresh = new Set(group.emails.filter(email => !planned.has(email)));
-    fresh.forEach(email => planned.add(email));
-    changes.push(...allocationPlan(learners, fresh, operators, choice));
-  }
-  return changes;
-}
+/** Units whose learners would be with more than one specialist (the shared queue counts as one). */
+export const splitUnits = <T extends AllocationUnit>(units: T[], ownerOf: (email: string) => number | null) =>
+  units.filter(unit => new Set(unit.emails.map(ownerOf)).size > 1);

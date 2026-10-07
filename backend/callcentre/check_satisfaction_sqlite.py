@@ -146,7 +146,96 @@ def main():
 
     from callcentre.check_satisfaction_email_sqlite import check_email
     checked += check_email(user, agent)
+    checked += check_employers(user, agent, raises)
     print(f'Passed {checked} isolated SQLite workflow scenarios. No external databases accessed.')
+
+
+def check_employers(user, agent, raises):
+    """Employer feedback calls: one per line manager, hidden for three months after completed feedback."""
+    from django.core.exceptions import PermissionDenied
+    from django.contrib.auth import get_user_model
+    from callcentre.learner_satisfaction import (EMPLOYER, close_without_feedback, complete, generate_employers,
+                                                 next_review_at)
+    from callcentre.learners import merge
+    from callcentre.lms_booking import session_types
+    from callcentre.models import CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
+    from callcentre.rules import LONDON, due_at
+    from callcentre.services import apply_call_result, resolve
+    from callcentre.test_learner_satisfaction import aptem, lms
+
+    now = datetime(2026, 10, 5, 12, tzinfo=LONDON)
+    boss = {'ManagerName': 'Boss', 'ManagerEmail': 'boss@example.org', 'Manager Phone': '07700 900123'}
+    people = merge([lms(id=21, Email='a@example.org', aptem_id=31), lms(id=22, Email='b@example.org', aptem_id=32)],
+                   [aptem(ID=31, Email='a@example.org', FullName='Ann', **boss), aptem(ID=32, Email='b@example.org', FullName='Ben', **boss)])
+    employers = CaseTicket.objects.filter(source_type=EMPLOYER)
+    checked = 0
+    with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]):
+        assert generate_employers(people)['created'] == 1
+        assert generate_employers(people)['created'] == 0
+        ticket = employers.get()
+        assert ticket.learner_email == ticket.manager_email == 'boss@example.org' and ticket.learner_name == 'Boss'
+        assert ticket.learner_phone == '+447700900123'
+        assert [item['email'] for item in ticket.source_data['learners']] == ['a@example.org', 'b@example.org']
+        assert ticket.due_at == due_at(EMPLOYER, now) > now and session_types(ticket) == []   # not born past SLA; no booking
+        checked += 1
+
+        feedback = dict(score=5, problem='None', action='No action needed', note='Employer is happy with both learners.')
+        raises(ValueError, lambda: complete(ticket.pk, user, **feedback))
+        raises(ValueError, lambda: resolve(ticket.pk, user, note='Try generic close'))
+        call = ZoomPhoneCall.objects.create(
+            source_account='student', zoom_account_id='test-account', history_id='employer', direction='outbound',
+            started_at=now + timedelta(minutes=1), ended_at=now + timedelta(minutes=5), result='answered')
+        match = CallMatch.objects.create(call=call, agent=agent, learner_email=ticket.learner_email)
+        CaseCall.objects.create(ticket=ticket, match=match)
+        apply_call_result(match)
+        completed_at = now + timedelta(minutes=10)
+        with patch('django.utils.timezone.now', return_value=completed_at):
+            complete(ticket.pk, user, **feedback)
+        ticket.refresh_from_db()
+        assert ticket.status == 'resolved' and not employers.filter(pk=ticket.pk).open().exists()
+        assert TicketEvent.objects.filter(kind='employer_feedback_completed').count() == 1
+        checked += 1
+
+        next_due = next_review_at(completed_at)
+        assert generate_employers(people, next_due - timedelta(seconds=1))['renewed'] == 0
+        assert generate_employers(people, next_due)['renewed'] == 1
+        assert generate_employers(people, next_due)['renewed'] == 0
+        renewal = employers.exclude(status='resolved').get()
+        assert renewal.due_at == due_at(EMPLOYER, next_due) and renewal.source_data['previous_case_id'] == ticket.pk
+        checked += 1
+
+        alone = merge([lms(id=21, Email='a@example.org', aptem_id=31)], [aptem(ID=31, Email='a@example.org', FullName='Ann')])
+        generate_employers(alone, next_due)
+        renewal.refresh_from_db()
+        assert not renewal.source_data['eligible'] and not employers.open().filter(manager_email='boss@example.org').exists()
+        generate_employers(people, next_due)
+        renewal.refresh_from_db()
+        assert renewal.source_data['eligible'] and employers.count() == 3   # boss: done + renewal; manager@ from `alone`
+        checked += 1
+
+        # A manager whose learners have all left is not called.
+        left = merge([lms(id=21, Email='a@example.org', aptem_id=31, Programme_status='Withdrawn')],
+                     [aptem(ID=31, Email='a@example.org', FullName='Ann', **boss)])
+        generate_employers(left, next_due)
+        renewal.refresh_from_db()
+        assert not renewal.source_data['eligible']
+        generate_employers(people, next_due)
+        checked += 1
+
+        # Only a manager can close a review that cannot be done; it comes back three months later.
+        specialist = get_user_model().objects.using('login_db').create(username='specialist', is_active=True)
+        raises(PermissionDenied, lambda: close_without_feedback(renewal.pk, specialist, 'refused', 'Declined to talk'))
+        manager = get_user_model().objects.using('login_db').create(username='manager', is_active=True, is_superuser=True)
+        raises(ValueError, lambda: close_without_feedback(renewal.pk, manager, 'refused', ''))
+        closed_at = next_due + timedelta(days=1)
+        with patch('django.utils.timezone.now', return_value=closed_at):
+            close_without_feedback(renewal.pk, manager, 'refused', 'Declined to talk')
+        renewal.refresh_from_db()
+        assert renewal.status == 'resolved' and renewal.resolution_option == 'closed_without_feedback'
+        assert generate_employers(people, next_review_at(closed_at) - timedelta(seconds=1))['renewed'] == 0
+        assert generate_employers(people, next_review_at(closed_at))['renewed'] == 1
+        checked += 1
+    return checked
 
 
 if __name__ == '__main__':

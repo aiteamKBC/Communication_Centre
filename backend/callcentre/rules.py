@@ -17,7 +17,11 @@ REVIEW_CATEGORIES = {'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature'}
 # so late attendance corrections land first. Absent on the 1st → on the list on the 4th.
 MISSED_LECTURE_DELAY_DAYS = 3
 # Case types switched off for now: none are created and open ones are left out of every list.
-PAUSED_CATEGORIES = {'otj'}
+# 'satisfaction' (emailed quarterly employer surveys) was replaced by employer_feedback calls on 2026-10-05.
+PAUSED_CATEGORIES = {'otj', 'satisfaction'}
+# Recurring feedback calls: one open case per contact, completed by the feedback form after an answered call,
+# then due again three calendar months later (learner_satisfaction.py).
+SATISFACTION_TYPES = {'learner_satisfaction', 'employer_feedback'}
 
 
 def missed_lectures_ready_until(today):
@@ -28,10 +32,12 @@ def missed_lectures_ready_until(today):
 def out_of_scope():
     """Open cases the call centre does not work on now. They stay in the database, untouched."""
     from .sources import on_break_emails   # sources imports this module
+    from .test_learner import hidden as test_learner_off
     ready = missed_lectures_ready_until(datetime.now(LONDON).date())
     return (Q(source_type__in=PAUSED_CATEGORIES)
-            | Q(source_type='learner_satisfaction', source_data__eligible=False)
+            | Q(source_type__in=SATISFACTION_TYPES, source_data__eligible=False)
             | Q(learner_email__in=on_break_emails())
+            | test_learner_off()
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
             | Q(source_type='attendance', overdue_since__gt=ready)
             | Q(source_type__in=REVIEW_CATEGORIES, overdue_since__lt=REVIEWS_SINCE)
@@ -40,7 +46,7 @@ def out_of_scope():
 
 
 SLA_DAYS = {'attendance': 2, 'mcm': 3, 'pr': 3, 'mcm_missed': 3, 'pr_missed': 3, 'signature': 3, 'otj': 5, 'epa': 5,
-            'satisfaction': 14}
+            'satisfaction': 14, 'learner_satisfaction': 10, 'employer_feedback': 10}
 FAILED_RESULTS = {'no_answer', 'missed', 'busy', 'voicemail', 'rejected'}
 WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unreachable', 'escalated'}
 # What a learner can agree to on a call, per case type, and the calendar days they have to do it.
@@ -65,6 +71,19 @@ OPTIONS = {option for options in PROMISES.values() for option in options} | {'ot
 MAX_MISSED_PROMISES = 2
 # Missed calls on one case before it goes to a manager.
 MAX_MISSED_CALLS = 3
+
+
+def same_contact(ticket):
+    """Cases of the same person in the same role. Someone who is a learner and also a line manager is two contacts:
+    a call about their own learning is not their employer feedback call, and the other way round."""
+    return Q(learner_email=ticket.learner_email) & (Q(source_type='employer_feedback') if ticket.source_type == 'employer_feedback'
+                                                    else ~Q(source_type='employer_feedback'))
+
+
+def contact_key(ticket):
+    if not ticket.learner_email:
+        return f'case:{ticket.pk}'
+    return ('employer:' if ticket.source_type == 'employer_feedback' else '') + ticket.learner_email
 
 
 def email_key(value):

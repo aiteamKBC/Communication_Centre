@@ -8,52 +8,15 @@ from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 
-from . import booking_email, email_settings, mailer
+from . import booking_email, email_settings, mailer, test_learner
 from .db import DB
-from .models import CaseTicket, EmailDelivery, EmailQuota, EmployerSatisfaction, TicketEvent
-from .rules import LONDON, due_at, email_key
+from .models import CaseTicket, EmailDelivery, EmailQuota, EmployerSatisfaction
+from .rules import LONDON, email_key
 from .services import event, release_fields
-from .sources import reason_key
 
 
 def survey_token(survey):
     return signing.dumps({'id': survey.pk, 'nonce': str(survey.nonce)}, salt='callcentre-survey')
-
-
-@transaction.atomic(using=DB)
-def generate_surveys(people):
-    now = timezone.now()
-    today = now.astimezone(LONDON).date()
-    quarter = f'{today.year}-Q{(today.month - 1) // 3 + 1}'
-    managers = {}
-    for person in people.values():
-        email = email_key(person.get('manager_email'))
-        try:
-            validate_email(email)
-        except ValidationError:
-            continue
-        managers.setdefault(email, []).append(person)
-    issued = set(EmployerSatisfaction.objects.filter(quarter=quarter).values_list('manager_email', flat=True))
-    existing = {c.reason_key: c for c in CaseTicket.objects.filter(source_type='satisfaction')}
-    new, pending = [], []
-    for email, learners in managers.items():
-        if email in issued:
-            continue
-        key = reason_key('satisfaction', email, quarter)
-        case = existing.get(key)
-        if not case:
-            case = CaseTicket(learner_email=email, learner_name=learners[0]['manager_name'] or email,
-                organisation=', '.join(sorted({p['organisation'] for p in learners}))[:255],
-                manager_email=email, manager_name=learners[0]['manager_name'], source_type='satisfaction',
-                reason_key=key, due_at=due_at('satisfaction', now),
-                source_data={'quarter': quarter, 'learner_count': len(learners)})
-            new.append(case)
-        pending.append((email, case))
-    CaseTicket.objects.bulk_create(new, batch_size=200)
-    TicketEvent.objects.bulk_create([TicketEvent(ticket=case, kind='created', data={'quarter': quarter}) for case in new], batch_size=200)
-    EmployerSatisfaction.objects.bulk_create([EmployerSatisfaction(ticket=case, manager_email=email,
-        quarter=quarter, organisation=case.organisation, expires_at=now + timedelta(days=30)) for email, case in pending], batch_size=200)
-    return len(managers)
 
 
 SENDER = 'KBC Learner Support'
@@ -66,12 +29,18 @@ CASE_TOPICS = {
 }
 
 
+def reminder_day(age, days):
+    """The latest reminder day this case age has reached, or None."""
+    reached = [day for day in sorted(days) if day <= age]
+    return reached[-1] if reached else None
+
+
 def reminder_stage(age, days):
     """The learner email due at this case age: 'initial' on day 0, else 'day<N>' for the latest reminder day reached."""
-    reached = [day for day in days if day <= age]
-    if not reached:
+    day = reminder_day(age, days)
+    if day is None:
         return None
-    return 'initial' if reached[-1] == 0 else f'day{reached[-1]}'
+    return 'initial' if day == 0 else f'day{day}'
 
 
 def render_email(ticket, kind):
@@ -117,8 +86,32 @@ def render_email(ticket, kind):
     return draft['subject'], draft['text'], draft['html']
 
 
-@transaction.atomic(using=DB)
 def send_ticket_email(ticket_id, stage):
+    """Send (or, in dry run, record) one automatic email for a case.
+
+    The delivery row is committed before Microsoft 365 is called, so a crash or a rollback after the send can
+    never send it again: a row left as 'sending' is checked by hand against the no-reply Sent Items.
+    """
+    delivery = _record_delivery(ticket_id, stage)
+    if delivery is None or delivery.mode != 'live':
+        return delivery
+    # Microsoft 365 (mailer.py). A timeout is indeterminate: never blindly retry and double-send.
+    try:
+        mailer.send(delivery.recipient, delivery.subject, delivery.html, cc=[delivery.cc] if delivery.cc else [])
+        delivery.status, delivery.sent_at = 'accepted', timezone.now()
+    except mailer.MailError as exc:
+        delivery.status = 'unknown' if exc.uncertain else 'failed'
+        delivery.error = (f'Delivery uncertain ({exc}); check the no-reply Sent Items before retrying.'
+                          if exc.uncertain else f'{exc} Review before retrying.')[:500]
+    delivery.save(update_fields=['status', 'error', 'sent_at'])
+    event(delivery.ticket, 'email_' + delivery.status,
+          {'delivery_id': delivery.pk, 'stage': stage, 'recipient': delivery.recipient, 'mode': delivery.mode})
+    return delivery
+
+
+@transaction.atomic(using=DB)
+def _record_delivery(ticket_id, stage):
+    """Check and record one email under the case lock; returns the delivery (live: still 'sending'), or None."""
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     # Learner satisfaction email has its own future Azure delivery path, never n8n.
     if ticket.source_type == 'learner_satisfaction':
@@ -167,17 +160,8 @@ def send_ticket_email(ticket_id, stage):
         mode=mode, subject=subject, html=html, text=text, cc=cc, status='dry_run' if mode == 'dry_run' else 'sending')
     quota.count += 1
     quota.save(update_fields=['count'])
-    if mode == 'live':
-        # Microsoft 365 (mailer.py). A timeout is indeterminate: never blindly retry and double-send.
-        try:
-            mailer.send(recipient, subject, html, cc=[cc] if cc else [])
-            delivery.status, delivery.sent_at = 'accepted', timezone.now()
-        except mailer.MailError as exc:
-            delivery.status = 'unknown' if exc.uncertain else 'failed'
-            delivery.error = (f'Delivery uncertain ({exc}); check the no-reply Sent Items before retrying.'
-                              if exc.uncertain else f'{exc} Review before retrying.')[:500]
-        delivery.save(update_fields=['status', 'error', 'sent_at'])
-    event(ticket, 'email_' + delivery.status, {'delivery_id': delivery.pk, 'stage': stage, 'recipient': recipient, 'mode': mode})
+    if mode == 'dry_run':
+        event(ticket, 'email_dry_run', {'delivery_id': delivery.pk, 'stage': stage, 'recipient': recipient, 'mode': mode})
     return delivery
 
 
@@ -192,14 +176,23 @@ def process_emails(limit=200):
     if not config['reminders_enabled']:
         return 0
     now = timezone.now()
+    today = now.astimezone(LONDON).date()
+    since = email_settings.sending_since(config) if config['email_mode'] == 'live' else None
     processed = 0
     escalate_day = max(0, config['escalate_day'])
     # Manager-requested calls are follow-ups by a specialist, not automated learner reminders.
-    tickets = CaseTicket.objects.open().filter(source_type__in=config['reminder_types']).exclude(source_type='manual')
+    tickets = (CaseTicket.objects.open().filter(source_type__in=config['reminder_types']).exclude(source_type='manual')
+               .exclude(reason_key=test_learner.KEY))
     for ticket in tickets.order_by('created_at').iterator():
-        age = (now.astimezone(LONDON).date() - (ticket.evidence_after or ticket.created_at).astimezone(LONDON).date()).days
-        stages = [stage for stage in [reminder_stage(age, config['reminder_days'])] if stage]
-        if escalate_day and (age >= escalate_day or ticket.status == 'unreachable'):
+        start = (ticket.evidence_after or ticket.created_at).astimezone(LONDON).date()
+        age = (today - start).days
+        # A stage that fell due before sending started is part of the backlog: it is not sent.
+        fresh = lambda day: since is None or start + timedelta(days=day) >= since  # noqa: E731
+        day = reminder_day(age, config['reminder_days'])
+        stages = [reminder_stage(age, config['reminder_days'])] if day is not None and fresh(day) else []
+        unreachable = ticket.status == 'unreachable' and (
+            since is None or bool(ticket.last_contact_at and ticket.last_contact_at.astimezone(LONDON).date() >= since))
+        if escalate_day and ((age >= escalate_day and fresh(escalate_day)) or unreachable):
             stages.append('escalation')
         for stage in stages:
             delivery = send_ticket_email(ticket.pk, stage)

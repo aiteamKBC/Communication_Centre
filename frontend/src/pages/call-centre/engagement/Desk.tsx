@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentStats, Overview } from '../api';
 import { api } from '../api';
@@ -45,16 +45,18 @@ function History({ onOpen }: { onOpen: (id: number) => void }) {
   const [error, setError] = useState('');
   useEffect(() => {
     let live = true;
+    setData(null);
+    setError('');
     api<{ groups: HistoryGroup[]; has_next: boolean }>(`queue/?view=history&page=${page}`)
       .then(result => { if (live) setData(result); })
-      .catch(reason => { if (live) setError(reason.message); });
+      .catch(reason => { if (live) setError(reason instanceof Error ? reason.message : 'History could not be loaded.'); });
     return () => { live = false; };
   }, [page]);
   return (
     <section className="ec-card">
       <h2>Resolved and archived cases</h2>
       {error && <p role="alert">{error}</p>}
-      {!data ? <p role="status">Loading history…</p> : (
+      {!data ? !error && <p role="status">Loading history…</p> : (
         <div className="ec-table-wrap">
           <table>
             <thead><tr><th>Learner</th><th>Issue</th><th>Resolved</th><th /></tr></thead>
@@ -92,10 +94,13 @@ export default function Desk({ overview, agent, session, section, name, status, 
   const [focus, setFocus] = useState(false);
   const [advance, setAdvance] = useState(true);
   const [touched, setTouched] = useState<Set<string>>(new Set());
+  // Set when a button moves to the follow-ups section to start a focus session there.
+  const focusOnArrival = useRef(false);
 
   useEffect(() => {
     setDetailId(null);
-    setFocus(false);
+    setFocus(focusOnArrival.current);
+    focusOnArrival.current = false;
     setTouched(new Set());
   }, [section]);
 
@@ -182,7 +187,11 @@ export default function Desk({ overview, agent, session, section, name, status, 
                 <span className="ec-tag">{g.cases.length} {g.cases.length === 1 ? 'person' : 'people'}</span>
                 <h3>{g.label}</h3>
                 <p>{g.purpose}</p>
-                <button type="button" className="primary" onClick={() => { setGroup(g); setSearch(''); setIssue('all'); onSection('followups'); setFocus(true); }}>Work through group</button>
+                <button type="button" className="primary" onClick={() => {
+                  setGroup(g); setSearch(''); setIssue('all');
+                  focusOnArrival.current = true;
+                  onSection('followups');
+                }}>Work through group</button>
               </article>
             ))}
             {!groups.length && (

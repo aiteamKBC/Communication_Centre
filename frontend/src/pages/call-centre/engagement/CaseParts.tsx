@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CaseDetail } from '../api';
-import { caseAction } from './actions';
+import { caseAction, pickCall } from './actions';
 import type { Session } from './actions';
-import { duration, human, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when } from './model';
+import { duration, human, isSatisfaction, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when } from './model';
 
 type FormProps = { detail: CaseDetail; session: Session; onSaved: (message: string) => void; onError: (message: string) => void; compact?: boolean };
 
@@ -19,17 +19,18 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   const [callId, setCallId] = useState('');
   const [callback, setCallback] = useState('');
   // Only proof closes a case; a manager can close one by hand, a specialist only those with nothing to prove.
-  const canClose = ticket.source_type !== 'learner_satisfaction' && (session.isManager || ticket.specialist_closes);
+  const canClose = !isSatisfaction(ticket) && (session.isManager || ticket.specialist_closes);
   const [note, setNote] = useState('');
+  const [closeReason, setCloseReason] = useState('');
   const [busy, setBusy] = useState(false);
   const blocked = session.preview || !session.canAct || (!!ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId);
   const calls = detail.calls;
 
   useEffect(() => {
-    setCallId(String(calls.find(call => !call.outcome)?.call_id ?? calls[0]?.call_id ?? ''));
+    setCallId(String(pickCall(calls, outcome, session)?.call_id ?? ''));
     setNote('');
     setCallback('');
-  }, [calls]);
+  }, [calls]); // eslint-disable-line react-hooks/exhaustive-deps -- re-pick only when the calls change, not on every outcome edit
 
   async function run(command: string, payload: Record<string, unknown>, message: string) {
     setBusy(true);
@@ -90,8 +91,18 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
           {session.isManager && ['escalated', 'unreachable'].includes(ticket.status) && (
             <button type="button" disabled={!note.trim()} onClick={() => void run('send_back', { note }, 'Case sent back to the calling list.')}>Send back to the list</button>
           )}
+          {session.isManager && isSatisfaction(ticket) && ['escalated', 'unreachable'].includes(ticket.status) && (
+            <>
+              <select aria-label="Why the review cannot be done" value={closeReason || (ticket.status === 'unreachable' ? 'unreachable' : 'wrong_number')} onChange={event => setCloseReason(event.target.value)}>
+                <option value="wrong_number">Wrong number</option>
+                <option value="refused">Refused feedback</option>
+                <option value="unreachable">Could not be reached</option>
+              </select>
+              <button type="button" disabled={!note.trim()} onClick={() => void run('close_review', { reason: closeReason || (ticket.status === 'unreachable' ? 'unreachable' : 'wrong_number'), note }, 'Review closed. The next one is due in three months.')}>Close without feedback</button>
+            </>
+          )}
           {ticket.status === 'ai_suggested_close' && <button type="button" onClick={() => void run('reject_ai', { note }, 'AI suggestion rejected.')}>Reject AI suggestion</button>}
-          {resolved && ticket.source_type !== 'learner_satisfaction' && <button type="button" className="primary" disabled={!note.trim()} onClick={() => void run('reopen', { note }, 'Case reopened.')}>Reopen case</button>}
+          {resolved && !isSatisfaction(ticket) && <button type="button" className="primary" disabled={!note.trim()} onClick={() => void run('reopen', { note }, 'Case reopened.')}>Reopen case</button>}
           {resolved && session.isManager && !ticket.archived && <button type="button" onClick={() => void run('archive', {}, 'Case archived.')}>Archive</button>}
           <button type="button" disabled={!note.trim()} onClick={() => void run('note', { note }, 'Note saved.')}>Save as note</button>
         </div>
@@ -102,7 +113,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
           : ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId ? <p className="ec-muted wide">{ticket.claimed_by} is working on this case.</p>
             : <p className="ec-muted wide">{ticket.promised_at && !resolved
               ? `${ticket.promise_missed ? 'Promise missed' : 'Waiting for the learner'}: ${promiseLabel(ticket.resolution_option)} by ${longDate(ticket.promised_at)}. `
-              : ''}{ticket.source_type === 'learner_satisfaction' ? 'Use Complete feedback after the answered call; ordinary outcomes do not complete the review.' : canClose
+              : ''}{isSatisfaction(ticket) ? 'Use Complete feedback after the answered call; ordinary outcomes do not complete the review.' : canClose
               ? 'An outcome is recorded against a call Zoom has verified.'
               : 'The case closes by itself when the learner’s action shows up; if it does not by the deadline, it comes back to the queue.'}</p>}
     </form>

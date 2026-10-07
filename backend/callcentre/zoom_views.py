@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
+from .access import is_director, refused
 from .db import APTEM
 from .models import CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
 from .zoom_phone import ACCOUNT_LABELS, ZoomError, account_config, missing_credentials, validate_config
@@ -54,7 +55,8 @@ def contact_directory():
         pass
 
     try:
-        for phone, name, email in CaseTicket.objects.exclude(learner_phone='').values_list(
+        # Employer feedback cases carry the manager's number, already named from Aptem above.
+        for phone, name, email in CaseTicket.objects.exclude(learner_phone='').exclude(source_type='employer_feedback').values_list(
                 'learner_phone', 'learner_name', 'learner_email').distinct().iterator():
             add(phone, 'learner', name, email)
     except (OperationalError, ProgrammingError):
@@ -88,6 +90,8 @@ def report_metrics(row):
 def zoom_call_report(request):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view call reports.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
         report_zone = ZoneInfo(settings.ZOOM_REPORT_TIME_ZONE)
     except ZoneInfoNotFoundError:
@@ -172,7 +176,7 @@ def zoom_call_report(request):
 
 def can_view_call(user, call):
     """Recordings and transcripts: managers, or the agent who made or was matched to the call."""
-    if user.is_staff or user.is_superuser:
+    if is_director(user):
         return True
     from .services import agent_for, identify_agent
     agent = agent_for(user)
@@ -206,7 +210,9 @@ def current_account_filter():
 def zoom_transcript_report(request):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view transcripts.'}, status=401)
-    if not (request.user.is_staff or request.user.is_superuser):
+    if refused(request.user):
+        return refused(request.user)
+    if not is_director(request.user):
         return JsonResponse({'detail': 'Only managers can view the transcript overview.'}, status=403)
     try:
         report_zone = ZoneInfo(settings.ZOOM_REPORT_TIME_ZONE)
@@ -279,6 +285,8 @@ def zoom_transcript_report(request):
 def zoom_call_recordings(request, call_pk):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view recordings.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
         call = ZoomPhoneCall.objects.filter(current_account_filter(), pk=call_pk).first()
         if call is None:
@@ -305,11 +313,13 @@ def zoom_call_recordings(request, call_pk):
 def zoom_recording_transcript(request, recording_pk):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view transcripts.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
         recording = ZoomPhoneRecording.objects.filter(current_account_filter(), pk=recording_pk).first()
         if recording is None:
             return JsonResponse({'detail': 'Recording not found.'}, status=404)
-        if not (request.user.is_staff or request.user.is_superuser) and not any(
+        if not is_director(request.user) and not any(
                 can_view_call(request.user, call) for call in recording_calls(recording)):
             return JsonResponse({'detail': 'Only managers or the agent on this call can read its transcript.'}, status=403)
         return JsonResponse({
