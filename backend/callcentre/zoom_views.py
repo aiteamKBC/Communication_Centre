@@ -22,6 +22,11 @@ CONTACT_DIRECTORY_CACHE_KEY = 'zoom-phone-contact-directory-v1'
 
 
 def contact_directory():
+    from .identity import enabled
+    from .sources import cached_directory
+    if enabled():
+        people = cached_directory()
+        return people.phone_contacts() if hasattr(people, 'phone_contacts') else {}
     cached = cache.get(CONTACT_DIRECTORY_CACHE_KEY)
     if isinstance(cached, dict):
         return cached

@@ -142,6 +142,16 @@ export default function CallCentrePage() {
   } else if (inDesk && deskOverview) {
     content = (
       <div id="engagement-centre" className="ec ed">
+        <p className="ec-alert">
+          Workspace: {deskAgent?.display_name || overview.access.display_name}. Showing this specialist's allocated contacts plus the shared queue.
+          {' '}Last successful cycle: {overview.cycle?.last_success_at ? new Date(overview.cycle.last_success_at).toLocaleString() : 'Not recorded'}.
+        </p>
+        {overview.sources?.some(source => source.details?.error) && <p className="ec-alert" role="alert">
+          Some data sources are unavailable. Lists may be incomplete; existing cases have been retained. Ask a manager to check Connections.
+        </p>}
+        {(!overview.cycle?.last_success_at || Date.now() - Date.parse(overview.cycle.last_success_at) > 30 * 60 * 1000) &&
+          <p className="ec-alert" role="alert">Synchronization is overdue or has not completed. Refresh only reloads saved cases; it does not run synchronization.</p>}
+        {overview.cases_truncated && <p className="ec-alert" role="alert">The case list is truncated. These counters do not include every case.</p>}
         {role === 'viewer' && <p className="ec-alert">Ask a manager to set up your agent profile to call learners and record outcomes. This calling workspace is read-only until then.</p>}
         <Desk
           overview={deskOverview} agent={deskAgent} session={session} section={section}

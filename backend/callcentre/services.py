@@ -123,8 +123,17 @@ def create_intent(ticket_id, agent, actor=None):
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
     candidates = CaseTicket.objects.open().filter(attempts__lt=MAX_MISSED_CALLS).exclude(source_type='satisfaction')
-    candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
+    person_id = ticket.source_data.get('person_id')
+    if person_id:
+        same_person = Q(source_data__person_id=person_id)
+        if ticket.learner_email:
+            same_person |= same_contact(ticket)
+        candidates = candidates.filter(same_person)
+    else:
+        candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
     tickets = list(candidates.order_by('pk'))
+    if not tickets:
+        raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')
     for item in tickets:
         claim(item.pk, agent, now, actor=actor)
     prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=ticket.learner_email, number=number,
@@ -245,7 +254,7 @@ def match_call(call_id):
     intent = intents[0] if intents else None
     candidates = CaseTicket.objects.filter(created_at__lte=call.started_at)
     if intent:
-        candidates = candidates.filter(intents=intent, learner_email=intent.learner_email)
+        candidates = candidates.filter(intents=intent)
         learner_email = intent.learner_email
     else:
         candidates = candidates.filter(Q(status='resolved', resolved_at__gte=call.started_at) | ~Q(status='resolved'))

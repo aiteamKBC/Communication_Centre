@@ -33,6 +33,13 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
   const related = detail.issues.filter(issue => issue.id !== c.id);
   const lastCall = detail.calls[0];
 
+  const epaRaw = c.source_type === 'epa' ? (c.source_data?.epa_metrics as Record<string, string | number> | undefined) : undefined;
+  const epa = epaRaw && Object.keys(epaRaw).length > 0 ? epaRaw : undefined;
+  const epaPair = (done?: string | number, total?: string | number, status?: string | number) => {
+    const ratio = `${done ?? ''}`.trim() && `${total ?? ''}`.trim() ? `${done} / ${total}` : '';
+    return [ratio, `${status ?? ''}`.trim()].filter(Boolean).join(' · ');
+  };
+
   async function call() {
     setBusy(true);
     try {
@@ -87,6 +94,24 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
           </>
         )}
       </details>
+
+      {epa && (
+        <details className="ed-disclosure" open>
+          <summary>EPA readiness</summary>
+          <p className="ec-muted">Live figures from Aptem — check the learner’s real position before agreeing the next step.</p>
+          <dl className="ec-dl">
+            {[
+              ['Gateway review', epa.gateway_review_date],
+              ['Programme end', epa.end_date],
+              ['KSBs', epaPair(epa.ksb_completed, epa.ksb_total, epa.ksb_status)],
+              ['Off-the-job hours', epaPair(epa.otj_completed, epa.otj_planned, epa.otj_status)],
+              ['Components', epaPair(epa.components_completed, epa.components_target, epa.components_status)],
+              ['Progress variance', epa.progress_variance],
+              ['Coach RAG', epa.coach_rag],
+            ].map(([label, value]) => <div key={label as string}><dt>{label}</dt><dd>{`${value ?? ''}`.trim() || 'Not recorded'}</dd></div>)}
+          </dl>
+        </details>
+      )}
 
       <details className="ed-disclosure" open>
         <summary>Short call guide</summary>

@@ -32,7 +32,7 @@ export type Case = {
 export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>;
 
 /** A case as listed by overview/ (no source_data). */
-export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null };
+export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null; contact_sources?: Record<string, string> };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
 
 export type DayStats = { day: string; attempts: number; connected: number; seconds: number };
@@ -47,7 +47,7 @@ export type AgentStats = {
 };
 
 export type Overview = {
-  today: string; month: string; generated_at: string;
+  today: string; next_workday: string; month: string; generated_at: string;
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;

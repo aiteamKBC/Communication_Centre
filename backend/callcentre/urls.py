@@ -20,6 +20,7 @@ urlpatterns = [
     path('agents/<int:pk>/', manage_views.agent_detail),
     path('activity-log/', manage_views.activity_log),
     path('learners/', manage_views.learners),
+    path('identity-status/', manage_views.identity_status),
     path('requests/', manage_views.call_requests),
     path('allocations/', manage_views.allocations),
     path('settings/', manage_views.settings_view),

@@ -16,7 +16,7 @@ from .learner_satisfaction import generate as generate_learner_satisfaction, gen
 from .rules import MAX_MISSED_PROMISES
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
 from . import test_learner
-from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_recording_links, source_health
+from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
 from .zoom_phone import ACCOUNT_LABELS, sync_account
 from .zoom_views import current_account_filter
 
@@ -88,6 +88,9 @@ def update_phone_directory(people):
     for person in people.values():
         if person['learner_phone']:
             directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
+    if hasattr(people, 'phone_contacts'):
+        directory = {phone: [entry['email']] for phone, entry in people.phone_contacts().items()
+                     if entry['role'] == 'learner' and entry['email']}
     CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
 
 
@@ -145,7 +148,10 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                 except Exception as exc:
                     result['zoom_' + account] = f'Unavailable ({type(exc).__name__}); inspect Zoom account status.'
         people = get_source('profiles', profiles)
-        if people is not None:
+        if people is not None and people.sources_complete:
+            from .catchup import sync as sync_catchups
+            from .sources import refresh_contacts
+            step(result, 'contacts_refreshed', lambda: refresh_contacts(people))
             step(result, 'phone_directory', lambda: update_phone_directory(people))
             step(result, 'source_created', lambda: generate_risks(people))
             bookings = get_source('bookings', lambda: load_bookings(people))
@@ -153,7 +159,11 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
                 step(result, 'reminders_created', lambda: generate_reminders(people, bookings))
             step(result, 'learner_satisfaction', lambda: generate_learner_satisfaction(people))
             step(result, 'employer_feedback', lambda: generate_employers(people))
+            result['catchup_followups'] = get_source('catchup_followups', lambda: sync_catchups(people))
+        else:
+            result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
+        result['epa_metrics'] = get_source('epa_metrics', refresh_epa_metrics)
         step(result, 'test_learner', test_learner.ensure)
         # Evidence wins over returning a promised-date case to the queue.
         step(result, 'resolved', evidence_cycle)
@@ -161,7 +171,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         step(result, 'matched', match_calls)
         if not skip_ai:
             step(result, 'analyses', process_ai)
-        if not skip_emails:
+        if not skip_emails and people is not None and people.sources_complete:
             step(result, 'emails_processed', process_emails)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result

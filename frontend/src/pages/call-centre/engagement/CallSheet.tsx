@@ -31,7 +31,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const [feedbackCase, setFeedbackCase] = useState<OverviewCase | null>(null);
   const [satisfactionEmail, setSatisfactionEmail] = useState<OverviewCase | null>(null);
 
-  const eligible = useMemo(() => categoryCases(overview.cases, tab.key, overview.today), [overview, tab.key]);
+  const eligible = useMemo(() => categoryCases(overview.cases, tab.key, overview.today, overview.next_workday), [overview, tab.key]);
   const groups = useMemo(() => callGroups(eligible, mode), [eligible, mode]);
   const group = groups.find(g => g.key === selected);
   const rows = useMemo(() => {
@@ -138,6 +138,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
         An outcome is saved against the call Zoom reports, so save once the call has synced.
       </p>
       <div id="ed-sheet-body">
+        <p className="ed-sheet-hint">This section contains {eligible.length} open tickets across {uniqueLearners(eligible).length} contacts before the filters below. A contact can have multiple tickets.</p>
         <div className="ed-sheet-count">{rows.length} {rows.length === 1 ? 'contact' : 'contacts'} · Priority order · One row per contact <span>Tab between fields · Ctrl/⌘ + Enter to save a row</span></div>
         <div className="ed-sheet-scroll" tabIndex={0} role="region" aria-label="Quick call register">
           <table className="ed-sheet-table">
@@ -165,6 +166,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         <details>
                           <summary>Contact details</summary>
                           <span>{c.learner_email || 'Email not recorded'}</span>
+                          <small>Phone source: {c.contact_sources?.phone || 'Not recorded'} · Email source: {c.contact_sources?.email || 'Not recorded'}</small>
                           <span>{c.programme || 'Programme not recorded'}</span>
                           <span>{c.organisation || 'Employer not recorded'}</span>
                           {c.manager_email && <span>Line manager: {c.manager_name || c.manager_email}</span>}

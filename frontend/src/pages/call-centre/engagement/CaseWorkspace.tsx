@@ -36,6 +36,14 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
       ['Line manager email', c.manager_email], ['Coach', c.coach], ['Due', longDate(c.due_at)],
       ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`]];
 
+  const epaRaw = c.source_type === 'epa' ? (c.source_data?.epa_metrics as Record<string, string | number> | undefined) : undefined;
+  const epa = epaRaw && Object.keys(epaRaw).length > 0 ? epaRaw : undefined;
+  const epaPair = (done?: string | number, total?: string | number, status?: string | number) => {
+    const ratio = `${done ?? ''}`.trim() && `${total ?? ''}`.trim() ? `${done} / ${total}` : '';
+    const label = `${status ?? ''}`.trim();
+    return [ratio, label].filter(Boolean).join(' · ');
+  };
+
   async function run(command: string, message: string) {
     setBusy(true);
     try {
@@ -89,6 +97,23 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
             </div>
             {callReason && <p className="ec-muted">{callReason}.</p>}
           </section>
+          {epa && (
+            <section className="ec-card">
+              <h2>EPA readiness</h2>
+              <p className="ec-muted">Live figures from Aptem — check the learner’s real position before agreeing the next step.</p>
+              <dl className="ec-dl">
+                {[
+                  ['Gateway review', epa.gateway_review_date],
+                  ['Programme end', epa.end_date],
+                  ['KSBs', epaPair(epa.ksb_completed, epa.ksb_total, epa.ksb_status)],
+                  ['Off-the-job hours', epaPair(epa.otj_completed, epa.otj_planned, epa.otj_status)],
+                  ['Components', epaPair(epa.components_completed, epa.components_target, epa.components_status)],
+                  ['Progress variance', epa.progress_variance],
+                  ['Coach RAG', epa.coach_rag],
+                ].map(([label, value]) => <div key={label as string}><dt>{label}</dt><dd>{`${value ?? ''}`.trim() || 'Not recorded'}</dd></div>)}
+              </dl>
+            </section>
+          )}
           {detail.issues.filter(issue => issue.id !== c.id).length > 0 && (
             <section className="ec-card">
               <h2>Other open issues for this learner</h2>

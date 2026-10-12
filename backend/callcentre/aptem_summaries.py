@@ -14,6 +14,10 @@ from django.db import connections
 
 from .db import APTEM, DB
 
+# EPA cases are only raised while the learner is recently overdue: 7 days to 7+EPA_RECENCY_DAYS
+# days past their End-Date. Older entries drop off so the queue stays to recent EPA entrants.
+EPA_RECENCY_DAYS = 60
+
 DATE_FORMATS = ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d', '%d-%m-%y', '%d/%m/%y', '%d %b %Y', '%d %B %Y')
 DATE_IN_TEXT = re.compile(
     r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})')
@@ -96,7 +100,11 @@ def otj_rows():
 
 
 def epa_overdue_rows(today=None):
-    """Active learners still open more than 7 days after their End-Date."""
+    """Active learners recently overdue for EPA: open 7 to EPA_RECENCY_DAYS days past their End-Date.
+
+    The upper bound keeps the queue to recent EPA entries only; once a learner is more than
+    EPA_RECENCY_DAYS past their End-Date the case is no longer raised (and stale ones are closed).
+    """
     today = today or date.today()
     rows = _fetch(APTEM, '''SELECT "ID", "Email", "Program-Status", "Subscription Status", "End-Date"
         FROM public.aptem_auto_extracting''')
@@ -105,28 +113,35 @@ def epa_overdue_rows(today=None):
         active = 'active' in {str(row.get('Program-Status') or '').strip().lower(),
                               str(row.get('Subscription Status') or '').strip().lower()}
         end_date = parse_date_safe(row.get('End-Date'))
-        if active and end_date and today > end_date + timedelta(days=7):
+        if active and end_date and end_date + timedelta(days=7) < today <= end_date + timedelta(days=7 + EPA_RECENCY_DAYS):
             result.append({'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
                            'endDate': end_date.isoformat()})
     return result
 
 
 def attendance_missed_for_week(week_start, week_end):
-    """Learners whose latest attendance row in the week is a miss, with their missed count.
+    """Each unambiguous missed learner/date/module session in the requested week.
 
     The count is the number of distinct missed (email, module, date) sessions up
     to that date across all history; a date counts as missed if any row for it is.
     """
-    rows = _fetch(DB, '''SELECT "Email", "date", "Attendance", "module" FROM public.kbc_attendance
+    rows = _fetch(DB, '''SELECT "key", "Email", "date", "Attendance", "module" FROM public.kbc_attendance
         WHERE "date" >= %s AND "date" <= %s ORDER BY "Email", "date" ASC''', [week_start, week_end])
-    latest = {}
+    sessions = {}
+    register_keys = {}
     for row in rows:
         email = str(row['Email'] or '').strip().lower()
         if email and row['date']:
-            latest[email] = row
-    learners = [{'email': email, 'attendance_date': row['date'].isoformat(),
-                 'attendance_module': str(row['module'] or '').strip()}
-                for email, row in latest.items() if normalize_attendance_value(row['Attendance']) == 0]
+            key = (email, row['date'], str(row['module'] or '').strip())
+            sessions.setdefault(key, set()).add(normalize_attendance_value(row['Attendance']))
+            if row.get('key'):
+                register_keys.setdefault(key, set()).add(str(row['key']))
+    # Every dated module is independent. Missing or contradictory attendance
+    # needs review, never an automatic absence call.
+    learners = [{'email': email, 'attendance_date': day.isoformat(), 'attendance_module': module,
+                 'attendance_key': next(iter(register_keys.get((email, day, module), {''})))}
+                for (email, day, module), states in sessions.items()
+                if states == {0} and len(register_keys.get((email, day, module), set())) <= 1]
     if not learners:
         return []
     emails = sorted({item['email'] for item in learners})

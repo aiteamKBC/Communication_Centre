@@ -24,8 +24,21 @@ class EvidenceSnapshot:
                 data = rows(DB, '''SELECT "ID", "Email", "module", "date", "Attendance"
                     FROM public.kbc_attendance WHERE "date" > %s AND "date" <= %s ORDER BY "date" DESC''',
                     [since, timezone.now().astimezone(LONDON).date()])
+                from .identity import enabled
+                from .sources import cached_directory
+                people = cached_directory() if enabled() else None
+                if people is not None and (not hasattr(people, 'resolve') or not people.sources_complete):
+                    raise ValueError('Identity source unavailable for attendance verification.')
                 for row in data:
-                    self.attendance.setdefault((email_key(row['Email']), row['module']), []).append(row)
+                    email = email_key(row['Email'])
+                    if people is not None:
+                        person = people.resolve('aptem', row['ID'], email)
+                        if not person:
+                            continue
+                        for alias in person['emails']:
+                            self.attendance.setdefault((alias, row['module']), []).append(row)
+                    else:
+                        self.attendance.setdefault((email, row['module']), []).append(row)
             except Exception as exc:
                 self.errors['attendance'] = type(exc).__name__
         refs = [ref for t in tickets if t.source_type in REVIEW_CATEGORIES for ref in t.source_data.get('review_refs', [])]
@@ -65,6 +78,13 @@ def proof(ticket, kind, table, key, when, value):
 
 
 def attendance_evidence(ticket, snapshot=None):
+    if ticket.source_data.get('catchup_booking'):
+        return session_attendance_evidence(ticket, catchup=True)
+    if ticket.source_data.get('catchup_no_show'):
+        return None  # Attendance at another lecture cannot complete this task.
+    from .identity import enabled
+    if snapshot is None and enabled():
+        snapshot = EvidenceSnapshot([ticket])
     module = ticket.source_data.get('module')
     if not module:
         return None
@@ -101,6 +121,9 @@ def review_evidence(ticket, snapshot=None):
         with source_transaction(LMS):
             states = lms_reviews.ref_states(refs)
     kind = 'review_signed' if ticket.source_type == 'signature' else ticket.source_type.split('_')[0] + '_completed'
+    from .identity import enabled
+    if enabled() and not all(ref in states and lms_reviews.done(ticket.source_type, states[ref]) for ref in refs):
+        return None
     for ref in refs:
         state = states.get(ref)
         if state and lms_reviews.done(ticket.source_type, state):
@@ -112,8 +135,51 @@ def review_evidence(ticket, snapshot=None):
 
 
 def reminder_evidence(ticket, snapshot=None):
-    # Existing sources cannot yet establish exact appointment attendance safely.
-    return None
+    if ticket.source_data.get('booking_source') != 'Learner.coach_calendar_event':
+        return None
+    return session_attendance_evidence(ticket)
+
+
+def session_attendance_evidence(ticket, catchup=False):
+    """Proof from an exact calendar FK AND actual learner attendance, never booking status."""
+    from .sources import cached_directory
+    booking = ticket.source_data.get('catchup_booking') or {}
+    key = booking.get('event_key') if catchup else ticket.source_data.get('booking_id')
+    if not key or (catchup and (booking.get('link_warning') or not booking.get('lms_report_id'))):
+        return None
+    people = cached_directory()
+    if not hasattr(people, 'resolve') or not people.sources_complete:
+        return None
+    person = people.resolve(email=ticket.learner_email)
+    if not person:
+        return None
+    data = rows(LMS, '''SELECT e.id, e.learner_id, e.learner_email, e.event_type, e.status,
+            e.scheduled_date, e.scheduled_time, a.id AS attendance_id, a.email AS participant_email,
+            a.attended, a.updated_at
+        FROM "Learner".coach_calendar_event e JOIN "Coach".coach_meeting_attendance a
+            ON a.calendar_event_id = e.id
+        WHERE e.event_key = %s AND a.role = 'learner' AND a.is_current IS TRUE''', [key])
+    # Duplicate/conflicting attendance is not proof. Teacher rows are excluded by role AND email.
+    matched = [r for r in data if people.calendar_person(r) is person
+               and email_key(r['participant_email']) in person['emails']]
+    if not matched or any(r['attended'] is not True or r['status'] == 'cancelled' for r in matched):
+        return None
+    if catchup:
+        reports = rows(LMS, '''SELECT learner_email, catchup_event_key FROM "Coach".coach_absence_report
+            WHERE id = %s AND status = 'approved' ''', [booking['lms_report_id']])
+        if (len(reports) != 1 or reports[0]['catchup_event_key'] != key
+                or email_key(reports[0]['learner_email']) not in person['emails']
+                or any(r['event_type'] != 'catch-up' for r in matched)):
+            return None
+    row = matched[0]
+    if not row['scheduled_date'] or not row['scheduled_time'] or not row['updated_at']:
+        return None
+    scheduled = datetime.combine(row['scheduled_date'], row['scheduled_time'], LONDON)
+    if scheduled > timezone.now() or scheduled <= evidence_cutoff(ticket):
+        return None
+    return proof(ticket, 'attendance_present' if catchup else 'session_attended',
+                 'Coach.coach_meeting_attendance', row['attendance_id'], row['updated_at'],
+                 {'calendar_id': row['id'], 'event_key': key, 'attended': True})
 
 
 def undated_status_evidence(ticket, snapshot=None):

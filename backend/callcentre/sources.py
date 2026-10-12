@@ -18,10 +18,11 @@ from django.utils import timezone
 
 from . import aptem_summaries as summaries
 from . import learners
+from . import identity
 from . import lms_reviews
 from .db import APTEM, DB, LMS
-from .models import CaseTicket, CycleState
-from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, REVIEW_CATEGORIES, due_at, email_key, missed_lectures_ready_until,
+from .models import CaseTicket, CycleState, TicketEvent
+from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, REVIEW_CATEGORIES, due_at, email_key, missed_lectures_ready_until, next_workday,
                     normalize_phone, parse_moment)
 from .services import event
 
@@ -54,7 +55,14 @@ def _staff():
 
 
 def profiles():
-    """The merged LMS + Aptem learner directory; works while either source is reachable."""
+    """Configured directory; unified mode requires every identity input to load."""
+    if identity.enabled():
+        people = get_source('unified_identity', unified_directory)
+        if people is None:
+            raise DatabaseError('Unified identity unavailable; existing cases retained.')
+        if not people.sources_complete:
+            source_health('unified_identity', error='Conflicting identities; review identity-status. Existing cases retained.')
+        return people
     lms = get_source('lms_learners', lambda: rows(LMS, learners.LMS_LEARNERS_SQL))
     aptem = get_source('aptem_learners', lambda: rows(APTEM, learners.APTEM_LEARNERS_SQL))
     if lms is None and aptem is None:
@@ -66,6 +74,8 @@ def profiles():
 
 def learner_directory():
     """The merged directory for on-demand lookups; unlike ``profiles`` it records no source health."""
+    if identity.enabled():
+        return unified_directory()
     loaded = []
     for alias, sql in ((LMS, learners.LMS_LEARNERS_SQL), (APTEM, learners.APTEM_LEARNERS_SQL)):
         try:
@@ -76,6 +86,16 @@ def learner_directory():
         raise DatabaseError('Neither learner source is available.')
     people = learners.merge(*(item or [] for item in loaded), _staff())
     people.sources_complete = all(item is not None for item in loaded)
+    return people
+
+
+def unified_directory():
+    """All inputs are required. A failed source must never look like an empty roster."""
+    people = identity.build(
+        rows(LMS, learners.LMS_LEARNERS_SQL.replace('SELECT id,', 'SELECT id, id_aptem,')),
+        rows(LMS, identity.APTEM_SQL), rows(LMS, learners.STAFF_SQL),
+        rows(LMS, identity.PROFILES_SQL), rows(LMS, identity.MAP_SQL), rows(LMS, identity.ACCOUNTS_SQL))
+    people.loaded_at = timezone.now().isoformat()
     return people
 
 
@@ -92,6 +112,14 @@ def cached_directory():
     now = time.monotonic()
     if now >= _cached['next_refresh']:
         _cached['next_refresh'] = now + DIRECTORY_REFRESH_SECONDS
+        if identity.enabled():
+            try:
+                fresh = unified_directory()
+            except Exception:
+                _cached['directory'].sources_complete = False
+                return _cached['directory']
+            _cached['directory'] = fresh
+            return fresh
         try:
             lms = rows(LMS, learners.LMS_LEARNERS_SQL)
         except Exception:
@@ -115,6 +143,32 @@ def on_break_emails():
 def coach_email(name):
     """The email of the coach with this name, as the LMS enrolment records give it; '' if unknown."""
     return cached_directory().coach_emails.get(' '.join(str(name or '').split()).casefold(), '')
+
+
+def manager_phone_directory():
+    """Manager email -> the one unambiguous manager phone across every Aptem source we read.
+
+    Deliberately conservative like the learner-derived path: a manager email is included only
+    when all sources agree on a single number, so a shared or conflicting number is never
+    attributed to the wrong person. Used only as a fallback when no learner supplies the number.
+    """
+    phones = {}
+
+    def add(email, value):
+        key, number = email_key(email), normalize_phone(value)
+        if key and number:
+            phones.setdefault(key, set()).add(number)
+
+    for row in rows(APTEM, 'SELECT "ManagerEmail", "Manager Phone", "manager_phone" FROM public.aptem_auto_extracting'):
+        add(row.get('ManagerEmail'), row.get('Manager Phone'))
+        add(row.get('ManagerEmail'), row.get('manager_phone'))
+    if identity.enabled():
+        try:
+            for row in rows(LMS, 'SELECT "ManagerEmail", "Manager Phone" FROM "LMS"."Aptem_users"'):
+                add(row.get('ManagerEmail'), row.get('Manager Phone'))
+        except DatabaseError:
+            pass
+    return {email: next(iter(numbers)) for email, numbers in phones.items() if len(numbers) == 1}
 
 
 def source_health(name, error='', count=0):
@@ -143,7 +197,7 @@ def reason_key(category, email, discriminator):
 
 @transaction.atomic(using=DB)
 def upsert_case(category, profile, discriminator, *, risk='amber', overdue=None,
-                misses=0, booking_at=None, data=None):
+                misses=0, booking_at=None, data=None, person=None):
     now = timezone.now()
     email = email_key(profile.get('learner_email'))
     if not email:
@@ -153,7 +207,17 @@ def upsert_case(category, profile, discriminator, *, risk='amber', overdue=None,
                 'source_type': category,
                 'risk': risk, 'overdue_since': overdue, 'misses': misses, 'booking_at': booking_at,
                 'source_data': data or {}, 'due_at': due_at(category, now, booking_at)}
-    case, created = CaseTicket.objects.get_or_create(reason_key=key, defaults=defaults)
+    if person:
+        defaults['source_data'] = {**defaults['source_data'], 'person_id': person['person_id'],
+                                   'identity_source_ids': person['identifiers'], 'contact_sources': person.get('provenance', {})}
+    old = list(CaseTicket.objects.filter(reason_key__in=[reason_key(category, e, discriminator)
+               for e in person['emails']])) if person else []
+    if len(old) > 1:
+        return None, False  # existing duplicate histories require review, never auto-merge
+    if old:
+        case, created = old[0], False
+    else:
+        case, created = CaseTicket.objects.get_or_create(reason_key=key, defaults=defaults)
     if created:
         event(case, 'created', {'source': category, 'source_id': case.source_id, 'reason': str(discriminator)})
     elif case.status != 'resolved':
@@ -164,6 +228,37 @@ def upsert_case(category, profile, discriminator, *, risk='amber', overdue=None,
     return case, created
 
 
+@transaction.atomic(using=DB)
+def refresh_contacts(people):
+    """Refresh open case contact snapshots only; keep case IDs, email keys and history."""
+    if not hasattr(people, 'resolve') or not people.sources_complete:
+        return 0
+    changed, audit = [], []
+    now = timezone.now()
+    fields = ['learner_name', 'learner_phone', 'coach', 'organisation', 'programme', 'manager_name', 'manager_email',
+              'source_data', 'last_actor', 'last_action_at']
+    for ticket in CaseTicket.objects.select_for_update().filter(archived=False).exclude(status='resolved').exclude(
+            source_type__in=('satisfaction', 'employer_feedback')):
+        person = people.resolve(email=ticket.learner_email)
+        if not person:
+            continue
+        values = {k: v for k, v in person['profile'].items() if k != 'learner_email'}
+        values['source_data'] = {**ticket.source_data, 'person_id': person['person_id'],
+                                 'identity_source_ids': person['identifiers'], 'contact_sources': person.get('provenance', {})}
+        previous = {k: getattr(ticket, k) for k, v in values.items() if k != 'source_data' and getattr(ticket, k) != v}
+        if not previous and values['source_data'] == ticket.source_data:
+            continue
+        for key, value in values.items():
+            setattr(ticket, key, value)
+        ticket.last_actor, ticket.last_action_at = 'System', now
+        changed.append(ticket)
+        audit.append(TicketEvent(ticket=ticket, kind='identity_contacts_refreshed', actor='System',
+                                 data={'previous_contact': previous, 'person_id': person['person_id']}))
+    CaseTicket.objects.bulk_update(changed, fields, batch_size=100)
+    TicketEvent.objects.bulk_create(audit, batch_size=200)
+    return len(changed)
+
+
 def _read(fn, alias):
     """Run a summary loader inside a read-only transaction on the alias it reads."""
     def load():
@@ -172,11 +267,11 @@ def _read(fn, alias):
     return load
 
 
-def generate_risks(people):
+def generate_risks(people, categories=None):
     today = timezone.now().astimezone(LONDON).date()
     total = 0
     existing = list(CaseTicket.objects.exclude(status='resolved').values('source_type', 'learner_email', 'overdue_since', 'source_data'))
-    open_reasons = {(c['source_type'], c['learner_email'], c['overdue_since'] if c['source_type'] == 'attendance' else None,
+    open_reasons = {(c['source_type'], people.get(c['learner_email'], {}).get('learner_email', c['learner_email']), c['overdue_since'] if c['source_type'] == 'attendance' else None,
                      c['source_data'].get('module', '') if c['source_type'] == 'attendance'
                      else c['source_data'].get('review_type', '') if c['source_type'] in REVIEW_CATEGORIES else '')
                     for c in existing}
@@ -197,6 +292,8 @@ def generate_risks(people):
         'attendance': _read(attendance, DB),
     }
     for category, loader in loaders.items():
+        if categories is not None and category not in categories:
+            continue
         if category in PAUSED_CATEGORIES:
             continue
         data = get_source(category, loader)
@@ -206,6 +303,7 @@ def generate_risks(people):
             email = email_key(item.get('email'))
             if email not in people:
                 continue
+            email = people[email]['learner_email']
             count, risk, overdue, module = 1, 'amber', None, ''
             if category == 'otj':
                 count = int(str(item.get('otjHoursStatus', '')).lower() == 'at risk')
@@ -228,15 +326,18 @@ def generate_risks(people):
             discriminator = f'{overdue}:{module}' if overdue else f"source:{item.get('id', email)}"
             # A resolved reason keeps its reason_key, so it stays closed until a distinct dated issue appears.
             _, fresh = upsert_case(category, people[email], discriminator, risk=risk, overdue=overdue,
-                                   misses=count, data={'module': module, 'source_learner_id': str(item.get('id', ''))})
+                                   misses=count, data={'module': module, 'source_learner_id': str(item.get('id', '')),
+                                                       'attendance_key': item.get('attendance_key', '')},
+                                   person=people.resolve(email=email) if hasattr(people, 'resolve') else None)
             total += fresh
             open_reasons.add(open_key)
-    return total + generate_review_cases(people, today, open_reasons)
+    return total + (generate_review_cases(people, today, open_reasons) if categories is None else 0)
 
 
 def generate_review_cases(people, today, open_reasons):
     """Overdue, missed and unsigned reviews from the LMS: one case per learner, case type and review type."""
-    items = get_source('lms_reviews', _read(lambda: lms_reviews.review_items(today), LMS))
+    items = get_source('lms_reviews', _read(lambda: lms_reviews.review_items(
+        today, people=people) if identity.enabled() else lms_reviews.review_items(today), LMS))
     if items is None:
         return 0
     total = 0
@@ -252,7 +353,8 @@ def generate_review_cases(people, today, open_reasons):
             summaries.mcm_risk(count) if category == 'mcm' else 'amber')
         _, fresh = upsert_case(category, people[email], f'{overdue}:{review_type}', risk=risk, overdue=overdue,
                                misses=count, data={'review_type': review_type,
-                                                   'review_refs': sorted(item['ref'] for item in group)[:50]})
+                                                   'review_refs': sorted(item['ref'] for item in group)[:50]},
+                               person=people.resolve(email=email) if hasattr(people, 'resolve') else None)
         total += fresh
         open_reasons.add(open_key)
     return total
@@ -278,12 +380,57 @@ def refresh_recording_links():
     return list(links)
 
 
+# EPA readiness figures surfaced on the case card, read live from the Aptem extract.
+# (label, column) pairs; numeric/date values are coerced to JSON-safe strings below.
+EPA_METRIC_COLUMNS = (
+    ('gateway_review_date', 'Gateway Review Date'), ('end_date', 'End-Date'),
+    ('ksb_completed', 'TotalCompletedKSB'), ('ksb_total', 'TotalTargetKSB'), ('ksb_status', 'KSBStatus'),
+    ('otj_completed', 'Completed'), ('otj_planned', 'Planned'), ('otj_status', 'OTJHoursStatus'),
+    ('components_completed', 'TotalCompCount'), ('components_target', 'TargetCompCount'), ('components_status', 'CompStatus'),
+    ('progress_variance', 'ProgressVariance'), ('coach_rag', 'Coach-RAG'),
+)
+
+
+def _epa_metric_value(value):
+    """JSON-safe scalar for source_data: '' for blanks, ISO for dates, plain number/str otherwise."""
+    if value is None:
+        return ''
+    from datetime import date as _date
+    if isinstance(value, _date):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    return text
+
+
+def refresh_epa_metrics():
+    """Attach live EPA readiness figures (KSB, off-the-job hours, components, gateway date)
+    to open EPA cases from ``aptem_auto_extracting``. Keeps the card showing real progress,
+    and clears figures for learners who have left the extract."""
+    cols = ', '.join('"%s"' % column for _, column in EPA_METRIC_COLUMNS)
+    rows_by_email = {}
+    for row in rows(APTEM, f'SELECT "Email", {cols} FROM public.aptem_auto_extracting'):
+        key = email_key(row.get('Email'))
+        if key:
+            rows_by_email[key] = row
+    changed = 0
+    for ticket in CaseTicket.objects.filter(source_type='epa', archived=False).exclude(status='resolved'):
+        row = rows_by_email.get(email_key(ticket.learner_email))
+        metrics = {label: _epa_metric_value(row.get(column)) for label, column in EPA_METRIC_COLUMNS} if row else {}
+        if ticket.source_data.get('epa_metrics', {}) != metrics:
+            data = {**ticket.source_data, 'epa_metrics': metrics}
+            CaseTicket.objects.filter(pk=ticket.pk).update(source_data=data)
+            changed += 1
+    return changed
+
+
 def decode_json(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
 def load_bookings(people):
-    tomorrow = timezone.now().astimezone(LONDON).date() + timedelta(days=1)
+    tomorrow = next_workday(timezone.now().astimezone(LONDON).date())
     result = {}
     coach_rows = rows(DB, '''SELECT case_owner, "booked_students_PR" AS pr,
         "booked_students_MCM" AS mcm, "booked_students_StSupport" AS support FROM public.coaches_data''')
@@ -301,17 +448,64 @@ def load_bookings(people):
                     continue
                 if start.astimezone(LONDON).date() != tomorrow:
                     continue
+                email = people[email]['learner_email']
                 key = f'{email}:{category}:{start.astimezone(LONDON).isoformat()}'
                 result.setdefault(key, {'email': email, 'start': start, 'type': category,
                                         'id': str(item.get('appointmentId', '')), 'source': 'coaches_data'})
+    if identity.enabled():
+        from datetime import datetime
+        calendar_rows = rows(LMS, '''SELECT id, event_key, learner_id, learner_email, event_type,
+            status, scheduled_date, scheduled_time FROM "Learner".coach_calendar_event
+            WHERE scheduled_date = %s AND scheduled_time IS NOT NULL''', [tomorrow])
+        types = {'catch-up': 'support', 'student-support': 'support', 'progress-review': 'pr',
+                 'monthly-coaching': 'mcm', 'monthly-coaching-meeting': 'mcm', 'mcr': 'mcm',
+                 'first-session': 'first-session', 'lms-introduction': 'lms-introduction'}
+        for item in calendar_rows:
+            person = people.calendar_person(item)
+            category = types.get(item['event_type'])
+            if not person or not category or program_is_paused(person):
+                continue
+            email = person['profile']['learner_email']
+            if not email:
+                continue
+            start = datetime.combine(item['scheduled_date'], item['scheduled_time'], LONDON)
+            key = f'{email}:{category}:{start.isoformat()}'
+            # An exact calendar appointment supersedes its legacy JSON copy,
+            # including cancellation/completion, so stale reminders cannot reappear.
+            result.pop(key, None)
+            if item['status'] not in ('scheduled', 'in-progress', 'awaiting-signature'):
+                continue
+            result[key] = {'email': email, 'start': start, 'type': category,
+                           'id': str(item['event_key']), 'source': 'Learner.coach_calendar_event'}
     return list(result.values())
 
 
+def program_is_paused(person):
+    return learners.program_status(person['programme_status']) in ('break', 'withdrawn', 'completed')
+
+
 def generate_reminders(people, bookings):
+    from datetime import datetime, time as day_time
+    tomorrow = next_workday(timezone.now().astimezone(LONDON).date())
+    start = datetime.combine(tomorrow, day_time.min, LONDON)
+    expected = {(b['email'], b['type'], b['start']) for b in bookings}
+    for ticket in CaseTicket.objects.filter(source_type='reminder', archived=False,
+            booking_at__gte=start, booking_at__lt=start+timedelta(days=1)).exclude(status='resolved'):
+        if ticket.source_data.get('booking_source') not in ('coaches_data', 'Learner.coach_calendar_event'):
+            continue
+        person = people.get(ticket.learner_email)
+        email = person['learner_email'] if person else ticket.learner_email
+        allowed = (email, ticket.source_data.get('session_type'), ticket.booking_at) in expected
+        if ticket.source_data.get('eligible', True) != allowed:
+            ticket.source_data = {**ticket.source_data, 'eligible': allowed,
+                                  'eligibility_reason': 'Matched current booking' if allowed else 'Booking absent, cancelled, rescheduled or no longer eligible'}
+            ticket.save(update_fields=['source_data', 'updated_at'])
+            event(ticket, 'reminder_eligibility_changed', {'eligible': allowed})
     count = 0
     for booking in bookings:
         _, created = upsert_case('reminder', people[booking['email']],
             f"{booking['type']}:{booking['start'].astimezone(LONDON).isoformat()}", booking_at=booking['start'],
-            data={'booking_id': booking['id'], 'booking_source': booking['source'], 'session_type': booking['type']})
+            data={'booking_id': booking['id'], 'booking_source': booking['source'], 'session_type': booking['type']},
+            person=people.resolve(email=booking['email']) if hasattr(people, 'resolve') else None)
         count += created
     return count

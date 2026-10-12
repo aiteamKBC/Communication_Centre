@@ -272,6 +272,11 @@ CALLCENTRE_SMART_EMBED = os.getenv('CALLCENTRE_SMART_EMBED', '').lower() in ('1'
 ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
 # Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
 CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')
+# Rollback: set to legacy and restart. Shadow keeps existing readers; the read-only
+# check_identity command evaluates the unified candidate without changing cases.
+CALLCENTRE_IDENTITY_MODE = os.getenv('CALLCENTRE_IDENTITY_MODE', 'shadow').strip().lower()
+if CALLCENTRE_IDENTITY_MODE not in {'legacy', 'shadow', 'unified'}:
+    raise ValueError('CALLCENTRE_IDENTITY_MODE must be legacy, shadow or unified.')
 CALLCENTRE_EMAIL_MODE = os.getenv('CALLCENTRE_EMAIL_MODE', 'dry_run')
 # Live email needs this server's own permission: the mode itself is shared through the database, so a local
 # or test copy without it only records emails (dry run). Set it to true on the production server only.
