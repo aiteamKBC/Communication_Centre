@@ -36,7 +36,7 @@ def performance(start, end):
     now = timezone.now()
     report = []
     agents = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name'))
-    events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper)
+    events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper).exclude(ticket__reason_key=test_learner.KEY)
     breaches = list(events.filter(kind='sla_breached').values('ticket_id', 'data'))
     # Calls to the test learner and its case are testing, not work.
     test_calls = CallMatch.objects.filter(cases__ticket__reason_key=test_learner.KEY).values('call_id')
@@ -88,5 +88,4 @@ def performance(start, end):
     resolved = cases.filter(resolved_at__gte=lower, resolved_at__lt=upper)
     return {'agents': report, 'from': start, 'to': end, 'timezone': 'Europe/London',
             'resolutions': {kind: resolved.filter(resolved_by=kind).count() for kind in ('agent', 'ai', 'system')},
-            'unclaimed_breaches': TicketEvent.objects.filter(kind='sla_breached', created_at__gte=lower,
-                created_at__lt=upper, data__unclaimed=True).count()}
+            'unclaimed_breaches': events.filter(kind='sla_breached', data__unclaimed=True).count()}

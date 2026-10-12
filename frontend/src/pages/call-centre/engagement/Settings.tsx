@@ -127,7 +127,7 @@ export default function Settings({ csrf }: { csrf: string }) {
               <input value={days} inputMode="numeric" aria-invalid={!daysValid} onChange={event => { setDays(event.target.value); setSaved(''); }} />
               {!daysValid && <small className="danger">Up to 10 whole numbers from 0 to 60, separated by commas.</small>}
             </label>
-            <label>Email the line manager and send to a manager on day (0 = never)
+            <label>Email the line manager on day (0 = never)
               <input type="number" min={0} max={60} value={draft.escalate_day} onChange={event => update({ escalate_day: Number(event.target.value) })} />
             </label>
             <label>Most emails per learner per day

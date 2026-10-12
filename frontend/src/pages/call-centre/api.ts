@@ -3,6 +3,7 @@
 // returned by config/.
 
 import { useCallback, useEffect, useState } from 'react';
+import { csrfToken as cookieCsrfToken } from '../../utils/apiSession';
 
 export type Case = {
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
@@ -98,7 +99,7 @@ export const api = <T,>(path: string, options: RequestOptions = {}) => request<T
 export function post<T>(path: string, csrfToken: string, payload: Record<string, unknown>, method = 'POST') {
   return api<T>(path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': cookieCsrfToken() || csrfToken },
     body: JSON.stringify(payload),
   });
 }

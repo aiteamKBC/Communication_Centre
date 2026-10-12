@@ -3,7 +3,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import DatabaseError, connections, transaction
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
@@ -13,7 +13,6 @@ from .emails import process_emails
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
-from .rules import MAX_MISSED_PROMISES
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
 from . import test_learner
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
@@ -41,10 +40,8 @@ def maintenance(now):
                 if promise:
                     since = ticket.evidence_after or ticket.created_at
                     missed = ticket.events.filter(kind='promise_missed', created_at__gt=since).count() + 1
-                    if missed >= MAX_MISSED_PROMISES:
-                        ticket.status, ticket.escalated = 'escalated', True
                     event(ticket, 'promise_missed', {'option': ticket.resolution_option, 'promised_at': promise.isoformat(),
-                                                     'missed': missed, 'to_manager': missed >= MAX_MISSED_PROMISES})
+                                                     'missed': missed})
                 else:
                     event(ticket, 'followup_due', {'promised_at': None})
             ticket.save()
@@ -120,7 +117,20 @@ def cycle_lock(duration):
         yield token if held else None
     finally:
         if held:
+            release_lock(token)
+
+
+def release_lock(token):
+    """Release the cycle lock. A dropped connection (Neon/PgBouncer) would otherwise leave it held for hours,
+    so a failed release closes the connection and tries once more on a fresh one."""
+    for attempt in range(2):
+        try:
             CycleState.objects.filter(name='cycle', token=token).update(locked_until=None, token='')
+            return
+        except DatabaseError:
+            if attempt:
+                logger.exception('Could not release the Call Centre cycle lock')
+            connections[DB].close()
 
 
 def run_call_sync():

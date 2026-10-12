@@ -11,8 +11,8 @@ from django.utils import timezone
 from . import booking_email, email_settings, mailer, test_learner
 from .db import DB
 from .models import CaseTicket, EmailDelivery, EmailQuota, EmployerSatisfaction
-from .rules import LONDON, email_key
-from .services import event, release_fields
+from .rules import LONDON, MAX_MISSED_CALLS, email_key
+from .services import event
 
 
 def survey_token(survey):
@@ -169,8 +169,8 @@ def process_emails(limit=200):
     """Send the due reminder emails; does nothing unless the director has switched reminders on (Settings tab).
 
     Each open case of a chosen type gets one email per reminder day of its age. From the escalation day (or 3
-    missed calls) the line manager is emailed and the case goes to a manager. The email mode still decides whether
-    anything leaves the building (dry run records only).
+    missed calls) the line manager is emailed too; the case stays on the calling list. The email mode still decides
+    whether anything leaves the building (dry run records only).
     """
     config = email_settings.current()
     if not config['reminders_enabled']:
@@ -190,23 +190,13 @@ def process_emails(limit=200):
         fresh = lambda day: since is None or start + timedelta(days=day) >= since  # noqa: E731
         day = reminder_day(age, config['reminder_days'])
         stages = [reminder_stage(age, config['reminder_days'])] if day is not None and fresh(day) else []
-        unreachable = ticket.status == 'unreachable' and (
+        unreachable = ticket.attempts >= MAX_MISSED_CALLS and (
             since is None or bool(ticket.last_contact_at and ticket.last_contact_at.astimezone(LONDON).date() >= since))
         if escalate_day and ((age >= escalate_day and fresh(escalate_day)) or unreachable):
             stages.append('escalation')
         for stage in stages:
-            delivery = send_ticket_email(ticket.pk, stage)
-            if delivery:
+            if send_ticket_email(ticket.pk, stage):
                 processed += 1
-                if stage == 'escalation':
-                    with transaction.atomic(using=DB):
-                        locked = CaseTicket.objects.select_for_update().get(pk=ticket.pk)
-                        if locked.status != 'resolved' and not locked.escalated:
-                            locked.escalated = True
-                            locked.status = 'escalated'
-                            release_fields(locked)
-                            locked.save()
-                            event(locked, 'escalated', {'reason': 'Reminder schedule exhausted', 'email_mode': delivery.mode})
             if processed >= limit:
                 return processed
     for survey in EmployerSatisfaction.objects.filter(score__lte=2):

@@ -1,10 +1,11 @@
 import { api, post } from '../api';
 import type { CaseCall, CaseDetail, OverviewCase } from '../api';
-import { MAX_MISSED_CALLS } from './model';
 import { dialInPage } from './smartEmbed';
 
 /** Who is working: `name` is the specialist whose desk is shown (the signed-in user outside a preview). */
-export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string };
+export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string;
+  /** False on another specialist's desk: Zoom records calls under the caller's own account, so they would not attach. */
+  ownDesk?: boolean };
 
 type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean };
 
@@ -24,11 +25,11 @@ export const loadCase = (id: number) => api<CaseDetail>(`tickets/${id}/`);
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {
   if (session.preview) return 'Read-only preview';
   if (c.status === 'resolved') return 'Case is not active';
-  if (c.attempts >= MAX_MISSED_CALLS) return `${MAX_MISSED_CALLS} attempts made: manager follow-up`;
   if (c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;
   if (!c.learner_phone?.trim()) return 'No number recorded';
   if (!session.agentId) return 'Agent profile needed';
+  if (session.ownDesk === false) return 'Calls go out from your own Zoom account: call from your own desk';
   return '';
 }
 
@@ -40,7 +41,7 @@ export function pickCall(calls: CaseCall[], outcome: string, session: Session) {
   const usable = calls.filter(call => call.current && (session.isManager || call.agent_id === session.agentId));
   const fits = (call: CaseCall) => (outcome === 'no_answer' ? FAILED.includes(call.result)
     : outcome === 'wrong_number' || call.result === 'answered');
-  return usable.find(call => !call.outcome && fits(call)) || usable.find(fits) || usable[0] || calls[0];
+  return usable.find(call => !call.outcome && fits(call)) || usable.find(fits) || usable[0];
 }
 
 /** Records an outcome against the Zoom call it belongs to (``pickCall``). */

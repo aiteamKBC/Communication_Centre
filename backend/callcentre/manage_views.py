@@ -27,7 +27,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from . import email_settings, mailer
 from .access import is_director
 from .db import DB
-from .models import Agent, Allocation, AllocationHistory, CaseTicket, ZoomPhoneCall
+from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
 from .services import Conflict, event
 from .sources import learner_directory, rows

@@ -9,7 +9,7 @@ import Dialog from './Dialog';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import type { CallTab } from './model';
-import { MAX_MISSED_CALLS, ISSUE_LABELS, callGroups, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, callGroups, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 type Props = {
@@ -61,7 +61,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       if (!draft.outcome) throw new Error('Choose an outcome first.');
       if (draft.notes.trim().length < 10) throw new Error('Add a short note: what was agreed and the next action (at least 10 characters).');
       if (draft.outcome === 'callback' && !draft.next_contact) throw new Error('Choose the date and time for the callback.');
-      const followUp = draft.next_contact ? new Date(draft.next_contact) : null;
+      const followUp = draft.next_contact ? londonInput(draft.next_contact) : null;
       if (followUp && followUp.getTime() <= Date.now()) throw new Error('Choose a follow-up time in the future.');
       await saveOutcome(session, c.id, {
         ...splitOutcome(draft.outcome), note: draft.notes.trim(),
@@ -178,7 +178,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       <span>{employer ? c.organisation || 'Organisation not recorded' : c.coach || 'Coach not recorded'}</span>
                       {c.source_type === 'attendance' && c.issue_date && <span>{c.issue_date} · {c.issue_name}</span>}
                       {c.booking_at && <span>{shortDate(c.booking_at)} · {c.issue_name}</span>}
-                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} of ${MAX_MISSED_CALLS}` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
+                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} unanswered` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
                       <button type="button" className="ed-sheet-link" onClick={() => onOpen(c.id)}>Full case</button>
                     </td>
                     <td>

@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from .db import DB
 from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneRecording
-from .rules import LONDON, OPTIONS, SATISFACTION_TYPES
+from .rules import LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES
 from .services import event, release_fields
 from .zoom_views import current_account_filter
 
@@ -122,21 +122,26 @@ def apply_analysis(analysis):
                 continue
             result = analysis.result
             ticket.ai_summary, ticket.ai_confidence = result['summary'], result['confidence']
-            ticket.resolution_option = result['chosen_option']
             if ticket.source_type in SATISFACTION_TYPES:
                 # AI summaries can assist the operator, but feedback needs explicit human completion.
                 ticket.save(update_fields=['ai_summary', 'ai_confidence'])
                 event(ticket, 'ai_analysis', {'analysis_id': analysis.pk, 'summary': result['summary'],
                                              'automatic_resolution': False})
                 continue
-            if result['outcome'] == 'resolved':
-                ticket.status = 'ai_suggested_close'
-            elif result['promised_date']:
-                promised = datetime.combine(date.fromisoformat(result['promised_date']), time(17), tzinfo=LONDON)
-                ticket.promised_at = promised
-                ticket.next_followup_at = promised
-                ticket.status = 'pending_verification' if promised > timezone.now() else 'new'
-            release_fields(ticket)
+            # A specialist's recorded outcome or an active promise wins: the AI only adds its summary then.
+            recorded = link.outcome or (ticket.promised_at and ticket.promised_at > timezone.now())
+            if not recorded:
+                if result['chosen_option'] in PROMISES.get(ticket.source_type, {}):
+                    ticket.resolution_option = result['chosen_option']
+                promised = (datetime.combine(date.fromisoformat(result['promised_date']), time(17), tzinfo=LONDON)
+                            if result['promised_date'] else None)
+                if result['outcome'] == 'resolved':
+                    ticket.status = 'ai_suggested_close'
+                elif promised and promised > max(recording.started_at, timezone.now()):
+                    # A date on or before the call (e.g. the absence itself) is not a promise.
+                    ticket.promised_at = ticket.next_followup_at = promised
+                    ticket.status = 'pending_verification'
+                release_fields(ticket)
             ticket.save()
             event(ticket, 'ai_analysis', {'analysis_id': analysis.pk, 'recording_id': recording.pk,
                   'transcript_hash': analysis.transcript_hash, 'model': analysis.model, 'result': result,

@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import type { CaseDetail } from '../api';
 import { caseAction, pickCall } from './actions';
 import type { Session } from './actions';
-import { duration, human, isSatisfaction, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when } from './model';
+import { duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when } from './model';
 
 type FormProps = { detail: CaseDetail; session: Session; onSaved: (message: string) => void; onError: (message: string) => void; compact?: boolean };
 
@@ -21,16 +21,19 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   // Only proof closes a case; a manager can close one by hand, a specialist only those with nothing to prove.
   const canClose = !isSatisfaction(ticket) && (session.isManager || ticket.specialist_closes);
   const [note, setNote] = useState('');
-  const [closeReason, setCloseReason] = useState('');
+  const [closeReason, setCloseReason] = useState('wrong_number');
   const [busy, setBusy] = useState(false);
   const blocked = session.preview || !session.canAct || (!!ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId);
   const calls = detail.calls;
 
+  const callKey = `${ticket.id}:${calls.map(call => call.call_id).join(',')}`;
   useEffect(() => {
     setCallId(String(pickCall(calls, outcome, session)?.call_id ?? ''));
+  }, [callKey]); // eslint-disable-line react-hooks/exhaustive-deps -- re-pick only when the case or its calls change
+  useEffect(() => {
     setNote('');
     setCallback('');
-  }, [calls]); // eslint-disable-line react-hooks/exhaustive-deps -- re-pick only when the calls change, not on every outcome edit
+  }, [ticket.id]);
 
   async function run(command: string, payload: Record<string, unknown>, message: string) {
     setBusy(true);
@@ -53,7 +56,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
     }
     void run('outcome', {
       call_id: Number(callId), ...splitOutcome(choice), note,
-      callback_at: outcome === 'callback' && callback ? new Date(callback).toISOString() : null,
+      callback_at: outcome === 'callback' && callback ? londonInput(callback).toISOString() : null,
     }, 'Next step saved.');
   }
 
@@ -88,17 +91,14 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
               {ticket.status === 'ai_suggested_close' ? 'Approve and resolve' : 'Resolve case'}
             </button>
           )}
-          {session.isManager && ['escalated', 'unreachable'].includes(ticket.status) && (
-            <button type="button" disabled={!note.trim()} onClick={() => void run('send_back', { note }, 'Case sent back to the calling list.')}>Send back to the list</button>
-          )}
-          {session.isManager && isSatisfaction(ticket) && ['escalated', 'unreachable'].includes(ticket.status) && (
+          {!resolved && isSatisfaction(ticket) && (
             <>
-              <select aria-label="Why the review cannot be done" value={closeReason || (ticket.status === 'unreachable' ? 'unreachable' : 'wrong_number')} onChange={event => setCloseReason(event.target.value)}>
+              <select aria-label="Why the review cannot be done" value={closeReason} onChange={event => setCloseReason(event.target.value)}>
                 <option value="wrong_number">Wrong number</option>
                 <option value="refused">Refused feedback</option>
                 <option value="unreachable">Could not be reached</option>
               </select>
-              <button type="button" disabled={!note.trim()} onClick={() => void run('close_review', { reason: closeReason || (ticket.status === 'unreachable' ? 'unreachable' : 'wrong_number'), note }, 'Review closed. The next one is due in three months.')}>Close without feedback</button>
+              <button type="button" disabled={!note.trim()} onClick={() => void run('close_review', { reason: closeReason, note }, 'Review closed. The next one is due in three months.')}>Close without feedback</button>
             </>
           )}
           {ticket.status === 'ai_suggested_close' && <button type="button" onClick={() => void run('reject_ai', { note }, 'AI suggestion rejected.')}>Reject AI suggestion</button>}

@@ -9,7 +9,7 @@ from .access import is_director
 from .allocation import manager_owners, owners
 from .db import DB
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, CycleState, TicketEvent, ZoomPhoneCall
-from .rules import (FAILED_RESULTS, LONDON, MAX_MISSED_CALLS, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES,
+from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact)
 from .zoom_views import current_account_filter
 
@@ -52,14 +52,25 @@ def release_fields(ticket):
     ticket.last_activity_at = None
 
 
+def allocated_owner(learner_email, source_type):
+    """The specialist who looks after this contact, or None for the shared queue."""
+    return (manager_owners() if source_type == 'employer_feedback' else owners([learner_email])).get(learner_email)
+
+
 def can_work(ticket, user, now=None, acting_agent=None):
     now = now or timezone.now()
     agent = acting_agent or agent_for(user)
-    if not agent and not is_director(user):
+    director = is_director(user)
+    if not agent and not director:
         raise PermissionDenied('An active agent profile or manager permission is required.')
     if ticket.claimed_by_id and ticket.last_activity_at and ticket.last_activity_at > now - timedelta(minutes=30):
         if not agent or ticket.claimed_by_id != agent.pk:
             raise Conflict('Another agent is working on this ticket.')
+    if agent and not director:
+        owner = allocated_owner(ticket.learner_email, ticket.source_type)
+        if owner and owner != agent.pk:
+            raise PermissionDenied(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. '
+                                   'Ask a manager to change the allocation.')
     return agent
 
 
@@ -69,7 +80,7 @@ def claim(ticket_id, agent, now=None, actor=None):
     if not agent.active or not agent.user.is_active:
         raise PermissionDenied('Agent is inactive.')
     learner, source = CaseTicket.objects.filter(pk=ticket_id).values_list('learner_email', 'source_type').first() or ('', '')
-    owner = (manager_owners() if source == 'employer_feedback' else owners([learner])).get(learner)
+    owner = allocated_owner(learner, source)
     if owner and owner != agent.pk:
         raise Conflict(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. Ask a manager to change the allocation.')
     # A single conditional UPDATE is the arbiter, including on SQLite.
@@ -112,8 +123,8 @@ def expire_claims(now):
 def create_intent(ticket_id, agent, actor=None):
     now = timezone.now()
     ticket = CaseTicket.objects.get(pk=ticket_id)
-    if ticket.source_type == 'satisfaction' or ticket.attempts >= MAX_MISSED_CALLS:
-        raise Conflict('This case needs email or manager follow-up, not another automatic call.')
+    if ticket.source_type == 'satisfaction':
+        raise Conflict('Employer surveys are followed up by email, not by phone.')
     if ticket.next_followup_at and ticket.next_followup_at > now:
         raise Conflict('The next follow-up is not due yet.')
     number = normalize_phone(ticket.learner_phone)
@@ -122,7 +133,7 @@ def create_intent(ticket_id, agent, actor=None):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    candidates = CaseTicket.objects.open().filter(attempts__lt=MAX_MISSED_CALLS).exclude(source_type='satisfaction')
+    candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
     person_id = ticket.source_data.get('person_id')
     if person_id:
         same_person = Q(source_data__person_id=person_id)
@@ -131,6 +142,9 @@ def create_intent(ticket_id, agent, actor=None):
         candidates = candidates.filter(same_person)
     else:
         candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
+    # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
+    # keeps its waiting state.
+    candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
     tickets = list(candidates.order_by('pk'))
     if not tickets:
         raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')
@@ -159,7 +173,7 @@ def resolve(ticket_id, user=None, evidence=None, note='', option='other', acting
     agent = can_work(ticket, user, acting_agent=acting_agent) if user else None
     # Only proof closes a case. A manager may close one by hand; a specialist only closes cases with nothing to prove.
     if user is not None and ticket.source_type not in SPECIALIST_CLOSES and not is_director(user):
-        raise PermissionDenied('This case closes when the learner’s action shows up. Send it to a manager if it cannot.')
+        raise PermissionDenied('This case closes when the learner’s action shows up.')
     if user is None:
         from .evidence import valid_evidence
         if not valid_evidence(ticket, evidence):
@@ -186,22 +200,6 @@ def close(ticket, agent, resolved_by, option, data, actor=None):
 
 
 @transaction.atomic(using=DB)
-def send_back(ticket_id, user, note):
-    """A manager returns a case that needed them to the calling list, with a fresh missed-call count."""
-    if not is_director(user):
-        raise PermissionDenied('Only managers can send a case back to the list.')
-    ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
-    if ticket.status not in ('escalated', 'unreachable') or not note.strip():
-        raise ValueError('A case waiting for a manager and a note for the specialist are required.')
-    ticket.status, ticket.escalated, ticket.attempts = 'new', False, 0
-    ticket.next_followup_at = ticket.promised_at = None
-    ticket.evidence_after = timezone.now()
-    release_fields(ticket)
-    ticket.save()
-    event(ticket, 'sent_back', {'note': note}, actor=user.get_username())
-
-
-@transaction.atomic(using=DB)
 def reopen(ticket_id, user, note, acting_agent=None):
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
@@ -209,12 +207,21 @@ def reopen(ticket_id, user, note, acting_agent=None):
         raise ValueError('Completed satisfaction reviews are retained; the next case opens automatically when due.')
     if ticket.status != 'resolved' or not note.strip():
         raise ValueError('A resolved ticket and reopening reason are required.')
+    if (not is_director(user) and ticket.source_type not in SPECIALIST_CLOSES
+            and not (agent and ticket.resolved_agent_id == agent.pk)):
+        raise PermissionDenied('Only a manager or the specialist who closed this case can reopen it.')
     ticket.status = 'new'
     ticket.resolved_at = None
     ticket.resolved_by = ''
     ticket.resolved_agent = None
     ticket.archived = False
+    ticket.attempts = 0
     ticket.evidence_after = timezone.now()
+    # The earlier catch-up belongs to the closed round: kept as history, never read as proof for this one.
+    if 'catchup_booking' in ticket.source_data:
+        data = dict(ticket.source_data)
+        data['previous_catchup_bookings'] = [*data.get('previous_catchup_bookings', []), data.pop('catchup_booking')]
+        ticket.source_data = data
     ticket.save()
     event(ticket, 'reopened', {'note': note}, agent, None if agent else user.get_username())
 
@@ -311,11 +318,10 @@ def apply_call_result(match):
             last = latest.match.call
             ticket.last_contact_at = last.started_at
             if last.result in FAILED_RESULTS:
-                # A missed call goes back to the list, flagged and at the bottom; enough of them go to a manager.
+                # A missed call goes back to the list, flagged and at the bottom.
                 ticket.next_followup_at = (next_workday_morning(last.ended_at)
                                            if ticket.source_type in SATISFACTION_TYPES else None)
-                ticket.status = 'unreachable' if ticket.attempts >= MAX_MISSED_CALLS else 'new'
-                ticket.escalated = ticket.escalated or ticket.attempts >= MAX_MISSED_CALLS
+                ticket.status = 'new'
             elif not (ticket.promised_at and ticket.promised_at > timezone.now()):
                 # Reached but nothing agreed yet: the case comes back next working day unless an outcome sets a promise.
                 ticket.status = 'pending_verification'
@@ -343,7 +349,7 @@ def check_outcome(ticket, outcome, option, note, callback_at):
     if option and option not in OPTIONS:
         raise ValueError('Invalid resolution option.')
     if outcome == 'refused' and not note.strip():
-        raise ValueError('Explain what the manager needs to know.')
+        raise ValueError('Say what the learner said.')
     if outcome == 'callback' and (not callback_at or callback_at <= timezone.now()):
         raise ValueError('Choose a future callback time.')
     if outcome == 'wrong_number' and not note.strip():
@@ -368,9 +374,8 @@ def record_outcome(ticket_id, user, call_id, outcome, option='', note='', callba
     link = CaseCall.objects.select_related('match__call', 'match__agent').filter(ticket=ticket, match__call_id=call_id).first()
     if not link:
         raise ValueError('An actual linked Zoom call is required.')
-    if (ticket.source_type in SATISFACTION_TYPES
-            and link.match.call.started_at < (ticket.evidence_after or ticket.created_at)):
-        raise ValueError('Use a call from the current satisfaction review cycle.')
+    if link.match.call.started_at < (ticket.evidence_after or ticket.created_at):
+        raise ValueError('Use a call made since this case was opened or last reopened.')
     # can_work admits a manager without an Agent profile; only a non-manager is limited to their own calls.
     if not is_director(user) and link.match.agent_id != agent.pk:
         raise PermissionDenied('Only the calling agent or a manager can record this outcome.')
@@ -437,8 +442,8 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
     if outcome == 'callback':
         ticket.status, ticket.next_followup_at = 'pending_learner', callback_at
     elif outcome in {'wrong_number', 'refused'}:
-        ticket.status, ticket.next_followup_at = 'escalated', None
-        ticket.escalated = True
+        # Recorded with the note on the case; the case comes back to the list next working day.
+        ticket.status, ticket.next_followup_at = 'pending_verification', next_workday_morning(timezone.now())
     elif outcome == 'reached' and not closes_now:
         # The promise's deadline is when the case returns if no proof has closed it by then.
         if promises:

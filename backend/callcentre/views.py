@@ -31,7 +31,7 @@ from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfactio
 from .reports import performance
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
-from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, send_back
+from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
 
 
 ISSUE_NAMES = {
@@ -380,10 +380,8 @@ def action(request, pk, command):
                                note=str(data.get('note', ''))[:5000],
                                callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)
         return JsonResponse({'ok': True, 'applied': applied})
-    elif command == 'send_back':
-        send_back(pk, request.user, str(data.get('note', ''))[:5000])
     elif command == 'close_review':
-        close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''))
+        close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''), acting_agent=agent)
     elif command == 'reopen':
         reopen(pk, request.user, str(data.get('note', ''))[:5000], acting_agent=agent)
     elif command == 'outcome':

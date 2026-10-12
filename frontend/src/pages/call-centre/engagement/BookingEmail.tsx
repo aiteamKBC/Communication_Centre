@@ -24,6 +24,9 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<Delivery | null>(null);
   const [sendError, setSendError] = useState('');
+  // After a Send the wording is locked: a retry must send the very same email under the same request id.
+  const [attempted, setAttempted] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   // One id per email: a retry after a lost answer returns the same delivery instead of sending twice.
   const requestId = useRef(crypto.randomUUID());
   const latest = useRef(0);
@@ -62,12 +65,20 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
     if (sending || sent) return;
     setSending(true);
     setSendError('');
+    setAttempted(true);
     try {
       const delivery = await post<Delivery>(`tickets/${caseId}/booking-email/send/`, session.csrf, {
         agent_id: session.agentId, request_id: requestId.current, subject, message,
       });
-      if (delivery.status === 'failed' || delivery.status === 'unknown') setSendError(delivery.error);
-      else setSent(delivery);
+      if (delivery.status === 'failed') {
+        // Definitely not sent: a new request id lets it be fixed and sent again.
+        requestId.current = crypto.randomUUID();
+        setAttempted(false);
+        setSendError(delivery.error);
+      } else if (delivery.status === 'unknown') {
+        setUncertain(true);
+        setSendError(delivery.error);
+      } else setSent(delivery);
     } catch (reason) {
       setSendError(`${errorText(reason)} Pressing Send again checks this same email; it is never sent twice.`);
     } finally {
@@ -96,15 +107,15 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
       <div className="ed-email-grid">
         <div className="ed-email-edit">
           <label>To<input value={draft.recipient} readOnly /></label>
-          <label>Subject<input value={subject} maxLength={180} disabled={!!sent} onChange={event => { setEdited(true); setSubject(event.target.value); }} /></label>
-          <label>Message<textarea rows={9} maxLength={5000} value={message} disabled={!!sent} onChange={event => { setEdited(true); setMessage(event.target.value); }} /></label>
+          <label>Subject<input value={subject} maxLength={180} disabled={!!sent || attempted} onChange={event => { setEdited(true); setSubject(event.target.value); }} /></label>
+          <label>Message<textarea rows={9} maxLength={5000} value={message} disabled={!!sent || attempted} onChange={event => { setEdited(true); setMessage(event.target.value); }} /></label>
           <p className="ec-muted">The greeting, the “{draft.link.label}” button and the sign-off are added for you.</p>
-          {edited && !sent && <button type="button" className="ed-sheet-link" onClick={() => setEdited(false)}>Reset to the standard wording</button>}
+          {edited && !sent && !attempted && <button type="button" className="ed-sheet-link" onClick={() => setEdited(false)}>Reset to the standard wording</button>}
           {error && <p className="ec-alert" role="alert">{error}</p>}
           <div className="ec-buttons">
             <button type="button" className="primary" onClick={() => void send()}
-              disabled={sending || !!sent || !!blocked || !session.canAct || session.preview || !subject.trim() || !message.trim()}>
-              {sending ? 'Sending…' : sent ? (sent.status === 'dry_run' ? 'Recorded' : 'Sent') : dryRun ? 'Send (dry run: record only)' : 'Send email'}
+              disabled={sending || !!sent || uncertain || !!blocked || !session.canAct || session.preview || !subject.trim() || !message.trim()}>
+              {sending ? 'Sending…' : sent ? (sent.status === 'dry_run' ? 'Recorded' : 'Sent') : attempted ? 'Check / retry this email' : dryRun ? 'Send (dry run: record only)' : 'Send email'}
             </button>
             <button type="button" onClick={() => void copy()}>Copy email</button>
             <a className="ec-button" href={mailto}>Open in my mail app</a>

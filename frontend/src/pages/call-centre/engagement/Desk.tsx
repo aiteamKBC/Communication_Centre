@@ -149,7 +149,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
     <>
       {tabs.map(id => (
         <LearnerPanel key={id} id={id} hidden={id !== current} overview={overview} session={session} onOpen={open} onNext={next}
-          hasNext={queue.some(c => c.id !== id)} onSaved={saved} notify={notify} />
+          hasNext={queue.some(c => c.id !== id)} onSaved={saved} notify={notify} onRefresh={onRefresh} />
       ))}
     </>
   );
@@ -160,7 +160,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
       <>
         <button type="button" onClick={() => setDetailId(null)}>Back to call sheet</button>
         <div style={{ marginTop: '1rem' }}>
-          <LearnerPanel id={detailId} hidden={false} overview={overview} session={session} onOpen={setDetailId} onNext={() => setDetailId(null)} hasNext={false} onSaved={message => { notify(message); onRefresh(); }} notify={notify} />
+          <LearnerPanel id={detailId} hidden={false} overview={overview} session={session} onOpen={setDetailId} onNext={() => setDetailId(null)} hasNext={false} onSaved={message => { notify(message); onRefresh(); }} notify={notify} onRefresh={onRefresh} />
         </div>
       </>
     );

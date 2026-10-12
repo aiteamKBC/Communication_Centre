@@ -6,9 +6,9 @@ const rules: [string, string][] = [
   ['Progress review or monthly coaching overdue: 3 working days', 'The review or meeting is booked and recorded in Aptem.'],
   ['Off-the-job hours or EPA preparation: 5 working days', 'The source shows the learner back on track.'],
   ['Tomorrow’s appointment', 'Attendance confirmed or the session rebooked before it starts.'],
-  ['Learner satisfaction: every three calendar months, 10 working days', 'Active, Delivery and Onboarding learners (LMS status first). Complete feedback after an answered Zoom call. Failed calls and emails do not restart the clock. A manager can close a review that cannot be done; the next is due three months later.'],
+  ['Learner satisfaction: every three calendar months, 10 working days', 'Active, Delivery and Onboarding learners (LMS status first). Complete feedback after an answered Zoom call. Failed calls and emails do not restart the clock. A review that cannot be done is closed without feedback; the next is due three months later.'],
   ['Employer satisfaction: every three calendar months, 10 working days', 'One call per line manager (from Aptem) who has a current learner, made by the specialist who looks after those learners. Same feedback form and rules as learner satisfaction.'],
-  ['Unanswered calls', 'The learner can be called again straight away and moves to the bottom of the list (satisfaction calls: from 9am the next working day). After 3 unanswered calls the case needs manager follow-up.'],
+  ['Unanswered calls', 'The learner can be called again straight away and moves to the bottom of the list (satisfaction calls: from 9am the next working day).'],
 ];
 
 /** Source health and the rules that open and close cases. */

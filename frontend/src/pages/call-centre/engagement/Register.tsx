@@ -4,7 +4,7 @@ import { ISSUE_LABELS, caseTone, human, issueLabel, longDate, matchesSearch } fr
 
 const stages: [string, string][] = [
   ['open', 'Active cases'], ['pending_learner', 'Awaiting reply'], ['pending_verification', 'Awaiting verification'],
-  ['escalated', 'Escalated'], ['unreachable', 'Unreachable'], ['all', 'All active stages'],
+  ['all', 'All active stages'],
 ];
 
 /** The director's calling register: call priorities by reason, filters and the case table. */

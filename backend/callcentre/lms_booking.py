@@ -449,8 +449,11 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
         meeting = _create_meeting(row)
         if not meeting['graph_event_id'] or not meeting['meeting_link']:
             raise graph.GraphError('Teams did not return a meeting link.')
-    except graph.GraphError as exc:
-        _fail(row, f'Call centre booking: {exc}')
+    except Exception as exc:
+        # Not only GraphError (a bad response body, a crash): the LMS row must never stay 'scheduled' without a
+        # meeting, where it would block the coach's slot and the learner's weekly limit.
+        reason = str(exc) if isinstance(exc, graph.GraphError) else type(exc).__name__
+        _fail(row, f'Call centre booking: {reason}')
         raise Unavailable('The Teams meeting could not be created, so nothing was booked. Try again shortly.') from exc
 
     report_id, link_warning = None, ''

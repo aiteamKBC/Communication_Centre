@@ -7,7 +7,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { MAX_MISSED_CALLS, casePurpose, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
+import { casePurpose, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -15,10 +15,12 @@ type Props = {
   id: number; overview: Overview; session: Session; hidden: boolean;
   onOpen: (id: number) => void; onNext: () => void; hasNext: boolean;
   onSaved: (message: string) => void; notify: (message: string, error?: boolean) => void;
+  /** Reloads the desk's case list (a booking can close a case). */
+  onRefresh?: () => void;
 };
 
 /** One learner's call workspace inside the operator desk. */
-export default function LearnerPanel({ id, overview, session, hidden, onOpen, onNext, hasNext, onSaved, notify }: Props) {
+export default function LearnerPanel({ id, overview, session, hidden, onOpen, onNext, hasNext, onSaved, notify, onRefresh }: Props) {
   const { detail, error, refresh } = useCase(id);
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -70,7 +72,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <p className="ed-purpose">{casePurpose(c)}</p>
       <div className="ec-buttons">
         <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
-        {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={refresh} />}
+        {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
         {c.source_type === 'learner_satisfaction' && <button type="button"
           disabled={session.preview || !session.canAct || !c.learner_email}
           onClick={() => setEmailOpen(true)}>Email</button>}
@@ -83,7 +85,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <details className="ed-disclosure">
         <summary>Learner context & contacts</summary>
         <dl className="ec-dl">
-          {[['Email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name], ['Line manager email', c.manager_email], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`], ['In progress with', c.claimed_by || 'Nobody']]
+          {[['Email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name], ['Line manager email', c.manager_email], ['Unanswered calls', String(c.attempts)], ['In progress with', c.claimed_by || 'Nobody']]
             .map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
         </dl>
         {lastCall ? <><h3>Last call</h3><p>{longDate(lastCall.started_at)} · {human(lastCall.result)}{lastCall.outcome ? ` · ${human(lastCall.outcome)}` : ''}</p></> : <p className="ec-muted">No verified call yet.</p>}

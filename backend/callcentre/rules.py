@@ -72,9 +72,7 @@ PROMISES = {
 # Cases with nothing to prove: the call itself is the work, so the specialist closes them.
 SPECIALIST_CLOSES = {'reminder', 'manual'}
 OPTIONS = {option for options in PROMISES.values() for option in options} | {'other'}
-# A learner who misses this many promises on one case goes to a manager instead of back to the queue.
-MAX_MISSED_PROMISES = 2
-# Missed calls on one case before it goes to a manager.
+# Missed calls on one case after which the line-manager reminder email goes out (when reminders are on).
 MAX_MISSED_CALLS = 3
 
 

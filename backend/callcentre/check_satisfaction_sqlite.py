@@ -222,7 +222,7 @@ def check_employers(user, agent, raises):
         generate_employers(people, next_due)
         checked += 1
 
-        # Only a manager can close a review that cannot be done; it comes back three months later.
+        # Closing a review that cannot be done needs an agent profile or manager access; it comes back three months later.
         specialist = get_user_model().objects.using('login_db').create(username='specialist', is_active=True)
         raises(PermissionDenied, lambda: close_without_feedback(renewal.pk, specialist, 'refused', 'Declined to talk'))
         manager = get_user_model().objects.using('login_db').create(username='manager', is_active=True, is_superuser=True)

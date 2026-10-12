@@ -2,9 +2,12 @@ import { useMemo, useState } from 'react';
 import type { Overview, OverviewCase } from '../api';
 import { caseAction, callDisabledReason } from './actions';
 import type { Session } from './actions';
+import BookSession from './BookSession';
+import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
+import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
-import { MAX_MISSED_CALLS, activeCase, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
+import { activeCase, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
 
@@ -27,6 +30,9 @@ function choicesFor(c: OverviewCase): Choice[] {
   ];
 }
 
+// Marks an issue whose catch-up was booked from Next call (the booking closed its case).
+const BOOKED = 'booked';
+
 const CALLBACKS: [string, () => Date][] = [
   ['In 2 hours', () => new Date(Date.now() + 2 * 3600000)],
   // London time, working days only.
@@ -45,6 +51,8 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const [calling, setCalling] = useState<{ key: string; person: OverviewCase; issues: OverviewCase[] } | null>(null);
   const [saved, setSaved] = useState<Set<number>>(new Set());
   const [feedbackFor, setFeedbackFor] = useState<OverviewCase | null>(null);
+  const [emailFor, setEmailFor] = useState<number | null>(null);
+  const [satisfactionEmailFor, setSatisfactionEmailFor] = useState<number | null>(null);
   const [picked, setPicked] = useState<Map<number, string>>(new Map());
   const [callback, setCallback] = useState(0);
   const [note, setNote] = useState('');
@@ -52,7 +60,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
 
   // Same order as the server's priority: missed calls are already at the bottom.
   const queue = useMemo(() => uniqueLearners(overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
-    && c.source_type !== 'employer_feedback' && !!c.learner_phone && c.attempts < MAX_MISSED_CALLS && dueForCall(c)
+    && c.source_type !== 'employer_feedback' && !!c.learner_phone && dueForCall(c)
     && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId))).filter(c => !done.has(contactKey(c))),
   [overview, session.agentId, done]);
   const open = queue.filter(c => !skipped.has(contactKey(c)));
@@ -60,7 +68,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const next = waiting[0] || null;
   const current = calling ? calling.person : next;
   const issues = calling ? calling.issues : next ? overview.cases.filter(c => contactKey(c) === contactKey(next) && activeCase(c)
-    && c.source_type !== 'employer_feedback' && c.attempts < MAX_MISSED_CALLS && dueForCall(c)) : [];
+    && c.source_type !== 'employer_feedback' && dueForCall(c)) : [];
 
   function reset(next: Set<string>) {
     setDone(next);
@@ -89,7 +97,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     if (!current) return;
     const chosen = issues.map(c => [c, choicesFor(c).find(choice => choice.key === picked.get(c.id))] as const);
     if (chosen.some(([, choice]) => choice?.note) && !note.trim()) {
-      notify('Add a short note for the manager.', true);
+      notify('Add a short note saying what happened.', true);
       return;
     }
     setBusy(true);
@@ -136,6 +144,31 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     onRefresh();
   }
 
+  // A booked catch-up is the proof a missed-lecture case waits for: the case is closed, so no outcome is needed for it.
+  function booked(c: OverviewCase, sessionType: string) {
+    if (sessionType === 'catch-up') {
+      setSaved(new Set(saved).add(c.id));
+      setPicked(new Map(picked).set(c.id, BOOKED));
+    }
+    onRefresh();
+  }
+
+  /** The same actions as the calling sheet: book with the coach, the booking email, the satisfaction email. */
+  function tools(c: OverviewCase) {
+    if (picked.get(c.id) === BOOKED) return <p className="ec-tag">Catch-up booked: case closed</p>;
+    const bookable = c.bookable.length > 0;
+    const bookingEmail = !['signature', 'satisfaction', 'employer_feedback'].includes(c.source_type);
+    if (!bookable && !bookingEmail && c.source_type !== 'learner_satisfaction') return null;
+    return (
+      <div className="ec-buttons ed-next-tools">
+        {bookable && <BookSession caseId={c.id} session={session} notify={notify} onBooked={type => booked(c, type)} />}
+        {bookingEmail && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
+        {c.source_type === 'learner_satisfaction' && <button type="button" disabled={session.preview || !c.learner_email}
+          onClick={() => setSatisfactionEmailFor(c.id)}>Email</button>}
+      </div>
+    );
+  }
+
   function feedbackSaved() {
     if (!current) return;
     notify(`Feedback completed for ${current.learner_name}. The next review is due in three calendar months.`);
@@ -164,9 +197,15 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
       <Dialog open={feedbackFor !== null} onClose={() => setFeedbackFor(null)}>
         {feedbackFor && <SatisfactionFeedback key={feedbackFor.id} caseId={feedbackFor.id} name={feedbackFor.learner_name} session={session} onSaved={feedbackSaved} />}
       </Dialog>
+      <Dialog open={emailFor !== null} onClose={() => setEmailFor(null)}>
+        {emailFor !== null && <BookingEmail key={emailFor} caseId={emailFor} session={session} />}
+      </Dialog>
+      <Dialog open={satisfactionEmailFor !== null} onClose={() => setSatisfactionEmailFor(null)}>
+        {satisfactionEmailFor !== null && <SatisfactionEmail key={satisfactionEmailFor} caseId={satisfactionEmailFor} session={session} />}
+      </Dialog>
       <h2 className="ed-next-name">{current.learner_name}</h2>
       <p className="ec-muted">{current.programme || 'Programme not recorded'} · Coach: {current.coach || 'not recorded'} · {current.learner_phone}</p>
-      {current.missed_call && <p className="ec-tag">Missed call · {current.attempts} of {MAX_MISSED_CALLS}</p>}
+      {current.missed_call && <p className="ec-tag">Missed call · {current.attempts} unanswered</p>}
       {current.promise_missed && <p className="ec-tag">Promise missed: call again</p>}
 
       {!calling ? (
@@ -177,6 +216,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
               <li key={c.id}>
                 <strong>{issueLabel(c)}</strong>{c.source_type === 'attendance' && c.issue_date ? ` · ${shortDate(c.issue_date)}` : ''}
                 <div className="ec-muted">{Object.keys(c.promises).length ? `Ask them to: ${Object.keys(c.promises).map(promiseLabel).join(' or ')}` : casePurpose(c)}</div>
+                {tools(c)}
               </li>
             ))}
           </ul>
@@ -194,12 +234,13 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
           {issues.map(c => (
             <div key={c.id}>
               <h3>{issueLabel(c)}: what happened?</h3>
-              <div className="ed-next-choices">
+              {picked.get(c.id) !== BOOKED && <div className="ed-next-choices">
                 {choicesFor(c).map(choice => (
                   <button key={choice.key} type="button" aria-pressed={picked.get(c.id) === choice.key} disabled={busy}
                     onClick={() => setPicked(new Map(picked).set(c.id, choice.key))}>{choice.label}</button>
                 ))}
-              </div>
+              </div>}
+              {tools(c)}
             </div>
           ))}
           {needsCallback && (
@@ -209,7 +250,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
               ))}
             </div>
           )}
-          <label>Note (optional, needed for a manager)
+          <label>Note (needed for wrong number or refused)
             <textarea rows={2} maxLength={5000} value={note} onChange={event => setNote(event.target.value)} />
           </label>
           <div className="ec-buttons" style={{ marginTop: '1rem' }}>

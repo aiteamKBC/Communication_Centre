@@ -1,5 +1,6 @@
 """Zoom Phone ingestion. Credentials stay on the server; reports read stored calls."""
 
+import logging
 import os
 import time
 import uuid
@@ -13,6 +14,8 @@ from django.utils.dateparse import parse_datetime
 
 from .db import DB
 from .models import ZoomPhoneCall, ZoomSyncState
+
+logger = logging.getLogger(__name__)
 
 
 ACCOUNT_LABELS = {'student': 'Student', 'office': 'Office (Accountant)'}
@@ -260,7 +263,12 @@ def sync_account(key, start=None, end=None, include_recordings=False):
                     raise ZoomError('Sync lease expired; another sync has taken over.')
                 unique = {}
                 for row in rows:
-                    values = normalize_call(key, config['account_id'], row)
+                    try:
+                        values = normalize_call(key, config['account_id'], row)
+                    except ZoomError as exc:
+                        # Skipped and logged, so one malformed record cannot stop every later sync.
+                        logger.warning('Skipped a Zoom %s call record: %s', key, exc)
+                        continue
                     unique[values['history_id']] = ZoomPhoneCall(**values)
                 fields = [field.name for field in ZoomPhoneCall._meta.fields
                           if field.name not in ('id', 'zoom_account_id', 'history_id')]

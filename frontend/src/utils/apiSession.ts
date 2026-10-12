@@ -21,7 +21,7 @@ export function installApiSession() {
     const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const token = UNSAFE_METHODS.has(method) ? csrfToken() : '';
     const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-    if (token && !headers.has('X-CSRFToken')) headers.set('X-CSRFToken', token);
+    if (token && !headers.get('X-CSRFToken')) headers.set('X-CSRFToken', token);
     const response = await originalFetch(input, token ? { ...init, headers } : init);
     if (response.status === 401 && !url.pathname.startsWith('/api/auth/login') && readStoredAuthUser()) {
       clearAuthStorage();

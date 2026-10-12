@@ -2,14 +2,13 @@
 
 One open case per learner (``learner_satisfaction``) and per employer (``employer_feedback``: a line
 manager from Aptem, with their learners listed); completed cycles remain separate, immutable history.
-Only an explicit feedback completion after an answered call, or a manager closing a review that cannot
-be done (wrong number, refused, unreachable), starts the three-calendar-month clock.
+Only an explicit feedback completion after an answered call, or closing a review that cannot be done
+(wrong number, refused, unreachable), starts the three-calendar-month clock.
 """
 import calendar
 import hashlib
 
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 
@@ -41,7 +40,7 @@ def eligible(person):
 
 
 def cycle_start(ticket):
-    """When a finished review's three-month clock started: completed feedback, or a manager closing it without."""
+    """When a finished review's three-month clock started: completed feedback, or closing it without."""
     value = ticket.source_data.get('last_completed_at') or ticket.source_data.get('last_closed_at')
     return parse_moment(value) if value else None
 
@@ -55,7 +54,8 @@ def cycle_due(ticket, now):
 
 def callable_from(previous, now):
     """A new review can be called straight away; its SLA runs from then (``rules.SLA_DAYS``)."""
-    return next_review_at(cycle_start(previous)) if previous else now
+    # A review that became due while the person was not eligible (e.g. on a break) starts now, not in the past.
+    return max(next_review_at(cycle_start(previous)), now) if previous else now
 
 
 @transaction.atomic(using=DB)
@@ -259,11 +259,15 @@ CLOSE_REASONS = {'wrong_number': 'Wrong number', 'refused': 'Refused feedback', 
 
 
 @transaction.atomic(using=DB)
-def close_without_feedback(ticket_id, user, reason, note):
-    """A manager closes a review that cannot be done; the next one is due three months later, like completed feedback."""
-    if not is_director(user):
-        raise PermissionDenied('Only managers can close a satisfaction review without feedback.')
+def close_without_feedback(ticket_id, user, reason, note, acting_agent=None):
+    """The specialist (or a manager) closes a review that cannot be done; the next one is due three months later,
+    like completed feedback."""
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+    agent = can_work(ticket, user, acting_agent=acting_agent)
+    # A specialist closes a review only after trying to call in this cycle; a manager may close it outright.
+    if not is_director(user) and not ticket.calls.filter(
+            match__call__started_at__gte=ticket.evidence_after or ticket.created_at).exists():
+        raise ValueError('Call them first: a review is closed without feedback only after a call in this cycle.')
     if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived:
         raise Conflict('This is not a satisfaction review.')
     if ticket.status == 'resolved':
@@ -275,5 +279,5 @@ def close_without_feedback(ticket_id, user, reason, note):
     closed = {'reason': reason, 'note': note[:3500], 'closed_at': now.isoformat(), 'next_due_at': next_review_at(now).isoformat()}
     ticket.source_data = {**ticket.source_data, 'closed_without_feedback': closed, 'last_closed_at': now.isoformat(),
                           'next_due_at': closed['next_due_at']}
-    close(ticket, None, 'agent', 'closed_without_feedback', closed, user.get_username())
+    close(ticket, agent, 'agent', 'closed_without_feedback', closed, None if agent else user.get_username())
     return ticket

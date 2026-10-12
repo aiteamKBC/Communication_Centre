@@ -116,7 +116,7 @@ class OutcomeTests(SimpleTestCase):
         check_outcome(missed_lecture, 'reached', 'catch_up_session', '', None)
         with self.assertRaisesMessage(ValueError, 'Choose what the learner agreed to.'):
             check_outcome(missed_lecture, 'reached', '', '', None)
-        with self.assertRaisesMessage(ValueError, 'Explain what the manager needs to know.'):
+        with self.assertRaisesMessage(ValueError, 'Say what the learner said.'):
             check_outcome(missed_lecture, 'refused', '', ' ', None)
         with self.assertRaisesMessage(ValueError, 'Choose a future callback time.'):
             check_outcome(missed_lecture, 'callback', '', '', datetime(2020, 1, 1, tzinfo=LONDON))
@@ -411,7 +411,7 @@ class BookingEmailTests(SimpleTestCase):
             quota.return_value.values_list.return_value.first.return_value = 0
             checks = {c['key']: c['state'] for c in booking_email.readiness(ticket)}
         self.assertEqual(checks['link'], 'missing')
-        self.assertEqual(checks['send'], 'missing')
+        self.assertNotIn('send', checks)   # the Send button exists now
         self.assertEqual(booking_email.render(ticket, 'Agent One')['link']['url'], '')
 
     def test_links_come_from_the_lms_catalogue_by_email(self):

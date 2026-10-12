@@ -7,7 +7,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { MAX_MISSED_CALLS, casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
+import { casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -30,11 +30,11 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const facts = employer
     ? [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Employer phone', c.learner_phone], ['Employer email', c.learner_email],
       ['Organisation', c.organisation], ['Learners', c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'],
-      ['Due', longDate(c.due_at)], ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`]]
+      ['Due', longDate(c.due_at)], ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Unanswered calls', String(c.attempts)]]
     : [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Learner phone', c.learner_phone],
       ['Learner email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name],
       ['Line manager email', c.manager_email], ['Coach', c.coach], ['Due', longDate(c.due_at)],
-      ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Call attempts', `${c.attempts} of ${MAX_MISSED_CALLS}`]];
+      ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Unanswered calls', String(c.attempts)]];
 
   const epaRaw = c.source_type === 'epa' ? (c.source_data?.epa_metrics as Record<string, string | number> | undefined) : undefined;
   const epa = epaRaw && Object.keys(epaRaw).length > 0 ? epaRaw : undefined;

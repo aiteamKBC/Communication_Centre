@@ -182,7 +182,8 @@ def source_health(name, error='', count=0):
 def get_source(name, fn):
     try:
         value = fn()
-        source_health(name, count=len(value))
+        # A loader returns its rows, or (refresh steps) the number of records it changed.
+        source_health(name, count=value if isinstance(value, int) else len(value))
         return value
     except Exception as exc:
         # Provider/DB exceptions may include credentials or personal values.
@@ -243,6 +244,8 @@ def refresh_contacts(people):
         if not person:
             continue
         values = {k: v for k, v in person['profile'].items() if k != 'learner_email'}
+        if ticket.source_type == 'manual':
+            values.pop('learner_phone', None)   # a requested call keeps the number the manager entered
         values['source_data'] = {**ticket.source_data, 'person_id': person['person_id'],
                                  'identity_source_ids': person['identifiers'], 'contact_sources': person.get('provenance', {})}
         previous = {k: getattr(ticket, k) for k, v in values.items() if k != 'source_data' and getattr(ticket, k) != v}

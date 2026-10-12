@@ -18,7 +18,7 @@ const errorText = (reason: unknown) => (reason instanceof Error ? reason.message
 
 /** "Book" button: books the session straight into the coach's LMS calendar with a Teams meeting. */
 export default function BookSession({ caseId, session, onBooked, notify, className }: {
-  caseId: number; session: Session; onBooked: () => void; notify: (message: string, error?: boolean) => void; className?: string;
+  caseId: number; session: Session; onBooked: (sessionType: string) => void; notify: (message: string, error?: boolean) => void; className?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -27,13 +27,13 @@ export default function BookSession({ caseId, session, onBooked, notify, classNa
         Book with coach
       </button>
       <Dialog open={open} onClose={() => setOpen(false)}>
-        {open && <BookingForm caseId={caseId} session={session} notify={notify} onDone={() => { setOpen(false); onBooked(); }} />}
+        {open && <BookingForm caseId={caseId} session={session} notify={notify} onDone={type => { setOpen(false); onBooked(type); }} />}
       </Dialog>
     </>
   );
 }
 
-function BookingForm({ caseId, session, notify, onDone }: { caseId: number; session: Session; notify: (message: string, error?: boolean) => void; onDone: () => void }) {
+function BookingForm({ caseId, session, notify, onDone }: { caseId: number; session: Session; notify: (message: string, error?: boolean) => void; onDone: (sessionType: string) => void }) {
   // One id per opened panel: a double click or retry can never book twice.
   const requestId = useMemo(() => crypto.randomUUID(), []);
   const [options, setOptions] = useState<Options | null>(null);
@@ -74,7 +74,7 @@ function BookingForm({ caseId, session, notify, onDone }: { caseId: number; sess
       });
       const at = new Date(result.booking.start).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
       notify(`Booked with ${result.booking.coach} on ${at}. The learner and coach have the Teams invitation.${result.warning ? ` Note: ${result.warning}` : ''}`);
-      onDone();
+      onDone(type);
     } catch (reason) {
       setError(errorText(reason));
       if (reason instanceof ApiError && reason.status === 409) {

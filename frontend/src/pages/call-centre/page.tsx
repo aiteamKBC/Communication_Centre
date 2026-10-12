@@ -96,7 +96,7 @@ export default function CallCentrePage() {
     if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self };
     const own = deskAgentId !== null && deskAgentId === ownAgent;
     const preview = role === 'viewer' || (!own && !superuser);
-    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self };
+    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own };
   }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role]);
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
@@ -223,7 +223,8 @@ export default function CallCentrePage() {
       >
         {content}
       </Shell>
-      {config.data?.smart_embed && ownAgent !== null && (
+      {/* Anyone who can call: a specialist, or a super admin working a specialist's desk. */}
+      {config.data?.smart_embed && (ownAgent !== null || !!overview?.access.is_superuser) && (
         <SmartEmbedPhone csrf={config.data.csrf_token} notify={notify} onCallLogged={refresh} />
       )}
     </div>

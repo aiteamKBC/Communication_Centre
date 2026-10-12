@@ -24,8 +24,6 @@ export const CALL_TABS: CallTab[] = [
     hint: 'Cases the AI review suggests closing. Approve to resolve, or reject to return the case to the calling list.' },
 ];
 
-/** Unanswered calls before a case goes to a manager (backend rules.MAX_MISSED_CALLS). */
-export const MAX_MISSED_CALLS = 3;
 
 export const ISSUE_LABELS: Record<string, string> = {
   attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue',
@@ -48,7 +46,7 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
 };
 
-const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem: send to manager']];
+const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem']];
 const PROMISE_LABELS: Record<string, string> = {
   catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
@@ -72,7 +70,7 @@ export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | '
   const { outcome, option } = splitOutcome(choice);
   if (isSatisfaction(c)) {
     if (outcome === 'reached') return 'Save the call outcome, then use Complete feedback. Only a completed review starts the next three-month period.';
-    if (outcome === 'no_answer') return 'The review stays open. Follow up on the chosen date, or the next working morning. Three failed calls need manager follow-up.';
+    if (outcome === 'no_answer') return 'The review stays open. Follow up on the chosen date, or the next working morning. If it cannot be done, close it without feedback.';
   }
   if (outcome === 'reached' && option) {
     const days = c.promises[option];
@@ -82,10 +80,10 @@ export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | '
   }
   return {
     reached: c.specialist_closes ? 'Resolve the case once the call’s purpose is done.' : 'The case comes back tomorrow morning unless the learner agrees something.',
-    no_answer: `Marked as a missed call and moved to the bottom of the list. After 3 missed calls a manager takes over (${c.attempts} so far).`,
-    wrong_number: 'Sent to a manager to find the right number. Say what happened in the note.',
+    no_answer: `Marked as a missed call and moved to the bottom of the list (${c.attempts} unanswered so far).`,
+    wrong_number: 'Recorded on the case; it comes back next working day. Say what happened in the note.',
     callback: 'The case comes back to the list at the time you choose.',
-    refused: 'Sent to a manager. Say what the learner said in the note.',
+    refused: 'Recorded on the case; it comes back next working day. Say what the learner said in the note.',
   }[outcome] || '';
 }
 
@@ -106,11 +104,23 @@ export function londonWorkdayAt(workdays: number, hour: number) {
     day.setUTCDate(day.getUTCDate() + 1);
     if (day.getUTCDay() % 6 !== 0) left -= 1;
   }
-  // London wall time to an instant: take it as UTC, then subtract London's offset from UTC at that moment.
-  const guess = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour);
+  return londonWallTime(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, 0);
+}
+
+/** A London wall-clock time as an instant: taken as UTC, then London's offset from UTC at that moment removed. */
+function londonWallTime(year: number, month: number, day: number, hour: number, minute: number) {
+  const guess = Date.UTC(year, month, day, hour, minute);
   const part = Object.fromEntries(londonClock.formatToParts(new Date(guess)).map(p => [p.type, Number(p.value)]));
   const offset = Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute, part.second) - guess;
   return new Date(guess - offset);
+}
+
+/** A datetime-local value ("2026-10-08T10:00") read as London time, whatever the computer's time zone. */
+export function londonInput(value: string) {
+  const [date, time = '00:00'] = value.split('T');
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  return londonWallTime(year, month - 1, day, hour, minute);
 }
 
 export const human = (value: string | null | undefined) => String(value || '').replaceAll('_', ' ');
@@ -221,7 +231,7 @@ export function badges(today: AgentStats['today'], target: number) {
 }
 
 export const caseTone = (c: Pick<OverviewCase, 'status' | 'sla_breached'>) =>
-  c.status === 'resolved' ? 'green' : c.status === 'escalated' ? 'red' : c.sla_breached ? 'amber' : '';
+  c.status === 'resolved' ? 'green' : c.sla_breached ? 'amber' : '';
 
 export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose'>, operator: string) {
   const first = c.learner_name.split(' ')[0];

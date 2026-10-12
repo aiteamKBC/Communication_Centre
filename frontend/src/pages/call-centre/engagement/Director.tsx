@@ -61,41 +61,14 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
   const open = overview.cases;
   const waitingAi = open.filter(c => c.status === 'ai_suggested_close').length;
   const coachesWithLinks = new Set(open.filter(c => Object.keys(c.booking_links).length).map(c => c.coach)).size;
-  const needsManager = open.filter(c => ['unreachable', 'escalated'].includes(c.status));
   const stats: [string, number, string][] = [
     ['Open support cases', open.length, 'Across the calling register'],
     ['Waiting for the learner', open.filter(c => ['pending_learner', 'pending_verification'].includes(c.status)).length, 'Callback booked, or a promise waiting for its deadline'],
     ['Missed calls', open.filter(c => c.missed_call).length, 'Last call unanswered; at the bottom of their list'],
-    ['Needs a manager', needsManager.length, '3 missed calls, wrong number, refusal or 2 missed promises'],
   ];
 
   return (
     <>
-      <section className="ec-card">
-        <h2>Needs a manager ({needsManager.length})</h2>
-        {needsManager.length ? (
-          <>
-            <p className="ec-muted">Open each case, then close it with a reason or send it back to the calling list with a note for the specialist.</p>
-            <div className="ec-table-wrap">
-              <table>
-                <thead><tr><th>Learner</th><th>Why</th><th>Last action</th><th /></tr></thead>
-                <tbody>
-                  {needsManager.slice(0, 50).map(c => (
-                    <tr key={c.id}>
-                      <td><strong>{c.learner_name}</strong><small>{issueLabel(c)}</small></td>
-                      <td>{c.status === 'unreachable' ? `${c.attempts} missed calls` : c.promise_missed ? 'Promises missed' : 'Wrong number or refused'}</td>
-                      <td>{when(c.last_action_at)}<small>{c.last_actor}</small></td>
-                      <td><button type="button" className="primary" onClick={() => onOpenCase(c.id)}>Open case</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {needsManager.length > 50 && <p className="ec-muted">First 50 shown, in priority order.</p>}
-          </>
-        ) : <p className="ec-muted">Nothing needs you right now.</p>}
-      </section>
-
       <section className="ec-card">
         <h2>Coach bookings · Microsoft Bookings</h2>
         <p>Booking pages are mapped for {coachesWithLinks} coaches in the current register. Calendar reading is not connected yet.</p>
