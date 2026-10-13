@@ -3,7 +3,6 @@ from datetime import datetime, time, timedelta
 from django.db.models import Q
 from django.utils import timezone
 
-from . import test_learner
 from .models import Agent, CallMatch, CaseTicket, TicketEvent, ZoomPhoneCall, ZoomSyncState
 from .rules import FAILED_RESULTS, LONDON, working_day
 from .services import identify_agent
@@ -36,17 +35,15 @@ def performance(start, end):
     now = timezone.now()
     report = []
     agents = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name'))
-    events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper).exclude(ticket__reason_key=test_learner.KEY)
+    events = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper)
     breaches = list(events.filter(kind='sla_breached').values('ticket_id', 'data'))
-    # Calls to the test learner and its case are testing, not work.
-    test_calls = CallMatch.objects.filter(cases__ticket__reason_key=test_learner.KEY).values('call_id')
-    cases = CaseTicket.objects.exclude(reason_key=test_learner.KEY)
+    cases = CaseTicket.objects.all()
     for agent in agents:
         identity = Q(caller_email__iexact=agent.zoom_email)
         if agent.zoom_user_id:
             identity |= Q(caller_user_id=agent.zoom_user_id)
         calls = list(ZoomPhoneCall.objects.filter(current_account_filter(), identity, source_account=agent.zoom_account,
-                     direction='outbound', started_at__gte=lower, started_at__lt=upper).exclude(pk__in=test_calls)
+                     direction='outbound', started_at__gte=lower, started_at__lt=upper)
                      .order_by('started_at'))
         calls = [call for call in calls if (identified := identify_agent(call, agents)) and identified.pk == agent.pk]
         daily = []

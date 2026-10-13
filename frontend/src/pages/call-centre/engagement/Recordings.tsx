@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { downloadText, request, transcriptStatusLabels } from '../api';
+import type { CallReview } from '../api';
+import CallReviewPanel from './CallReview';
 import Dialog from './Dialog';
 
 type Recording = { id: number; recording_type: string; owner_name: string; duration_seconds: number | null; transcript_status: string; transcript_error: string };
-type Transcript = { status: string; text: string; error: string };
+type Transcript = { status: string; text: string; error: string; review: CallReview | null };
 
 /** Recordings for one Zoom call and the selected transcript (managers or the agent on the call). */
 export default function RecordingDialog({ callId, onClose }: { callId: number | null; onClose: () => void }) {
@@ -66,6 +68,7 @@ export default function RecordingDialog({ callId, onClose }: { callId: number | 
             <h3>Call transcript</h3>
             <button type="button" disabled={!transcript.text} onClick={() => downloadText(transcript.text, `zoom-transcript-${selected}.txt`)}>Download text</button>
           </div>
+          {transcript.status === 'ready' && <CallReviewPanel review={transcript.review} />}
           {transcript.status === 'ready' ? <pre style={{ whiteSpace: 'pre-wrap' }}>{transcript.text}</pre> : <p>The transcript is pending. Check Zoom transcription settings and allow processing time.</p>}
         </>
       )}

@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
@@ -17,10 +17,10 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, helpdesk, lms_booking, satisfaction_email, test_learner
+from . import email_settings, helpdesk, lms_booking, satisfaction_email
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback
 from .access import is_director, refused
-from .ai import ai_enabled
+from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
 from .allocation import manager_owners, owners
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
@@ -116,8 +116,8 @@ def with_last_call(cases):
 
 
 def rank(ticket, now):
-    """List order: the test learner first, then the case priority."""
-    return test_learner.is_test(ticket), priority(ticket, now)
+    """List order: the case priority."""
+    return priority(ticket, now)
 
 
 def ticket_json(ticket):
@@ -206,18 +206,25 @@ def config(request):
 OVERVIEW_CASE_LIMIT = 3000
 
 
-@authenticated
-@require_GET
-def overview(request):
-    """Everything the Engagement Centre screens render: active cases in priority order and call stats for a month."""
-    now = timezone.now()
-    today = now.astimezone(LONDON).date()
+def report_month(request, today):
+    """The requested report month as (first day, last day so far), plus London-time bounds [lower, upper)."""
     month = request.GET.get('month') or today.strftime('%Y-%m')
     start = date.fromisoformat(month + '-01')
     if start > today or start.year < 2020:
         raise ValueError('Choose a month up to the current month.')
     following = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
     end = min(following - timedelta(days=1), today)
+    return month, start, end, (datetime.combine(start, time.min, tzinfo=LONDON),
+                               datetime.combine(end + timedelta(days=1), time.min, tzinfo=LONDON))
+
+
+@authenticated
+@require_GET
+def overview(request):
+    """Everything the Engagement Centre screens render: active cases in priority order and call stats for a month."""
+    now = timezone.now()
+    today = now.astimezone(LONDON).date()
+    month, start, end, bounds = report_month(request, today)
     report = performance(start, end)
     agent = agent_for(request.user)
     is_manager = is_director(request.user)
@@ -263,6 +270,9 @@ def overview(request):
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details').first(),
         'connections': {'calling': bool(agent), 'email_mode': email_settings.current()['email_mode'], 'ai': ai_enabled()},
+        # AI call ratings name specialists' weak calls: managers see everyone's, a specialist only their own.
+        'call_reviews': call_reviews(*bounds, list(Agent.objects.filter(active=True, user__is_active=True))) if is_manager
+        else call_reviews(*bounds, [agent], own_only=True) if agent else None,
     })
 
 
@@ -277,7 +287,7 @@ def queue(request):
         raise ValueError('Invalid page.')
     qs = CaseTicket.objects.select_related('claimed_by').exclude(source_type='satisfaction')
     if view == 'history':
-        qs = qs.filter(Q(status='resolved') | Q(archived=True)).exclude(test_learner.hidden())
+        qs = qs.filter(Q(status='resolved') | Q(archived=True))
     else:
         qs = qs.open()
         if view == 'due':
@@ -434,12 +444,6 @@ def booking(request, pk):
         raise Conflict('This case is closed.')
     if not lms_booking.session_types(ticket):
         raise Conflict('Coach sessions are not booked from employer calls.')
-    if test_learner.is_test(ticket):
-        if request.method == 'GET':
-            return JsonResponse(test_learner.booking_preview(ticket))
-        booked = test_learner.book(ticket, str(data.get('session_type', '')), parse_moment(data['start']),
-                                   str(data.get('reason_category', '')))
-        return booked_response(request, pk, data, agent, booked)
     try:
         if request.method == 'GET':
             person = lms_booking.lms_learner(ticket.learner_email)
@@ -536,6 +540,23 @@ def tech_issue(request, pk):
     except helpdesk.HelpdeskError as exc:
         return JsonResponse({'detail': str(exc)}, status=502)
     return JsonResponse({'id': case.pk, 'ticket': case.source_data['ticket'], 'created': created}, status=201 if created else 200)
+
+
+@authenticated
+@require_GET
+def my_call_reviews(request):
+    """Every AI-rated call of one specialist in a month: their own, or any specialist's for a manager."""
+    today = timezone.now().astimezone(LONDON).date()
+    _, _, _, bounds = report_month(request, today)
+    agent_id = request.GET.get('agent_id')
+    if agent_id and is_director(request.user):
+        agent = Agent.objects.get(pk=int(agent_id))
+    else:
+        agent = agent_for(request.user)
+        if agent is None or (agent_id and int(agent_id) != agent.pk):
+            raise PermissionDenied('You can only see your own call reviews.')
+    reviews = call_reviews(*bounds, [agent], own_only=True, all_calls=True)
+    return JsonResponse({'agent_id': agent.pk, 'counts': reviews['agents'][agent.pk], 'calls': reviews['calls']})
 
 
 @authenticated

@@ -5,13 +5,14 @@ import { api } from '../api';
 import type { Case } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
+import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
 import LearnerPanel from './LearnerPanel';
 import NextCall from './NextCall';
 import type { CallGroup } from './model';
 import {
   CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, promiseLabel, badges, callGroups, categoryCases, contactKey, downloadBlob, dueForCall,
-  duration, human, issueLabel, longDate, matchesSearch, points, shortDate, uniqueLearners,
+  duration, human, issueLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners,
 } from './model';
 
 type Props = {
@@ -20,9 +21,10 @@ type Props = {
   notify: (message: string, error?: boolean) => void;
 };
 
-function ProgressStrip({ agent }: { agent: AgentStats | undefined }) {
+function ProgressStrip({ agent, overview }: { agent: AgentStats | undefined; overview: Overview }) {
   const today = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
   const target = agent?.target_seconds || 0;
+  const reviews = agent ? overview.call_reviews?.agents[agent.id] : undefined;
   return (
     <div className="ed-score">
       <div className="ed-target">
@@ -32,7 +34,9 @@ function ProgressStrip({ agent }: { agent: AgentStats | undefined }) {
       </div>
       <div><span>Connections</span><strong>{today.connected}</strong></div>
       <div><span>Points today</span><strong>{points(today, target)}<small> / 300</small></strong></div>
-      <div><span>Call quality</span><strong>Unscored<small>{today.attempts} calls</small></strong></div>
+      <div><span>Call quality this month</span>{reviews && ratedCalls(reviews)
+        ? <strong>{reviews.excellent} <small>excellent ·</small> {reviews.good} <small>good ·</small> {reviews.bad} <small>bad</small></strong>
+        : <strong>Unscored<small>{today.attempts} calls today</small></strong>}</div>
     </div>
   );
 }
@@ -230,6 +234,8 @@ export default function Desk({ overview, agent, session, section, name, status, 
         </section>
       </>
     );
+  } else if (section === 'reviews') {
+    body = <MyCallReviews agentId={agent?.id} month={overview.month} today={overview.today} onMonth={onMonth} />;
   } else if (section === 'reports') {
     const month = agent?.month;
     const download = () => {
@@ -341,7 +347,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
           <button type="button" onClick={onRefresh}>Refresh</button>
         </div>
       </header>
-      <ProgressStrip agent={agent} />
+      <ProgressStrip agent={agent} overview={overview} />
       {status}
       {body}
     </>

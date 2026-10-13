@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import type { Overview } from '../api';
+import type { AgentStats, CallFlag, Overview } from '../api';
+import { CallReviewDialog, RatingRules } from './CallReview';
 import Dialog from './Dialog';
 import Register from './Register';
-import { ISSUE_LABELS, badges, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
+import { ISSUE_LABELS, badges, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
 
 type Props = {
   overview: Overview; month: string;
@@ -55,9 +56,18 @@ function reportHTML(overview: Overview) {
     + '<p>Call figures come from Zoom Phone records. Missing telephone coverage is not evidence of inactivity.</p>';
 }
 
+function quality(overview: Overview, agent: AgentStats) {
+  const counts = overview.call_reviews?.agents[agent.id];
+  const rated = ratedCalls(counts);
+  if (!counts || !rated) return <>Unscored<small>No rated calls this month</small></>;
+  return <>{counts.excellent} excellent · {counts.good} good<small className={counts.bad ? 'danger' : undefined}>{counts.bad} bad · {rated} rated this month</small></>;
+}
+
 /** Director overview: bookings, call review, operator desks, KPIs, performance and the calling register. */
 export default function Director({ overview, month, onMonth, onView, onPreview, onOpenCase }: Props) {
   const [report, setReport] = useState(false);
+  const [flag, setFlag] = useState<CallFlag | null>(null);
+  const flags = overview.call_reviews?.flags || [];
   const open = overview.cases;
   const waitingAi = open.filter(c => c.status === 'ai_suggested_close').length;
   const coachesWithLinks = new Set(open.filter(c => Object.keys(c.booking_links).length).map(c => c.coach)).size;
@@ -77,10 +87,27 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
 
       <section className="ec-card ed-lower">
         <div className="ec-head">
-          <div><h2>Call red flags</h2><p className="ec-muted">Recorded-call evidence for every specialist. AI findings require a human review.</p></div>
-          <button type="button" disabled>Process pending call reviews</button>
+          <div><h2>Call red flags</h2><p className="ec-muted">The AI rates each call transcript excellent, good or bad as it arrives. Calls rated bad are listed here with what went wrong and what to change. AI findings require a human review.</p></div>
         </div>
-        <p className="ec-alert">Transcript red-flag analysis is not connected yet. Zoom transcripts are available under Zoom Phone.</p>
+        {!overview.connections.ai ? <p className="ec-alert">AI call review is switched off, so transcripts are not being rated.</p> : (
+          <div className="ec-table-wrap">
+            <table>
+              <thead><tr><th>Call</th><th>What went wrong</th><th>What needs to change</th><th /></tr></thead>
+              <tbody>
+                {flags.map(item => (
+                  <tr key={item.recording_id}>
+                    <td><strong>{item.agent_name}</strong><small>{when(item.started_at)}</small></td>
+                    <td>{item.went_wrong.join(' ')}</td>
+                    <td>{item.needs_change.join(' ')}</td>
+                    <td><button type="button" onClick={() => setFlag(item)}>Review call</button></td>
+                  </tr>
+                ))}
+                {!flags.length && <tr><td colSpan={4}>No calls rated bad in {overview.month}.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <RatingRules />
         <p className="ec-muted">{overview.connections.ai ? `${waitingAi} AI close suggestions await a specialist decision in the calling workspace.` : 'AI case review is switched off.'}</p>
       </section>
 
@@ -123,7 +150,7 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
                   <td><strong>{agent.display_name}</strong><small>{agent.sync.last_success_at ? `Zoom synced ${when(agent.sync.last_success_at)}` : 'Zoom sync pending'}</small></td>
                   <td>{agent.today.attempts}<small>{agent.today.connected} connected</small></td>
                   <td>{duration(agent.today.seconds)}<small>Target {duration(agent.target_seconds)}</small></td>
-                  <td>Unscored<small>Transcript scoring not connected</small></td>
+                  <td>{quality(overview, agent)}</td>
                   <td>{points(agent.today, agent.target_seconds)}</td>
                   <td>{badges(agent.today, agent.target_seconds).map(name => <span key={name} className="ec-tag">★ {name}</span>)}{!badges(agent.today, agent.target_seconds).length && '—'}</td>
                 </tr>
@@ -175,6 +202,7 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
       <div style={{ height: '1.2rem' }} />
       <Register overview={overview} onOpenCase={onOpenCase} />
 
+      <CallReviewDialog call={flag} onClose={() => setFlag(null)} />
       <Dialog open={report} onClose={() => setReport(false)}>
         <h2>Monthly engagement report · {overview.month}</h2>
         <div className="ec-report" dangerouslySetInnerHTML={{ __html: reportHTML(overview) }} />

@@ -1,5 +1,5 @@
 // Presentation rules for the Engagement Centre screens. The server stays authoritative for access and outcomes.
-import type { AgentStats, Case, Overview, OverviewCase } from '../api';
+import type { AgentStats, CallRating, Case, Overview, OverviewCase } from '../api';
 
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
@@ -280,8 +280,12 @@ export const DESK_MENUS: [string, string, string][] = [
   ['next', 'Next call', 'phone'],
   ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
   ['groups', 'Call groups', 'people'], ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'],
-  ['history', 'History', 'clock'], ['progress', 'My progress', 'chart'], ['reports', 'Reports', 'file'],
+  ['history', 'History', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
+  ['reports', 'Reports', 'file'],
 ];
+
+/** Calls the AI actually judged (excludes not rated). */
+export const ratedCalls = (counts: Record<CallRating, number> | undefined) => (counts ? counts.excellent + counts.good + counts.bad : 0);
 
 export const deskLabel = (overview: Overview, key: string) => {
   const menu = DESK_MENUS.find(item => item[0] === key);

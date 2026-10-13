@@ -4,7 +4,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.core.cache import cache
 from django.db import OperationalError, ProgrammingError, connections, transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, OuterRef, Q, Subquery, Sum
+from django.db.models.fields.json import KT
 from django.db.models.functions import Substr, TruncDate
 from django.http import JsonResponse
 from django.utils import timezone
@@ -13,7 +14,7 @@ from django.views.decorators.http import require_GET
 
 from .access import is_director, refused
 from .db import APTEM
-from .models import CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
+from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
 from .zoom_phone import ACCOUNT_LABELS, ZoomError, account_config, missing_credentials, validate_config
 from .rules import normalize_phone
 
@@ -235,8 +236,10 @@ def zoom_transcript_report(request):
         return JsonResponse({'detail': 'Use a valid date range of at most 366 days and a positive page.'}, status=400)
     source = request.GET.get('account', 'all')
     status = request.GET.get('status', 'all')
+    rating = request.GET.get('rating', 'all')
     statuses = ('ready', 'pending', 'disabled', 'unavailable', 'error')
-    if source not in ('all', *ACCOUNT_LABELS) or status not in ('all', *statuses):
+    if (source not in ('all', *ACCOUNT_LABELS) or status not in ('all', *statuses)
+            or rating not in ('all', 'excellent', 'good', 'bad', 'not_rated')):
         return JsonResponse({'detail': 'Invalid transcript filter.'}, status=400)
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
     end_time = datetime.combine(end + timedelta(days=1), time.min, tzinfo=report_zone)
@@ -260,12 +263,16 @@ def zoom_transcript_report(request):
                 **{item: rows.filter(transcript_status=item).count() for item in statuses},
             })
         selected = base if status == 'all' else base.filter(transcript_status=status)
+        latest = AIAnalysis.objects.filter(recording=OuterRef('pk'), state='ready').order_by('-created_at', '-pk')
+        selected = selected.annotate(rating=Subquery(latest.annotate(rating=KT('result__call_rating')).values('rating')[:1]))
+        if rating != 'all':
+            selected = selected.filter(rating=rating)
         total_records = selected.count()
         offset = (page - 1) * page_size
         records = list(selected.annotate(preview=Substr('transcript_text', 1, 240)).values(
             'id', 'source_account', 'recording_type', 'owner_name', 'started_at',
             'duration_seconds', 'transcript_status', 'transcript_error',
-            'transcript_checked_at', 'preview',
+            'transcript_checked_at', 'preview', 'rating',
         ).order_by('-started_at', '-id')[offset:offset + page_size])
     except (OperationalError, ProgrammingError):
         return JsonResponse({'detail': 'Transcripts are temporarily unavailable.'}, status=503)
@@ -275,6 +282,7 @@ def zoom_transcript_report(request):
         'timezone': settings.ZOOM_REPORT_TIME_ZONE,
         'account': source,
         'status': status,
+        'rating': rating,
         'summary': summary,
         'accounts': accounts,
         'records': records,
@@ -316,6 +324,7 @@ def zoom_call_recordings(request, call_pk):
 @never_cache
 @require_GET
 def zoom_recording_transcript(request, recording_pk):
+    from .ai import latest_review
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view transcripts.'}, status=401)
     if refused(request.user):
@@ -331,7 +340,7 @@ def zoom_recording_transcript(request, recording_pk):
             'id': recording.pk, 'source_account': recording.source_account,
             'status': recording.transcript_status, 'text': recording.transcript_text,
             'transcript': recording.transcript_data, 'error': recording.transcript_error,
-            'checked_at': recording.transcript_checked_at,
+            'checked_at': recording.transcript_checked_at, 'review': latest_review(recording),
         })
     except (OperationalError, ProgrammingError):
         return JsonResponse({'detail': 'Transcripts are temporarily unavailable.'}, status=503)
