@@ -14,7 +14,6 @@ from .evidence import EvidenceSnapshot, check_evidence
 from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
-from . import test_learner
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
 from .zoom_phone import ACCOUNT_LABELS, sync_account
 from .zoom_views import current_account_filter
@@ -49,7 +48,7 @@ def maintenance(now):
 
 def evidence_cycle():
     resolved, errors = 0, {}
-    tickets = list(CaseTicket.objects.open().exclude(reason_key=test_learner.KEY).select_related('survey'))
+    tickets = list(CaseTicket.objects.open().select_related('survey'))
     snapshot = EvidenceSnapshot(tickets)
     for ticket in tickets:
         if ticket.source_type in errors:
@@ -174,7 +173,6 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
         result['epa_metrics'] = get_source('epa_metrics', refresh_epa_metrics)
-        step(result, 'test_learner', test_learner.ensure)
         # Evidence wins over returning a promised-date case to the queue.
         step(result, 'resolved', evidence_cycle)
         step(result, 'maintenance', lambda: maintenance(timezone.now()))

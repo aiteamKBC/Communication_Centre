@@ -16,13 +16,34 @@ from .services import event, release_fields
 from .zoom_views import current_account_filter
 
 FIELDS = {'outcome', 'absence_reason', 'chosen_option', 'promised_date', 'commitments', 'sentiment',
-          'agent_quality_score', 'agent_quality_notes', 'summary', 'confidence'}
+          'call_rating', 'went_wrong', 'needs_change', 'summary', 'confidence'}
+RATINGS = ('excellent', 'good', 'bad', 'not_rated')
+# New transcripts are rated even without an open case; the lookback stops a first run paying for the whole archive.
+RATING_LOOKBACK = timedelta(days=30)
+
+# Kept short on purpose so specialists and managers read the same rules the AI applies.
+RATING_CRITERIA = (
+    'Rate the KBC specialist (the caller from Kent Business College), not the learner. '
+    'excellent: polite greeting, says who they are and that they are calling from KBC, explains why they are calling, '
+    "listens and answers the learner's questions correctly, agrees a clear next step (what and when), "
+    'and closes politely. '
+    'good: professional and the purpose of the call is met, but one or two of the excellent points are missing '
+    '(for example no clear date for the next step, or no summary at the end). '
+    'bad: any of rude, impatient or unprofessional; gives wrong or confusing information; does not explain why '
+    'they are calling; ignores or talks over the learner; ends with no next step; shares personal details '
+    'without checking who they are speaking to. '
+    'not_rated: no real conversation took place (no answer, voicemail only, wrong number, or the transcript is too '
+    'short or unclear to judge). '
+    'went_wrong: short points on what went wrong (at least one when bad; may be empty otherwise). '
+    'needs_change: short practical points on what the specialist should do differently next time '
+    '(at least one when bad; optional tips when good; empty when excellent or not_rated).'
+)
 
 
 def validate_analysis(value):
     if not isinstance(value, dict) or set(value) != FIELDS:
         raise ValueError('AI result has an invalid schema.')
-    for field in ('outcome', 'absence_reason', 'sentiment', 'agent_quality_notes', 'summary'):
+    for field in ('outcome', 'absence_reason', 'sentiment', 'call_rating', 'summary'):
         if not isinstance(value[field], str) or len(value[field]) > 5000:
             raise ValueError('AI text field is invalid.')
     if value['outcome'] not in {'reached', 'no_answer', 'follow_up', 'resolved', 'unknown'}:
@@ -31,8 +52,14 @@ def validate_analysis(value):
         raise ValueError('AI sentiment is invalid.')
     if value['chosen_option'] not in OPTIONS:
         raise ValueError('AI option is invalid.')
-    if type(value['agent_quality_score']) is not int or not 1 <= value['agent_quality_score'] <= 5:
-        raise ValueError('AI quality score is invalid.')
+    if value['call_rating'] not in RATINGS:
+        raise ValueError('AI call rating is invalid.')
+    for field in ('went_wrong', 'needs_change'):
+        if not isinstance(value[field], list) or len(value[field]) > 10 or any(
+                not isinstance(item, str) or not item.strip() or len(item) > 1000 for item in value[field]):
+            raise ValueError('AI rating notes are invalid.')
+    if value['call_rating'] == 'bad' and not (value['went_wrong'] and value['needs_change']):
+        raise ValueError('A bad call rating needs notes on what went wrong and what to change.')
     confidence = value['confidence']
     if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
         raise ValueError('AI confidence is invalid.')
@@ -69,9 +96,10 @@ def analyze_recording(recording):
             'outcome (reached/no_answer/follow_up/resolved/unknown), absence_reason (string), '
             f'chosen_option ({"/".join(sorted(OPTIONS))}), '
             'promised_date (YYYY-MM-DD or null; use null if ambiguous), commitments (array of strings), '
-            'sentiment (positive/neutral/negative/unknown), agent_quality_score (integer 1-5), '
-            'agent_quality_notes (string), summary (string), confidence (number 0-1). '
+            'sentiment (positive/neutral/negative/unknown), call_rating (excellent/good/bad/not_rated), '
+            'went_wrong (array of strings), needs_change (array of strings), summary (string), confidence (number 0-1). '
             'Resolved only means the speaker claims resolution, not that evidence exists. '
+            f'Call rating rules: {RATING_CRITERIA} '
             f'Call date: {recording.started_at.astimezone(LONDON).date().isoformat()}.'
         )
         response = requests.post('https://api.openai.com/v1/chat/completions', timeout=60, allow_redirects=False,
@@ -155,7 +183,8 @@ def process_ai(limit=10):
     # crashed worker. Without this it would be skipped forever.
     AIAnalysis.objects.filter(state='processing').update(state='pending')
     done = 0
-    for recording in ZoomPhoneRecording.objects.filter(current_account_filter(), transcript_status='ready').exclude(transcript_text='').order_by('pk').iterator():
+    ready = ZoomPhoneRecording.objects.filter(current_account_filter(), transcript_status='ready').exclude(transcript_text='')
+    for recording in ready.order_by('pk').iterator():
         match = recording_match(recording)
         if not match or not match.cases.exclude(ticket__status='resolved').filter(ticket__archived=False).exists():
             continue
@@ -171,5 +200,56 @@ def process_ai(limit=10):
             apply_analysis(analysis)
         done += 1
         if done >= limit:
-            break
+            return done
+    # Every other recent transcript still gets its call rating, newest first, without touching any case.
+    unrated = ready.filter(started_at__gte=timezone.now() - RATING_LOOKBACK).exclude(
+        pk__in=AIAnalysis.objects.exclude(state='pending').values('recording_id'))
+    for recording in unrated.order_by('-started_at', '-pk')[:limit - done]:
+        analyze_recording(recording)
+        done += 1
     return done
+
+
+def review_json(analysis):
+    """The call rating people see. Analyses made before ratings existed show as not rated."""
+    if not analysis or analysis.state != 'ready':
+        return None
+    result = analysis.result
+    return {'rating': result.get('call_rating', 'not_rated'), 'went_wrong': result.get('went_wrong', []),
+            'needs_change': result.get('needs_change', []), 'summary': result.get('summary', ''),
+            'analysed_at': analysis.created_at}
+
+
+def latest_review(recording):
+    return review_json(AIAnalysis.objects.filter(recording=recording, state='ready').order_by('-created_at', '-pk').first())
+
+
+def call_reviews(lower, upper, agents, own_only=False, all_calls=False):
+    """Ratings per specialist and the bad calls to follow up, for recordings made in [lower, upper).
+
+    own_only drops calls matched to none of ``agents`` (a specialist sees only their own calls);
+    all_calls also lists every rated call, not just the bad ones."""
+    from .services import identify_agent
+    from .zoom_views import recording_calls
+    recordings = ZoomPhoneRecording.objects.filter(current_account_filter(), started_at__gte=lower, started_at__lt=upper)
+    latest = {}
+    for analysis in (AIAnalysis.objects.filter(state='ready', recording__in=recordings).select_related('recording')
+                     .order_by('recording_id', '-created_at', '-pk')):
+        latest.setdefault(analysis.recording_id, analysis)
+    counts = {agent.pk: dict.fromkeys(RATINGS, 0) for agent in agents}
+    calls = []
+    for analysis in latest.values():
+        review, recording = review_json(analysis), analysis.recording
+        agent = next((found for call in recording_calls(recording) if (found := identify_agent(call, agents))), None)
+        if agent:
+            counts[agent.pk][review['rating']] += 1
+        elif own_only:
+            continue
+        calls.append({**review, 'recording_id': recording.pk, 'started_at': recording.started_at,
+                      'agent_id': agent.pk if agent else None,
+                      'agent_name': agent.display_name if agent else recording.owner_name or 'Unmatched specialist'})
+    calls.sort(key=lambda call: call['started_at'], reverse=True)
+    result = {'agents': counts, 'flags': [call for call in calls if call['rating'] == 'bad']}
+    if all_calls:
+        result['calls'] = calls
+    return result

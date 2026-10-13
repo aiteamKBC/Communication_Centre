@@ -57,7 +57,14 @@ export type Overview = {
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;
   sources: Config['sources']; cycle: Config['cycle'];
   connections: { calling: boolean; email_mode: string; ai: boolean };
+  /** AI call ratings for the month: every specialist's for managers, only their own for a specialist. */
+  call_reviews: { agents: Record<string, Record<CallRating, number>>; flags: CallFlag[] } | null;
 };
+
+export type CallRating = 'excellent' | 'good' | 'bad' | 'not_rated';
+/** The AI's rating of one call transcript, with notes on what went wrong and what to change. */
+export type CallReview = { rating: CallRating; went_wrong: string[]; needs_change: string[]; summary: string; analysed_at: string };
+export type CallFlag = CallReview & { recording_id: number; started_at: string; agent_id: number | null; agent_name: string };
 
 export type CaseCall = {
   call_id: number; agent: string; agent_id: number; manual: boolean; result: string; started_at: string; duration_seconds: number | null; outcome: string;
@@ -168,6 +175,18 @@ export const transcriptStatusLabels: Record<string, string> = {
   ready: 'Ready', pending: 'Processing', disabled: 'Transcription disabled',
   unavailable: 'Transcript unavailable', error: 'Sync failed',
 };
+
+export const RATING_LABELS: Record<CallRating, string> = {
+  excellent: 'Excellent', good: 'Good', bad: 'Bad', not_rated: 'Not rated',
+};
+
+/** The same simple rules the AI is given (backend/callcentre/ai.py RATING_CRITERIA). */
+export const RATING_RULES: [CallRating, string][] = [
+  ['excellent', 'Polite greeting, says who they are and that they are from KBC, explains why they are calling, listens and answers correctly, agrees a clear next step with a date, closes politely.'],
+  ['good', 'Professional and the call did its job, but one or two of the excellent points were missed (for example no date for the next step).'],
+  ['bad', 'Rude or impatient, wrong or confusing information, no reason given for the call, ignores the learner, no next step, or personal details shared without checking who answered.'],
+  ['not_rated', 'No real conversation: no answer, voicemail only, wrong number, or too short to judge.'],
+];
 
 export function downloadText(text: string, name: string) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));

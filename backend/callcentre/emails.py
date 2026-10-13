@@ -8,7 +8,7 @@ from django.core.validators import validate_email
 from django.db import transaction
 from django.utils import timezone
 
-from . import booking_email, email_settings, mailer, test_learner
+from . import booking_email, email_settings, mailer
 from .db import DB
 from .models import CaseTicket, EmailDelivery, EmailQuota, EmployerSatisfaction
 from .rules import LONDON, MAX_MISSED_CALLS, email_key
@@ -181,8 +181,7 @@ def process_emails(limit=200):
     processed = 0
     escalate_day = max(0, config['escalate_day'])
     # Manager-requested calls are follow-ups by a specialist, not automated learner reminders.
-    tickets = (CaseTicket.objects.open().filter(source_type__in=config['reminder_types']).exclude(source_type='manual')
-               .exclude(reason_key=test_learner.KEY))
+    tickets = CaseTicket.objects.open().filter(source_type__in=config['reminder_types']).exclude(source_type='manual')
     for ticket in tickets.order_by('created_at').iterator():
         start = (ticket.evidence_after or ticket.created_at).astimezone(LONDON).date()
         age = (today - start).days

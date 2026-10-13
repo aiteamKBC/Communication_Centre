@@ -288,11 +288,6 @@ CALLCENTRE_EMAIL_DAILY_CAP = int(os.getenv('CALLCENTRE_EMAIL_DAILY_CAP', '2'))
 CALLCENTRE_PUBLIC_URL = os.getenv('CALLCENTRE_PUBLIC_URL', '').rstrip('/')
 CALLCENTRE_ESCALATION_EMAIL = os.getenv('CALLCENTRE_ESCALATION_EMAIL', '')
 CALLCENTRE_HOLIDAYS = [s.strip() for s in os.getenv('CALLCENTRE_HOLIDAYS', '').split(',') if s.strip()]
-# The test learner (callcentre/test_learner.py): a phone you can answer turns on one always-first missed-lecture
-# case for testing calls. Leave empty in production; removing it takes the case off every list.
-CALLCENTRE_TEST_LEARNER_PHONE = os.getenv('CALLCENTRE_TEST_LEARNER_PHONE', '').strip()
-# Optional email for the test learner (default: a non-deliverable address).
-CALLCENTRE_TEST_LEARNER_EMAIL = os.getenv('CALLCENTRE_TEST_LEARNER_EMAIL', '').strip()
 CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS = [
     s.strip().lower() for s in os.getenv('CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', '').split(',') if s.strip()
 ]

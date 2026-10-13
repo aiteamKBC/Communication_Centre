@@ -145,13 +145,27 @@ class SummaryTests(SimpleTestCase):
 
 class AiTests(SimpleTestCase):
     valid = {'outcome': 'reached', 'absence_reason': '', 'chosen_option': 'other', 'promised_date': None,
-             'commitments': [], 'sentiment': 'neutral', 'agent_quality_score': 4, 'agent_quality_notes': '',
-             'summary': 'ok', 'confidence': 0.5}
+             'commitments': [], 'sentiment': 'neutral', 'call_rating': 'good', 'went_wrong': [],
+             'needs_change': ['Agree a date for the next step.'], 'summary': 'ok', 'confidence': 0.5}
 
     def test_validate_analysis(self):
         self.assertEqual(validate_analysis(dict(self.valid)), self.valid)
         with self.assertRaises(ValueError):
             validate_analysis({**self.valid, 'confidence': 2})
+
+    def test_call_rating_is_one_of_the_simple_flags(self):
+        with self.assertRaises(ValueError):
+            validate_analysis({**self.valid, 'call_rating': 'average'})
+        with self.assertRaises(ValueError):
+            validate_analysis({**self.valid, 'went_wrong': ['  ']})
+
+    def test_bad_call_needs_notes_on_what_went_wrong_and_what_to_change(self):
+        bad = {**self.valid, 'call_rating': 'bad', 'went_wrong': ['Did not say why they were calling.']}
+        with self.assertRaises(ValueError):
+            validate_analysis({**bad, 'needs_change': []})
+        with self.assertRaises(ValueError):
+            validate_analysis({**bad, 'went_wrong': []})
+        self.assertEqual(validate_analysis(dict(bad))['call_rating'], 'bad')
 
     @override_settings(OPENAI_API_KEY='key', OPENAI_MODEL='model', CALLCENTRE_AI_ENABLED=False)
     def test_ai_needs_explicit_opt_in(self):
