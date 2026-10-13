@@ -1,13 +1,11 @@
-import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import useAccessControl from '../../hooks/useAccessControl';
 
+
 type DashboardLink = {
   title: string;
   url?: string;
-  // In-app route; opened in the same tab instead of an external URL.
-  internalPath?: string;
   description: string;
   label: string;
   icon: string;
@@ -26,6 +24,7 @@ type DashboardLink = {
 
 const dashboardLinks: DashboardLink[] = [
   {
+<<<<<<< Updated upstream
     title: 'Engagement Centre',
     internalPath: '/dashboard/call-centre',
     description: 'Learner calling desk, Zoom Phone calls and engagement KPIs.',
@@ -38,6 +37,8 @@ const dashboardLinks: DashboardLink[] = [
     engagementCentre: true,
   },
   {
+=======
+>>>>>>> Stashed changes
     title: 'Tutor Dashboard',
     url: 'https://tutordashboard.kentbusinesscollege.net/',
     description: 'Teaching delivery, attendance follow-up, and learner-facing academic actions.',
@@ -141,6 +142,17 @@ const dashboardLinks: DashboardLink[] = [
     soft: 'bg-[#fff1f7]',
     text: 'text-[#be185d]',
   },
+
+{
+    title: 'initial assessment',
+    url: 'http://initial-assessment.kentbusinesscollege.net/',
+    description: 'Central learning resources, reference material, and operational document access.',
+    label: 'Resource Library',
+    icon: 'ri-book-open-line',
+    accent: 'from-[#f43f5e] to-[#be123c]',
+    soft: 'bg-[#fff1f7]',
+    text: 'text-[#be185d]',
+  },
   {
     title: 'HR Compliance System',
     url: 'https://hrcompliance.kentbusinesscollege.net/',
@@ -160,6 +172,17 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#14b8a6] to-[#0f766e]',
     soft: 'bg-[#e9fbf7]',
     text: 'text-[#138f82]',
+  },
+
+	{
+    title: 'Lecture Intelligence',
+    url: 'https://positive-moments.kentbusinesscollege.net/',
+    description: 'Lecture records, attendance evidence, quality assurance, and positive learner moments.',
+    label: 'Lecture Operations',
+    icon: 'ri-presentation-line',
+    accent: 'from-[#f97316] to-[#c2410c]',
+    soft: 'bg-[#fff7ed]',
+    text: 'text-[#c2410c]',
   },
 ];
 
@@ -244,10 +267,10 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between gap-3 border-t border-[#efeaf8] pt-3">
                   <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
                     <span className={`inline-flex h-2 w-2 rounded-full ${isComingSoon || isExpiringSoon ? 'bg-[#d4a546]' : 'bg-[#6d47ff]'}`} />
-                    {isComingSoon ? 'Coming soon' : isExpiringSoon ? 'Expire soon' : link.internalPath ? 'Open' : 'Ready in new tab'}
+                    {isComingSoon ? 'Coming soon' : isExpiringSoon ? 'Expire soon' : 'Ready in new tab'}
                   </div>
                   <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${isComingSoon ? 'bg-[#8b5e18]/10 text-[#8b5e18]' : 'bg-[#24164f] text-white transition-transform duration-300 group-hover:scale-105 group-hover:-rotate-3'}`}>
-                    <i className={`${isComingSoon ? 'ri-time-line' : link.internalPath ? 'ri-arrow-right-line' : 'ri-external-link-line'} text-base`} />
+                    <i className={`${isComingSoon ? 'ri-time-line' : 'ri-external-link-line'} text-base`} />
                   </div>
                 </div>
                 </>
@@ -258,14 +281,6 @@ export default function DashboardPage() {
                   <div key={link.title} className={cardClassName}>
                     {content}
                   </div>
-                );
-              }
-
-              if (link.internalPath) {
-                return (
-                  <Link key={link.internalPath} to={link.internalPath} className={cardClassName}>
-                    {content}
-                  </Link>
                 );
               }
 
