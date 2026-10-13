@@ -9,7 +9,7 @@ from .access import is_director
 from .allocation import manager_owners, owners
 from .db import DB
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, CycleState, TicketEvent, ZoomPhoneCall
-from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES,
+from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact)
 from .zoom_views import current_account_filter
 
@@ -145,6 +145,8 @@ def create_intent(ticket_id, agent, actor=None):
     # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
     # keeps its waiting state.
     candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
+    # A technical issue still with support is not part of another call: the call would send it back to the list.
+    candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
     tickets = list(candidates.order_by('pk'))
     if not tickets:
         raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')

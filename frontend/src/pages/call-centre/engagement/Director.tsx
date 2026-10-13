@@ -71,8 +71,7 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
     <>
       <section className="ec-card">
         <h2>Coach bookings · Microsoft Bookings</h2>
-        <p>Booking pages are mapped for {coachesWithLinks} coaches in the current register. Calendar reading is not connected yet.</p>
-        <button type="button" onClick={() => onView('calendar')}>Open coach calendars</button>{' '}
+        <p>Booking pages are mapped for {coachesWithLinks} coaches in the current register.</p>
         <button type="button" onClick={() => onView('bookings')}>Open coach booking links</button>
       </section>
 

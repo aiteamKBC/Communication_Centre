@@ -178,6 +178,9 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         # Evidence wins over returning a promised-date case to the queue.
         step(result, 'resolved', evidence_cycle)
         step(result, 'maintenance', lambda: maintenance(timezone.now()))
+        # After maintenance: a technical issue still with support ends the cycle waiting, whatever a call did meanwhile.
+        from .helpdesk import sync as sync_helpdesk
+        step(result, 'technical_issues', sync_helpdesk)
         step(result, 'matched', match_calls)
         if not skip_ai:
             step(result, 'analyses', process_ai)

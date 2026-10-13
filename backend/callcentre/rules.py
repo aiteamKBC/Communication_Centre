@@ -68,9 +68,16 @@ PROMISES = {
     'epa': {'epa_step': 7},
     'reminder': {},
     'manual': {},
+    # A technical issue raised in the help desk: the specialist resolves it once the learner confirms the fix.
+    'tech_support': {},
 }
+def waiting_on_support():
+    """Technical-issue cases whose help-desk ticket is not closed yet: support has the work, not the specialist."""
+    return Q(source_type='tech_support') & ~Q(source_data__helpdesk_status='Closed')
+
+
 # Cases with nothing to prove: the call itself is the work, so the specialist closes them.
-SPECIALIST_CLOSES = {'reminder', 'manual'}
+SPECIALIST_CLOSES = {'reminder', 'manual', 'tech_support'}
 OPTIONS = {option for options in PROMISES.values() for option in options} | {'other'}
 # Missed calls on one case after which the line-manager reminder email goes out (when reminders are on).
 MAX_MISSED_CALLS = 3

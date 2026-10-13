@@ -200,6 +200,8 @@ CHECKS = {'attendance': attendance_evidence, 'pr': review_evidence, 'mcm': revie
           'reminder': reminder_evidence, 'satisfaction': satisfaction_evidence,
           # A manager's request closes only when a specialist resolves it.
           'manual': lambda ticket, snapshot=None: None,
+          # Closes when the learner confirms the fix on a call (the help desk's own status is followed by helpdesk.sync).
+          'tech_support': lambda ticket, snapshot=None: None,
           'learner_satisfaction': lambda ticket, snapshot=None: None,
           'employer_feedback': lambda ticket, snapshot=None: None}
 

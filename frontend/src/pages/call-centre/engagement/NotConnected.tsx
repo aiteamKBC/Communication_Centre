@@ -25,20 +25,3 @@ export function Eventbrite() {
     </>
   );
 }
-
-export function Calendar() {
-  return (
-    <section className="ec-card co-card">
-      <h2>Coach calendars</h2>
-      <p>Imported calendar bookings in UK time. Learner links use exact email matches. The default date skips weekends; choose dates manually for bank holidays or college closures.</p>
-      <form className="co-filters ec-tools" onSubmit={event => event.preventDefault()}>
-        <label>From <input type="date" disabled /></label>
-        <label>To <input type="date" disabled /></label>
-        <label>Coach <select disabled><option>All accessible coaches</option></select></label>
-        <button type="submit" disabled>Apply</button>
-        <button type="button" disabled>Next working day</button>
-      </form>
-      <p className="ec-alert">The coach calendar feed is not connected yet. Use Coach booking links to book appointments, and Next Day for tomorrow’s confirmed sessions.</p>
-    </section>
-  );
-}

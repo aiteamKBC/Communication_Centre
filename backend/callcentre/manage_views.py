@@ -24,13 +24,13 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, mailer
+from . import booking_links, email_settings, mailer
 from .access import is_director
 from .db import DB
-from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, ZoomPhoneCall
+from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
 from .services import Conflict, event
-from .sources import learner_directory, rows
+from .sources import coach_email, learner_directory, rows
 from .views import authenticated, body
 
 AGENT_FIELDS = ('display_name', 'zoom_email', 'zoom_user_id', 'zoom_phone_number', 'zoom_account',
@@ -261,6 +261,62 @@ def settings_view(request):
         'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing(),
                     'live_allowed': settings.CALLCENTRE_EMAIL_LIVE_ALLOWED},
         'history': email_settings.history(),
+    })
+
+
+COACH_PAGES_NOT_SET_UP = ('Linking coach booking pages is not set up yet. Run docs/callcentre-port/coach_booking_pages.sql '
+                          'on the call-centre database.')
+
+
+def register_coaches():
+    """Coach name -> email for every coach with an open case; the email from the LMS enrolment records ('' if unknown)."""
+    names = {name.strip() for name in CaseTicket.objects.open().values_list('coach', flat=True).distinct() if name and name.strip()}
+    return {name: coach_email(name) for name in sorted(names, key=str.casefold)}
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def coach_pages(request):
+    """Directors link each coach (by email) to their page in the LMS coach directory, which is only read.
+    A coach's links then follow that page as it is edited in the LMS."""
+    require_manager(request.user)
+    coaches = register_coaches()
+    if request.method == 'POST':
+        data = body(request)
+        email = email_key(data.get('email'))
+        slug = data.get('slug')
+        if not email or email not in {email_key(value) for value in coaches.values()}:
+            raise ValueError('Choose a coach from the current register.')
+        if not isinstance(slug, str):
+            raise ValueError('Choose a booking page.')
+        directory = booking_links.pages()
+        if slug and (directory is None or slug not in directory):
+            raise ValueError('That page is not in the LMS coach directory. Reload and choose again.')
+        try:
+            booking_links.confirm(email, slug, request.user.get_username())
+        except ProgrammingError:
+            return JsonResponse({'detail': COACH_PAGES_NOT_SET_UP}, status=503)
+        return JsonResponse({'ok': True})
+    directory = booking_links.pages()
+    try:
+        CoachBookingPage.objects.exists()   # the table is there
+        set_up = True
+    except ProgrammingError:
+        set_up = False
+    rows_out = []
+    for name, email in coaches.items():
+        slug, source = booking_links.page_for(email) if email else ('', '')
+        rows_out.append({
+            'coach': name, 'email': email, 'slug': slug, 'source': source,
+            'page_found': directory is None or not slug or slug in directory,
+            'suggestion': booking_links.suggest(name, directory) if email and not source else '',
+        })
+    return JsonResponse({
+        'coaches': rows_out, 'set_up': set_up, 'not_set_up': '' if set_up else COACH_PAGES_NOT_SET_UP,
+        'directory_readable': directory is not None,
+        'pages': sorted(({'slug': slug, 'name': page['name']} for slug, page in (directory or {}).items()),
+                        key=lambda page: (page['name'].casefold(), page['slug'])),
     })
 
 

@@ -5,7 +5,9 @@ import { dialInPage } from './smartEmbed';
 /** Who is working: `name` is the specialist whose desk is shown (the signed-in user outside a preview). */
 export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string;
   /** False on another specialist's desk: Zoom records calls under the caller's own account, so they would not attach. */
-  ownDesk?: boolean };
+  ownDesk?: boolean;
+  /** Technical issues can be raised in the technical support system. */
+  helpdesk?: boolean };
 
 type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean };
 
@@ -29,7 +31,9 @@ export function callDisabledReason(c: OverviewCase, session: Session, now = Date
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;
   if (!c.learner_phone?.trim()) return 'No number recorded';
   if (!session.agentId) return 'Agent profile needed';
-  if (session.ownDesk === false) return 'Calls go out from your own Zoom account: call from your own desk';
+  // TEMPORARY: the director may call from any specialist's desk until every specialist has their own account.
+  // Remove `!session.isManager` once they do.
+  if (session.ownDesk === false && !session.isManager) return 'Calls go out from your own Zoom account: call from your own desk';
   return '';
 }
 

@@ -6,13 +6,14 @@ import type { Config, Overview } from './api';
 import type { Session } from './engagement/actions';
 import Allocation from './engagement/Allocation';
 import BookingLinksView from './engagement/BookingLinksView';
+import CoachPages from './engagement/CoachPages';
 import CaseWorkspace from './engagement/CaseWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import Director from './engagement/Director';
 import Imports from './engagement/Imports';
 import { DESK_MENUS, deskLabel, longDate } from './engagement/model';
-import { Calendar, Eventbrite } from './engagement/NotConnected';
+import { Eventbrite } from './engagement/NotConnected';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
@@ -22,7 +23,7 @@ import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
 
 const DIRECTOR_NAV: [string, string, string][] = [
-  ['director', 'Director overview', 'chart'], ['calendar', 'Coach calendars', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
+  ['director', 'Director overview', 'chart'], ['bookings', 'Coach booking links', 'calendar'],
   ['allocations', 'Learner allocation', 'people'], ['imports', 'Import & export', 'upload'], ['phone', 'Zoom Phone', 'settings'],
   ['eventbrite', 'Eventbrite', 'calendar'], ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
 ];
@@ -32,7 +33,7 @@ const DIRECTOR_TABS: [string, string][] = [
   ['settings', 'Settings'],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Director overview', calendar: 'Coach calendars', bookings: 'Coach booking links', allocations: 'Learner allocation',
+  director: 'Director overview', bookings: 'Coach booking links', allocations: 'Learner allocation',
   imports: 'Import & export', phone: 'Zoom Phone', eventbrite: 'Eventbrite', connections: 'Make every conversation count',
   settings: 'Settings',
 };
@@ -93,10 +94,11 @@ export default function CallCentrePage() {
     const superuser = !!overview?.access.is_superuser;
     const csrf = config.data?.csrf_token || '';
     const self = overview?.access.display_name || '';
-    if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self };
+    const helpdesk = !!config.data?.helpdesk;
+    if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self, helpdesk };
     const own = deskAgentId !== null && deskAgentId === ownAgent;
     const preview = role === 'viewer' || (!own && !superuser);
-    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own };
+    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own, helpdesk };
   }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role]);
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
@@ -191,9 +193,8 @@ export default function CallCentrePage() {
           ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
               : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} smartEmbed={!!config.data?.smart_embed} />
-                : view === 'bookings' ? <BookingLinksView overview={overview} />
+                : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
                   : view === 'connections' ? <Connections overview={overview} onView={key => setParam({ view: key })} />
-                    : view === 'calendar' ? <Calendar />
                       : view === 'eventbrite' ? <Eventbrite />
                         : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
                         : (

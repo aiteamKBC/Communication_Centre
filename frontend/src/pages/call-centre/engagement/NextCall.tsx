@@ -7,6 +7,7 @@ import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
+import TechIssue from './TechIssue';
 import { activeCase, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
@@ -158,13 +159,15 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     if (picked.get(c.id) === BOOKED) return <p className="ec-tag">Catch-up booked: case closed</p>;
     const bookable = c.bookable.length > 0;
     const bookingEmail = !['signature', 'satisfaction', 'employer_feedback'].includes(c.source_type);
-    if (!bookable && !bookingEmail && c.source_type !== 'learner_satisfaction') return null;
+    const employer = c.source_type === 'employer_feedback';
+    if (!bookable && !bookingEmail && c.source_type !== 'learner_satisfaction' && employer) return null;
     return (
       <div className="ec-buttons ed-next-tools">
         {bookable && <BookSession caseId={c.id} session={session} notify={notify} onBooked={type => booked(c, type)} />}
         {bookingEmail && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
         {c.source_type === 'learner_satisfaction' && <button type="button" disabled={session.preview || !c.learner_email}
           onClick={() => setSatisfactionEmailFor(c.id)}>Email</button>}
+        {!employer && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onRefresh} />}
       </div>
     );
   }

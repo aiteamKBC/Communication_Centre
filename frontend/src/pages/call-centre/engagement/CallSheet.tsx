@@ -8,8 +8,9 @@ import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
+import TechIssue from './TechIssue';
 import type { CallTab } from './model';
-import { ISSUE_LABELS, callGroups, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, callGroups, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 type Props = {
@@ -155,6 +156,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <th scope="row">
                       <strong>{c.learner_name}</strong>
                       <span>{c.learner_phone || 'No phone recorded'}</span>
+                      {!employer && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
                       {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
                       {employer ? (
                         <details>
@@ -178,6 +180,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       <span>{employer ? c.organisation || 'Organisation not recorded' : c.coach || 'Coach not recorded'}</span>
                       {c.source_type === 'attendance' && c.issue_date && <span>{c.issue_date} · {c.issue_name}</span>}
                       {c.booking_at && <span>{shortDate(c.booking_at)} · {c.issue_name}</span>}
+                      {c.helpdesk && <span>{c.helpdesk.ticket} · {helpdeskStatus(c.helpdesk)}</span>}
+                      {c.helpdesk?.helpdesk_error && <small>Last status check failed: {c.helpdesk.helpdesk_error}</small>}
                       <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} unanswered` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
                       <button type="button" className="ed-sheet-link" onClick={() => onOpen(c.id)}>Full case</button>
                     </td>

@@ -269,6 +269,9 @@ ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').l
 # In-page calling with Zoom Phone Smart Embed (the Zoom admin installs the Smart Embed app first). Off: the Call
 # button opens the Zoom desktop app.
 CALLCENTRE_SMART_EMBED = os.getenv('CALLCENTRE_SMART_EMBED', '').lower() in ('1', 'true', 'yes')
+# The KBC technical support (help-desk) site, e.g. https://technicalsupport.kentbusinesscollege.net. Empty: specialists
+# cannot raise technical issues and open ones are not followed up.
+CALLCENTRE_HELPDESK_URL = os.getenv('CALLCENTRE_HELPDESK_URL', '').strip().rstrip('/')
 ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
 # Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
 CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')

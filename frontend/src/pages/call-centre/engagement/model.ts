@@ -1,5 +1,5 @@
 // Presentation rules for the Engagement Centre screens. The server stays authoritative for access and outcomes.
-import type { AgentStats, Overview, OverviewCase } from '../api';
+import type { AgentStats, Case, Overview, OverviewCase } from '../api';
 
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
@@ -20,8 +20,8 @@ export const CALL_TABS: CallTab[] = [
     hint: 'Each employer (line manager) with their learners: complete a feedback call every three calendar months. Unanswered calls do not complete a review.' },
   { key: 'manager', label: 'Extra Calls by Manager', icon: 'message', reasons: [],
     hint: 'Additional calls requested by a manager. Follow the request’s purpose and record the agreed outcome; the case closes when a specialist resolves it.' },
-  { key: 'ai', label: 'AI suggestions', icon: 'check', reasons: [],
-    hint: 'Cases the AI review suggests closing. Approve to resolve, or reject to return the case to the calling list.' },
+  { key: 'tech', label: 'Technical issues', icon: 'settings', reasons: [],
+    hint: 'Technical issues raised in the technical support system. A ticket waits there until support closes it; then call the learner to confirm it is fixed and resolve the case.' },
 ];
 
 
@@ -29,7 +29,7 @@ export const ISSUE_LABELS: Record<string, string> = {
   attendance: 'Missed lecture', pr: 'Progress review overdue', mcm: 'Monthly coaching overdue',
   pr_missed: 'Missed progress review', mcm_missed: 'Missed monthly coaching', signature: 'Missing signature', otj: 'Off-the-job hours',
   epa: 'EPA preparation', reminder: 'Tomorrow’s appointment', manual: 'Extra call by manager',
-  learner_satisfaction: 'Learner satisfaction', employer_feedback: 'Employer satisfaction',
+  learner_satisfaction: 'Learner satisfaction', employer_feedback: 'Employer satisfaction', tech_support: 'Technical issue',
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
@@ -42,9 +42,17 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   otj: 'Agree support to record and recover off-the-job hours.',
   epa: 'Confirm the learner’s EPA preparation and next step.',
   reminder: 'Confirm attendance at tomorrow’s appointment or rebook it.',
+  tech_support: 'Confirm with the learner that the technical issue is fixed, then resolve the case.',
   employer_feedback: 'Record the employer’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
   learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
 };
+
+/** The help-desk ticket on a technical-issue case, in words. */
+export function helpdeskStatus(helpdesk: NonNullable<Case['helpdesk']>) {
+  const status = helpdesk.helpdesk_status || 'Open';
+  if (status === 'Closed') return 'Closed in the ticket system: awaiting learner confirmation';
+  return `${status} in the ticket system${helpdesk.helpdesk_reason ? ` · ${helpdesk.helpdesk_reason}` : ''}`;
+}
 
 const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem']];
 const PROMISE_LABELS: Record<string, string> = {
@@ -156,6 +164,7 @@ export function dueForCall(c: OverviewCase, now = Date.now()) {
 }
 
 export function categoryFor(c: OverviewCase, today: string, nextWorkday: string) {
+  if (c.source_type === 'tech_support') return 'tech';
   if (c.status === 'ai_suggested_close') return 'ai';
   if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
@@ -198,8 +207,6 @@ export function callGroups(cases: OverviewCase[], mode: string): CallGroup[] {
       if (!c.programme) continue;
       identity = [c.programme];
       label = c.programme;
-    } else if (mode === 'event') {
-      continue;
     } else {
       if (!c.coach) continue;
       identity = [c.coach];

@@ -6,8 +6,9 @@ import BookSession from './BookSession';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
+import TechIssue from './TechIssue';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
+import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -70,9 +71,14 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <div className="ed-phone-line"><strong>{c.learner_phone || 'Phone number not recorded'}</strong>{!employer && <span>Coach: {c.coach || 'Not recorded'}</span>}</div>
       {employer && <p className="ec-muted">Learners: {c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'}</p>}
       <p className="ed-purpose">{casePurpose(c)}</p>
+      {c.helpdesk && (
+        <p className="ec-muted">Ticket {c.helpdesk.ticket} ({c.helpdesk.subcategory}) · {helpdeskStatus(c.helpdesk)} · raised by {c.helpdesk.raised_by}
+          {c.helpdesk.helpdesk_error ? ` · Last status check failed: ${c.helpdesk.helpdesk_error}` : ''}</p>
+      )}
       <div className="ec-buttons">
         <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
         {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
+        {!employer && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={() => { refresh(); onRefresh?.(); }} />}
         {c.source_type === 'learner_satisfaction' && <button type="button"
           disabled={session.preview || !session.canAct || !c.learner_email}
           onClick={() => setEmailOpen(true)}>Email</button>}

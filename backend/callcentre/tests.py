@@ -11,7 +11,9 @@ from unittest import mock
 
 from django.conf import settings
 from django.core import signing
+from django.db import DatabaseError, ProgrammingError
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.utils import timezone
 
 from backend.db_routers import CallCentreRouter
 from . import aptem_summaries as summaries
@@ -420,6 +422,321 @@ class BookingEmailTests(SimpleTestCase):
         self.assertNotEqual(afaan['mcm'], med['pr'])
         self.assertTrue(med['support'].endswith('3xT6G1X7mUeeCWp7yJmQwA2'))
         self.assertTrue(all(url.startswith('https://') for links in booking_links.CATALOGUE.values() for url in links.values()))
+
+
+AFAAN = 'afaan.khan@kentbusinesscollege.com'
+
+
+class CoachBookingPageTests(SimpleTestCase):
+    """Links follow the coach's page in the LMS coach directory (only read); a director confirms which page."""
+
+    def setUp(self):
+        self.pages = {'afaan': {'name': 'Afaan', 'links': {'pr': 'https://book.example/afaan-pr-new'}},
+                      'rukshana': {'name': 'Rukshana', 'links': {'support': 'https://book.example/ruk-support'}}}
+        self.confirmed = {}
+        for patcher in (mock.patch.dict(booking_links._cached, {'pages': None, 'confirmed': {}, 'next_refresh': 0.0}),
+                        mock.patch.dict(settings.DATABASES, {booking_links.LMS: {}}),
+                        mock.patch.object(booking_links, '_read_pages', side_effect=lambda: self.pages),
+                        mock.patch.object(booking_links, '_read_confirmed', side_effect=lambda: self.confirmed)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_catalogue_coach_follows_their_lms_page(self):
+        self.assertEqual(booking_links.links_for_email(AFAAN), {'pr': 'https://book.example/afaan-pr-new'})
+        self.assertEqual(booking_links.page_for(AFAAN), ('afaan', 'catalogue'))
+
+    def test_a_confirmed_page_gives_a_new_coach_links(self):
+        self.assertEqual(booking_links.links_for_email('rukshana.hussain@kentbusinesscollege.com'), {})
+        self.confirmed = {'rukshana.hussain@kentbusinesscollege.com': 'rukshana'}
+        booking_links.refresh(force=True)
+        self.assertEqual(booking_links.links_for_email(' Rukshana.Hussain@KentBusinessCollege.com '),
+                         {'support': 'https://book.example/ruk-support'})
+
+    def test_confirmed_no_page_and_a_removed_page_give_no_links(self):
+        self.confirmed = {AFAAN: ''}
+        self.assertEqual(booking_links.links_for_email(AFAAN), {})
+        self.confirmed = {}
+        del self.pages['afaan']
+        booking_links.refresh(force=True)
+        self.assertEqual(booking_links.links_for_email(AFAAN), {})
+
+    def test_until_the_directory_is_read_the_bundled_links_are_used(self):
+        del settings.DATABASES[booking_links.LMS]
+        self.assertEqual(booking_links.links_for_email(AFAAN), booking_links.CATALOGUE[AFAAN])
+        self.assertTrue(booking_links.CATALOGUE[AFAAN])
+        # A confirmed page other than the catalogue's cannot be shown without the directory.
+        self.confirmed = {AFAAN: 'rukshana'}
+        booking_links.refresh(force=True)
+        self.assertEqual(booking_links.links_for_email(AFAAN), {})
+        self.assertIsNone(booking_links.pages())
+
+    def test_an_unreadable_directory_keeps_the_last_good_pages(self):
+        booking_links.refresh()
+        booking_links._read_pages.side_effect = DatabaseError('connection lost')
+        with self.assertLogs('callcentre.booking_links', 'WARNING'):
+            booking_links.refresh(force=True)
+        self.assertEqual(booking_links.links_for_email(AFAAN), {'pr': 'https://book.example/afaan-pr-new'})
+
+    def test_linking_not_set_up_uses_the_catalogue_pages(self):
+        booking_links._read_confirmed.side_effect = ProgrammingError('relation does not exist')
+        self.assertEqual(booking_links.page_for(AFAAN), ('afaan', 'catalogue'))
+        self.assertEqual(booking_links.links_for_email(AFAAN), {'pr': 'https://book.example/afaan-pr-new'})
+
+    def test_read_at_most_once_a_minute(self):
+        for _ in range(3):
+            booking_links.links_for_email(AFAAN)
+        self.assertEqual(booking_links._read_pages.call_count, 1)
+
+    def test_names_only_suggest_a_single_matching_page(self):
+        directory = {'rukshana': {'name': 'Rukshana'}, 'omar-badr': {'name': 'Omar Badr'},
+                     'omar-elshafey': {'name': 'Omar Elshafey'}, 'med': {'name': 'Med'}}
+        self.assertEqual(booking_links.suggest('Rukshana  Hussain', directory), 'rukshana')
+        self.assertEqual(booking_links.suggest('omar badr', directory), 'omar-badr')
+        self.assertEqual(booking_links.suggest('Omar Smith', directory), '')    # two "Omar" pages
+        self.assertEqual(booking_links.suggest('Ahmed Lotfi', directory), '')
+        self.assertEqual(booking_links.suggest('Anyone', None), '')
+
+
+@override_settings(CALLCENTRE_HELPDESK_URL='https://support.example')
+class HelpdeskTests(SimpleTestCase):
+    """Technical issues raised in the help desk through its public ticket API; nothing real is contacted."""
+
+    def reply(self, status=200, data=None):
+        response = mock.Mock(status_code=status)
+        response.json.side_effect = (lambda: data) if data is not None else ValueError('not JSON')
+        return mock.patch('callcentre.helpdesk.requests.request', return_value=response)
+
+    def test_ticket_is_created_for_the_learner_as_a_technical_ticket(self):
+        from . import helpdesk
+        with self.reply(201, {'ticket': {'id': 'KBC-000123', 'status': 'Open'}}) as request:
+            public_id, ticket = helpdesk.create_ticket('learner@example.com', 'LMS', 'Cannot open the module page.')
+        self.assertEqual(public_id, 'KBC-000123')
+        args, kwargs = request.call_args
+        self.assertEqual(args, ('POST', 'https://support.example/api/tickets'))
+        self.assertEqual(kwargs['json'], {'email': 'learner@example.com', 'category': 'Technical',
+                                          'technicalSubcategory': 'LMS', 'inquiry': 'Cannot open the module page.'})
+        self.assertFalse(kwargs['allow_redirects'])
+
+    def test_help_desk_refusals_and_bad_replies_are_reported(self):
+        from . import helpdesk
+        with self.reply(404, {'message': 'This email is not registered in our records.'}), \
+                self.assertRaisesMessage(helpdesk.HelpdeskError, 'This email is not registered in our records.'):
+            helpdesk.create_ticket('x@example.com', 'LMS', 'Something broke here.')
+        for reply in (self.reply(200), self.reply(201, {'ticket': {'id': '../admin'}})):
+            with reply, self.assertRaises(helpdesk.HelpdeskError):
+                helpdesk.create_ticket('x@example.com', 'LMS', 'Something broke here.')
+        with mock.patch('callcentre.helpdesk.requests.request', side_effect=helpdesk.requests.ConnectTimeout) as request, \
+                self.assertRaisesMessage(helpdesk.HelpdeskError, 'could not be reached'):
+            helpdesk.ticket_status('KBC-000123')
+        self.assertEqual(request.call_count, helpdesk.CONNECT_ATTEMPTS)
+
+    def test_a_dropped_connection_is_retried_but_a_sent_request_never_is(self):
+        from . import helpdesk
+        answered = mock.Mock(status_code=201)
+        answered.json.return_value = {'ticket': {'id': 'KBC-000123'}}
+        with mock.patch('callcentre.helpdesk.requests.request', side_effect=[helpdesk.requests.ConnectTimeout, answered]) as request:
+            self.assertEqual(helpdesk.create_ticket('x@example.com', 'LMS', 'Something broke here.')[0], 'KBC-000123')
+        self.assertEqual(request.call_count, 2)
+        with mock.patch('callcentre.helpdesk.requests.request', side_effect=helpdesk.requests.ReadTimeout) as request, \
+                self.assertRaisesMessage(helpdesk.HelpdeskError, 'may still have been created'):
+            helpdesk.create_ticket('x@example.com', 'LMS', 'Something broke here.')
+        self.assertEqual(request.call_count, 1)
+
+    def test_status_is_read_only_for_a_valid_ticket_number(self):
+        from . import helpdesk
+        with self.reply(200, {'ticket': {'status': 'Pending', 'statusReason': 'Escalation'}}) as request:
+            self.assertEqual(helpdesk.ticket_status('KBC-000123'), {'status': 'Pending', 'reason': 'Escalation'})
+        self.assertEqual(request.call_args.args, ('GET', 'https://support.example/api/tickets/KBC-000123/chat-history'))
+        with self.reply(200, {}) as request, self.assertRaises(helpdesk.HelpdeskError):
+            helpdesk.ticket_status('KBC-1/../../admin')
+        request.assert_not_called()
+
+    @override_settings(CALLCENTRE_HELPDESK_URL='')
+    def test_switched_off_without_a_help_desk_address(self):
+        from . import helpdesk
+        self.assertFalse(helpdesk.enabled())
+        self.assertEqual(helpdesk.sync(), 'Not connected')
+        with self.assertRaises(helpdesk.HelpdeskError):
+            helpdesk.create_ticket('x@example.com', 'LMS', 'Something broke here.')
+
+    def case(self, **data):
+        return SimpleNamespace(source_data={'ticket': 'KBC-000123', 'helpdesk_status': 'Open', **data}, status='pending_verification',
+                               next_followup_at=None, due_at=None, sla_breached=True, claimed_by_id=None, save=mock.Mock())
+
+    def test_a_closed_ticket_makes_the_case_due_for_the_confirmation_call(self):
+        from . import helpdesk
+        case, now = self.case(), datetime(2026, 10, 13, 10, tzinfo=LONDON)
+        with mock.patch('callcentre.helpdesk.event') as event:
+            helpdesk.apply_status(case, 'Closed', 'Closed via Agent', now)
+            self.assertEqual((case.status, case.sla_breached), ('new', False))
+            self.assertEqual(case.due_at.date(), date(2026, 10, 15))
+            self.assertEqual(case.source_data['helpdesk_status'], 'Closed')
+            event.assert_called_once_with(case, 'helpdesk_closed', {'ticket': 'KBC-000123', 'reason': 'Closed via Agent'})
+            # Still closed on the next check: nothing changes again.
+            helpdesk.apply_status(case, 'Closed', 'Closed via Agent', now)
+            self.assertEqual(event.call_count, 1)
+            # Support reopened it before anyone called: waiting on support again.
+            helpdesk.apply_status(case, 'Open', '', now)
+            self.assertEqual(case.status, 'pending_verification')
+            self.assertEqual(event.call_args.args[1], 'helpdesk_reopened')
+
+    def test_open_and_pending_tickets_keep_the_case_waiting(self):
+        from . import helpdesk
+        case = self.case()
+        with mock.patch('callcentre.helpdesk.event') as event:
+            helpdesk.apply_status(case, 'Pending', 'Escalation', timezone.now())
+        self.assertEqual(case.status, 'pending_verification')
+        self.assertEqual(case.source_data['helpdesk_reason'], 'Escalation')
+        event.assert_not_called()
+
+    def test_a_call_while_support_has_the_ticket_does_not_put_the_case_back_on_the_list(self):
+        from . import helpdesk
+        now = timezone.now()
+        # A missed call made the case due now; an answered one set a next-morning follow-up.
+        for status, followup in (('new', None), ('pending_verification', now + timedelta(hours=16))):
+            case = self.case()
+            case.status, case.next_followup_at = status, followup
+            with self.subTest(status=status), mock.patch('callcentre.helpdesk.event') as event:
+                helpdesk.apply_status(case, 'Open', '', now)
+                self.assertEqual((case.status, case.next_followup_at), ('pending_verification', None))
+                self.assertGreater(case.due_at, now + timedelta(days=300))
+                event.assert_not_called()
+
+    def test_a_callback_or_a_case_being_worked_is_left_alone(self):
+        from . import helpdesk
+        callback_at = timezone.now() + timedelta(days=1)
+        callback = self.case()
+        callback.status, callback.next_followup_at = 'pending_learner', callback_at
+        claimed = self.case()
+        claimed.status, claimed.claimed_by_id = 'new', 3
+        with mock.patch('callcentre.helpdesk.event'):
+            helpdesk.apply_status(callback, 'Pending', 'Escalation', timezone.now())
+            helpdesk.apply_status(claimed, 'Open', '', timezone.now())
+        self.assertEqual((callback.status, callback.next_followup_at), ('pending_learner', callback_at))
+        self.assertEqual(claimed.status, 'new')
+
+    def test_a_call_about_another_case_leaves_out_technical_issues_still_with_support(self):
+        from .rules import waiting_on_support
+        sql = str(CaseTicket.objects.filter(~waiting_on_support()).query)
+        self.assertIn('tech_support', sql)
+        self.assertIn('helpdesk_status', sql)
+
+    def test_raising_checks_the_input_before_contacting_the_help_desk(self):
+        from . import helpdesk
+        origin = SimpleNamespace(pk=7, learner_email='learner@example.com', learner_name='Learner')
+        agent = SimpleNamespace(display_name='Agent One')
+        with mock.patch('callcentre.helpdesk.create_ticket') as create:
+            for subcategory, description, email in (('Coverage', 'Valid description.', 'l@example.com'),
+                                                    ('LMS', 'short', 'l@example.com'), ('LMS', 'Valid description.', '')):
+                origin.learner_email = email
+                with self.subTest(subcategory=subcategory, description=description), self.assertRaises(ValueError):
+                    helpdesk.raise_issue(origin, agent, 'agent', subcategory, description, 'key')
+            create.assert_not_called()
+
+    def test_a_repeated_request_does_not_raise_a_second_ticket(self):
+        from . import helpdesk
+        origin = SimpleNamespace(pk=7, learner_email='learner@example.com', learner_name='Learner')
+        existing = SimpleNamespace(pk=9)
+        with mock.patch('callcentre.helpdesk.create_ticket') as create, \
+                mock.patch('callcentre.helpdesk.CaseTicket.objects.filter') as found:
+            found.return_value.first.return_value = existing
+            self.assertEqual(helpdesk.raise_issue(origin, SimpleNamespace(display_name='A'), 'a', 'LMS', 'Valid description.', 'k'),
+                             (existing, False))
+        create.assert_not_called()
+
+    def view(self, user, payload, origin_email='learner@example.com'):
+        from .views import tech_issue
+        request = RequestFactory().post('/api/callcentre/tickets/7/tech-issue/', data=json.dumps(payload), content_type='application/json')
+        request._dont_enforce_csrf_checks = True
+        request.user = user
+        origin = SimpleNamespace(pk=7, learner_email=origin_email, learner_name='Learner', learner_phone='+447700900123', coach='Coach',
+                                 organisation='', programme='', manager_name='', manager_email='')
+        agent = SimpleNamespace(pk=3, display_name='Agent One')
+        with mock.patch('callcentre.access.has_access', return_value=True), \
+                mock.patch('callcentre.views.operating_agent', return_value=agent if user.is_agent else None), \
+                mock.patch('callcentre.views.CaseTicket.objects.get', return_value=origin), \
+                mock.patch('callcentre.views.can_work', return_value=agent), \
+                mock.patch('callcentre.helpdesk.CaseTicket.objects.filter') as found, \
+                mock.patch('callcentre.helpdesk.create_ticket', return_value=('KBC-000123', {'status': 'Open'})) as create, \
+                mock.patch('callcentre.helpdesk.CaseTicket.objects.create', return_value=SimpleNamespace(
+                    pk=11, source_data={'ticket': 'KBC-000123'})), \
+                mock.patch('callcentre.helpdesk.event'), mock.patch('callcentre.helpdesk.transaction.atomic'):
+            found.return_value.first.return_value = None
+            response = tech_issue(request, 7)
+        return response.status_code, json.loads(response.content), create
+
+    agent_user = SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=False, is_agent=True, get_username=lambda: 'agent')
+    payload = {'subcategory': 'LMS', 'description': 'The learner cannot open their module page.',
+               'request_key': '3f2b1c9e-8d7a-4b6c-9e1f-0a2b3c4d5e6f', 'email': 'someone.else@example.com'}
+
+    def test_the_ticket_is_raised_for_the_case_learner_not_an_email_in_the_request(self):
+        status, data, create = self.view(self.agent_user, self.payload)
+        self.assertEqual((status, data['ticket'], data['id']), (201, 'KBC-000123', 11))
+        self.assertEqual(create.call_args.args[0], 'learner@example.com')
+        self.assertIn('Raised by Agent One (KBC Engagement Centre)', create.call_args.args[2])
+
+    def test_only_specialists_raise_tickets_and_a_request_key_is_required(self):
+        no_agent = SimpleNamespace(**{**vars(self.agent_user), 'is_agent': False})
+        self.assertEqual(self.view(no_agent, self.payload)[0], 403)
+        self.assertEqual(self.view(self.agent_user, {**self.payload, 'request_key': 'nope'})[0], 400)
+
+    def test_a_help_desk_refusal_is_shown_to_the_specialist(self):
+        from . import helpdesk
+        with mock.patch('callcentre.helpdesk.raise_issue', side_effect=helpdesk.HelpdeskError('This email is not registered in our records.')):
+            status, data, _ = self.view(self.agent_user, self.payload)
+        self.assertEqual((status, data['detail']), (502, 'This email is not registered in our records.'))
+
+
+class CoachPagesViewTests(SimpleTestCase):
+    manager = CallRequestTests.manager
+    coaches = {'Afaan Khan': AFAAN, 'Rukshana Hussain': 'rukshana.hussain@kentbusinesscollege.com', 'No Email': ''}
+
+    def call(self, user, payload=None):
+        factory = RequestFactory()
+        request = (factory.post('/api/callcentre/coach-pages/', data=json.dumps(payload), content_type='application/json')
+                   if payload is not None else factory.get('/api/callcentre/coach-pages/'))
+        request._dont_enforce_csrf_checks = True
+        request.user = user
+        with mock.patch('callcentre.access.has_access', return_value=True), \
+                mock.patch('callcentre.manage_views.register_coaches', return_value=self.coaches), \
+                mock.patch.object(booking_links, 'pages', return_value={'rukshana': {'name': 'Rukshana', 'links': {}}}), \
+                mock.patch.object(booking_links, 'confirm') as confirm, \
+                mock.patch('callcentre.manage_views.CoachBookingPage.objects.exists', return_value=False):
+            from .manage_views import coach_pages
+            response = coach_pages(request)
+        return response.status_code, json.loads(response.content), confirm
+
+    def test_only_directors_link_pages(self):
+        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
+        self.assertEqual(self.call(agent)[0], 403)
+        status, _, confirm = self.call(agent, {'email': AFAAN, 'slug': 'rukshana'})
+        self.assertEqual(status, 403)
+        confirm.assert_not_called()
+
+    def test_coaches_show_their_page_and_a_suggestion(self):
+        status, data, _ = self.call(self.manager)
+        self.assertEqual(status, 200)
+        rows = {row['coach']: row for row in data['coaches']}
+        self.assertEqual((rows['Afaan Khan']['slug'], rows['Afaan Khan']['source']), ('afaan', 'catalogue'))
+        self.assertFalse(rows['Afaan Khan']['page_found'])   # not in the (mocked) directory
+        self.assertEqual(rows['Rukshana Hussain']['suggestion'], 'rukshana')
+        self.assertEqual(rows['No Email']['suggestion'], '')
+        self.assertEqual(data['pages'], [{'slug': 'rukshana', 'name': 'Rukshana'}])
+        self.assertTrue(data['set_up'])
+
+    def test_director_confirms_a_page_for_a_register_coach(self):
+        status, _, confirm = self.call(self.manager, {'email': 'Rukshana.Hussain@kentbusinesscollege.com', 'slug': 'rukshana'})
+        self.assertEqual(status, 200)
+        confirm.assert_called_once_with('rukshana.hussain@kentbusinesscollege.com', 'rukshana', 'manager')
+        self.assertEqual(self.call(self.manager, {'email': AFAAN, 'slug': ''})[0], 200)   # no booking page
+
+    def test_unknown_coach_or_page_is_refused(self):
+        for payload in ({'email': 'someone@example.com', 'slug': 'rukshana'}, {'email': '', 'slug': 'rukshana'},
+                        {'email': AFAAN, 'slug': 'not-a-page'}, {'email': AFAAN, 'slug': None}):
+            with self.subTest(payload=payload):
+                status, _, confirm = self.call(self.manager, payload)
+                self.assertEqual(status, 400)
+                confirm.assert_not_called()
 
 
 class CoachRuleTests(SimpleTestCase):

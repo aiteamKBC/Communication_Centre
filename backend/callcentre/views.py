@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import date, timedelta
 from functools import wraps
 from urllib.parse import urlencode
@@ -16,7 +17,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, lms_booking, satisfaction_email, test_learner
+from . import email_settings, helpdesk, lms_booking, satisfaction_email, test_learner
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback
 from .access import is_director, refused
 from .ai import ai_enabled
@@ -47,6 +48,7 @@ ISSUE_NAMES = {
     'manual': 'Extra call',
     'learner_satisfaction': 'Learner satisfaction',
     'employer_feedback': 'Employer satisfaction',
+    'tech_support': 'Technical issue',
 }
 
 
@@ -61,6 +63,8 @@ def issue_json(ticket):
         name = str(data.get('session_type') or '').strip()
     elif ticket.source_type == 'manual':
         name = str(data.get('title') or '').strip()
+    elif ticket.source_type == 'tech_support':
+        name = ' · '.join(str(data.get(key) or '') for key in ('ticket', 'subcategory') if data.get(key))
     elif ticket.source_type in REVIEW_CATEGORIES:
         name = str(data.get('review_type') or '').strip()
     return {
@@ -145,6 +149,9 @@ def ticket_json(ticket):
         'promises': PROMISES.get(ticket.source_type, {}), 'specialist_closes': ticket.source_type in SPECIALIST_CLOSES,
         'purpose': str(ticket.source_data.get('purpose') or '') if isinstance(ticket.source_data, dict) else '',
         'requested_by': str(ticket.source_data.get('requested_by') or '') if isinstance(ticket.source_data, dict) else '',
+        'helpdesk': {key: ticket.source_data.get(key) for key in (
+            'ticket', 'subcategory', 'description', 'raised_by', 'helpdesk_status', 'helpdesk_reason', 'helpdesk_checked_at',
+            'helpdesk_error')} if ticket.source_type == 'tech_support' else None,
         'priority_why': f"Risk: {ticket.risk}; SLA: {'overdue' if score[2] else 'within due date'}; learner overdue: {score[3]} days; misses: {ticket.misses}; tomorrow: {bool(score[5])}; failed attempts: {ticket.attempts}",
     }
 
@@ -190,7 +197,7 @@ def config(request):
         'agents': list(agents.order_by('zoom_account').values(
             'id', 'display_name', 'zoom_account', 'zoom_phone_number')),
         'email_mode': email_settings.current()['email_mode'], 'ai_enabled': ai_enabled(),
-        'smart_embed': settings.CALLCENTRE_SMART_EMBED,
+        'smart_embed': settings.CALLCENTRE_SMART_EMBED, 'helpdesk': helpdesk.enabled(),
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details', 'locked_until').first(),
     })
@@ -505,6 +512,30 @@ def booking_email_send(request, pk):
         raise PermissionDenied('An active agent profile or manager permission is required.')
     sender = agent.display_name if agent else (request.user.get_full_name() or request.user.get_username())
     return JsonResponse(send_booking_email(pk, request.user, sender, data, acting_agent=agent))
+
+
+@authenticated
+@require_POST
+@csrf_protect
+def tech_issue(request, pk):
+    """Raise the learner of case ``pk`` as a technical support ticket and open a technical-issue case to follow it.
+    The requester is the case's learner, never an email from the request."""
+    data = body(request)
+    agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
+    if not agent:
+        raise PermissionDenied('An agent profile is required to raise a technical issue.')
+    try:
+        request_key = str(uuid.UUID(str(data.get('request_key', ''))))
+    except ValueError:
+        raise ValueError('The request key is missing or invalid.') from None
+    origin = CaseTicket.objects.get(pk=pk)
+    can_work(origin, request.user, acting_agent=agent)
+    try:
+        case, created = helpdesk.raise_issue(origin, agent, request.user.get_username(), str(data.get('subcategory', '')),
+                                             str(data.get('description', '')), request_key)
+    except helpdesk.HelpdeskError as exc:
+        return JsonResponse({'detail': str(exc)}, status=502)
+    return JsonResponse({'id': case.pk, 'ticket': case.source_data['ticket'], 'created': created}, status=201 if created else 200)
 
 
 @authenticated

@@ -154,7 +154,7 @@ class CaseTicket(Retained):
     objects = CaseQuerySet.as_manager()
     CATEGORIES = [(s, s.upper() if s in ('pr', 'mcm', 'otj', 'epa') else s.replace('_', ' ').title())
                   for s in ('attendance', 'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature', 'otj', 'epa', 'reminder',
-                            'satisfaction', 'learner_satisfaction', 'employer_feedback', 'manual')]
+                            'satisfaction', 'learner_satisfaction', 'employer_feedback', 'manual', 'tech_support')]
     STATES = [(s, s.replace('_', ' ').title()) for s in (
         'new', 'in_progress', 'pending_learner', 'pending_verification', 'ai_suggested_close',
         'resolved', 'unreachable', 'escalated',
@@ -403,4 +403,20 @@ class SettingHistory(Retained):
 
     class Meta:
         db_table = 'callcenter_setting_history'
+        managed = False
+
+
+class CoachBookingPage(models.Model):
+    """The LMS coach directory page (``login.coach_directory.slug``) a director confirmed for a coach.
+
+    ``page_slug`` '' means the director confirmed the coach has no booking page. Coaches without a row use
+    the page the bundled catalogue gives their email (``booking_links``).
+    """
+    coach_email = models.EmailField(max_length=254, primary_key=True)
+    page_slug = models.CharField(max_length=255, blank=True)
+    updated_by = models.CharField(max_length=255)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_coach_booking_page'
         managed = False

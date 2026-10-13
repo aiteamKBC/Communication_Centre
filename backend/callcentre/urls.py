@@ -12,6 +12,7 @@ urlpatterns = [
     path('tickets/<int:pk>/booking-email/', views.booking_email),
     path('tickets/<int:pk>/booking-email/send/', views.booking_email_send),
     path('tickets/<int:pk>/satisfaction-email/', views.satisfaction_email_view),
+    path('tickets/<int:pk>/tech-issue/', views.tech_issue),
     path('tickets/<int:pk>/<str:command>/', views.action),
     path('performance/', views.agent_report),
     path('satisfaction/', views.satisfaction_report),
@@ -23,5 +24,6 @@ urlpatterns = [
     path('identity-status/', manage_views.identity_status),
     path('requests/', manage_views.call_requests),
     path('allocations/', manage_views.allocations),
+    path('coach-pages/', manage_views.coach_pages),
     path('settings/', manage_views.settings_view),
 ]

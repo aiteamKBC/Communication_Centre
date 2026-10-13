@@ -177,7 +177,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
             <div><h2>Keep the purpose consistent</h2><p className="ec-muted">Work through one group at a time, with a separate outcome for each learner.</p></div>
             <label>Group by
               <select value={mode} onChange={event => setMode(event.target.value)}>
-                {[['coach', 'Coach + call reason'], ['class', 'Same class session'], ['event', 'Same event occurrence'], ['programme', 'Programme + reason']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                {[['coach', 'Coach + call reason'], ['class', 'Same class session'], ['programme', 'Programme + reason']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </label>
           </div>
@@ -196,17 +196,11 @@ export default function Desk({ overview, agent, session, section, name, status, 
             ))}
             {!groups.length && (
               <div className="ec-empty">
-                <h3>No verified {mode === 'event' ? 'event' : mode === 'class' ? 'class session' : 'matching'} groups available</h3>
-                <p>{mode === 'event' ? 'Event registrations are not connected yet.' : mode === 'class' ? 'Missed-lecture cases need a shared module and date. A shared coach alone does not establish the same session.' : 'Groups appear when active cases have the selected context.'}</p>
+                <h3>No verified {mode === 'class' ? 'class session' : 'matching'} groups available</h3>
+                <p>{mode === 'class' ? 'Missed-lecture cases need a shared module and date. A shared coach alone does not establish the same session.' : 'Groups appear when active cases have the selected context.'}</p>
               </div>
             )}
           </div>
-        </section>
-        <section className="ec-card ed-automation">
-          <h2>Calling efficiency</h2>
-          <p>Focus sessions can open the next learner after you save their outcome. You stay in control of when each call starts.</p>
-          <label><input type="checkbox" disabled /> Automatic dialling — not connected</label>
-          <p className="ec-muted">Calls open in the Zoom desktop app. Automatic dialling and call-end confirmation are not connected.</p>
         </section>
       </>
     );
@@ -222,7 +216,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
         <section className="ec-card">
           <h2>Build a strong calling day</h2>
           <div className="ed-badges">
-            {[['Call-time target', `${duration(agent?.target_seconds)} of verified connected calls`], ['Ten connections', '10 answered calls'], ['Quality champion', '3 scored calls with an average quality of at least 85% (scoring not connected)']].map(([badge, text]) => (
+            {[['Call-time target', `${duration(agent?.target_seconds)} of verified connected calls`], ['Ten connections', '10 answered calls']].map(([badge, text]) => (
               <article key={badge} className={earned.includes(badge) ? 'earned' : ''}>
                 <span>{earned.includes(badge) ? '★ Earned' : '☆ In progress'}</span><h3>{badge}</h3><p>{text}</p>
               </article>
@@ -230,13 +224,9 @@ export default function Desk({ overview, agent, session, section, name, status, 
           </div>
           <details>
             <summary>How points are earned</summary>
-            <p>Up to 100 points for reaching your call-time target, 5 points per answered call up to 100, and up to 100 for evidenced call quality. Unscored calls do not receive quality points.</p>
+            <p>Up to 100 points for reaching your call-time target, and 5 points per answered call up to 100.</p>
           </details>
           <p className="ec-muted">{agent ? 'Figures use verified Zoom Phone records.' : 'No agent profile is linked, so no telephone activity is shown. Zero recorded activity is not evidence that no work took place.'}</p>
-        </section>
-        <section className="ec-card ed-lower">
-          <h2>My agreed development actions</h2>
-          <p className="ec-muted">Development actions are not connected yet.</p>
         </section>
       </>
     );

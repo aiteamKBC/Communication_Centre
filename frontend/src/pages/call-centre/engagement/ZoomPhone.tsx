@@ -101,7 +101,6 @@ function Agents({ csrf }: { csrf: string }) {
             </select>
           </label>
           <label>Zoom email<input type="email" required value={form.zoom_email} onChange={event => set('zoom_email', event.target.value)} /></label>
-          <label>Zoom user ID (optional)<input value={form.zoom_user_id} onChange={event => set('zoom_user_id', event.target.value)} /></label>
           <label>Engagement number (+44…)<input value={form.zoom_phone_number} onChange={event => set('zoom_phone_number', event.target.value)} /></label>
           <label>Daily talk target (minutes)<input type="number" min={0} value={form.daily_talk_target_minutes} onChange={event => set('daily_talk_target_minutes', Number(event.target.value))} /></label>
           <label className="wide ec-checks"><input type="checkbox" checked={form.active} onChange={event => set('active', event.target.checked)} /> Active specialist</label>

@@ -20,6 +20,9 @@ export type Case = {
   created_at: string; priority_why: string; source_data: Record<string, unknown>;
   /** Manager requests only: why to call and who asked. */
   purpose: string; requested_by: string;
+  /** Technical issues only: the ticket in the technical support system and its last known status. */
+  helpdesk: { ticket: string; subcategory: string; description: string; raised_by: string; helpdesk_status: string;
+    helpdesk_reason: string; helpdesk_checked_at: string | null; helpdesk_error?: string | null } | null;
   /** What the learner agreed to and the deadline; a missed promise is back in the queue. */
   promised_at: string | null; promise_missed: boolean;
   /** What the learner can agree to (option -> days to do it, null: agreeing closes the case); without options a specialist closes the case. */
@@ -71,6 +74,8 @@ export type Config = {
   csrf_token: string; agent_id: number | null; is_manager: boolean; is_superuser: boolean; email_mode: string; ai_enabled: boolean;
   /** In-page calling with Zoom Phone Smart Embed is switched on for this server. */
   smart_embed: boolean;
+  /** Specialists can raise technical issues in the technical support system. */
+  helpdesk: boolean;
   agents: { id: number; display_name: string; zoom_account: string; zoom_phone_number: string }[];
   sources: { name: string; last_success_at: string | null; details: { error?: string } }[];
   cycle: { last_success_at: string | null } | null;
