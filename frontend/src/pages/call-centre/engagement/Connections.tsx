@@ -3,23 +3,18 @@ import { human, longDate } from './model';
 
 const rules: [string, string][] = [
   ['Missed lecture: due within 2 working days', 'A catch-up session booked in the LMS calendar, or attendance evidence. Lectures appear 3 days after they happen.'],
-  ['Progress review or monthly coaching overdue: 3 working days', 'The review or meeting is booked and recorded in Aptem.'],
+  ['Progress review or monthly coaching overdue: 3 working days', 'The review or meeting is booked and completed in the LMS.'],
   ['Off-the-job hours or EPA preparation: 5 working days', 'The source shows the learner back on track.'],
   ['Tomorrow’s appointment', 'Attendance confirmed or the session rebooked before it starts.'],
   ['Learner satisfaction: every three calendar months, 10 working days', 'Active, Delivery and Onboarding learners (LMS status first). Complete feedback after an answered Zoom call. Failed calls and emails do not restart the clock. A review that cannot be done is closed without feedback; the next is due three months later.'],
   ['Employer satisfaction: every three calendar months, 10 working days', 'One call per line manager (from Aptem) who has a current learner, made by the specialist who looks after those learners. Same feedback form and rules as learner satisfaction.'],
-  ['Unanswered calls', 'The learner can be called again straight away and moves to the bottom of the list (satisfaction calls: from 9am the next working day).'],
+  ['Unanswered calls', 'The learner is held until 9am the next working day (or the follow-up date chosen), then comes back at the bottom of the list. No calls at weekends or on bank holidays.'],
 ];
 
 /** Source health and the rules that open and close cases. */
-export default function Connections({ overview, onView }: { overview: Overview; onView: (view: string) => void }) {
+export default function Connections({ overview }: { overview: Overview }) {
   return (
     <>
-      <section className="ec-card">
-        <h2>Eventbrite organiser connection</h2>
-        <p>Connect your organiser accounts and browse event registrations.</p>
-        <button type="button" className="primary" onClick={() => onView('eventbrite')}>Open Eventbrite setup</button>
-      </section>
       <div className="ec-connection-list">
         {overview.sources.map(source => {
           const error = source.details?.error;

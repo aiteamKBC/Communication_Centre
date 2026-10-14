@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentStats, Overview } from '../api';
 import { api } from '../api';
@@ -9,9 +9,8 @@ import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
 import LearnerPanel from './LearnerPanel';
 import NextCall from './NextCall';
-import type { CallGroup } from './model';
 import {
-  CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, promiseLabel, badges, callGroups, categoryCases, contactKey, downloadBlob, dueForCall,
+  CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, promiseLabel, badges, categoryCases, contactKey, downloadBlob, dueForCall,
   duration, human, issueLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners,
 } from './model';
 
@@ -86,31 +85,26 @@ function History({ onOpen }: { onOpen: (id: number) => void }) {
   );
 }
 
-/** The operator's calling day: category call sheets, learner workspaces, groups, progress and reports. */
+/** The operator's calling day: category call sheets, learner workspaces, progress and reports. */
 export default function Desk({ overview, agent, session, section, name, status, onSection, onExit, onRefresh, onMonth, notify }: Props) {
   const [tabs, setTabs] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [issue, setIssue] = useState('all');
-  const [mode, setMode] = useState('coach');
-  const [group, setGroup] = useState<CallGroup | null>(null);
   const [focus, setFocus] = useState(false);
   const [advance, setAdvance] = useState(true);
   const [touched, setTouched] = useState<Set<string>>(new Set());
-  // Set when a button moves to the follow-ups section to start a focus session there.
-  const focusOnArrival = useRef(false);
 
   useEffect(() => {
     setDetailId(null);
-    setFocus(focusOnArrival.current);
-    focusOnArrival.current = false;
+    setFocus(false);
     setTouched(new Set());
   }, [section]);
 
   const active = useMemo(() => overview.cases.filter(activeCase), [overview.cases]);
   const queue = useMemo(() => uniqueLearners(active.filter(c => (issue === 'all' || c.source_type === issue)
-    && (!group || group.cases.some(x => x.id === c.id)) && !touched.has(contactKey(c)) && matchesSearch(c, search))), [active, issue, group, touched, search]);
+    && !touched.has(contactKey(c)) && matchesSearch(c, search))), [active, issue, touched, search]);
   const currentCase = overview.cases.find(c => c.id === current);
 
   function open(id: number) {
@@ -172,42 +166,6 @@ export default function Desk({ overview, agent, session, section, name, status, 
     body = <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={setDetailId} />;
   } else if (tab) {
     body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
-  } else if (section === 'groups') {
-    const groups = callGroups(active, mode);
-    body = (
-      <>
-        <section className="ec-card">
-          <div className="ec-head">
-            <div><h2>Keep the purpose consistent</h2><p className="ec-muted">Work through one group at a time, with a separate outcome for each learner.</p></div>
-            <label>Group by
-              <select value={mode} onChange={event => setMode(event.target.value)}>
-                {[['coach', 'Coach + call reason'], ['class', 'Same class session'], ['programme', 'Programme + reason']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
-          </div>
-          <div className="ed-groups">
-            {groups.map(g => (
-              <article key={g.key}>
-                <span className="ec-tag">{g.cases.length} {g.cases.length === 1 ? 'person' : 'people'}</span>
-                <h3>{g.label}</h3>
-                <p>{g.purpose}</p>
-                <button type="button" className="primary" onClick={() => {
-                  setGroup(g); setSearch(''); setIssue('all');
-                  focusOnArrival.current = true;
-                  onSection('followups');
-                }}>Work through group</button>
-              </article>
-            ))}
-            {!groups.length && (
-              <div className="ec-empty">
-                <h3>No verified {mode === 'class' ? 'class session' : 'matching'} groups available</h3>
-                <p>{mode === 'class' ? 'Missed-lecture cases need a shared module and date. A shared coach alone does not establish the same session.' : 'Groups appear when active cases have the selected context.'}</p>
-              </div>
-            )}
-          </div>
-        </section>
-      </>
-    );
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'history') {
@@ -275,7 +233,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
       <>
         {focus && (
           <div className="ed-session">
-            <div><strong>Focus session · {group?.label || 'Priority calls'}</strong><span>{touched.size} people worked through · {queue.length} remaining</span></div>
+            <div><strong>Focus session · Priority calls</strong><span>{touched.size} people worked through · {queue.length} remaining</span></div>
             <label><input type="checkbox" checked={advance} onChange={event => setAdvance(event.target.checked)} /> Open next learner after saving</label>
           </div>
         )}
@@ -287,7 +245,6 @@ export default function Desk({ overview, agent, session, section, name, status, 
                 <option value="all">All call reasons</option>
                 {Object.entries(ISSUE_LABELS).filter(([key]) => active.some(c => c.source_type === key)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>
-              {group && <button type="button" onClick={() => { setGroup(null); setFocus(false); }}>Clear group: {group.label}</button>}
             </div>
             <div id="ed-queue-list">
               <div className="ed-queue-heading"><strong>{queue.length} people with active cases</strong><span>Priority order</span></div>
@@ -298,7 +255,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
                   <small>{c.coach || 'Coach not recorded'} · {shortDate(c.next_followup_at || c.due_at)}</small>
                   <small>{human(c.status)}{dueForCall(c) ? ' · Due now' : ''}</small>
                 </button>
-              )) : <div className="ec-empty"><h3>No people in this list</h3><p>Try another reason or clear the group.</p></div>}
+              )) : <div className="ec-empty"><h3>No people in this list</h3><p>Try another reason or clear the search.</p></div>}
             </div>
           </aside>
           <section className="ed-work">
@@ -318,7 +275,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
               <section className="ec-card ed-start">
                 <p className="ec-eyebrow">One purposeful conversation at a time</p>
                 <h2>{queue.length ? queue[0].learner_name : 'Your call desk is ready'}</h2>
-                <p>{queue.length ? casePurpose(queue[0]) : 'Choose a call group or another list.'}</p>
+                <p>{queue.length ? casePurpose(queue[0]) : 'Choose another list.'}</p>
                 <button type="button" className="primary" disabled={!queue.length} onClick={next}>Open next learner</button>
                 {!focus && <button type="button" disabled={!queue.length} onClick={() => { setFocus(true); setTouched(new Set()); if (current === null) next(); }}>Start focus session</button>}
                 <p className="ec-muted">Each learner appears once in this list. Their other open issues stay together in the workspace.</p>
@@ -342,7 +299,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
         <div><p className="ec-eyebrow">{longDate(overview.today)} · {name}</p><h1>{DESK_MENUS.find(item => item[0] === section)?.[1] || 'Call next'}</h1></div>
         <div className="ec-buttons">
           {section === 'followups' && (focus
-            ? <button type="button" onClick={() => { setFocus(false); setGroup(null); setTouched(new Set()); }}>End focus session</button>
+            ? <button type="button" onClick={() => { setFocus(false); setTouched(new Set()); }}>End focus session</button>
             : <button type="button" disabled={!queue.length} onClick={() => { setFocus(true); setTouched(new Set()); if (current === null) next(); }}>Start focus session</button>)}
           <button type="button" onClick={onRefresh}>Refresh</button>
         </div>

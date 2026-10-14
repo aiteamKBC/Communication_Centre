@@ -373,7 +373,17 @@ class LmsBookingTests(SimpleTestCase):
 
     def test_catch_up_only_on_missed_lecture_cases(self):
         self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='attendance')), ['catch-up', 'student-support'])
-        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='pr')), ['student-support'])
+        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='epa')), ['student-support'])
+
+    def test_no_coach_booking_where_a_support_session_is_not_the_next_step(self):
+        # Reviews have their own review slot, a signature has nothing to book, tomorrow's appointment is booked already.
+        for source_type in ('pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature', 'reminder', 'learner_satisfaction', 'tech_support'):
+            self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type=source_type)), [], source_type)
+
+    def test_tomorrows_appointment_is_named_in_words(self):
+        from .views import issue_json
+        ticket = SimpleNamespace(pk=1, source_type='reminder', status='new', overdue_since=None, source_data={'session_type': 'mcm'})
+        self.assertEqual(issue_json(ticket)['issue_name'], 'Monthly coaching meeting')
 
     def test_booking_refuses_bad_input_before_touching_any_system(self):
         ticket = SimpleNamespace(source_type='pr')
@@ -1112,4 +1122,4 @@ class EmployerAllocationTests(SimpleTestCase):
 
     def test_employers_are_never_booked_coach_sessions(self):
         self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='employer_feedback')), [])
-        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='learner_satisfaction')), ['student-support'])
+        self.assertEqual(lms_booking.session_types(SimpleNamespace(source_type='satisfaction')), [])

@@ -51,10 +51,13 @@ class Unavailable(RuntimeError):
 
 
 def session_types(ticket):
-    # Employers are not learners: no coach session is booked from an employer call.
-    if ticket.source_type in ('employer_feedback', 'satisfaction'):
-        return []
-    return [CATCH_UP, SUPPORT] if ticket.source_type == 'attendance' else [SUPPORT]
+    """What can be booked from this case. Only where a coach session is the agreed next step: a missed lecture's
+    catch-up, or support towards EPA, off-the-job hours or a manager's request. A review is booked in its own
+    review slot (the booking email sends the coach's review page), a signature has nothing to book, tomorrow's
+    appointment is already booked, and employer, satisfaction and technical calls are not coaching."""
+    if ticket.source_type == 'attendance':
+        return [CATCH_UP, SUPPORT]
+    return [SUPPORT] if ticket.source_type in ('epa', 'otj', 'manual') else []
 
 
 def bookable_day(day):

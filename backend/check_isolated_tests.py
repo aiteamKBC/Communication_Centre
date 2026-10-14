@@ -66,7 +66,8 @@ def main():
                     for model in apps.get_models():
                         editor.create_model(model)
             modules = sys.argv[1:] or ['api.tests', 'login.tests', 'callcentre.tests',
-                                      'callcentre.test_learner_satisfaction', 'callcentre.test_source_bridge', 'callcentre.test_identity']
+                                      'callcentre.test_learner_satisfaction', 'callcentre.test_source_bridge', 'callcentre.test_identity',
+                                      'callcentre.test_call_flow']
             suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
             result = unittest.TextTestRunner(verbosity=1).run(suite)
         return 0 if result.wasSuccessful() else 1

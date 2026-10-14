@@ -3,6 +3,7 @@ import type { Overview } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
+import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
@@ -19,6 +20,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [bookingEmailOpen, setBookingEmailOpen] = useState(false);
 
   if (error) return <p role="alert">{error}</p>;
   if (!detail) return <p role="status">Loading the learner’s case…</p>;
@@ -30,10 +32,10 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const facts = employer
     ? [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Employer phone', c.learner_phone], ['Employer email', c.learner_email],
       ['Organisation', c.organisation], ['Learners', c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'],
-      ['Due', longDate(c.due_at)], ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Unanswered calls', String(c.attempts)]]
+      ['Call due by', longDate(c.due_at)], ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Unanswered calls', String(c.attempts)]]
     : [['Engagement specialist', c.claimed_by || 'Not in progress'], ['Learner phone', c.learner_phone],
       ['Learner email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name],
-      ['Line manager email', c.manager_email], ['Coach', c.coach], ['Due', longDate(c.due_at)],
+      ['Line manager email', c.manager_email], ['Coach', c.coach], ['Call due by', longDate(c.due_at)],
       ['Next contact', c.next_followup_at ? longDate(c.next_followup_at) : 'Due now'], ['Unanswered calls', String(c.attempts)]];
 
   const epaRaw = c.source_type === 'epa' ? (c.source_data?.epa_metrics as Record<string, string | number> | undefined) : undefined;
@@ -79,7 +81,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
               {facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
             </dl>
             <div className="ec-alert">
-              {c.sla_breached ? `Overdue by ${c.sla_days_overdue} days. ` : ''}
+              {c.sla_breached ? `This call is ${c.sla_days_overdue} ${c.sla_days_overdue === 1 ? 'day' : 'days'} past its due date. ` : ''}
               {c.learner_days_overdue ? `The learner’s activity has been outstanding for ${c.learner_days_overdue} days. ` : ''}
               {employer ? 'Ask how each of their learners is getting on.' : 'Check the learner’s current position before discussing a recorded gap.'}
             </div>
@@ -90,7 +92,8 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
                   {mine ? 'Release case' : 'Claim case'}
                 </button>
               )}
-              {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
+              {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
+              {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
               {c.source_type === 'learner_satisfaction' && <button type="button"
                 disabled={session.preview || !session.canAct || !c.learner_email}
                 onClick={() => setEmailOpen(true)}>Email</button>}
@@ -150,6 +153,9 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
         </div>
       </div>
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
+      <Dialog open={bookingEmailOpen} onClose={() => setBookingEmailOpen(false)}>
+        {bookingEmailOpen && <BookingEmail key={c.id} caseId={c.id} session={session} />}
+      </Dialog>
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
         {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} />}
       </Dialog>

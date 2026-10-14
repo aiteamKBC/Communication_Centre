@@ -9,12 +9,12 @@ export const isSatisfaction = (c: { source_type?: string }) => c.source_type ===
 export const CALL_TABS: CallTab[] = [
   { key: 'missed', label: 'Missed', icon: 'calendar',
     reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
-    hint: 'Check the missed activity and agree a new time. Request outstanding signatures without rebooking a completed meeting.' },
+    hint: 'Missed lectures, reviews that were booked but are not completed, and finished reviews waiting for a signature. Agree a catch-up or a new review time; for a signature, ask the learner to sign in the LMS (nothing to book).' },
   // Off-the-job hours cases are paused on the server (rules.PAUSED_CATEGORIES); add ['otj', 'Off-the-job hours'] back with them.
   { key: 'due', label: 'Due', icon: 'calendar', reasons: [['mcm', 'Monthly coaching'], ['pr', 'Progress review'], ['epa', 'EPA']],
-    hint: 'Monthly coaching, progress reviews and EPA preparation that are overdue. Agree a booking or a support action.' },
+    hint: 'Progress reviews and monthly coaching that are due but not booked yet: send the booking email. EPA: learners past their end date; check their gateway and EPA position and agree the next step.' },
   { key: 'nextday', label: 'Next Day', icon: 'calendar', reasons: [],
-    hint: 'Confirm tomorrow’s coaching sessions and reviews with each learner.' },
+    hint: 'Appointments on the next working day. Confirm each learner will attend; if they cannot, ask them to contact their coach to rearrange.' },
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
     hint: 'Active, Delivery and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
@@ -34,15 +34,15 @@ export const ISSUE_LABELS: Record<string, string> = {
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
-  attendance: 'Agree a catch-up session.',
-  pr: 'Book the overdue progress review with the coach.',
-  mcm: 'Book the overdue monthly coaching meeting.',
-  pr_missed: 'Find out why the progress review was missed and agree to rebook it.',
-  mcm_missed: 'Find out why the monthly coaching meeting was missed and agree to rebook it.',
-  signature: 'Ask the learner to sign the review in the LMS.',
+  attendance: 'The register shows the learner absent from this lecture. Find out why, then book a catch-up session with their coach (Book with coach) or send the booking email.',
+  pr: 'The progress review is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s progress review link.',
+  mcm: 'The monthly coaching meeting is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s coaching link.',
+  pr_missed: 'The progress review was booked but is not completed in the LMS. Check whether it went ahead; if not, send the booking email so the learner can rebook it.',
+  mcm_missed: 'The monthly coaching meeting was booked but is not completed in the LMS. Check whether it went ahead; if not, send the booking email so the learner can rebook it.',
+  signature: 'The review is finished and waiting for the learner’s signature. Ask them to sign it in the LMS; there is nothing to book.',
   otj: 'Agree support to record and recover off-the-job hours.',
-  epa: 'Confirm the learner’s EPA preparation and next step.',
-  reminder: 'Confirm attendance at tomorrow’s appointment or rebook it.',
+  epa: 'The learner is past their programme end date and still active. Check where they are with gateway and the end-point assessment and agree the next step; book a support session with their coach if they need help.',
+  reminder: 'Confirm the learner will attend tomorrow’s appointment. If they cannot, ask them to contact their coach to rearrange it, and say why in the note.',
   tech_support: 'Confirm with the learner that the technical issue is fixed, then resolve the case.',
   employer_feedback: 'Record the employer’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
   learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
@@ -85,16 +85,27 @@ export function outcomeHelp(choice: string, c: Pick<OverviewCase, 'promises' | '
     const days = c.promises[option];
     return days === null
       ? 'The case closes now: the learner has agreed to do it.'
-      : `The case waits ${days} day${days === 1 ? '' : 's'} for proof. If nothing shows up, it comes back to the top of the list.`;
+      : `The case waits ${days} day${days === 1 ? '' : 's'} for proof (or until the follow-up date, if you choose one). If nothing shows up, it comes back to the top of the list.`;
   }
   return {
-    reached: c.specialist_closes ? 'Resolve the case once the call’s purpose is done.' : 'The case comes back tomorrow morning unless the learner agrees something.',
-    no_answer: `Marked as a missed call and moved to the bottom of the list (${c.attempts} unanswered so far).`,
-    wrong_number: 'Recorded on the case; it comes back next working day. Say what happened in the note.',
+    reached: c.specialist_closes ? 'Resolve the case once the call’s purpose is done.' : 'The case comes back next working morning (or on the follow-up date, if you choose one) unless the learner agrees something.',
+    no_answer: `Marked as a missed call (${c.attempts} unanswered so far). Held until the next working morning (or the follow-up date, if you choose one), then back at the bottom of the list.`,
+    wrong_number: 'Recorded on the case; it comes back next working day (or on the follow-up date, if you choose one). Say what happened in the note.',
     callback: 'The case comes back to the list at the time you choose.',
-    refused: 'Recorded on the case; it comes back next working day. Say what the learner said in the note.',
+    refused: 'Recorded on the case; it comes back next working day (or on the follow-up date, if you choose one). Say what the learner said in the note.',
   }[outcome] || '';
 }
+
+/** The outcome closes the case straight away (the learner agreed something with nothing to wait for). */
+export function closesCase(choice: string, c: Pick<OverviewCase, 'promises'>) {
+  const { outcome, option } = splitOutcome(choice);
+  return outcome === 'reached' && !!option && c.promises[option] === null;
+}
+
+/** Quick follow-up choices: working days from today, at 10:00 London time. */
+export const QUICK_FOLLOW_UPS: [number, string][] = [[3, '+3 days'], [5, '+5 days']];
+/** A datetime-local value for 10:00 London, `workdays` working days from today. */
+export const workdayInput = (workdays: number) => `${londonDate(londonWorkdayAt(workdays, 10).toISOString())}T10:00`;
 
 /** Splits an outcome choice into the outcome and the agreed option the server expects. */
 export function splitOutcome(choice: string) {
@@ -106,12 +117,16 @@ const londonFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London
 export const londonDate = (value: string | null | undefined) => (value ? londonFormat.format(new Date(value)) : '');
 const londonClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
 
-/** `hour`:00 London time, `workdays` working days (Mon-Fri) after today London time. */
+// Bank holidays and college closures, from the server (overview.holidays); set whenever the overview loads.
+let holidays = new Set<string>();
+export const setHolidays = (dates: string[] | undefined) => { holidays = new Set(dates || []); };
+
+/** `hour`:00 London time, `workdays` working days (Mon-Fri, not a bank holiday) after today London time. */
 export function londonWorkdayAt(workdays: number, hour: number) {
   const day = new Date(`${londonDate(new Date().toISOString())}T12:00:00Z`);
   for (let left = workdays; left > 0;) {
     day.setUTCDate(day.getUTCDate() + 1);
-    if (day.getUTCDay() % 6 !== 0) left -= 1;
+    if (day.getUTCDay() % 6 !== 0 && !holidays.has(day.toISOString().slice(0, 10))) left -= 1;
   }
   return londonWallTime(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, 0);
 }
@@ -198,34 +213,6 @@ export function uniqueLearners(cases: OverviewCase[]) {
   });
 }
 
-export type CallGroup = { key: string; label: string; purpose: string; cases: OverviewCase[] };
-
-export function callGroups(cases: OverviewCase[], mode: string): CallGroup[] {
-  const groups = new Map<string, CallGroup>();
-  for (const c of cases) {
-    let identity: string[];
-    let label: string;
-    if (mode === 'class') {
-      if (c.source_type !== 'attendance' || !c.issue_date) continue;
-      identity = [c.issue_name, c.issue_date];
-      label = `${c.issue_name} · ${c.issue_date}`;
-    } else if (mode === 'programme') {
-      if (!c.programme) continue;
-      identity = [c.programme];
-      label = c.programme;
-    } else {
-      if (!c.coach) continue;
-      identity = [c.coach];
-      label = c.coach;
-    }
-    // Never batch different reasons together.
-    const key = JSON.stringify([mode, c.source_type, ...identity]);
-    if (!groups.has(key)) groups.set(key, { key, label, purpose: issueLabel(c), cases: [] });
-    groups.get(key)!.cases.push(c);
-  }
-  return [...groups.values()].map(g => ({ ...g, cases: uniqueLearners(g.cases) }));
-}
-
 export function matchesSearch(c: OverviewCase, query: string) {
   const q = query.trim().toLowerCase();
   return !q || [c.learner_name, c.learner_email, c.learner_phone, c.programme, c.coach, c.organisation].join(' ').toLowerCase().includes(q);
@@ -246,23 +233,65 @@ export function badges(today: AgentStats['today'], target: number) {
 export const caseTone = (c: Pick<OverviewCase, 'status' | 'sla_breached'>) =>
   c.status === 'resolved' ? 'green' : c.sla_breached ? 'amber' : '';
 
-export function shortGuide(c: Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose'>, operator: string) {
+/** An appointment's day and London time, e.g. "Thu 15 Oct at 10:00". */
+export const appointmentTime = (value: string) => {
+  const at = new Date(value);
+  const day = at.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' });
+  return `${day} at ${at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })}`;
+};
+
+/** What the booking tools do for this case, or why there is nothing to book. */
+export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable'>) {
+  if (c.bookable.includes('catch-up')) return 'Book a catch-up or support session in the coach’s LMS calendar, or send the booking email.';
+  if (c.bookable.length) return 'Book a support session in the coach’s LMS calendar, or send the booking email.';
+  const rebook = 'The learner rebooks the review from the coach’s page in the booking email.';
+  return ({
+    pr: 'The learner books the review from the coach’s page in the booking email.',
+    mcm: 'The learner books the meeting from the coach’s page in the booking email.',
+    pr_missed: rebook, mcm_missed: rebook,
+    signature: 'Nothing to book: the learner signs the review in the LMS.',
+    reminder: 'Already booked. If the learner cannot attend, they contact their coach to rearrange.',
+    learner_satisfaction: 'No booking for a satisfaction call.',
+    tech_support: 'No booking: technical support has the issue.',
+  } as Record<string, string>)[c.source_type] || '';
+}
+
+type GuideCase =Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose' | 'issue_name' | 'issue_date' | 'booking_at' | 'coach' | 'booking_links'>;
+
+/** The call guide: the opening, what to say about this case, and how to close. Words the specialist can say as written. */
+export function shortGuide(c: GuideCase, operator: string) {
   const first = c.learner_name.split(' ')[0];
   const op = operator.split(' ')[0];
+  const coach = c.coach || 'your coach';
+  const on = c.issue_date ? ` on ${longDate(c.issue_date)}` : '';
+  const review = c.issue_name || 'review';
+  // The booking email carries the coach's page for this kind of review; without one the coach arranges the time.
+  const link = c.booking_links[c.source_type.startsWith('pr') ? 'pr' : 'mcm'];
+  const book = link ? `I’ll email you the link to book it straight into ${coach}’s calendar.` : `I’ll ask ${coach} to contact you with a time.`;
+  const rebook = link ? 'I’ll email you the link to book a new time.' : `I’ll ask ${coach} to contact you with a new time.`;
+  const catchUp = c.issue_name.startsWith('Missed catch-up');
   const questions: Record<string, string> = {
     otj: 'What learning have you completed recently? What is making it difficult to record or complete your hours? What support would help this week?',
-    reminder: 'Can you confirm tomorrow’s appointment and whether you can attend? Do we need to arrange another time?',
-    attendance: 'What prevented you from attending? Can we book you a catch-up session?',
-    pr_missed: 'What stopped the progress review going ahead? Can we agree a new time with your coach?',
-    mcm_missed: 'What stopped the coaching meeting going ahead? Can we agree a new time with your coach?',
-    signature: 'Your review is waiting for your signature in the LMS. Can you sign it today? Do you need help finding it?',
+    reminder: c.booking_at
+      ? `You have a ${review.toLowerCase()} with ${coach} on ${appointmentTime(c.booking_at)}. Can you confirm you will be there? If you can’t make it, please contact ${coach} to rearrange.`
+      : `Can you confirm you will attend tomorrow’s ${review.toLowerCase()} with ${coach}? If you can’t make it, please contact ${coach} to rearrange.`,
+    attendance: catchUp
+      ? `Our records show you missed the catch-up session booked for ${c.issue_name.replace(/^Missed catch-up( — )?/, '') || 'your missed lecture'}. What happened? Can we book another catch-up with ${coach}?`
+      : `Our register shows you as absent from ${c.issue_name || 'your lecture'}${on}. Is everything OK? What stopped you attending? (If you did attend, tell me and we will check the register.) Can we book a catch-up session with ${coach} so you don’t fall behind?`,
+    pr: `Your progress review with ${coach} is due and isn’t booked yet. When would suit you? ${book}`,
+    mcm: `Your monthly coaching meeting with ${coach} is due and isn’t booked yet. When would suit you? ${book}`,
+    pr_missed: `Your ${review.toLowerCase()}${on} isn’t showing as completed. Did it go ahead? If it did, I’ll note it so ${coach} can complete the record. If not, ${rebook}`,
+    mcm_missed: `Your ${review.toLowerCase()}${on} isn’t showing as completed. Did it go ahead? If it did, I’ll note it so ${coach} can complete the record. If not, ${rebook}`,
+    signature: `Your ${review.toLowerCase()} is finished and is waiting for your signature in the LMS. Can you sign it today? I can talk you through finding it.`,
+    epa: 'Your programme end date has passed, so you should now be getting ready for gateway and your end-point assessment. Where are you up to? What do you need from your coach to move forward?',
+    tech_support: 'I’m following up the technical issue you reported. Is it working for you now, or is it still causing problems?',
     employer_feedback: 'How satisfied are you with the apprenticeship and our coaching, from 1 to 5? How are your learners progressing, what could we improve, and what support would help?',
     learner_satisfaction: 'How satisfied are you with your learning and coaching, from 1 to 5? What is going well, what could improve, and what support would help?',
   };
   return [
-    `Hello ${first}, it’s ${op} from Kent Business College. Is now a good time? Calls are recorded for quality and follow-up; confirm you are comfortable before continuing.`,
+    `Hello, could I speak to ${first}? It’s ${op} from Kent Business College. Is now a good time? Calls are recorded for quality and follow-up; check they are comfortable before you continue.`,
     (c.source_type === 'manual' && c.purpose) || questions[c.source_type] || 'What is your current position with this action? What would help you take the next step?',
-    'Agree an action, its owner and a date. Check understanding and confirm how the learner will receive the next steps.',
+    'Agree what happens next, who does it and by when. Repeat it back to check they understand, and tell them what they will receive (for example the booking email).',
   ];
 }
 
@@ -285,7 +314,7 @@ export const csvText = (headers: string[], rows: Record<string, unknown>[]) =>
 export const DESK_MENUS: [string, string, string][] = [
   ['next', 'Next call', 'phone'],
   ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
-  ['groups', 'Call groups', 'people'], ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'],
+  ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'],
   ['history', 'History', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
   ['reports', 'Reports', 'file'],
 ];
@@ -306,28 +335,30 @@ export type AllocationChange = { email: string; agent_id: number | null; revisio
 export type AllocationUnit = { key: string; emails: string[] };
 
 /**
- * Hands whole units to specialists so each gets a similar number of learners. A unit stays with the
- * specialist who has most of it while that stays within a fair share, so as few learners as possible move;
- * the rest go, largest first, to whoever has the fewest so far. Returns learner email -> specialist.
+ * Hands whole units to specialists so each gets a similar load: by default the number of learners, or any
+ * `weight` (e.g. open cases). A unit stays with the specialist who has most of it while that stays within a
+ * fair share, so as few learners as possible move; the rest go, heaviest first, to whoever has the least so far.
+ * Returns learner email -> specialist.
  */
-export function balanceUnits(units: AllocationUnit[], current: Map<string, number | null>, operators: number[]) {
+export function balanceUnits<T extends AllocationUnit>(units: T[], current: Map<string, number | null>, operators: number[],
+  weight: (unit: T) => number = unit => unit.emails.length) {
   const owners = new Map<string, number>();
   if (!operators.length) return owners;
   const load = new Map(operators.map(id => [id, 0]));
-  const share = Math.ceil(units.reduce((sum, unit) => sum + unit.emails.length, 0) / operators.length);
-  const give = (unit: AllocationUnit, id: number) => {
+  const share = Math.ceil(units.reduce((sum, unit) => sum + weight(unit), 0) / operators.length);
+  const give = (unit: T, id: number) => {
     unit.emails.forEach(email => owners.set(email, id));
-    load.set(id, (load.get(id) || 0) + unit.emails.length);
+    load.set(id, (load.get(id) || 0) + weight(unit));
   };
-  const rest: AllocationUnit[] = [];
-  for (const unit of [...units].sort((a, b) => b.emails.length - a.emails.length || a.key.localeCompare(b.key))) {
+  const rest: T[] = [];
+  for (const unit of [...units].sort((a, b) => weight(b) - weight(a) || b.emails.length - a.emails.length || a.key.localeCompare(b.key))) {
     const counts = new Map<number, number>();
     for (const email of unit.emails) {
       const id = current.get(email);
       if (id != null && load.has(id)) counts.set(id, (counts.get(id) || 0) + 1);
     }
     const keep = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
-    if (keep !== undefined && (load.get(keep) || 0) + unit.emails.length <= share) give(unit, keep);
+    if (keep !== undefined && (load.get(keep) || 0) + weight(unit) <= share) give(unit, keep);
     else rest.push(unit);
   }
   for (const unit of rest) give(unit, operators.reduce((best, next) => ((load.get(next) || 0) < (load.get(best) || 0) ? next : best)));

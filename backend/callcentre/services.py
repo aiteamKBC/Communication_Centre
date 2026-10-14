@@ -10,7 +10,7 @@ from .allocation import learner_owner, manager_owners, owners
 from .db import DB
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, CycleState, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
-                    add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact)
+                    add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
 from .zoom_views import current_account_filter
 
 
@@ -108,11 +108,17 @@ def release(ticket_id, user, acting_agent=None):
     event(ticket, 'released', agent=agent, actor=None if agent else user.get_username())
 
 
-def expire_claims(now):
-    for pk in CaseTicket.objects.filter(claimed_by__isnull=False, last_activity_at__lte=now - timedelta(minutes=30)).values_list('pk', flat=True):
+def expire_claims(now, agent=None):
+    """Release claims idle for 30 minutes, and every claim of a specialist who is switched off or whose login is closed
+    (or only ``agent``'s, when one is given): their cases go straight back to the list."""
+    gone = Q(claimed_by__active=False) | Q(claimed_by__user__is_active=False)
+    claims = CaseTicket.objects.filter(claimed_by=agent) if agent else CaseTicket.objects.filter(
+        Q(last_activity_at__lte=now - timedelta(minutes=30)) | gone, claimed_by__isnull=False)
+    for pk in claims.values_list('pk', flat=True):
         with transaction.atomic(using=DB):
-            ticket = CaseTicket.objects.select_for_update().get(pk=pk)
-            if ticket.last_activity_at and ticket.last_activity_at <= now - timedelta(minutes=30):
+            ticket = CaseTicket.objects.select_for_update().select_related('claimed_by__user').get(pk=pk)
+            switched_off = ticket.claimed_by and not (ticket.claimed_by.active and ticket.claimed_by.user.is_active)
+            if switched_off or (ticket.last_activity_at and ticket.last_activity_at <= now - timedelta(minutes=30)):
                 agent = ticket.claimed_by
                 release_fields(ticket)
                 if ticket.status == 'in_progress':
@@ -322,9 +328,8 @@ def apply_call_result(match):
             last = latest.match.call
             ticket.last_contact_at = last.started_at
             if last.result in FAILED_RESULTS:
-                # A missed call goes back to the list, flagged and at the bottom.
-                ticket.next_followup_at = (next_workday_morning(last.ended_at)
-                                           if ticket.source_type in SATISFACTION_TYPES else None)
+                # A missed call is held until the next working morning, then comes back flagged, at the bottom.
+                ticket.next_followup_at = next_workday_morning(last.ended_at)
                 ticket.status = 'new'
             elif not (ticket.promised_at and ticket.promised_at > timezone.now()):
                 # Reached but nothing agreed yet: the case comes back next working day unless an outcome sets a promise.
@@ -358,8 +363,10 @@ def check_outcome(ticket, outcome, option, note, callback_at):
         raise ValueError('Choose a future callback time.')
     if outcome == 'wrong_number' and not note.strip():
         raise ValueError('Explain why this is the wrong number.')
-    if ticket.source_type in SATISFACTION_TYPES and callback_at and callback_at <= timezone.now():
+    if callback_at and callback_at <= timezone.now():
         raise ValueError('Choose a future follow-up time.')
+    if callback_at and not working_day(callback_at.astimezone(LONDON).date()):
+        raise ValueError('Learners are not called at weekends or on bank holidays: choose a working day.')
 
 
 def check_call_result(outcome, call):
@@ -443,18 +450,20 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
     closes_now = outcome == 'reached' and option in promises and promises[option] is None
     ticket.resolution_option = option
     ticket.promised_at = None  # any new outcome replaces an earlier promise
+    # callback_at is the follow-up the specialist chose; without one each outcome has its own default.
     if outcome == 'callback':
         ticket.status, ticket.next_followup_at = 'pending_learner', callback_at
     elif outcome in {'wrong_number', 'refused'}:
         # Recorded with the note on the case; the case comes back to the list next working day.
-        ticket.status, ticket.next_followup_at = 'pending_verification', next_workday_morning(timezone.now())
+        ticket.status, ticket.next_followup_at = 'pending_verification', callback_at or next_workday_morning(timezone.now())
     elif outcome == 'reached' and not closes_now:
         # The promise's deadline is when the case returns if no proof has closed it by then.
         if promises:
             ticket.promised_at = promise_deadline(ticket.source_type, option, timezone.now())
         ticket.status = 'pending_verification'
-        ticket.next_followup_at = ticket.promised_at if promises else next_workday_morning(timezone.now())
-    elif outcome == 'no_answer' and ticket.source_type in SATISFACTION_TYPES:
+        ticket.next_followup_at = callback_at or ticket.promised_at or next_workday_morning(timezone.now())
+    elif outcome == 'no_answer':
+        # Held until the chosen follow-up, else the next working morning (as apply_call_result does).
         ticket.next_followup_at = callback_at or next_workday_morning(timezone.now())
     release_fields(ticket)
     ticket.save()

@@ -8,7 +8,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
-import { activeCase, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
+import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
 
@@ -38,7 +38,8 @@ const CALLBACKS: [string, () => Date][] = [
   ['In 2 hours', () => new Date(Date.now() + 2 * 3600000)],
   // London time, working days only.
   ['Next working day 10:00', () => londonWorkdayAt(1, 10)],
-  ['Next week', () => londonWorkdayAt(5, 10)],
+  ['In 3 working days', () => londonWorkdayAt(3, 10)],
+  ['In 5 working days', () => londonWorkdayAt(5, 10)],
 ];
 
 /** The simple calling screen: one learner, one Call button, then one tap per issue for what happened. */
@@ -139,7 +140,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
 
   function noAnswer() {
     if (!current) return;
-    notify(`No answer from ${current.learner_name}. Zoom records it; the learner moves to the bottom of your list.`);
+    notify(`No answer from ${current.learner_name}. Once Zoom reports the call, they are held until the next working morning, then come back at the bottom of the list.`);
     setLater(new Set(later).add(contactKey(current)));
     reset(done);
     onRefresh();
@@ -158,16 +159,15 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   function tools(c: OverviewCase) {
     if (picked.get(c.id) === BOOKED) return <p className="ec-tag">Catch-up booked: case closed</p>;
     const bookable = c.bookable.length > 0;
-    const bookingEmail = !['signature', 'satisfaction', 'employer_feedback'].includes(c.source_type);
-    const employer = c.source_type === 'employer_feedback';
-    if (!bookable && !bookingEmail && c.source_type !== 'learner_satisfaction' && employer) return null;
+    const techIssue = c.source_type !== 'employer_feedback' && c.source_type !== 'tech_support';
+    if (!bookable && !c.booking_email && c.source_type !== 'learner_satisfaction' && !techIssue) return null;
     return (
       <div className="ec-buttons ed-next-tools">
         {bookable && <BookSession caseId={c.id} session={session} notify={notify} onBooked={type => booked(c, type)} />}
-        {bookingEmail && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
+        {c.booking_email && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
         {c.source_type === 'learner_satisfaction' && <button type="button" disabled={session.preview || !c.learner_email}
           onClick={() => setSatisfactionEmailFor(c.id)}>Email</button>}
-        {!employer && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onRefresh} />}
+        {techIssue && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onRefresh} />}
       </div>
     );
   }
@@ -218,6 +218,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
             {issues.map(c => (
               <li key={c.id}>
                 <strong>{issueLabel(c)}</strong>{c.source_type === 'attendance' && c.issue_date ? ` · ${shortDate(c.issue_date)}` : ''}
+                {c.source_type === 'reminder' && c.booking_at ? ` · ${c.issue_name} · ${appointmentTime(c.booking_at)}` : ''}
                 <div className="ec-muted">{Object.keys(c.promises).length ? `Ask them to: ${Object.keys(c.promises).map(promiseLabel).join(' or ')}` : casePurpose(c)}</div>
                 {tools(c)}
               </li>

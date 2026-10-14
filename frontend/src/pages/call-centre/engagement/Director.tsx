@@ -1,16 +1,20 @@
 import { useState } from 'react';
-import type { AgentStats, CallFlag, Overview } from '../api';
+import type { AgentStats, CallFlag, Overview, OverviewCase } from '../api';
+import { caseAction } from './actions';
+import type { Session } from './actions';
 import { CallReviewDialog, RatingRules } from './CallReview';
 import Dialog from './Dialog';
 import Register from './Register';
-import { ISSUE_LABELS, badges, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
+import { ISSUE_LABELS, badges, dueForCall, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
 
 type Props = {
-  overview: Overview; month: string;
-  onMonth: (month: string) => void; onView: (view: string) => void; onPreview: (agentId: number) => void; onOpenCase: (id: number) => void;
+  overview: Overview; month: string; session: Session;
+  onMonth: (month: string) => void; onChanged: () => void; notify: (message: string, error?: boolean) => void; onPreview: (agentId: number) => void; onOpenCase: (id: number) => void;
 };
 
-const colours = ['#60359a', '#268a8b'];
+// Case types switched off on the server (rules.PAUSED_CATEGORIES): no cases to count.
+const PAUSED = new Set(['otj']);
+const colours = ['#60359a', '#268a8b', '#c0632b', '#2f6db5', '#a3326e', '#5b8a2a'];
 
 function Chart({ overview }: { overview: Overview }) {
   const rows = overview.agents[0]?.month.daily || [];
@@ -32,14 +36,14 @@ function Chart({ overview }: { overview: Overview }) {
           </>
         )}
         {overview.agents.map((agent, index) => (
-          <polyline key={agent.id} fill="none" stroke={colours[index % 2]} strokeWidth="3"
+          <polyline key={agent.id} fill="none" stroke={colours[index % colours.length]} strokeWidth="3"
             points={rows.map((row, j) => `${x(j)},${y(agent.month.daily.find(d => d.day === row.day)?.seconds || 0)}`).join(' ')} />
         ))}
         <text x="35" y="183">{rows[0].day}</text>
         <text x="610" y="183">{rows[rows.length - 1].day}</text>
       </svg>
       <div className="ec-legend">
-        {overview.agents.map((agent, index) => <span key={agent.id} style={{ '--colour': colours[index % 2] } as React.CSSProperties}>{agent.display_name}</span>)}
+        {overview.agents.map((agent, index) => <span key={agent.id} style={{ '--colour': colours[index % colours.length] } as React.CSSProperties}>{agent.display_name}</span>)}
       </div>
     </>
   );
@@ -63,28 +67,81 @@ function quality(overview: Overview, agent: AgentStats) {
   return <>{counts.excellent} excellent · {counts.good} good<small className={counts.bad ? 'danger' : undefined}>{counts.bad} bad · {rated} rated this month</small></>;
 }
 
-/** Director overview: bookings, call review, operator desks, KPIs, performance and the calling register. */
-export default function Director({ overview, month, onMonth, onView, onPreview, onOpenCase }: Props) {
+/** AI close suggestions: the AI read a call and thinks the case is done; a manager approves or rejects it. */
+function WaitingForManager({ cases, session, onOpenCase, onChanged, notify }: {
+  cases: OverviewCase[]; session: Session; onOpenCase: (id: number) => void; onChanged: () => void; notify: (message: string, error?: boolean) => void;
+}) {
+  const [notes, setNotes] = useState<Map<number, string>>(new Map());
+  const [busy, setBusy] = useState<number | null>(null);
+
+  async function decide(c: OverviewCase, approve: boolean) {
+    const note = (notes.get(c.id) || '').trim();
+    if (approve && !note) {
+      notify('Add a short reason before approving.', true);
+      return;
+    }
+    setBusy(c.id);
+    try {
+      await caseAction(session, c.id, approve ? 'resolve' : 'reject_ai', approve ? { note, option: c.resolution_option || 'other' } : { note });
+      notify(approve ? `${c.learner_name}: case resolved.` : `${c.learner_name}: AI suggestion rejected; the case is back in the list.`);
+      onChanged();
+    } catch (failure) {
+      notify(failure instanceof Error ? failure.message : 'The case could not be updated.', true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="ec-card">
+      <h2>Cases waiting for a manager ({cases.length})</h2>
+      <p className="ec-muted">The AI read the call and suggests the case is done. Check its summary, then approve (the case closes) or reject (it goes back to the list).</p>
+      <div className="ec-table-wrap">
+        <table>
+          <thead><tr><th>Learner</th><th>AI summary</th><th>Your reason</th><th /></tr></thead>
+          <tbody>
+            {cases.map(c => (
+              <tr key={c.id}>
+                <td><strong>{c.learner_name}</strong><small>{issueLabel(c)}</small></td>
+                <td>{c.ai_summary || 'No summary recorded.'}<small>Confidence {Math.round((c.ai_confidence || 0) * 100)}%</small></td>
+                <td><textarea rows={2} maxLength={5000} aria-label={`Reason for ${c.learner_name}`} value={notes.get(c.id) || ''}
+                  onChange={event => setNotes(current => new Map(current).set(c.id, event.target.value))} /></td>
+                <td>
+                  <div className="ec-buttons">
+                    <button type="button" className="primary" disabled={busy !== null} onClick={() => void decide(c, true)}>Approve and resolve</button>
+                    <button type="button" disabled={busy !== null} onClick={() => void decide(c, false)}>Reject</button>
+                    <button type="button" onClick={() => onOpenCase(c.id)}>Open case</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {!cases.length && <tr><td colSpan={4}>No AI suggestions are waiting.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/** Director overview: call review, operator desks, KPIs, performance and the calling register. */
+export default function Director({ overview, month, session, onMonth, onChanged, notify, onPreview, onOpenCase }: Props) {
   const [report, setReport] = useState(false);
   const [flag, setFlag] = useState<CallFlag | null>(null);
   const flags = overview.call_reviews?.flags || [];
   const open = overview.cases;
-  const waitingAi = open.filter(c => c.status === 'ai_suggested_close').length;
-  const coachesWithLinks = new Set(open.filter(c => Object.keys(c.booking_links).length).map(c => c.coach)).size;
+  const waiting = open.filter(c => c.status === 'ai_suggested_close');
+  const mine = (agent: AgentStats) => open.filter(c => c.allocated_agent_id === agent.id);
   const stats: [string, number, string][] = [
     ['Open support cases', open.length, 'Across the calling register'],
+    ['Due to call now', open.filter(c => dueForCall(c)).length, 'Not waiting on a callback, a promise or evidence'],
+    ['Past their call date', open.filter(c => c.sla_breached).length, 'The call was due before today'],
+    ['In the shared queue', open.filter(c => !c.allocated_agent_id).length, 'Learners not allocated to a specialist'],
     ['Waiting for the learner', open.filter(c => ['pending_learner', 'pending_verification'].includes(c.status)).length, 'Callback booked, or a promise waiting for its deadline'],
     ['Missed calls', open.filter(c => c.missed_call).length, 'Last call unanswered; at the bottom of their list'],
   ];
 
   return (
     <>
-      <section className="ec-card">
-        <h2>Coach bookings · Microsoft Bookings</h2>
-        <p>Booking pages are mapped for {coachesWithLinks} coaches in the current register.</p>
-        <button type="button" onClick={() => onView('bookings')}>Open coach booking links</button>
-      </section>
-
       <section className="ec-card ed-lower">
         <div className="ec-head">
           <div><h2>Call red flags</h2><p className="ec-muted">The AI rates each call transcript excellent, good or bad as it arrives. Calls rated bad are listed here with what went wrong and what to change. AI findings require a human review.</p></div>
@@ -108,8 +165,12 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
           </div>
         )}
         <RatingRules />
-        <p className="ec-muted">{overview.connections.ai ? `${waitingAi} AI close suggestions await a specialist decision in the calling workspace.` : 'AI case review is switched off.'}</p>
+        {!overview.connections.ai && <p className="ec-muted">AI case review is switched off.</p>}
       </section>
+
+      {(overview.connections.ai || waiting.length > 0) && (
+        <WaitingForManager cases={waiting} session={session} onOpenCase={onOpenCase} onChanged={onChanged} notify={notify} />
+      )}
 
       <section className="ec-card ec-preview-options">
         <div><h2>See the operator’s call desk</h2><p>Your director access includes every specialist. Preview their individual queues and daily progress here.</p></div>
@@ -125,25 +186,17 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
         {stats.map(([label, value, hint]) => <div key={label} className="ec-card ec-stat"><span>{label}</span><strong>{value}</strong><span>{hint}</span></div>)}
       </div>
 
-      <section className="ec-card ec-allocation-intro">
-        <div className="ec-head">
-          <div><h2>Learner allocation</h2><p>Keep each learner with one specialist. Review workloads, share learners evenly or arrange a handover.</p></div>
-          <button type="button" className="primary" onClick={() => onView('allocations')}>Manage learner allocation</button>
-        </div>
-      </section>
-
       <section className="ec-card">
         <div className="ec-head">
           <h2>Operator performance</h2>
           <div className="ec-buttons">
             <label>Report month <input type="month" value={month} max={overview.today.slice(0, 7)} onChange={event => event.target.value && onMonth(event.target.value)} /></label>
             <button type="button" onClick={() => setReport(true)}>Monthly report</button>
-            <button type="button" disabled title="Development actions are not connected yet.">+ SMART action</button>
           </div>
         </div>
         <div className="ec-table-wrap">
           <table>
-            <thead><tr><th>Specialist</th><th>Calls today</th><th>Connected time</th><th>Call quality</th><th>Points today</th><th>Achievements</th></tr></thead>
+            <thead><tr><th>Specialist</th><th>Calls today</th><th>Connected time</th><th>Call quality</th><th>Missed calls</th><th>Broken promises</th><th>Points today</th><th>Achievements</th></tr></thead>
             <tbody>
               {overview.agents.map(agent => (
                 <tr key={agent.id}>
@@ -151,6 +204,8 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
                   <td>{agent.today.attempts}<small>{agent.today.connected} connected</small></td>
                   <td>{duration(agent.today.seconds)}<small>Target {duration(agent.target_seconds)}</small></td>
                   <td>{quality(overview, agent)}</td>
+                  <td>{mine(agent).filter(c => c.missed_call).length}<small>open cases, last call unanswered</small></td>
+                  <td>{mine(agent).filter(c => c.promise_missed).length}<small>deadline passed, nothing done</small></td>
                   <td>{points(agent.today, agent.target_seconds)}</td>
                   <td>{badges(agent.today, agent.target_seconds).map(name => <span key={name} className="ec-tag">★ {name}</span>)}{!badges(agent.today, agent.target_seconds).length && '—'}</td>
                 </tr>
@@ -159,7 +214,7 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
           </table>
         </div>
         <Chart overview={overview} />
-        <p className="ec-muted">Time is taken from Zoom Phone. Duration points stop at the daily target; unscored calls are not scored as zero.</p>
+        <p className="ec-muted">Missed calls and broken promises count the open cases of each specialist’s allocated learners (the shared queue is not included). Time is taken from Zoom Phone. Duration points stop at the daily target; unscored calls are not scored as zero.</p>
       </section>
 
       <div style={{ height: '1.2rem' }} />
@@ -170,7 +225,7 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
             <table>
               <thead><tr><th>Issue</th><th>Open</th><th>Awaiting reply</th></tr></thead>
               <tbody>
-                {Object.entries(ISSUE_LABELS).map(([key, label]) => (
+                {Object.entries(ISSUE_LABELS).filter(([key]) => !PAUSED.has(key)).map(([key, label]) => (
                   <tr key={key}><td>{label}</td><td>{open.filter(c => c.source_type === key).length}</td><td>{open.filter(c => c.source_type === key && c.status === 'pending_learner').length}</td></tr>
                 ))}
               </tbody>
@@ -179,16 +234,6 @@ export default function Director({ overview, month, onMonth, onView, onPreview, 
           <p className="ec-muted">Repeated unanswered calls flag a contact review. They do not establish that a learner has disengaged.</p>
         </section>
         <div className="ec-stack">
-          <section className="ec-card">
-            <h2>Ask about the call evidence</h2>
-            <p>Explore expressed feedback, support barriers, commitments and observable call practice.</p>
-            <form onSubmit={event => event.preventDefault()}>
-              <label>Your question<textarea name="prompt" placeholder="What are the main barriers learners mentioned, and which actions helped?" disabled /></label>
-              <div className="ec-buttons" style={{ marginTop: '1rem' }}><button type="submit" disabled>Request transcript analysis</button></div>
-            </form>
-            <p className="ec-muted">Transcript analysis connection pending.</p>
-            <button type="button" disabled>View saved analyses</button>
-          </section>
           <section className="ec-card">
             <h2>Red flags & development</h2>
             {overview.agents.filter(agent => agent.month.sla_breaches > 0).map(agent => (

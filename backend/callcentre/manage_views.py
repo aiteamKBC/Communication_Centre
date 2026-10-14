@@ -9,6 +9,7 @@
 * ``learners`` / ``call_requests`` back the director's "Request a call": a manager picks a
   learner from the merged LMS + Aptem directory and adds a call to the calling register.
 """
+from collections import Counter
 import json
 import uuid
 from datetime import date, datetime, time, timedelta
@@ -17,7 +18,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.functions import TruncMonth
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
@@ -29,7 +30,7 @@ from .access import is_director
 from .db import DB
 from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
-from .services import Conflict, event
+from .services import Conflict, event, expire_claims
 from .sources import coach_email, learner_directory, rows
 from .views import authenticated, body
 
@@ -56,6 +57,9 @@ def save_agent(agent, data):
     except ValidationError as exc:
         raise ValueError('; '.join(f'{field}: {" ".join(errors)}' for field, errors in exc.message_dict.items())) from None
     agent.save()
+    if not agent.active:
+        # Switched off: the cases they were working on go back to the list now, not after the 30-minute claim.
+        expire_claims(timezone.now(), agent)
     return agent
 
 
@@ -350,6 +354,10 @@ def allocations(request):
     operators = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name').values('id', 'display_name'))
     active = {operator['id'] for operator in operators}
 
+    allocated = Counter(current[p['learner_email']].agent_id for p in people.values() if p['learner_email'] in current)
+    inactive = [{'id': agent.pk, 'display_name': agent.display_name, 'learners': allocated[agent.pk]}
+                for agent in Agent.objects.filter(Q(active=False) | Q(user__is_active=False)).order_by('display_name')]
+
     def owner(email):
         # A switched-off specialist's learners are in the shared queue (allocation.owners).
         agent_id = current[email].agent_id if email in current else None
@@ -361,10 +369,14 @@ def allocations(request):
             'organisation': p['organisation'], 'coach': p['coach'],
             'manager_email': p['manager_email'], 'manager_name': p['manager_name'],
             'agent_id': owner(p['learner_email']),
+            # The specialist the allocation names, even when switched off (then the learner is in the shared queue).
+            'allocated_to': current[p['learner_email']].agent_id if p['learner_email'] in current else None,
             'revision': current[p['learner_email']].revision if p['learner_email'] in current else 0,
             'active_cases': work.get(p['learner_email'], 0),
         } for p in sorted(people.values(), key=lambda p: (p['learner_name'].lower(), p['learner_email']))],
         'operators': operators,
+        # Switched-off specialists (or closed logins) whose learners are still allocated to them: hand them over.
+        'inactive': [item for item in inactive if item['learners']],
         'history': [{**h, 'learner_name': names.get(h['learner_email'], h['learner_email'])} for h in history],
     })
 

@@ -31,6 +31,8 @@ export type Case = {
   missed_call: boolean;
   /** Session types the call centre can book straight into the coach's LMS calendar for this case. */
   bookable: ('catch-up' | 'student-support')[];
+  /** The case has a booking email (the coach's booking link, or the review's rebooking link). */
+  booking_email: boolean;
 };
 
 export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>;
@@ -52,6 +54,8 @@ export type AgentStats = {
 
 export type Overview = {
   today: string; next_workday: string; month: string; generated_at: string;
+  /** Bank holidays and college closures from today (ISO dates): no calls on these days. */
+  holidays: string[];
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;

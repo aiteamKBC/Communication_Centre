@@ -3,6 +3,7 @@ import type { Overview } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
+import BookingEmail from './BookingEmail';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
@@ -26,6 +27,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [bookingEmailOpen, setBookingEmailOpen] = useState(false);
 
   if (error) return <article className="ec-card ed-learner" hidden={hidden}><p role="alert">{error}</p></article>;
   if (!detail) return <article className="ec-card ed-learner" hidden={hidden}><p role="status">Loading the learner’s workspace…</p></article>;
@@ -77,16 +79,17 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       )}
       <div className="ec-buttons">
         <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
-        {c.status !== 'resolved' && !employer && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
-        {!employer && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={() => { refresh(); onRefresh?.(); }} />}
+        {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
+        {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
+        {!employer && c.source_type !== 'tech_support' && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={() => { refresh(); onRefresh?.(); }} />}
         {c.source_type === 'learner_satisfaction' && <button type="button"
           disabled={session.preview || !session.canAct || !c.learner_email}
           onClick={() => setEmailOpen(true)}>Email</button>}
       </div>
       {callReason && <p className="ec-muted ed-call-note">{session.preview ? `Calls are disabled in this director preview. ${session.name} must sign in to call.` : `${callReason}.`}</p>}
       {c.sla_breached
-        ? <p className="ed-verification">Overdue by {c.sla_days_overdue} days. First confirm the learner’s current position.</p>
-        : <p className="ec-muted">Due {longDate(c.due_at)}</p>}
+        ? <p className="ed-verification">This call is {c.sla_days_overdue} {c.sla_days_overdue === 1 ? 'day' : 'days'} past its due date. First confirm the learner’s current position.</p>
+        : <p className="ec-muted">Call due by {longDate(c.due_at)}</p>}
 
       <details className="ed-disclosure">
         <summary>Learner context & contacts</summary>
@@ -144,6 +147,9 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         <Timeline detail={detail} limit={12} />
       </details>
       <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
+      <Dialog open={bookingEmailOpen} onClose={() => setBookingEmailOpen(false)}>
+        {bookingEmailOpen && <BookingEmail key={c.id} caseId={c.id} session={session} />}
+      </Dialog>
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
         {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} />}
       </Dialog>

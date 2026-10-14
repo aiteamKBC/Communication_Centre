@@ -30,7 +30,7 @@ from .db import DB
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
 from .reports import performance
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, missed_call, next_workday,
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
 
@@ -50,6 +50,14 @@ ISSUE_NAMES = {
     'employer_feedback': 'Employer satisfaction',
     'tech_support': 'Technical issue',
 }
+# Tomorrow's appointments, by the session type the booking source records (sources.load_bookings).
+APPOINTMENT_NAMES = {
+    'pr': 'Progress review',
+    'mcm': 'Monthly coaching meeting',
+    'support': 'Coach support session',
+    'first-session': 'First session',
+    'lms-introduction': 'LMS introduction',
+}
 
 
 def issue_json(ticket):
@@ -60,7 +68,8 @@ def issue_json(ticket):
         if data.get('catchup_no_show'):
             name = 'Missed catch-up' + (f' — {name}' if name else '')
     elif ticket.source_type == 'reminder':
-        name = str(data.get('session_type') or '').strip()
+        kind = str(data.get('session_type') or '').strip()
+        name = APPOINTMENT_NAMES.get(kind, kind.replace('-', ' ').capitalize())
     elif ticket.source_type == 'manual':
         name = str(data.get('title') or '').strip()
     elif ticket.source_type == 'tech_support':
@@ -144,6 +153,7 @@ def ticket_json(ticket):
         'resolved_at': ticket.resolved_at, 'resolved_by': ticket.resolved_by, 'archived': ticket.archived,
         'created_at': ticket.created_at, 'escalated': ticket.escalated, 'source_data': ticket.source_data,
         'booking_links': booking_links(ticket.coach), 'bookable': lms_booking.session_types(ticket),
+        'booking_email': ticket.source_type not in NO_BOOKING_EMAIL,
         'promised_at': ticket.promised_at, 'promise_missed': promise_missed(ticket, now), 'missed_call': missed_call(ticket),
         # What the learner can agree to (option -> days to do it); without options the specialist closes the case.
         'promises': PROMISES.get(ticket.source_type, {}), 'specialist_closes': ticket.source_type in SPECIALIST_CLOSES,
@@ -259,7 +269,8 @@ def overview(request):
         })
 
     return JsonResponse({
-        'today': today.isoformat(), 'next_workday': next_workday(today).isoformat(), 'month': month, 'generated_at': now,
+        'today': today.isoformat(), 'next_workday': next_workday(today).isoformat(), 'holidays': holidays_from(today),
+        'month': month, 'generated_at': now,
         'access': {
             'role': 'director' if is_manager else 'operator' if agent else 'viewer',
             'agent_id': agent.pk if agent else None, 'is_superuser': request.user.is_superuser,

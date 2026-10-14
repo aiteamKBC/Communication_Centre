@@ -120,3 +120,4 @@
 .ec-phone-toggle{border:0;border-radius:999px;padding:.7rem 1.1rem;background:#2E4482;color:#fff;font:inherit;font-weight:600;cursor:pointer;box-shadow:0 8px 20px rgba(20,24,60,.25)}
 .ec-phone-toggle:focus-visible{outline:3px solid #f5b942;outline-offset:2px}
 @media (max-width:767px){.ec-phone-dock{right:8px;left:8px;bottom:8px}.ec-phone-panel{width:100%;height:min(600px,calc(100vh - 80px))}}
+.ed .ed-quick-dates{display:flex;gap:.8rem;margin-top:.2rem}

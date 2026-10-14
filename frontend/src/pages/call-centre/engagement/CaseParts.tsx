@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import type { CaseDetail } from '../api';
 import { caseAction, pickCall } from './actions';
 import type { Session } from './actions';
-import { duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when } from './model';
+import { QUICK_FOLLOW_UPS, closesCase, duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when, workdayInput } from './model';
 
 type FormProps = { detail: CaseDetail; session: Session; onSaved: (message: string) => void; onError: (message: string) => void; compact?: boolean };
 
@@ -56,7 +56,8 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
     }
     void run('outcome', {
       call_id: Number(callId), ...splitOutcome(choice), note,
-      callback_at: outcome === 'callback' && callback ? londonInput(callback).toISOString() : null,
+      // The chosen follow-up applies to every outcome; an outcome that closes the case ignores it.
+      callback_at: callback ? londonInput(callback).toISOString() : null,
     }, 'Next step saved.');
   }
 
@@ -79,8 +80,17 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
               {calls.map(call => <option key={call.call_id} value={call.call_id}>{when(call.started_at)} · {human(call.result)}{call.outcome ? ` · ${human(call.outcome)}` : ''}</option>)}
             </select>
           </label>
-          {outcome === 'callback' && (
-            <label>Callback date and time<input type="datetime-local" required value={callback} onChange={event => setCallback(event.target.value)} /></label>
+          {!closesCase(choice, ticket) && (
+            <div>
+              <label>{outcome === 'callback' ? 'Callback date and time' : 'Follow-up date (optional)'}
+                <input type="datetime-local" required={outcome === 'callback'} value={callback} onChange={event => setCallback(event.target.value)} />
+              </label>
+              <div className="ec-buttons">
+                {QUICK_FOLLOW_UPS.map(([days, label]) => (
+                  <button key={days} type="button" title={`${longDate(workdayInput(days))} at 10:00`} onClick={() => setCallback(workdayInput(days))}>{label}</button>
+                ))}
+              </div>
+            </div>
           )}
         </div>
         {!resolved && <p className="ec-muted wide" role="note">{outcomeHelp(choice, ticket)}</p>}

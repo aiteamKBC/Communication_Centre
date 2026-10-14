@@ -127,6 +127,12 @@ def working_day(day):
     return day.weekday() < 5 and day.isoformat() not in holidays
 
 
+def holidays_from(day):
+    """Bank holidays and college closures from this day on, ISO dates: the screens skip them like the server does."""
+    holidays = BANK_HOLIDAYS | set(getattr(settings, 'CALLCENTRE_HOLIDAYS', []))
+    return sorted(value for value in holidays if value >= day.isoformat())
+
+
 def next_workday(day):
     candidate = day + timedelta(days=1)
     while not working_day(candidate):

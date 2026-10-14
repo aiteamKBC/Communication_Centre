@@ -21,8 +21,9 @@ from .rules import LONDON, email_key
 from .services import Conflict, can_work, event
 
 SUBJECT_MAX, MESSAGE_MAX = 180, 5000
-# Case types with no booking email: employer calls, and signatures (the learner signs in the LMS).
-NO_BOOKING_EMAIL = ('satisfaction', 'employer_feedback', 'signature')
+# Case types with no booking email: employer and satisfaction calls, signatures (the learner signs in the LMS),
+# tomorrow's appointment (already booked) and technical issues (support has the work).
+NO_BOOKING_EMAIL = ('satisfaction', 'employer_feedback', 'learner_satisfaction', 'signature', 'reminder', 'tech_support')
 SERVICES = {
     'pr': ('pr', 'Book your progress review', 'progress review'),
     'mcm': ('mcm', 'Book your monthly coaching session', 'monthly coaching session'),

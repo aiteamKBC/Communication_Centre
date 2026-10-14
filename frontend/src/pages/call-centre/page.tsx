@@ -12,8 +12,7 @@ import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import Director from './engagement/Director';
 import Imports from './engagement/Imports';
-import { DESK_MENUS, deskLabel, failingSources, human, longDate } from './engagement/model';
-import { Eventbrite } from './engagement/NotConnected';
+import { DESK_MENUS, deskLabel, failingSources, human, longDate, setHolidays } from './engagement/model';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
@@ -23,18 +22,13 @@ import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
 
 const DIRECTOR_NAV: [string, string, string][] = [
-  ['director', 'Director overview', 'chart'], ['bookings', 'Coach booking links', 'calendar'],
+  ['director', 'Director overview', 'chart'], ['operator', 'Calling workspace', 'phone'], ['bookings', 'Coach booking links', 'calendar'],
   ['allocations', 'Learner allocation', 'people'], ['imports', 'Import & export', 'upload'], ['phone', 'Zoom Phone', 'settings'],
-  ['eventbrite', 'Eventbrite', 'calendar'], ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
-];
-const DIRECTOR_TABS: [string, string][] = [
-  ['director', 'Director'], ['allocations', 'Learner allocation'], ['imports', 'Import & export'], ['phone', 'Zoom Phone'],
-  ['bookings', 'Coach booking links'], ['operator', 'Calling workspace'], ['connections', 'Connections & call rules'],
-  ['settings', 'Settings'],
+  ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
 ];
 const TITLES: Record<string, string> = {
   director: 'Director overview', bookings: 'Coach booking links', allocations: 'Learner allocation',
-  imports: 'Import & export', phone: 'Zoom Phone', eventbrite: 'Eventbrite', connections: 'Make every conversation count',
+  imports: 'Import & export', phone: 'Zoom Phone', connections: 'Make every conversation count',
   settings: 'Settings',
 };
 
@@ -59,6 +53,8 @@ export default function CallCentrePage() {
   const config = useCallCentre<Config>('config/', false);
   const overviewState = useCallCentre<Overview>(`overview/${month ? `?month=${month}` : ''}`);
   const overview = overviewState.data;
+  // The quick follow-up dates skip the bank holidays the server knows.
+  setHolidays(overview?.holidays);
 
   const setParam = useCallback((changes: Record<string, string | null>) => {
     setParams(current => {
@@ -181,13 +177,6 @@ export default function CallCentrePage() {
           </div>
         </div>
         {status}
-        {!caseId && director && (
-          <div className="ec-tabs" role="tablist" aria-label="Engagement screens">
-            {DIRECTOR_TABS.map(([key, label]) => (
-              <button key={key} type="button" role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} onClick={() => setParam({ view: key === 'director' ? null : key, section: null })}>{label}</button>
-            ))}
-          </div>
-        )}
         <div id="ec-body">
           {caseId ? (
             <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
@@ -195,12 +184,12 @@ export default function CallCentrePage() {
             : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
               : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} smartEmbed={!!config.data?.smart_embed} />
                 : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
-                  : view === 'connections' ? <Connections overview={overview} onView={key => setParam({ view: key })} />
-                      : view === 'eventbrite' ? <Eventbrite />
+                  : view === 'connections' ? <Connections overview={overview} />
                         : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
                         : (
                           <Director
-                            overview={overview} month={overview.month} onMonth={value => setParam({ month: value })} onView={key => setParam({ view: key })}
+                            overview={overview} month={overview.month} session={session} onChanged={refresh} notify={notify}
+                            onMonth={value => setParam({ month: value })}
                             onPreview={id => setParam({ view: 'operator', operator: String(id), section: null })} onOpenCase={id => setParam({ case: String(id) })}
                           />
                         )}

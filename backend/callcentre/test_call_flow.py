@@ -1,0 +1,289 @@
+"""The call flow end to end on a real (in-memory) database: Zoom's call result, the outcome a specialist
+records, the follow-up date and where the learner sits in the list.
+
+Run with ``python check_isolated_tests.py callcentre.test_call_flow``. Skipped anywhere else, so a plain
+``manage.py test`` never builds these tables on a configured server.
+"""
+import unittest
+import uuid
+from datetime import datetime, time, timedelta
+from unittest import mock
+
+from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import connections
+from django.db.models import ProtectedError
+from django.test import TestCase
+from django.utils import timezone
+
+from .allocation import owners
+from .models import Agent, Allocation, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
+from .rules import LONDON, add_workdays, missed_call, promise_deadline
+from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
+                       record_outcome)
+from .views import rank, with_last_call
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class CallFlowTests(TestCase):
+    databases = {'default', 'login_db'}
+
+    def setUp(self):
+        patches = [mock.patch('callcentre.services.allocated_owner', return_value=None),
+                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset())]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.user = get_user_model().objects.create_user('alice')
+        self.agent = Agent.objects.create(user=self.user, display_name='Alice', zoom_email='alice@kbc.test', zoom_account='student')
+        self.now = timezone.now()
+
+    def case(self, name, source_type='epa', **fields):
+        ticket = CaseTicket.objects.create(
+            source_type=source_type, reason_key=f'{source_type}:{name}', learner_email=f'{name}@x.test',
+            learner_name=name.title(), learner_phone=f'+4477009000{len(name):02d}', due_at=self.now + timedelta(days=2),
+            **fields)
+        CaseTicket.objects.filter(pk=ticket.pk).update(created_at=self.now - timedelta(hours=1))
+        return CaseTicket.objects.get(pk=ticket.pk)
+
+    def zoom(self, ticket, result, minutes_ago=5):
+        """A call Zoom reports for this case, matched to Alice, with its result applied as the sync does."""
+        call = ZoomPhoneCall.objects.create(
+            source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()), direction='outbound',
+            started_at=self.now - timedelta(minutes=minutes_ago), ended_at=self.now - timedelta(minutes=minutes_ago - 1),
+            result=result)
+        match = CallMatch.objects.create(call=call, agent=self.agent, learner_email=ticket.learner_email)
+        CaseCall.objects.create(ticket=ticket, match=match)
+        apply_call_result(match)
+        return call
+
+    def listed(self):
+        """The Engagement Centre's list, in the order the overview sends it."""
+        tickets = list(with_last_call(CaseTicket.objects.open()))
+        tickets.sort(key=lambda ticket: rank(ticket, timezone.now()), reverse=True)
+        return [ticket.learner_name for ticket in tickets]
+
+    def fresh(self, ticket):
+        return with_last_call(CaseTicket.objects.filter(pk=ticket.pk)).get()
+
+    def morning(self, workdays=1):
+        return datetime.combine(add_workdays(timezone.now(), workdays).date(), time(9), tzinfo=LONDON)
+
+    # Not answered
+
+    def test_an_unanswered_learner_waits_for_the_next_working_day_then_comes_back_at_the_bottom(self):
+        ann = self.case('ann', risk='red', overdue_since=self.now.date() - timedelta(days=30))
+        self.case('ben')
+        self.case('cat')
+        self.zoom(ann, 'no_answer')
+        ann = self.fresh(ann)
+        self.assertEqual((ann.status, ann.attempts, ann.next_followup_at), ('new', 1, self.morning()))
+        self.assertTrue(missed_call(ann))
+        with self.assertRaisesMessage(Conflict, 'The next follow-up is not due yet.'):
+            create_intent(ann.pk, self.agent)
+        # Red risk and 30 days overdue would put Ann first; the missed call puts her last.
+        self.assertEqual(self.listed()[-1], 'Ann')
+
+    def test_each_unanswered_call_is_counted_once(self):
+        ann = self.case('ann')
+        for minutes, result in ((30, 'no_answer'), (20, 'busy'), (10, 'voicemail')):
+            call = self.zoom(ann, result, minutes)
+        apply_call_result(CallMatch.objects.get(call=call))   # a re-sync of the same call
+        self.assertEqual(self.fresh(ann).attempts, 3)
+
+    def test_an_answered_call_after_missed_ones_takes_the_learner_off_the_bottom(self):
+        ann = self.case('ann')
+        self.case('ben')
+        self.zoom(ann, 'no_answer', 30)
+        self.zoom(ann, 'answered', 10)
+        ann = self.fresh(ann)
+        self.assertFalse(missed_call(ann))
+        # Reached with nothing agreed yet: back next working morning, not due before then.
+        self.assertEqual((ann.status, ann.next_followup_at), ('pending_verification', self.morning()))
+
+    def test_an_unanswered_satisfaction_review_comes_back_next_working_morning(self):
+        ann = self.case('ann', source_type='learner_satisfaction')
+        self.zoom(ann, 'no_answer')
+        self.assertEqual(self.fresh(ann).next_followup_at, self.morning())
+
+    def test_a_broken_promise_ranks_with_red_risk_above_everyone_else(self):
+        self.case('ben', overdue_since=self.now.date() - timedelta(days=30))
+        self.case('ann', promised_at=self.now - timedelta(hours=1))
+        self.case('cat', risk='red', overdue_since=self.now.date() - timedelta(days=40))
+        # Ann's broken promise beats Ben's 30 days overdue; within the red tier the most overdue comes first.
+        self.assertEqual(self.listed(), ['Cat', 'Ann', 'Ben'])
+
+    # Follow-up dates
+
+    def test_the_chosen_follow_up_date_is_kept_for_every_outcome(self):
+        chosen = add_workdays(self.now, 3).replace(microsecond=0)
+        for outcome, result, option, note in (('reached', 'answered', 'epa_step', ''),
+                                              ('callback', 'answered', '', ''),
+                                              ('wrong_number', 'answered', '', 'Number belongs to someone else'),
+                                              ('refused', 'answered', '', 'Asked us not to call this week'),
+                                              ('no_answer', 'no_answer', '', '')):
+            with self.subTest(outcome):
+                ticket = self.case(outcome)
+                call = self.zoom(ticket, result)
+                record_outcome(ticket.pk, self.user, call.pk, outcome, option, note, chosen)
+                ticket.refresh_from_db()
+                self.assertEqual(ticket.next_followup_at, chosen)
+
+    def test_without_a_date_each_outcome_has_its_own_follow_up(self):
+        reached = self.case('reached')
+        record_outcome(reached.pk, self.user, self.zoom(reached, 'answered').pk, 'reached', 'epa_step')
+        reached.refresh_from_db()
+        self.assertEqual(reached.next_followup_at, promise_deadline('epa', 'epa_step', timezone.now()))
+        wrong = self.case('wrong')
+        record_outcome(wrong.pk, self.user, self.zoom(wrong, 'answered').pk, 'wrong_number', '', 'Not their number')
+        wrong.refresh_from_db()
+        self.assertEqual(wrong.next_followup_at, self.morning())
+        missed = self.case('missed')
+        record_outcome(missed.pk, self.user, self.zoom(missed, 'no_answer').pk, 'no_answer')
+        missed.refresh_from_db()
+        self.assertEqual(missed.next_followup_at, self.morning())
+
+    def test_the_next_working_morning_skips_weekends_and_bank_holidays(self):
+        from .services import next_workday_morning
+        # Thursday 24 December 2026: Friday 25 and Monday 28 are bank holidays, so the next call is Tuesday 29.
+        self.assertEqual(next_workday_morning(datetime(2026, 12, 24, 15, tzinfo=LONDON)), datetime(2026, 12, 29, 9, tzinfo=LONDON))
+
+    def test_a_follow_up_in_the_past_is_refused(self):
+        ann = self.case('ann')
+        with self.assertRaisesMessage(ValueError, 'Choose a future follow-up time.'):
+            record_outcome(ann.pk, self.user, self.zoom(ann, 'answered').pk, 'refused', '', 'Busy', self.now - timedelta(hours=1))
+
+    def test_a_follow_up_on_a_bank_holiday_is_refused(self):
+        ann = self.case('ann')
+        with mock.patch('callcentre.services.timezone.now', return_value=datetime(2026, 12, 23, 12, tzinfo=LONDON)):
+            with self.assertRaisesMessage(ValueError, 'not called at weekends or on bank holidays'):
+                record_outcome(ann.pk, self.user, self.zoom(ann, 'answered').pk, 'callback', '', '',
+                               datetime(2026, 12, 25, 10, tzinfo=LONDON))
+
+    def test_a_closing_outcome_closes_the_case_whatever_the_date(self):
+        ann = self.case('ann', source_type='manual')
+        CaseTicket.objects.filter(pk=ann.pk).update(source_type='pr')
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'answered').pk, 'reached', 'book_pr', '', add_workdays(self.now, 5))
+        ann.refresh_from_db()
+        self.assertEqual((ann.status, ann.next_followup_at), ('resolved', None))
+
+    def test_a_learner_cannot_be_called_before_their_follow_up(self):
+        ann = self.case('ann')
+        call = self.zoom(ann, 'answered')
+        record_outcome(ann.pk, self.user, call.pk, 'callback', '', '', add_workdays(self.now, 3))
+        with self.assertRaisesMessage(Conflict, 'The next follow-up is not due yet.'):
+            create_intent(ann.pk, self.agent)
+        CaseTicket.objects.filter(pk=ann.pk).update(next_followup_at=self.now - timedelta(minutes=1))
+        create_intent(ann.pk, self.agent)   # due again: the call can start
+
+
+class Directory(dict):
+    managers = {}
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class AgentRemovalTests(TestCase):
+    """What happens to a specialist's learners when the specialist is switched off or their account is closed."""
+    databases = {'default', 'login_db'}
+
+    def setUp(self):
+        patches = [mock.patch('callcentre.sources.cached_directory', return_value=Directory()),
+                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset())]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        users = get_user_model().objects
+        self.alice = Agent.objects.create(user=users.create_user('alice'), display_name='Alice', zoom_email='alice@kbc.test', zoom_account='student')
+        self.bob = Agent.objects.create(user=users.create_user('bob'), display_name='Bob', zoom_email='bob@kbc.test', zoom_account='student')
+        Allocation.objects.create(learner_email='ann@x.test', agent=self.bob, updated_by='manager')
+        self.ticket = CaseTicket.objects.create(source_type='epa', reason_key='epa:ann', learner_email='ann@x.test', learner_name='Ann',
+                                                learner_phone='+447700900001', due_at=timezone.now() + timedelta(days=2))
+
+    def switch_off(self, agent):
+        from .manage_views import save_agent   # what the Zoom Phone page does when Active is unticked
+        save_agent(agent, {'active': False})
+
+    def test_an_active_specialists_learner_is_theirs_alone(self):
+        self.assertEqual(allocated_owner('ann@x.test', 'epa'), self.bob.pk)
+        with self.assertRaisesMessage(PermissionDenied, 'Bob looks after this learner'):
+            can_work(self.ticket, self.alice.user)
+
+    def test_a_switched_off_specialists_learners_go_to_the_shared_queue(self):
+        self.switch_off(self.bob)
+        self.assertEqual(owners(), {})
+        self.assertIsNone(allocated_owner('ann@x.test', 'epa'))
+        self.assertEqual(can_work(self.ticket, self.alice.user), self.alice)   # anyone can now call Ann
+        # The allocation is kept, so switching Bob back on gives him his learners again.
+        self.assertEqual(Allocation.objects.get(learner_email='ann@x.test').agent, self.bob)
+        self.bob.active = True
+        self.bob.save()
+        self.assertEqual(allocated_owner('ann@x.test', 'epa'), self.bob.pk)
+
+    def test_a_closed_login_does_the_same(self):
+        self.bob.user.is_active = False
+        self.bob.user.save()
+        self.assertIsNone(allocated_owner('ann@x.test', 'epa'))
+        self.assertEqual(can_work(self.ticket, self.alice.user), self.alice)
+
+    def test_a_switched_off_specialist_cannot_call_or_claim(self):
+        self.switch_off(self.bob)
+        self.assertIsNone(agent_for(self.bob.user))
+        with self.assertRaisesMessage(PermissionDenied, 'Agent is inactive.'):
+            claim(self.ticket.pk, self.bob)
+
+    def test_a_case_a_switched_off_specialist_was_working_on_is_released_at_once(self):
+        claim(self.ticket.pk, self.bob)
+        self.switch_off(self.bob)
+        self.ticket.refresh_from_db()
+        self.assertEqual((self.ticket.claimed_by, self.ticket.status), (None, 'new'))
+        self.assertEqual(can_work(self.ticket, self.alice.user), self.alice)
+
+    def test_a_case_held_by_a_closed_login_is_released_by_the_next_cycle(self):
+        from .services import expire_claims
+        claim(self.ticket.pk, self.bob)
+        self.bob.user.is_active = False
+        self.bob.user.save()
+        expire_claims(timezone.now())
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.claimed_by)
+
+    def test_specialists_and_their_history_cannot_be_deleted(self):
+        with self.assertRaises(ValidationError):
+            self.bob.delete()
+        with self.assertRaises(ProtectedError):
+            self.bob.user.delete()
+
+    def test_the_allocation_page_names_a_switched_off_specialists_learners(self):
+        import json
+        from django.test import RequestFactory
+        from .manage_views import allocations
+        people = {'ann@x.test': {'learner_email': 'ann@x.test', 'learner_name': 'Ann', 'programme': '', 'organisation': '',
+                                 'coach': '', 'manager_email': '', 'manager_name': ''}}
+        self.switch_off(self.bob)
+        request = RequestFactory().get('/')
+        request.user = get_user_model().objects.create_superuser('director', 'director@kbc.test', 'x')
+        with mock.patch('callcentre.manage_views.learner_directory', return_value=people):
+            data = json.loads(allocations(request).content)
+        # Ann shows in the shared queue, still named as Bob's, and Bob is listed for a handover.
+        self.assertEqual((data['learners'][0]['agent_id'], data['learners'][0]['allocated_to']), (None, self.bob.pk))
+        self.assertEqual(data['inactive'], [{'id': self.bob.pk, 'display_name': 'Bob', 'learners': 1}])
+
+    def test_a_manager_approves_or_rejects_an_ai_suggestion_from_the_director_page(self):
+        import json
+        from django.test import RequestFactory
+        from .views import action
+        director = get_user_model().objects.create_superuser('director', 'director@kbc.test', 'x')
+
+        def post(ticket, command, data):
+            request = RequestFactory().post('/', data=json.dumps(data), content_type='application/json')
+            request.user, request._dont_enforce_csrf_checks = director, True
+            return action(request, ticket.pk, command)
+
+        rejected = CaseTicket.objects.create(source_type='epa', reason_key='epa:ben', learner_email='ben@x.test', learner_name='Ben',
+                                             status='ai_suggested_close', due_at=timezone.now() + timedelta(days=2))
+        CaseTicket.objects.filter(pk=self.ticket.pk).update(status='ai_suggested_close')
+        self.assertEqual(post(self.ticket, 'resolve', {'note': 'Learner confirmed the EPA date.', 'option': 'epa_step'}).status_code, 200)
+        self.assertEqual(post(rejected, 'reject_ai', {'note': 'Not done yet.'}).status_code, 200)
+        self.ticket.refresh_from_db()
+        rejected.refresh_from_db()
+        self.assertEqual((self.ticket.status, rejected.status), ('resolved', 'new'))
