@@ -84,7 +84,7 @@ export type Config = {
   /** Specialists can raise technical issues in the technical support system. */
   helpdesk: boolean;
   agents: { id: number; display_name: string; zoom_account: string; zoom_phone_number: string }[];
-  sources: { name: string; last_success_at: string | null; details: { error?: string } }[];
+  sources: { name: string; last_success_at: string | null; details: { error?: string; checked_at?: string } }[];
   cycle: { last_success_at: string | null } | null;
 };
 

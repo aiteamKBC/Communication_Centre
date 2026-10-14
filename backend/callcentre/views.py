@@ -22,7 +22,7 @@ from .learner_satisfaction import close_without_feedback, complete as complete_l
 from .access import is_director, refused
 from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
-from .allocation import manager_owners, owners
+from .allocation import learner_owner, manager_owners, owners
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
                             send as send_booking_email)
 from .booking_links import booking_links
@@ -238,7 +238,8 @@ def overview(request):
         item = ticket_json(ticket)
         item.pop('source_data')
         item.pop('priority_why')
-        item['allocated_agent_id'] = (employers if ticket.source_type == 'employer_feedback' else allocated).get(ticket.learner_email)
+        item['allocated_agent_id'] = (employers.get(ticket.learner_email) if ticket.source_type == 'employer_feedback'
+                                      else learner_owner(ticket.learner_email, allocated))
         cases.append(item)
 
     agents = []

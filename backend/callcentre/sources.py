@@ -270,30 +270,55 @@ def _read(fn, alias):
     return load
 
 
+def set_eligible(ticket_id, allowed, reason):
+    """Set a case aside while its source no longer reports the issue, or bring it back. Nothing is resolved: the
+    case keeps its history and returns, with ``eligible`` true, as soon as the source reports the issue again."""
+    with transaction.atomic(using=DB):
+        ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.status == 'resolved' or ticket.source_data.get('eligible', True) == allowed:
+            return False
+        ticket.source_data = {**ticket.source_data, 'eligible': allowed, 'eligibility_reason': reason}
+        ticket.save(update_fields=['source_data', 'updated_at'])
+        event(ticket, 'eligibility_changed', {'eligible': allowed, 'reason': reason})
+        return True
+
+
+def open_key(people, source_type, email, overdue_since, data):
+    """What one open case is about: the same key means the same issue, whichever email the source used."""
+    email = people.get(email, {}).get('learner_email', email)
+    if source_type == 'attendance':
+        return source_type, email, overdue_since, str(data.get('module', '')).strip()
+    if source_type in REVIEW_CATEGORIES:
+        return source_type, email, None, lms_reviews.review_key(data.get('review_type', ''))
+    return source_type, email, None, ''
+
+
 def generate_risks(people, categories=None):
     today = timezone.now().astimezone(LONDON).date()
     total = 0
-    existing = list(CaseTicket.objects.exclude(status='resolved').values('source_type', 'learner_email', 'overdue_since', 'source_data'))
-    open_reasons = {(c['source_type'], people.get(c['learner_email'], {}).get('learner_email', c['learner_email']), c['overdue_since'] if c['source_type'] == 'attendance' else None,
-                     c['source_data'].get('module', '') if c['source_type'] == 'attendance'
-                     else c['source_data'].get('review_type', '') if c['source_type'] in REVIEW_CATEGORIES else '')
-                    for c in existing}
+    existing = list(CaseTicket.objects.exclude(status='resolved').values(
+        'pk', 'source_type', 'learner_email', 'overdue_since', 'source_data', 'archived'))
+    open_reasons = {open_key(people, c['source_type'], c['learner_email'], c['overdue_since'], c['source_data']) for c in existing}
+    ready = missed_lectures_ready_until(today)
+    # Attendance is read for the four weeks up to ``ready``; only cases in that window can be checked against it.
+    first_week = ready - timedelta(days=ready.weekday()) - timedelta(weeks=3)
 
     def attendance():
         # Rows newer than the delay are not read at all, so a fresh absence cannot hide an older one in its week.
-        ready = missed_lectures_ready_until(today)
         output = []
-        monday = ready - timedelta(days=ready.weekday())
         for week in range(4):
-            start = monday - timedelta(weeks=week)
+            start = first_week + timedelta(weeks=week)
             output.extend(summaries.attendance_missed_for_week(start, min(ready, start + timedelta(days=6))))
         return output
 
     loaders = {
         'otj': _read(summaries.otj_rows, APTEM),
-        'epa': _read(summaries.epa_overdue_rows, APTEM),
+        'epa': _read(lambda: summaries.epa_overdue_rows(today), APTEM),
         'attendance': _read(attendance, DB),
     }
+    # Which open cases each source can vouch for: those it would raise again today.
+    in_window = {'epa': lambda c: True,
+                 'attendance': lambda c: bool(c['overdue_since']) and first_week <= c['overdue_since'] <= ready}
     for category, loader in loaders.items():
         if categories is not None and category not in categories:
             continue
@@ -302,6 +327,7 @@ def generate_risks(people, categories=None):
         data = get_source(category, loader)
         if data is None:
             continue
+        seen = set()
         for item in data:
             email = email_key(item.get('email'))
             if email not in people:
@@ -323,8 +349,9 @@ def generate_risks(people, categories=None):
                     continue
             if not count:
                 continue
-            open_key = (category, email, overdue if category == 'attendance' else None, module if category == 'attendance' else '')
-            if open_key in open_reasons:
+            key = open_key(people, category, email, overdue, {'module': module})
+            seen.add(key)
+            if key in open_reasons:
                 continue
             discriminator = f'{overdue}:{module}' if overdue else f"source:{item.get('id', email)}"
             # A resolved reason keeps its reason_key, so it stays closed until a distinct dated issue appears.
@@ -333,34 +360,108 @@ def generate_risks(people, categories=None):
                                                        'attendance_key': item.get('attendance_key', '')},
                                    person=people.resolve(email=email) if hasattr(people, 'resolve') else None)
             total += fresh
-            open_reasons.add(open_key)
-    return total + (generate_review_cases(people, today, open_reasons) if categories is None else 0)
+            open_reasons.add(key)
+        retire(people, [c for c in existing if c['source_type'] == category and not c['archived']
+                        and in_window.get(category, lambda c: True)(c)],
+               seen, 'No longer reported by the source (register corrected, EPA date changed or learner no longer active).')
+    return total + (generate_review_cases(people, today, open_reasons, existing) if categories is None else 0)
 
 
-def generate_review_cases(people, today, open_reasons):
-    """Overdue, missed and unsigned reviews from the LMS: one case per learner, case type and review type."""
+def retire(people, cases, current, reason, keep=None):
+    """Set aside the open cases whose issue the source no longer reports, and bring back those it reports again.
+    ``keep(case)`` holds a case back from being set aside (its own proof will resolve it)."""
+    for case in cases:
+        reported = open_key(people, case['source_type'], case['learner_email'], case['overdue_since'], case['source_data']) in current
+        if case['source_data'].get('eligible', True) == reported or (not reported and keep and keep(case)):
+            continue
+        set_eligible(case['pk'], reported, 'Reported by the source again.' if reported else reason)
+
+
+def generate_review_cases(people, today, open_reasons, existing=()):
+    """Overdue, missed and unsigned reviews from the LMS: one case per learner, case type and review type.
+
+    An open case collects every review ref the LMS reports for its issue. When the LMS stops reporting the issue
+    (booked, rebooked, cancelled, moved on to a signature, or the learner left) the case is set aside, unless all
+    its reviews are done: then the evidence check resolves it with that proof.
+    """
     items = get_source('lms_reviews', _read(lambda: lms_reviews.review_items(
         today, people=people) if identity.enabled() else lms_reviews.review_items(today), LMS))
     if items is None:
         return 0
-    total = 0
-    for (email, category, review_type), group in lms_reviews.group_items(items).items():
+    # The LMS row may use an alias (e.g. the Aptem email): group under the learner's main email.
+    items = [{**item, 'email': people.get(item['email'], {}).get('learner_email', item['email'])} for item in items]
+    open_cases = {}
+    for case in existing:
+        if case['source_type'] in REVIEW_CATEGORIES and not case['archived']:
+            key = open_key(people, case['source_type'], case['learner_email'], case['overdue_since'], case['source_data'])
+            open_cases.setdefault(key, []).append(case)
+    total, current = 0, set()
+    for (email, category, review), group in lms_reviews.group_items(items).items():
         # Only learners the LMS has as Active or Delivery: withdrawn and completed learners get no review calls.
         if email not in people or email not in people.active:
             continue
-        open_key = (category, email, None, review_type)
-        if open_key in open_reasons:
+        key = (category, email, None, review)
+        current.add(key)
+        refs = sorted({item['ref'] for item in group})
+        if key in open_reasons:
+            for case in open_cases.get(key, []):
+                add_review_refs(case['pk'], refs)
             continue
-        count, overdue = len(group), max(item['day'] for item in group)
+        days = [item['day'] for item in group]
+        review_type = group[0]['review_type']
+        person = people.resolve(email=email) if hasattr(people, 'resolve') else None
+        discriminator = f'{max(days)}:{review_type}'
+        if not closed_case_covers(category, person['emails'] if person else [email], discriminator, refs):
+            # A closed case already has this key but not these reviews: they are a new issue, not the closed one.
+            discriminator += ':' + hashlib.sha256(','.join(refs).encode()).hexdigest()[:12]
+        count = len(group)
         risk = ('red' if summaries.overdue_status(count) == 'Due' else 'amber') if category == 'pr' else (
             summaries.mcm_risk(count) if category == 'mcm' else 'amber')
-        _, fresh = upsert_case(category, people[email], f'{overdue}:{review_type}', risk=risk, overdue=overdue,
-                               misses=count, data={'review_type': review_type,
-                                                   'review_refs': sorted(item['ref'] for item in group)[:50]},
-                               person=people.resolve(email=email) if hasattr(people, 'resolve') else None)
+        # Overdue since the earliest review on the case, so its age and priority are not understated.
+        _, fresh = upsert_case(category, people[email], discriminator, risk=risk, overdue=min(days), misses=count,
+                               data={'review_type': review_type, 'review_refs': refs[:50]}, person=person)
         total += fresh
-        open_reasons.add(open_key)
+        open_reasons.add(key)
+    candidates = [case for cases in open_cases.values() for case in cases]
+    done = reviews_done([case for case in candidates if open_key(
+        people, case['source_type'], case['learner_email'], case['overdue_since'], case['source_data']) not in current])
+    retire(people, candidates, current, 'The LMS no longer reports this review as needing a call '
+           '(booked, rebooked, cancelled, waiting for a signature, or the learner is not active).',
+           keep=lambda case: done is None or case['pk'] in done)
     return total
+
+
+def add_review_refs(ticket_id, refs):
+    """Keep every review the LMS reports for an open case's issue on the case, so its proof covers all of them."""
+    with transaction.atomic(using=DB):
+        ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+        known = list(ticket.source_data.get('review_refs') or [])
+        merged = known + [ref for ref in refs if ref not in known]
+        if merged != known and ticket.status != 'resolved':
+            ticket.source_data = {**ticket.source_data, 'review_refs': merged[:50]}
+            ticket.save(update_fields=['source_data', 'updated_at'])
+
+
+def closed_case_covers(category, emails, discriminator, refs):
+    """Whether a resolved case with this reason key already covered these reviews (then it stays closed)."""
+    closed = CaseTicket.objects.filter(reason_key__in=[reason_key(category, email, discriminator) for email in emails],
+                                       status='resolved').values_list('source_data', flat=True)
+    return all(set(refs) <= set((data or {}).get('review_refs') or []) for data in closed)
+
+
+def reviews_done(cases):
+    """IDs of the cases all of whose reviews are done in the LMS; None when the LMS cannot be read."""
+    refs = sorted({ref for case in cases for ref in case['source_data'].get('review_refs') or []})
+    if not refs:
+        return set()
+    try:
+        with source_transaction(LMS):
+            states = lms_reviews.ref_states(refs)
+    except Exception:
+        return None
+    return {case['pk'] for case in cases if case['source_data'].get('review_refs')
+            and all(ref in states and lms_reviews.done(case['source_type'], states[ref])
+                    for ref in case['source_data']['review_refs'])}
 
 
 def refresh_recording_links():
@@ -451,6 +552,10 @@ def load_bookings(people):
                     continue
                 if start.astimezone(LONDON).date() != tomorrow:
                     continue
+                # On a break, withdrawn or completed: no reminder (the calendar path below checks the same).
+                person = people.resolve(email=email) if hasattr(people, 'resolve') else None
+                if person and program_is_paused(person):
+                    continue
                 email = people[email]['learner_email']
                 key = f'{email}:{category}:{start.astimezone(LONDON).isoformat()}'
                 result.setdefault(key, {'email': email, 'start': start, 'type': category,
@@ -466,16 +571,15 @@ def load_bookings(people):
         for item in calendar_rows:
             person = people.calendar_person(item)
             category = types.get(item['event_type'])
-            if not person or not category or program_is_paused(person):
-                continue
-            email = person['profile']['learner_email']
-            if not email:
-                continue
             start = datetime.combine(item['scheduled_date'], item['scheduled_time'], LONDON)
+            email = person['profile']['learner_email'] if person else people.get(
+                email_key(item['learner_email']), {}).get('learner_email', '')
             key = f'{email}:{category}:{start.isoformat()}'
-            # An exact calendar appointment supersedes its legacy JSON copy,
-            # including cancellation/completion, so stale reminders cannot reappear.
+            # An exact calendar appointment supersedes its legacy JSON copy, including cancellation/completion and
+            # a learner who is now paused, so stale reminders cannot reappear.
             result.pop(key, None)
+            if not person or not category or not email or program_is_paused(person):
+                continue
             if item['status'] not in ('scheduled', 'in-progress', 'awaiting-signature'):
                 continue
             result[key] = {'email': email, 'start': start, 'type': category,

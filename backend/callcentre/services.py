@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .access import is_director
-from .allocation import manager_owners, owners
+from .allocation import learner_owner, manager_owners, owners
 from .db import DB
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, CycleState, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
@@ -54,7 +54,9 @@ def release_fields(ticket):
 
 def allocated_owner(learner_email, source_type):
     """The specialist who looks after this contact, or None for the shared queue."""
-    return (manager_owners() if source_type == 'employer_feedback' else owners([learner_email])).get(learner_email)
+    if source_type == 'employer_feedback':
+        return manager_owners().get(learner_email)
+    return learner_owner(learner_email, owners())
 
 
 def can_work(ticket, user, now=None, acting_agent=None):

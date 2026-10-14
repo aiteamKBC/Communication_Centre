@@ -10,8 +10,9 @@ export const CALL_TABS: CallTab[] = [
   { key: 'missed', label: 'Missed', icon: 'calendar',
     reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
     hint: 'Check the missed activity and agree a new time. Request outstanding signatures without rebooking a completed meeting.' },
-  { key: 'due', label: 'Due', icon: 'calendar', reasons: [['mcm', 'Monthly coaching'], ['pr', 'Progress review'], ['otj', 'Off-the-job hours'], ['epa', 'EPA']],
-    hint: 'Monthly coaching, progress reviews, off-the-job hours and EPA preparation that are overdue. Agree a booking or a support action.' },
+  // Off-the-job hours cases are paused on the server (rules.PAUSED_CATEGORIES); add ['otj', 'Off-the-job hours'] back with them.
+  { key: 'due', label: 'Due', icon: 'calendar', reasons: [['mcm', 'Monthly coaching'], ['pr', 'Progress review'], ['epa', 'EPA']],
+    hint: 'Monthly coaching, progress reviews and EPA preparation that are overdue. Agree a booking or a support action.' },
   { key: 'nextday', label: 'Next Day', icon: 'calendar', reasons: [],
     hint: 'Confirm tomorrow’s coaching sessions and reviews with each learner.' },
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
@@ -165,7 +166,6 @@ export function dueForCall(c: OverviewCase, now = Date.now()) {
 
 export function categoryFor(c: OverviewCase, today: string, nextWorkday: string) {
   if (c.source_type === 'tech_support') return 'tech';
-  if (c.status === 'ai_suggested_close') return 'ai';
   if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
   if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextWorkday ? 'nextday' : null;
@@ -174,6 +174,12 @@ export function categoryFor(c: OverviewCase, today: string, nextWorkday: string)
   if (c.source_type === 'manual') return 'manager';
   return null;
 }
+
+/** Sources whose last read failed. A source the cycle no longer reads (e.g. a paused one) keeps its old error;
+ * only errors from the last two hours describe the lists as they are now. */
+export const failingSources = (overview: Pick<Overview, 'sources'>, now = Date.now()) =>
+  overview.sources.filter(source => source.details?.error && source.details.checked_at
+    && now - Date.parse(source.details.checked_at) < 2 * 60 * 60 * 1000);
 
 export const categoryCases = (cases: OverviewCase[], key: string, today: string, nextWorkday: string) =>
   cases.filter(c => activeCase(c) && categoryFor(c, today, nextWorkday) === key);

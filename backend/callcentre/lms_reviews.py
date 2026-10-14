@@ -17,33 +17,87 @@ from .db import LMS
 from .rules import REVIEWS_SINCE, email_key
 
 # LMS review type (lower case) -> the call centre's review kind. Two kinds of progress review stay separate cases.
+# Aptem has exported the monthly coaching meeting under three names; the LMS treats them as one (review_history.py).
 REVIEW_KINDS = {
     'monthly coaching meeting': 'mcm',
+    'monthly coaching': 'mcm',
+    'mcm': 'mcm',
     'progress review': 'pr',
     'progress review (+ skills radar)': 'pr',
 }
-# Imported (Aptem) review status -> call reason.
-IMPORTED_REASONS = {'not scheduled': 'due', 'scheduled': 'missed', 'awaitingsignature': 'signature'}
-# New LMS review status -> call reason.
-NATIVE_REASONS = {'not-scheduled': 'due', 'scheduled': 'missed', 'awaiting-signature': 'signature'}
+MCM_NAMES = [name for name, kind in REVIEW_KINDS.items() if kind == 'mcm']
+# Review status, normalised as the LMS does (both sources) -> call reason.
+STATUS_REASONS = {'not-scheduled': 'due', 'scheduled': 'missed', 'awaiting-signature': 'signature'}
+IMPORTED_REASONS = NATIVE_REASONS = STATUS_REASONS
 # (review kind, call reason) -> case type.
 CASE_TYPES = {('mcm', 'due'): 'mcm', ('pr', 'due'): 'pr', ('mcm', 'missed'): 'mcm_missed',
               ('pr', 'missed'): 'pr_missed', ('mcm', 'signature'): 'signature', ('pr', 'signature'): 'signature'}
+# Booking statuses the LMS shows for an imported review even when the booking's sync is not verified.
+BOOKING_STATUSES = {'completed', 'awaiting-signature', 'cancelled', 'failed'}
 
-IMPORTED_SQL = '''SELECT id, lower(trim(learner_email)) AS email, trim(review_type) AS review_type, status,
-        (planned_scheduled_date AT TIME ZONE 'Europe/London')::date AS day, completed_date
-    FROM "Learner".reviews
-    WHERE lower(trim(review_type)) = ANY(%s) AND nullif(trim(learner_email), '') IS NOT NULL
-      AND (planned_scheduled_date AT TIME ZONE 'Europe/London')::date BETWEEN %s AND %s'''
-IMPORTED_EMAILS_SQL = '''SELECT DISTINCT lower(trim(learner_email)) FROM "Learner".reviews
-    WHERE nullif(trim(learner_email), '') IS NOT NULL'''
-NATIVE_SQL = '''SELECT i.id, i.learner_id AS profile_id, lower(trim(e.learner_email)) AS email, trim(t.name) AS review_type, i.status,
-        coalesce(e.scheduled_date, i.target_date) AS day, i.completed_at
+
+def normalise_status(value):
+    """One status vocabulary for both sources, as the LMS's learner_api.review_history._normalise_status."""
+    text = str(value or '').strip().lower().replace(' ', '-').replace('_', '-')
+    return {'finished': 'completed', 'complete': 'completed', 'planned': 'not-scheduled', 'not-booked': 'not-scheduled',
+            'inprogress': 'in-progress', 'awaitingsignature': 'awaiting-signature'}.get(text, text)
+
+
+# An imported review as the LMS shows it: the raw Aptem row, then its new-LMS booking ("Coach".coach_calendar_event,
+# by exact key or the learner's own booking key) and its form continuation ("Coach".coach_imported_review_instance).
+# The joins follow coach_api.review_sources (linked_overlay, linked_booking); more than one match is a conflict.
+IMPORTED_SQL = '''SELECT r.id, lower(trim(r.learner_email)) AS email, trim(r.review_type) AS review_type, r.status,
+        r.completed_date, r.updated_at, (r.planned_scheduled_date AT TIME ZONE 'Europe/London')::date AS planned_day,
+        o.matches AS overlay_matches, o.status AS overlay_status, o.completed_at AS overlay_completed,
+        b.matches AS booking_matches, b.status AS booking_status, b.verified AS booking_verified,
+        b.scheduled_date AS booking_day
+    FROM "Learner".reviews r
+    LEFT JOIN "Learner".learners p ON p.id = r.learner_id
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS matches, max(x.status) AS status, max(x.completed_at) AS completed_at, max(x.event_key) AS event_key
+        FROM "Coach".coach_imported_review_instance x
+        WHERE x.learner_id = r.learner_id
+          AND (x.source_review_id = r.id
+               OR (x.source_review_id IS NULL AND x.event_key = 'imported-review:' || trim(r.aptem_review_id)))
+    ) o ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS matches, max(e.status) AS status, max(e.scheduled_date) AS scheduled_date,
+               bool_or(e.sync_state = 'synced' AND coalesce(e.graph_event_id, '') <> ''
+                       AND (coalesce(e.meeting_link, '') <> '' OR coalesce(e.graph_web_link, '') <> '')) AS verified
+        FROM "Coach".coach_calendar_event e
+        WHERE e.event_type = CASE WHEN lower(trim(r.review_type)) = ANY(%(mcm)s) THEN 'mcr' ELSE 'progress-review' END
+          AND coalesce(e.review_instance_id, '') = '' AND coalesce(e.review_template_id, '') = ''
+          AND ((e.learner_id = r.learner_id
+                AND (e.event_key = 'imported-review:' || trim(r.aptem_review_id) OR e.event_key = o.event_key))
+               OR (array_length(string_to_array(e.idempotency_key, ':'), 1) = 6
+                   AND split_part(e.idempotency_key, ':', 1) = 'learner-book'
+                   AND split_part(e.idempotency_key, ':', 2)
+                       = CASE WHEN lower(trim(r.review_type)) = ANY(%(mcm)s) THEN 'mcm' ELSE 'progress-review' END
+                   AND split_part(e.idempotency_key, ':', 3)
+                       = CASE WHEN p.learner_type = 'commercial' THEN 'commercial' ELSE 'apprenticeship' END
+                   AND split_part(e.idempotency_key, ':', 4) = p.enrolment_id::text
+                   AND split_part(e.idempotency_key, ':', 6) = r.id::text
+                   AND e.learner_id IN (r.learner_id, p.enrolment_id)))
+    ) b ON TRUE
+    WHERE {where}'''
+IMPORTED_WHERE = '''lower(trim(r.review_type)) = ANY(%(kinds)s) AND nullif(trim(r.learner_email), '') IS NOT NULL
+      AND greatest((r.planned_scheduled_date AT TIME ZONE 'Europe/London')::date, b.scheduled_date) >= %(since)s'''
+# New-LMS reviews. An unbooked review has no calendar event, so the learner's own profile gives the email, and a
+# cancelled booking puts the review back on its target date. ``aptem_source``: the LMS reads this learner's reviews
+# from Aptem (coach_api.review_sources.resolve_review_source: enrolment Aptem ID, then profile Aptem ID).
+NATIVE_DAY = "CASE WHEN e.id IS NULL OR e.status = 'cancelled' THEN i.target_date ELSE coalesce(e.scheduled_date, i.target_date) END"
+NATIVE_EMAIL = "coalesce(nullif(trim(e.learner_email), ''), l.email_normalized)"
+NATIVE_SQL = f'''SELECT i.id, i.learner_id AS profile_id, lower(trim({NATIVE_EMAIL})) AS email,
+        trim(t.name) AS review_type, i.status, i.completed_at, {NATIVE_DAY} AS day,
+        coalesce(coalesce(nullif(trim(u.aptem_id::text), ''), nullif(trim(l.aptem_id::text), '')) ~ '^0*[1-9][0-9]*$',
+                 false) AS aptem_source
     FROM curriculum.review_instances i
     JOIN curriculum.review_templates t ON t.id = i.review_template_id
-    JOIN "Coach".coach_calendar_event e ON e.id = i.calendar_event_id
-    WHERE lower(trim(t.name)) = ANY(%s) AND nullif(trim(e.learner_email), '') IS NOT NULL
-      AND coalesce(e.scheduled_date, i.target_date) BETWEEN %s AND %s'''
+    LEFT JOIN "Coach".coach_calendar_event e ON e.id = i.calendar_event_id
+    LEFT JOIN "Learner".learners l ON l.id = i.learner_id
+    LEFT JOIN enrolment."Created_users" u ON u.id = l.enrolment_id AND coalesce(l.learner_type, '') <> 'commercial'
+    WHERE lower(trim(t.name)) = ANY(%(kinds)s) AND nullif(trim({NATIVE_EMAIL}), '') IS NOT NULL
+      AND {NATIVE_DAY} >= %(since)s'''
 
 
 def _fetch(cursor, sql, params=()):
@@ -52,15 +106,33 @@ def _fetch(cursor, sql, params=()):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def _fetch_rows(cursor, sql, params=()):
-    cursor.execute(sql, params)
-    return cursor.fetchall()
+def imported_state(row):
+    """(status, day, completed) of an imported review as the LMS shows it (review_sources.apply_imported_state);
+    None while more than one booking or form continuation claims it, which the LMS refuses to choose between."""
+    source = normalise_status(row.get('status'))
+    planned = row.get('planned_day')
+    if source == 'completed' or row.get('completed_date'):
+        return 'completed', planned, row.get('completed_date') or row.get('updated_at')
+    if (row.get('booking_matches') or 0) > 1 or (row.get('overlay_matches') or 0) > 1:
+        return None
+    status, day = source, planned
+    if row.get('booking_matches'):
+        booking = normalise_status(row.get('booking_status'))
+        if row.get('booking_verified') or booking in BOOKING_STATUSES:
+            status = booking
+        day = row.get('booking_day') or day
+    if row.get('overlay_matches'):
+        local = normalise_status(row.get('overlay_status'))
+        # An unstarted form must not demote an existing booking.
+        if local != 'not-scheduled' or status == 'not-scheduled':
+            status = local
+    return status, day, row.get('overlay_completed') if status == 'completed' else None
 
 
-def classify(review_type, status, day, completed, today, reasons):
+def classify(review_type, status, day, completed, today, reasons=STATUS_REASONS):
     """The case type for one review, or None when nobody needs a call about it."""
     kind = REVIEW_KINDS.get(str(review_type or '').strip().lower())
-    reason = reasons.get(str(status or '').strip().lower())
+    reason = reasons.get(normalise_status(status))
     if not kind or not reason or day is None or day < REVIEWS_SINCE:
         return None
     # A due or missed review needs its date to have passed and no completion; a signature is waited for from the day.
@@ -73,49 +145,57 @@ def classify(review_type, status, day, completed, today, reasons):
 
 def review_items(today, people=None):
     """Every review needing a call: {email, case_type, review_type, day, ref}. ``ref`` names the LMS row."""
-    kinds = list(REVIEW_KINDS)
+    params = {'kinds': list(REVIEW_KINDS), 'mcm': MCM_NAMES, 'since': REVIEWS_SINCE}
     with connections[LMS].cursor() as cursor:
-        imported = _fetch(cursor, IMPORTED_SQL, [kinds, REVIEWS_SINCE, today])
-        has_imported = {email for (email,) in _fetch_rows(cursor, IMPORTED_EMAILS_SQL)}
-        native = _fetch(cursor, NATIVE_SQL, [kinds, REVIEWS_SINCE, today])
+        imported = _fetch(cursor, IMPORTED_SQL.format(where=IMPORTED_WHERE), params)
+        native = _fetch(cursor, NATIVE_SQL, params)
+    reviews = []
+    for row in imported:
+        state = imported_state(row)
+        if state:
+            reviews.append((row, 'reviews', *state))
+    for row in native:
+        # Legacy mode keeps the LMS's rule: a learner whose reviews come from Aptem is never read from Curriculum.
+        if people is None and row.get('aptem_source'):
+            continue
+        reviews.append((row, 'instance', row['status'], row['day'], row['completed_at']))
     items = []
-    for rows, reasons, prefix, done in ((imported, IMPORTED_REASONS, 'reviews', 'completed_date'),
-                                        (native, NATIVE_REASONS, 'instance', 'completed_at')):
-        for row in rows:
-            email = email_key(row['email'])
-            if people is not None:
-                if email not in people:
-                    continue
-                if prefix == 'instance' and (row.get('profile_id') is None or not people.resolve('profile', row.get('profile_id'), email)):
-                    continue
-                email = people[email]['learner_email']
-            if people is None and prefix == 'instance' and email in has_imported:
-                continue   # the LMS's rule: a learner with imported reviews is never read from Curriculum
-            case_type = classify(row['review_type'], row['status'], row['day'], row[done], today, reasons)
-            if case_type:
-                items.append({'email': email, 'case_type': case_type, 'review_type': row['review_type'],
-                              'day': row['day'], 'ref': f'{prefix}:{row["id"]}'})
+    for row, prefix, status, day, completed in reviews:
+        email = email_key(row['email'])
+        if people is not None:
+            if email not in people:
+                continue
+            if prefix == 'instance' and (row.get('profile_id') is None or not people.resolve('profile', row.get('profile_id'), email)):
+                continue
+            email = people[email]['learner_email']
+        case_type = classify(row['review_type'], status, day, completed, today)
+        if case_type:
+            items.append({'email': email, 'case_type': case_type, 'review_type': row['review_type'],
+                          'day': day, 'ref': f'{prefix}:{row["id"]}'})
     return items
 
 
 def group_items(items):
-    """One call per learner, case type and review type: {(email, case_type, review_type): [items]}."""
+    """One call per learner, case type and review type (letter case ignored): {(email, case_type, type): [items]}."""
     groups = {}
     for item in items:
-        groups.setdefault((item['email'], item['case_type'], item['review_type']), []).append(item)
+        groups.setdefault((item['email'], item['case_type'], review_key(item['review_type'])), []).append(item)
     return groups
 
 
+def review_key(review_type):
+    return ' '.join(str(review_type or '').split()).lower()
+
+
 REF_SQL = {
-    'reviews': '''SELECT id::text AS id, status, completed_date AS completed, updated_at FROM "Learner".reviews
-        WHERE id::text = ANY(%s)''',
+    'reviews': IMPORTED_SQL.format(where='r.id::text = ANY(%(ids)s)'),
     'instance': '''SELECT id, status, completed_at AS completed, updated_at FROM curriculum.review_instances
-        WHERE id = ANY(%s)''',
+        WHERE id = ANY(%(ids)s)''',
 }
 
 
 def ref_states(refs):
-    """Current LMS state of the given review refs: {ref: {status, completed, updated_at}}."""
+    """Current LMS state of the given review refs, as the LMS shows them: {ref: {status, completed, updated_at}}."""
     by_prefix = {}
     for ref in refs:
         prefix, _, key = str(ref).partition(':')
@@ -124,14 +204,19 @@ def ref_states(refs):
     states = {}
     with connections[LMS].cursor() as cursor:
         for prefix, keys in by_prefix.items():
-            for row in _fetch(cursor, REF_SQL[prefix], [keys]):
+            for row in _fetch(cursor, REF_SQL[prefix], {'ids': keys, 'mcm': MCM_NAMES}):
+                if prefix == 'reviews':
+                    state = imported_state(row)
+                    if not state:
+                        continue   # conflicting bookings: no state is proof
+                    row = {'id': row['id'], 'status': state[0], 'completed': state[2], 'updated_at': row['updated_at']}
                 states[f'{prefix}:{row["id"]}'] = row
     return states
 
 
 def done(case_type, state):
     """Whether this review no longer needs the call: completed (and, for a signature, signed off)."""
-    status = str(state.get('status') or '').strip().lower()
+    status = normalise_status(state.get('status'))
     if case_type == 'signature':
         return status == 'completed'
     return status == 'completed' or bool(state.get('completed'))

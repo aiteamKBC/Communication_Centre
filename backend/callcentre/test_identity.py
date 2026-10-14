@@ -133,12 +133,11 @@ class IdentityTests(SimpleTestCase):
                                  'email_normalized': 'learner@example.org'}])
         today = timezone.now().astimezone(LONDON).date()
         imported = {'id': 'old', 'email': 'learner@example.org', 'review_type': 'Progress Review',
-                    'status': 'Not Scheduled', 'day': today-timedelta(days=1), 'completed_date': None}
+                    'status': 'Not Scheduled', 'planned_day': today-timedelta(days=1), 'completed_date': None}
         native = {'id': 'native', 'email': 'learner@example.org', 'review_type': 'Progress Review',
                   'status': 'not-scheduled', 'day': today-timedelta(days=1), 'completed_at': None, 'profile_id': 800}
         with patch.object(lms_reviews, 'connections', {sources.LMS: MagicMock()}), \
-                patch.object(lms_reviews, '_fetch', side_effect=[[imported], [native]]), \
-                patch.object(lms_reviews, '_fetch_rows', return_value=[('learner@example.org',)]):
+                patch.object(lms_reviews, '_fetch', side_effect=[[imported], [native]]):
             result = lms_reviews.review_items(today, people=p)
         self.assertEqual({r['ref'] for r in result}, {'reviews:old', 'instance:native'})
 

@@ -12,7 +12,7 @@ import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import Director from './engagement/Director';
 import Imports from './engagement/Imports';
-import { DESK_MENUS, deskLabel, longDate } from './engagement/model';
+import { DESK_MENUS, deskLabel, failingSources, human, longDate } from './engagement/model';
 import { Eventbrite } from './engagement/NotConnected';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
@@ -148,8 +148,9 @@ export default function CallCentrePage() {
           Workspace: {deskAgent?.display_name || overview.access.display_name}. Showing this specialist's allocated contacts plus the shared queue.
           {' '}Last successful cycle: {overview.cycle?.last_success_at ? new Date(overview.cycle.last_success_at).toLocaleString() : 'Not recorded'}.
         </p>
-        {overview.sources?.some(source => source.details?.error) && <p className="ec-alert" role="alert">
-          Some data sources are unavailable. Lists may be incomplete; existing cases have been retained. Ask a manager to check Connections.
+        {failingSources(overview).length > 0 && <p className="ec-alert" role="alert">
+          Some data sources are unavailable ({failingSources(overview).map(source => human(source.name.replace(/^source:/, ''))).join(', ')}).
+          {' '}Lists may be incomplete; existing cases have been retained. Ask a manager to check Connections.
         </p>}
         {(!overview.cycle?.last_success_at || Date.now() - Date.parse(overview.cycle.last_success_at) > 30 * 60 * 1000) &&
           <p className="ec-alert" role="alert">Synchronization is overdue or has not completed. Refresh only reloads saved cases; it does not run synchronization.</p>}

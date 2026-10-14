@@ -52,9 +52,9 @@ def normalize_attendance_value(value):
     if value is False or value == 0:
         return 0
     normalized = str(value or '').strip().lower()
-    if normalized in {'1', 'present', 'attended', 'yes', 'true'}:
+    if normalized in {'1', 'present', 'attended', 'yes', 'true', 'p', 'late'}:
         return 1
-    if normalized in {'0', 'absent', 'missed', 'no', 'false'}:
+    if normalized in {'0', 'absent', 'missed', 'no', 'false', 'a'}:
         return 0
     return None
 
@@ -110,8 +110,10 @@ def epa_overdue_rows(today=None):
         FROM public.aptem_auto_extracting''')
     result = []
     for row in rows:
-        active = 'active' in {str(row.get('Program-Status') or '').strip().lower(),
-                              str(row.get('Subscription Status') or '').strip().lower()}
+        # The programme status decides; the subscription status only when no programme status is recorded,
+        # so a completed or withdrawn programme with a still-active subscription is not called about EPA.
+        programme = str(row.get('Program-Status') or '').strip().lower()
+        active = (programme or str(row.get('Subscription Status') or '').strip().lower()) == 'active'
         end_date = parse_date_safe(row.get('End-Date'))
         if active and end_date and end_date + timedelta(days=7) < today <= end_date + timedelta(days=7 + EPA_RECENCY_DAYS):
             result.append({'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
@@ -136,18 +138,17 @@ def attendance_missed_for_week(week_start, week_end):
             sessions.setdefault(key, set()).add(normalize_attendance_value(row['Attendance']))
             if row.get('key'):
                 register_keys.setdefault(key, set()).add(str(row['key']))
-    # Every dated module is independent. Missing or contradictory attendance
-    # needs review, never an automatic absence call.
+    # Every dated module is independent. Missing or contradictory attendance needs review, never an automatic
+    # absence call; absent on every register that day (e.g. morning and afternoon) is a missed lecture.
     learners = [{'email': email, 'attendance_date': day.isoformat(), 'attendance_module': module,
-                 'attendance_key': next(iter(register_keys.get((email, day, module), {''})))}
-                for (email, day, module), states in sessions.items()
-                if states == {0} and len(register_keys.get((email, day, module), set())) <= 1]
+                 'attendance_key': min(register_keys.get((email, day, module), {''}))}
+                for (email, day, module), states in sessions.items() if states == {0}]
     if not learners:
         return []
     emails = sorted({item['email'] for item in learners})
     placeholders = ','.join(['%s'] * len(emails))
     history = _fetch(DB, f'''SELECT "Email", "module", "date", "Attendance" FROM public.kbc_attendance
-        WHERE lower("Email") IN ({placeholders})''', emails)
+        WHERE lower(trim("Email")) IN ({placeholders})''', emails)
     missed = {}
     for row in history:
         key = (str(row['Email'] or '').strip().lower(), str(row['module'] or '').strip(), str(row['date']))

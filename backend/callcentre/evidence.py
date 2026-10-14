@@ -26,19 +26,24 @@ class EvidenceSnapshot:
                     [since, timezone.now().astimezone(LONDON).date()])
                 from .identity import enabled
                 from .sources import cached_directory
-                people = cached_directory() if enabled() else None
+                directory = cached_directory()
+                people = directory if enabled() else None
                 if people is not None and (not hasattr(people, 'resolve') or not people.sources_complete):
                     raise ValueError('Identity source unavailable for attendance verification.')
                 for row in data:
                     email = email_key(row['Email'])
+                    module = str(row['module'] or '').strip()
                     if people is not None:
                         person = people.resolve('aptem', row['ID'], email)
                         if not person:
                             continue
                         for alias in person['emails']:
-                            self.attendance.setdefault((alias, row['module']), []).append(row)
+                            self.attendance.setdefault((alias, module), []).append(row)
                     else:
-                        self.attendance.setdefault((email, row['module']), []).append(row)
+                        # The register may use an alias (e.g. the Aptem email); cases use the main email.
+                        main = directory.get(email, {}).get('learner_email', email)
+                        for key in {email, main}:
+                            self.attendance.setdefault((key, module), []).append(row)
             except Exception as exc:
                 self.errors['attendance'] = type(exc).__name__
         refs = [ref for t in tickets if t.source_type in REVIEW_CATEGORIES for ref in t.source_data.get('review_refs', [])]
@@ -85,7 +90,7 @@ def attendance_evidence(ticket, snapshot=None):
     from .identity import enabled
     if snapshot is None and enabled():
         snapshot = EvidenceSnapshot([ticket])
-    module = ticket.source_data.get('module')
+    module = str(ticket.source_data.get('module') or '').strip()
     if not module:
         return None
     since = max(evidence_cutoff(ticket).astimezone(LONDON).date(), ticket.overdue_since or ticket.created_at.date())
@@ -95,7 +100,7 @@ def attendance_evidence(ticket, snapshot=None):
         data = [r for r in snapshot.attendance.get((ticket.learner_email, module), []) if r['date'] > since]
     else:
         data = rows(DB, '''SELECT "ID", "date", "Attendance" FROM public.kbc_attendance
-        WHERE LOWER(TRIM("Email")) = %s AND "module" = %s AND "date" > %s AND "date" <= %s
+        WHERE LOWER(TRIM("Email")) = %s AND TRIM("module") = %s AND "date" > %s AND "date" <= %s
         ORDER BY "date" DESC''',
         [ticket.learner_email, module, since,
          timezone.now().astimezone(LONDON).date()])
@@ -121,8 +126,8 @@ def review_evidence(ticket, snapshot=None):
         with source_transaction(LMS):
             states = lms_reviews.ref_states(refs)
     kind = 'review_signed' if ticket.source_type == 'signature' else ticket.source_type.split('_')[0] + '_completed'
-    from .identity import enabled
-    if enabled() and not all(ref in states and lms_reviews.done(ticket.source_type, states[ref]) for ref in refs):
+    # Every review on the case must be done: one completed review does not settle another still overdue.
+    if not all(ref in states and lms_reviews.done(ticket.source_type, states[ref]) for ref in refs):
         return None
     for ref in refs:
         state = states.get(ref)

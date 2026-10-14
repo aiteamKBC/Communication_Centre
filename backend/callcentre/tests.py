@@ -842,6 +842,118 @@ class LmsReviewTests(SimpleTestCase):
         signed.review_states['reviews:5']['status'] = 'AwaitingSignature'
         self.assertIsNone(review_evidence(ticket, signed))
 
+    def test_one_completed_review_does_not_close_a_case_with_another_still_overdue(self):
+        from .evidence import review_evidence
+        ticket = SimpleNamespace(source_type='mcm', learner_email='a@x.com', evidence_after=None,
+                                 created_at=datetime(2026, 10, 1, 9, tzinfo=LONDON), source_data={'review_refs': ['reviews:1', 'reviews:2']})
+        done = {'status': 'Completed', 'completed': datetime(2026, 10, 2, tzinfo=LONDON), 'updated_at': datetime(2026, 10, 2, tzinfo=LONDON)}
+        states = SimpleNamespace(errors={}, review_states={'reviews:1': done, 'reviews:2': {**done, 'status': 'Not Scheduled', 'completed': None}})
+        self.assertIsNone(review_evidence(ticket, states))
+        states.review_states['reviews:2'] = done
+        self.assertEqual(review_evidence(ticket, states)['kind'], 'mcm_completed')
+
+    def test_the_lms_status_spellings_are_all_understood(self):
+        self.assertEqual(self.classify(status='Planned'), 'pr')
+        self.assertEqual(self.classify(status='Not Booked'), 'pr')
+        self.assertEqual(self.classify(status='Awaiting Signature'), 'signature')
+        self.assertIsNone(self.classify(status='Finished'))
+        self.assertEqual(self.classify('MCM', 'Scheduled'), 'mcm_missed')
+        self.assertEqual(self.classify('Monthly Coaching', 'Not Scheduled'), 'mcm')
+        self.assertTrue(lms_reviews.done('pr', {'status': 'Finished', 'completed': None}))
+
+    def test_an_imported_review_shows_its_new_lms_booking_and_form(self):
+        row = {'status': 'Not Scheduled', 'planned_day': date(2026, 9, 10), 'completed_date': None}
+        self.assertEqual(lms_reviews.imported_state(row), ('not-scheduled', date(2026, 9, 10), None))
+        booked = {**row, 'booking_matches': 1, 'booking_status': 'scheduled', 'booking_verified': True, 'booking_day': date(2026, 10, 20)}
+        self.assertEqual(lms_reviews.imported_state(booked)[:2], ('scheduled', date(2026, 10, 20)))
+        self.assertIsNone(self.classify(status='scheduled', day=date(2026, 10, 20)))   # booked for later: no call
+        # A booking whose sync is not confirmed does not claim the review is booked.
+        self.assertEqual(lms_reviews.imported_state({**booked, 'booking_verified': False})[0], 'not-scheduled')
+        self.assertEqual(lms_reviews.imported_state({**booked, 'booking_verified': False, 'booking_status': 'cancelled'})[0], 'cancelled')
+        completed = {**booked, 'overlay_matches': 1, 'overlay_status': 'completed', 'overlay_completed': datetime(2026, 10, 3)}
+        self.assertEqual(lms_reviews.imported_state(completed), ('completed', date(2026, 10, 20), datetime(2026, 10, 3)))
+        # An unstarted form does not undo a booking; two bookings for one review are a conflict, never a guess.
+        self.assertEqual(lms_reviews.imported_state({**booked, 'overlay_matches': 1, 'overlay_status': 'not-scheduled'})[0], 'scheduled')
+        self.assertIsNone(lms_reviews.imported_state({**booked, 'booking_matches': 2}))
+        self.assertEqual(lms_reviews.imported_state({**booked, 'status': 'Completed'})[0], 'completed')
+
+    def test_legacy_mode_reads_aptem_learners_from_aptem_only(self):
+        today = date(2026, 10, 4)
+        native = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'not-scheduled',
+                  'day': date(2026, 9, 20), 'completed_at': None, 'profile_id': 1, 'aptem_source': True}
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: mock.MagicMock()}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[], [native], [], [{**native, 'aptem_source': False}]]):
+            self.assertEqual(lms_reviews.review_items(today), [])
+            self.assertEqual([item['ref'] for item in lms_reviews.review_items(today)], ['instance:7'])
+
+    def test_review_types_group_whatever_their_letter_case(self):
+        items = [{'email': 'a@x.com', 'case_type': 'pr', 'review_type': t, 'day': date(2026, 9, 10), 'ref': f'reviews:{i}'}
+                 for i, t in enumerate(('Progress Review', 'Progress review', ' progress  review '))]
+        self.assertEqual(len(lms_reviews.group_items(items)), 1)
+
+
+class StaleCaseTests(SimpleTestCase):
+    """Open cases whose source no longer reports the issue are set aside, never resolved."""
+    people = {'a@x.com': {'learner_email': 'a@x.com'}, 'alias@x.com': {'learner_email': 'a@x.com'}}
+
+    def case(self, pk, source_type='mcm', email='a@x.com', **data):
+        return {'pk': pk, 'source_type': source_type, 'learner_email': email, 'overdue_since': date(2026, 9, 10),
+                'source_data': {'review_type': 'Monthly Coaching Meeting', **data}, 'archived': False}
+
+    def test_cases_follow_whether_the_source_still_reports_them(self):
+        from . import sources
+        reported = sources.open_key(self.people, 'mcm', 'alias@x.com', None, {'review_type': 'monthly coaching meeting'})
+        cases = [self.case(1), self.case(2, 'pr', review_type='Progress Review'), self.case(3, 'pr', review_type='Progress Review', eligible=False),
+                 self.case(4, 'mcm', 'b@x.com')]
+        with mock.patch.object(sources, 'set_eligible') as set_eligible:
+            sources.retire(self.people, cases, {reported}, 'gone', keep=lambda case: case['pk'] == 4)
+        # 1 is still reported (through the alias), 2 is set aside, 3 was already aside, 4 waits for its proof.
+        self.assertEqual([c.args[:2] for c in set_eligible.call_args_list], [(2, False)])
+        with mock.patch.object(sources, 'set_eligible') as set_eligible:
+            sources.retire(self.people, [self.case(3, 'pr', review_type='Progress Review', eligible=False)],
+                           {sources.open_key(self.people, 'pr', 'a@x.com', None, {'review_type': 'Progress Review'})}, 'gone')
+        self.assertEqual(set_eligible.call_args.args[:2], (3, True))
+
+    def test_set_aside_cases_and_past_reminders_leave_every_list(self):
+        from django.db.models import Q
+        from .rules import out_of_scope
+        with mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()):
+            conditions = out_of_scope().children
+        tomorrow = datetime.combine(next_workday(timezone.now().astimezone(LONDON).date()), datetime.min.time(), tzinfo=LONDON)
+        self.assertIn(Q(source_data__has_key='eligible', source_data__eligible=False), conditions)
+        self.assertIn(Q(source_type='reminder', booking_at__lt=tomorrow), conditions)
+
+    def test_a_closed_case_stays_closed_only_for_the_reviews_it_covered(self):
+        from . import sources
+        closed = mock.MagicMock()
+        closed.filter.return_value.values_list.return_value = [{'review_refs': ['reviews:1']}]
+        with mock.patch.object(sources.CaseTicket, 'objects', closed):
+            self.assertTrue(sources.closed_case_covers('mcm', ['a@x.com'], 'x', ['reviews:1']))
+            self.assertFalse(sources.closed_case_covers('mcm', ['a@x.com'], 'x', ['reviews:1', 'reviews:2']))
+
+    def test_attendance_absent_on_every_register_is_a_missed_lecture(self):
+        rows = [{'key': 'am', 'Email': 'A@x.com ', 'date': date(2026, 9, 10), 'Attendance': 'A', 'module': 'Marketing'},
+                {'key': 'pm', 'Email': 'a@x.com', 'date': date(2026, 9, 10), 'Attendance': 'absent', 'module': 'Marketing '},
+                {'key': 'am', 'Email': 'b@x.com', 'date': date(2026, 9, 10), 'Attendance': 'P', 'module': 'Marketing'}]
+        with mock.patch.object(summaries, '_fetch', side_effect=[rows, rows]):
+            missed = summaries.attendance_missed_for_week(date(2026, 9, 7), date(2026, 9, 13))
+        self.assertEqual([(m['email'], m['attendance_module']) for m in missed], [('a@x.com', 'Marketing')])
+
+    def test_epa_follows_the_programme_status_before_the_subscription(self):
+        rows = [{'ID': 1, 'Email': 'a@x.com', 'Program-Status': 'Completed', 'Subscription Status': 'Active', 'End-Date': '2026-09-01'},
+                {'ID': 2, 'Email': 'b@x.com', 'Program-Status': '', 'Subscription Status': 'Active', 'End-Date': '2026-09-01'},
+                {'ID': 3, 'Email': 'c@x.com', 'Program-Status': 'Active', 'Subscription Status': '', 'End-Date': '2026-09-01'}]
+        with mock.patch.object(summaries, '_fetch', return_value=rows):
+            self.assertEqual([r['email'] for r in summaries.epa_overdue_rows(date(2026, 10, 1))], ['b@x.com', 'c@x.com'])
+
+    def test_an_alias_case_follows_the_learners_specialist(self):
+        from .allocation import learner_owner
+        directory = mock.MagicMock()
+        directory.get.side_effect = lambda email, default=None: self.people.get(email, default)
+        with mock.patch('callcentre.sources.cached_directory', return_value=directory):
+            self.assertEqual(learner_owner('alias@x.com', {'a@x.com': 5}), 5)
+            self.assertIsNone(learner_owner('nobody@x.com', {'a@x.com': 5}))
+
 
 
 @mock.patch('callcentre.sources.coach_email', lambda name: COACHES.get(' '.join(str(name).split()).casefold(), ''))

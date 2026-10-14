@@ -26,6 +26,16 @@ def owners(emails=None):
         return {}
 
 
+def learner_owner(email, allocated):
+    """The specialist of the learner behind this case email. A case may carry an alias (e.g. the Aptem email) while
+    the allocation is kept under the learner's main email, so both are looked up."""
+    if email in allocated:
+        return allocated[email]
+    from .sources import cached_directory   # sources imports services, which imports this module
+    main = cached_directory().get(email, {}).get('learner_email')
+    return allocated.get(main) if main else None
+
+
 def manager_owners(allocated=None):
     """{line-manager email: agent id}. An employer case follows the specialist who looks after most
     of that manager's learners; on a tie, the agent with the lowest id."""
