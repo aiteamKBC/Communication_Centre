@@ -20,6 +20,9 @@ def survey_token(survey):
 
 
 SENDER = 'KBC Learner Support'
+# Automatic reminders are not released yet ("Coming soon" in Settings): the cycle sends none, whatever the
+# saved settings say. Set to True to release them.
+AUTOMATIC_REMINDERS_AVAILABLE = False
 # What the line manager is told the learner's case is about.
 CASE_TOPICS = {
     'attendance': 'a missed lecture', 'pr': 'an overdue progress review', 'mcm': 'an overdue monthly coaching meeting',
@@ -172,6 +175,8 @@ def process_emails(limit=200):
     missed calls) the line manager is emailed too; the case stays on the calling list. The email mode still decides
     whether anything leaves the building (dry run records only).
     """
+    if not AUTOMATIC_REMINDERS_AVAILABLE:
+        return 0
     config = email_settings.current()
     if not config['reminders_enabled']:
         return 0

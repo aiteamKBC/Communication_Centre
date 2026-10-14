@@ -41,6 +41,10 @@ function changes(before: Values, after: Values, types: Map<string, string>) {
 const parseDays = (text: string) => text.split(',').map(part => part.trim()).filter(Boolean).map(Number);
 
 /** Director settings: the automatic reminder emails and whether email is really sent. Every save keeps its reason. */
+// Automatic reminders are not released yet: shown as "Coming soon" and locked. The backend sends none either
+// (AUTOMATIC_REMINDERS_AVAILABLE in callcentre/emails.py); release both together.
+const REMINDERS_AVAILABLE = false;
+
 export default function Settings({ csrf }: { csrf: string }) {
   const [data, setData] = useState<Data | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -76,7 +80,7 @@ export default function Settings({ csrf }: { csrf: string }) {
 
   const update = (patch: Partial<Values>) => { setDraft({ ...draft, ...patch }); setSaved(''); setError(''); };
   const readOnly = !data.set_up;
-  const goingLive = next.reminders_enabled && next.email_mode === 'live';
+  const goingLive = REMINDERS_AVAILABLE && next.reminders_enabled && next.email_mode === 'live';
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -118,9 +122,10 @@ export default function Settings({ csrf }: { csrf: string }) {
       </section>
 
       <section className="ec-card">
-        <h2>Automatic reminders</h2>
+        <h2>Automatic reminders {!REMINDERS_AVAILABLE && <span className="ec-tag amber">Coming soon</span>}</h2>
         <p className="ec-muted">Emails the case cycle sends to learners about their open cases, on the college template with the right booking link.</p>
-        <fieldset disabled={readOnly}>
+        {!REMINDERS_AVAILABLE && <p className="ec-alert" role="note">Automatic reminders are not available yet. No reminder emails are sent.</p>}
+        <fieldset disabled={readOnly || !REMINDERS_AVAILABLE}>
           <label className="ec-choice"><input type="checkbox" checked={draft.reminders_enabled} onChange={event => update({ reminders_enabled: event.target.checked })} /> Send automatic reminders</label>
           <div className="ec-form">
             <label>Email the learner on these days (0 = when the case opens)
@@ -150,7 +155,7 @@ export default function Settings({ csrf }: { csrf: string }) {
             </div>
           </fieldset>
         </fieldset>
-        <p className="ec-muted">Reminders go out when the case cycle runs. A cycle started with <code>--skip-emails</code> sends none.</p>
+        {REMINDERS_AVAILABLE && <p className="ec-muted">Reminders go out when the case cycle runs. A cycle started with <code>--skip-emails</code> sends none.</p>}
       </section>
 
       {!readOnly && (

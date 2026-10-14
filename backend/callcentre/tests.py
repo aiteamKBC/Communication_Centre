@@ -862,6 +862,15 @@ class ReminderEmailTests(SimpleTestCase):
             self.assertEqual(emails.process_emails(), 0)
         open_cases.assert_not_called()
 
+    def test_reminders_are_held_back_until_released(self):
+        from . import email_settings, emails
+        self.assertFalse(emails.AUTOMATIC_REMINDERS_AVAILABLE)
+        switched_on = {**email_settings.defaults(), 'reminders_enabled': True, 'email_mode': 'live'}
+        with mock.patch.object(email_settings, 'current', return_value=switched_on), \
+                mock.patch.object(emails.CaseTicket.objects, 'open') as open_cases:
+            self.assertEqual(emails.process_emails(), 0)
+        open_cases.assert_not_called()
+
     def test_stage_follows_the_configured_days(self):
         from .emails import reminder_stage
         days = [0, 2, 5, 7]
