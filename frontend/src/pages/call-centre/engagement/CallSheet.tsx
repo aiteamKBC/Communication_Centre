@@ -10,7 +10,7 @@ import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import TechIssue from './TechIssue';
 import type { CallTab } from './model';
-import { ISSUE_LABELS, QUICK_FOLLOW_UPS, appointmentTime, bookingHint, closesCase, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, QUICK_FOLLOW_UPS, appointmentTime, bookingHint, closesCase, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 type Props = {
@@ -147,11 +147,14 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       {!employer && c.source_type !== 'tech_support' && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
                       {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
                       {employer ? (
-                        <details>
-                          <summary>{c.employer_learners?.length || 0} learners · {c.organisation || 'Organisation not recorded'}</summary>
-                          {c.employer_learners?.map(l => <span key={l.email}>{l.name}{l.programme ? ` · ${l.programme}` : ''}</span>)}
-                          <span>{c.learner_email}</span>
-                        </details>
+                        <>
+                          <span className="ed-employer-email">Employer email: {satisfactionRecipient(c) || 'Email not recorded'}</span>
+                          <details>
+                            <summary>{c.employer_learners?.length || 0} learners · {c.organisation || 'Organisation not recorded'}</summary>
+                            {c.employer_learners?.map(l => <span key={l.email}>{l.name}{l.programme ? ` · ${l.programme}` : ''}</span>)}
+                            <span>Email: {satisfactionRecipient(c) || 'Email not recorded'}</span>
+                          </details>
+                        </>
                       ) : (
                         <details>
                           <summary>Contact details</summary>
@@ -174,13 +177,15 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       <button type="button" className="ed-sheet-link" onClick={() => onOpen(c.id)}>Full case</button>
                     </td>
                     <td>
-                      <button type="button" className="primary" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
-                        {session.preview ? 'Preview' : 'Call'}
-                      </button>
+                      <div className="ed-call-actions">
+                        <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
+                          {session.preview ? 'Preview' : 'Call'}
+                        </button>
+                        {isSatisfaction(c) && <button type="button" className="ed-call-action"
+                          disabled={disabled || !satisfactionRecipient(c)}
+                          title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
+                      </div>
                       {callReason && <span className="ed-call-reason">{callReason}</span>}
-                      {c.source_type === 'learner_satisfaction' && <button type="button"
-                        className="ed-sheet-link" disabled={disabled || !c.learner_email}
-                        title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
                     </td>
                     <td className="ed-booking-cell">
                       {employer ? <small>No coach booking for employer calls</small> : <>
@@ -240,7 +245,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       </Dialog>
       <Dialog open={satisfactionEmail !== null} onClose={() => setSatisfactionEmail(null)}>
         {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id}
-          caseId={satisfactionEmail.id} session={session} />}
+          caseId={satisfactionEmail.id} session={session} employer={satisfactionEmail.source_type === 'employer_feedback'} />}
       </Dialog>
     </section>
   );

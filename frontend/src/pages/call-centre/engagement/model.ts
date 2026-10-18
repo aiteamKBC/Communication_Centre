@@ -6,6 +6,10 @@ export type CallTab = { key: string; label: string; icon: string; hint: string; 
 /** Recurring feedback calls: completed by the feedback form after an answered call, due again three months later. */
 export const isSatisfaction = (c: { source_type?: string }) => c.source_type === 'learner_satisfaction' || c.source_type === 'employer_feedback';
 
+/** The explicit satisfaction email recipient; employer cases use the line manager email from Aptem. */
+export const satisfactionRecipient = (c: Pick<OverviewCase, 'source_type' | 'learner_email' | 'manager_email'>) =>
+  c.source_type === 'employer_feedback' ? c.manager_email : c.learner_email;
+
 export const CALL_TABS: CallTab[] = [
   { key: 'missed', label: 'Missed', icon: 'calendar',
     reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],

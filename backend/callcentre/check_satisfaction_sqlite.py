@@ -172,7 +172,7 @@ def check_employers(user, agent, raises):
     with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]):
         assert generate_employers(people)['created'] == 1
         assert generate_employers(people)['created'] == 0
-        ticket = employers.get()
+        ticket = employers.get(manager_email='boss@example.org')
         assert ticket.learner_email == ticket.manager_email == 'boss@example.org' and ticket.learner_name == 'Boss'
         assert ticket.learner_phone == '+447700900123'
         assert [item['email'] for item in ticket.source_data['learners']] == ['a@example.org', 'b@example.org']
@@ -200,7 +200,7 @@ def check_employers(user, agent, raises):
         assert generate_employers(people, next_due - timedelta(seconds=1))['renewed'] == 0
         assert generate_employers(people, next_due)['renewed'] == 1
         assert generate_employers(people, next_due)['renewed'] == 0
-        renewal = employers.exclude(status='resolved').get()
+        renewal = employers.exclude(status='resolved').get(manager_email='boss@example.org')
         assert renewal.due_at == due_at(EMPLOYER, next_due) and renewal.source_data['previous_case_id'] == ticket.pk
         checked += 1
 
@@ -210,7 +210,7 @@ def check_employers(user, agent, raises):
         assert not renewal.source_data['eligible'] and not employers.open().filter(manager_email='boss@example.org').exists()
         generate_employers(people, next_due)
         renewal.refresh_from_db()
-        assert renewal.source_data['eligible'] and employers.count() == 3   # boss: done + renewal; manager@ from `alone`
+        assert renewal.source_data['eligible'] and employers.count() == 4   # current employer email check; boss: done + renewal; manager@ from `alone`
         checked += 1
 
         # A manager whose learners have all left is not called.

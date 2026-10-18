@@ -8,7 +8,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
+import { casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -94,8 +94,8 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
               )}
               {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
               {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
-              {c.source_type === 'learner_satisfaction' && <button type="button"
-                disabled={session.preview || !session.canAct || !c.learner_email}
+              {isSatisfaction(c) && <button type="button"
+                disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}
                 onClick={() => setEmailOpen(true)}>Email</button>}
             </div>
             {callReason && <p className="ec-muted">{callReason}.</p>}
@@ -157,7 +157,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
         {bookingEmailOpen && <BookingEmail key={c.id} caseId={c.id} session={session} />}
       </Dialog>
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
-        {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} />}
+        {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} employer={employer} />}
       </Dialog>
     </>
   );

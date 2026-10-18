@@ -9,7 +9,7 @@ import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, shortGuide } from './model';
+import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -82,8 +82,8 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
         {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
         {!employer && c.source_type !== 'tech_support' && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={() => { refresh(); onRefresh?.(); }} />}
-        {c.source_type === 'learner_satisfaction' && <button type="button"
-          disabled={session.preview || !session.canAct || !c.learner_email}
+        {isSatisfaction(c) && <button type="button"
+          disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}
           onClick={() => setEmailOpen(true)}>Email</button>}
       </div>
       {callReason && <p className="ec-muted ed-call-note">{session.preview ? `Calls are disabled in this director preview. ${session.name} must sign in to call.` : `${callReason}.`}</p>}
@@ -151,7 +151,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         {bookingEmailOpen && <BookingEmail key={c.id} caseId={c.id} session={session} />}
       </Dialog>
       <Dialog open={emailOpen} onClose={() => setEmailOpen(false)}>
-        {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} />}
+        {emailOpen && <SatisfactionEmail key={c.id} caseId={c.id} session={session} employer={employer} />}
       </Dialog>
     </article>
   );

@@ -114,11 +114,19 @@ test('learner email drafts use the right contact and only send on explicit click
   expect(posts.at(-1)?.data).toMatchObject({ agent_id: 1, subject: 'Feedback request' });
   expect(posts.at(-1)?.data.request_id).toBeTruthy();
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  // Employer feedback is a call, not an email: its row has no Email draft.
+  // Employer feedback uses the manager email from the employer case.
   await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
   const employerRow = page.locator('[data-sheet-row="3"]');
   await expect(employerRow).toBeVisible();
-  await expect(employerRow.getByRole('button', { name: 'Email', exact: true })).toHaveCount(0);
+  await employerRow.getByRole('button', { name: 'Email', exact: true }).click();
+  const employerDialog = page.getByRole('dialog');
+  await expect(employerDialog).toHaveRole('dialog');
+  await expect(employerDialog.getByRole('heading', { name: 'Employer satisfaction email', exact: true })).toBeVisible();
+  await expect(employerDialog.getByLabel('To', { exact: true })).toHaveValue('manager@example.org');
+  await employerDialog.getByRole('button', { name: 'Send via Azure', exact: true }).click();
+  await expect(employerDialog.getByRole('status')).toContainText('Accepted by Microsoft 365 for manager@example.org');
+  expect(posts.filter(post => post.path.endsWith('/satisfaction-email/'))).toHaveLength(2);
+  expect(posts.at(-1)?.data).toMatchObject({ agent_id: 1 });
 });
 
 test('a network retry reuses the same request ID and does not complete feedback', async ({ page }) => {

@@ -13,11 +13,15 @@ from .models import CaseTicket, EmailDelivery, EmailQuota
 from .rules import LONDON
 from .services import Conflict, can_work, event
 
+SATISFACTION_SOURCES = ('learner_satisfaction', 'employer_feedback', 'satisfaction')
+CURRENT_SATISFACTION_SOURCES = ('learner_satisfaction', 'employer_feedback')
+EMPLOYER_SOURCES = ('employer_feedback', 'satisfaction')
+
 
 def contact(ticket):
-    if ticket.source_type not in ('learner_satisfaction', 'satisfaction'):
+    if ticket.source_type not in SATISFACTION_SOURCES:
         raise ValueError('This email is only for satisfaction cases.')
-    employer = ticket.source_type == 'satisfaction'
+    employer = ticket.source_type in EMPLOYER_SOURCES
     address = ticket.manager_email if employer else ticket.learner_email
     name = ticket.manager_name if employer else ticket.learner_name
     return str(address or '').strip().lower(), name or 'there'
@@ -26,7 +30,7 @@ def contact(ticket):
 def check_open(ticket):
     if (ticket.archived or ticket.status == 'resolved'
             or ticket.source_data.get('eligible') is False
-            or (ticket.source_type == 'learner_satisfaction' and not ticket.source_data.get('eligible'))):
+            or (ticket.source_type in CURRENT_SATISFACTION_SOURCES and not ticket.source_data.get('eligible'))):
         raise Conflict('This satisfaction case is closed or no longer eligible.')
 
 
@@ -53,7 +57,7 @@ def draft(ticket):
         quota = EmailQuota.objects.filter(recipient=recipient, day=timezone.now().astimezone(LONDON).date()).first()
         if config['daily_cap'] <= (quota.count if quota else 0):
             reason = 'The daily email limit for this contact has been reached.'
-    kind = 'employer' if ticket.source_type == 'satisfaction' else 'learner'
+    kind = 'employer' if ticket.source_type in EMPLOYER_SOURCES else 'learner'
     return {
         'recipient': recipient, 'name': name, 'sender': mailer.sender(),
         'subject': f'KBC: {kind} satisfaction follow-up',

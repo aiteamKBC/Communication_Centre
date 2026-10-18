@@ -59,11 +59,12 @@ def check_email(user, agent):
         raises(Conflict, lambda: satisfaction_email.send(ticket.pk, user, payload(), agent))
         assert EmailQuota.objects.get(recipient=ticket.learner_email).count == 2
 
-        employer = case(manager_email='manager@example.org', manager_name='Test Manager')
-        employer.source_type = 'satisfaction'
+        employer = case(manager_email='current-manager@example.org', manager_name='Test Manager')
+        employer.source_type = 'employer_feedback'
         employer.save()
-        assert satisfaction_email.draft(employer)['recipient'] == 'manager@example.org'
-        assert satisfaction_email.send(employer.pk, user, payload(), agent)['recipient'] == 'manager@example.org'
+        assert satisfaction_email.draft(employer)['recipient'] == 'current-manager@example.org'
+        assert satisfaction_email.draft(employer)['subject'] == 'KBC: employer satisfaction follow-up'
+        assert satisfaction_email.send(employer.pk, user, payload(), agent)['recipient'] == 'current-manager@example.org'
         employer.manager_email = ''
         employer.save()
         assert not satisfaction_email.draft(employer)['can_send']

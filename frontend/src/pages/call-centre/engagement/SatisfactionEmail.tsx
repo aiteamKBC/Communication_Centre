@@ -6,7 +6,7 @@ type Draft = { recipient: string; name: string; sender: string; subject: string;
 type Delivery = { id: number; status: string; recipient: string; error: string };
 
 /** Credentials and recipient selection stay on the server. Only an explicit click sends. */
-export default function SatisfactionEmail({ caseId, session }: { caseId: number; session: Session }) {
+export default function SatisfactionEmail({ caseId, session, employer = false }: { caseId: number; session: Session; employer?: boolean }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -52,7 +52,7 @@ export default function SatisfactionEmail({ caseId, session }: { caseId: number;
   }
 
   return <>
-    <h2>Learner satisfaction email</h2>
+    <h2>{employer ? 'Employer satisfaction email' : 'Learner satisfaction email'}</h2>
     {!draft && !status && <p>Loading email settings…</p>}
     {draft && <div className="ec-form">
       <p className="ec-muted wide">From: {draft.sender}. The greeting and college sign-off are added automatically.</p>

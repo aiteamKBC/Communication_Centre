@@ -116,8 +116,8 @@ def send_ticket_email(ticket_id, stage):
 def _record_delivery(ticket_id, stage):
     """Check and record one email under the case lock; returns the delivery (live: still 'sending'), or None."""
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
-    # Learner satisfaction email has its own future Azure delivery path, never n8n.
-    if ticket.source_type == 'learner_satisfaction':
+    # Satisfaction emails have their own explicit Azure delivery path, never automatic reminders.
+    if ticket.source_type in ('learner_satisfaction', 'employer_feedback'):
         return None
     if (ticket.status == 'resolved' and stage != 'low_score') or ticket.archived:
         return None
