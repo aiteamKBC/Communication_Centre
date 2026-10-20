@@ -411,6 +411,7 @@ class BookingEmailTests(SimpleTestCase):
         self.assertIn('I26h14gLCESW1sxisFM7NA2', draft['link']['url'])
         self.assertIn('Marketing &lt;Plan&gt;', draft['html'])
         self.assertIn('Monday 21 September 2026', draft['text'])
+        self.assertIn('target="_blank" rel="noopener noreferrer"', draft['html'])
         for code in ('dFNqOwBdgEaEnzYyrKQ3Sw2', 'sVb8a69Fy0WmmOBY0UDUcA2'):
             self.assertNotIn(code, draft['html'])
 
@@ -955,6 +956,27 @@ class StaleCaseTests(SimpleTestCase):
                 {'ID': 3, 'Email': 'c@x.com', 'Program-Status': 'Active', 'Subscription Status': '', 'End-Date': '2026-09-01'}]
         with mock.patch.object(summaries, '_fetch', return_value=rows):
             self.assertEqual([r['email'] for r in summaries.epa_overdue_rows(date(2026, 10, 1))], ['b@x.com', 'c@x.com'])
+
+    def test_epa_window_is_more_than_seven_through_sixty_seven_days(self):
+        today = date(2026, 10, 20)
+        rows = [
+            {'ID': days, 'Email': f'day{days}@example.org', 'Program-Status': 'Active',
+             'End-Date': (today - timedelta(days=days)).isoformat()}
+            for days in (7, 8, 67, 68)
+        ]
+        with mock.patch.object(summaries, '_fetch', return_value=rows):
+            self.assertEqual([r['id'] for r in summaries.epa_overdue_rows(today)], [8, 67])
+
+    def test_epa_dates_use_the_snapshot_without_fabricating_missing_dates(self):
+        from .views import epa_dates
+        ticket = SimpleNamespace(source_type='epa', source_data={'epa_metrics': {
+            'end_date': '31/08/2026', 'gateway_review_date': 'N/A',
+        }})
+        self.assertEqual(epa_dates(ticket), {'programme_end_date': date(2026, 8, 31), 'gateway_review_date': None})
+        ticket.source_data = {'epa_metrics': None}
+        self.assertEqual(epa_dates(ticket), {'programme_end_date': None, 'gateway_review_date': None})
+        ticket.source_type = 'pr'
+        self.assertEqual(epa_dates(ticket), {})
 
     def test_an_alias_case_follows_the_learners_specialist(self):
         from .allocation import learner_owner

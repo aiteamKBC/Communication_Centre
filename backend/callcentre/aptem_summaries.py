@@ -100,10 +100,10 @@ def otj_rows():
 
 
 def epa_overdue_rows(today=None):
-    """Active learners recently overdue for EPA: open 7 to EPA_RECENCY_DAYS days past their End-Date.
+    """Active learners recently overdue for EPA: more than 7 and at most 7+EPA_RECENCY_DAYS days past End-Date.
 
     The upper bound keeps the queue to recent EPA entries only; once a learner is more than
-    EPA_RECENCY_DAYS past their End-Date the case is no longer raised (and stale ones are closed).
+    7+EPA_RECENCY_DAYS past End-Date the source stops reporting them and their cases are set aside.
     """
     today = today or date.today()
     rows = _fetch(APTEM, '''SELECT "ID", "Email", "Program-Status", "Subscription Status", "End-Date"

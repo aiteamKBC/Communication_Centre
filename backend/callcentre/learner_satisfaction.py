@@ -13,6 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .access import is_director
+from .call_scope import system_case_calls
 from .db import DB
 from .learners import program_status
 from .models import CaseTicket, CycleState
@@ -236,7 +237,7 @@ def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None
     if any(len(value) > 3500 for value in (note, problem, action)):
         raise ValueError('Each feedback field must be at most 3500 characters.')
     # Sending a message, dialing, or a failed Zoom call is never completion evidence.
-    calls = ticket.calls.filter(processed_result='answered', match__call__ended_at__lte=timezone.now())
+    calls = system_case_calls(ticket.calls.all()).filter(processed_result='answered', match__call__ended_at__lte=timezone.now())
     calls = calls.filter(match__call__started_at__gte=ticket.evidence_after or ticket.created_at)
     if not is_director(user):
         calls = calls.filter(match__agent=agent)
@@ -265,7 +266,7 @@ def close_without_feedback(ticket_id, user, reason, note, acting_agent=None):
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
     # A specialist closes a review only after trying to call in this cycle; a manager may close it outright.
-    if not is_director(user) and not ticket.calls.filter(
+    if not is_director(user) and not system_case_calls(ticket.calls.all()).filter(
             match__call__started_at__gte=ticket.evidence_after or ticket.created_at).exists():
         raise ValueError('Call them first: a review is closed without feedback only after a call in this cycle.')
     if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived:

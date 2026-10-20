@@ -17,7 +17,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from .allocation import owners
-from .models import Agent, Allocation, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
+from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
                        record_outcome)
@@ -53,6 +53,9 @@ class CallFlowTests(TestCase):
             started_at=self.now - timedelta(minutes=minutes_ago), ended_at=self.now - timedelta(minutes=minutes_ago - 1),
             result=result)
         match = CallMatch.objects.create(call=call, agent=self.agent, learner_email=ticket.learner_email)
+        intent = CallIntent.objects.create(agent=self.agent, learner_email=ticket.learner_email,
+                                          number=ticket.learner_phone, matched_call=call)
+        intent.tickets.add(ticket)
         CaseCall.objects.create(ticket=ticket, match=match)
         apply_call_result(match)
         return call

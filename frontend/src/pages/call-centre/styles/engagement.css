@@ -121,3 +121,21 @@
 .ec-phone-toggle:focus-visible{outline:3px solid #f5b942;outline-offset:2px}
 @media (max-width:767px){.ec-phone-dock{right:8px;left:8px;bottom:8px}.ec-phone-panel{width:100%;height:min(600px,calc(100vh - 80px))}}
 .ed .ed-quick-dates{display:flex;gap:.8rem;margin-top:.2rem}
+.ed-ticket-dates{margin:.35rem 0;color:var(--muted);font-size:.8rem;line-height:1.5}
+.ed-ticket-dates>span{display:block}
+.ed-related-ticket{margin-top:.55rem;padding-top:.55rem;border-top:1px solid var(--line)}
+.ed-pagination{display:flex;align-items:center;flex-wrap:wrap;gap:.65rem;padding:.8rem;border-top:1px solid var(--line);font-size:.85rem}
+.ed-pagination label{display:flex;align-items:center;gap:.4rem}
+.ed .ed-pagination select{width:auto;min-width:3.5rem}
+.ed-pagination>span{color:var(--muted)}
+.ec dialog.ed-case-dialog{max-width:1100px;padding:0;overscroll-behavior:contain}
+.ed-dialog-header{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 1rem;background:#fff;border-bottom:1px solid var(--line)}
+.ed .ed-dialog-header h2{margin:0;font-size:1.1rem}
+.kbc-portals .workspace-app .ec button.ed-dialog-close{min-width:44px;min-height:44px;padding:0;border:1px solid var(--line);background:#f4f0fa;color:var(--purple);font-size:1.8rem;line-height:1;border-radius:8px}
+.ed-dialog-content{padding:1rem}
+.ed .ed-dialog-content>.ed-learner{margin:0}
+.ed-date-filter{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;flex:0 1 auto}
+.ed-date-filter label{display:flex;align-items:center;gap:.4rem;font-size:.85rem}
+.ed .ed-date-filter select{flex:0 1 auto;min-width:10rem;max-width:15rem}
+.ed .ed-date-filter input{min-width:9rem;max-width:12rem}
+.ed .ed-date-filter button{font-size:.85rem;padding:.5rem .7rem}

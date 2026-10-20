@@ -152,14 +152,18 @@ export function londonInput(value: string) {
 }
 
 export const human = (value: string | null | undefined) => String(value || '').replaceAll('_', ' ');
+/** Form values have no UTC offset: interpret them in London, never the browser's zone. */
+const displayDate = (value: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)
+  ? londonInput(value)
+  : new Date(value.length === 10 ? `${value}T12:00:00Z` : value);
 export const longDate = (value: string | null | undefined) => (value
-  ? new Date(value.length === 10 ? `${value}T12:00:00Z` : value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/London' })
+  ? displayDate(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/London' })
   : 'Not recorded');
 export const shortDate = (value: string | null | undefined) => (value
-  ? new Date(value.length === 10 ? `${value}T12:00:00Z` : value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Europe/London' })
+  ? displayDate(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Europe/London' })
   : 'Not set');
 export const when = (value: string | null | undefined) => (value
-  ? new Date(value).toLocaleString('en-GB', { timeZone: 'Europe/London' }) : 'Not yet');
+  ? displayDate(value).toLocaleString('en-GB', { timeZone: 'Europe/London' }) : 'Not yet');
 export const duration = (seconds: number | null | undefined) => `${Math.floor((Number(seconds) || 0) / 3600)}h ${Math.floor(((Number(seconds) || 0) % 3600) / 60)}m`;
 
 // Review cases name their LMS review type; the two kinds of progress review are told apart this way.
@@ -319,7 +323,7 @@ export const DESK_MENUS: [string, string, string][] = [
   ['next', 'Next call', 'phone'],
   ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
   ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'],
-  ['history', 'History', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
+  ['history', 'Monthly achievements', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
   ['reports', 'Reports', 'file'],
 ];
 

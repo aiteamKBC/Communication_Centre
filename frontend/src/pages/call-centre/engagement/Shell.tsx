@@ -134,6 +134,7 @@ export default function Shell({ title, email, groups, active, notice, onNavigate
             </button>
             <Link className="workspace-back" to="/dashboard"><Icon name="back" /><span>Back to dashboard</span></Link>
             <div className="workspace-topbar-account">
+              <span title="Europe/London — adjusts automatically for British Summer Time">All times: London</span>
               <span>{email}</span>
               <button type="button" className="workspace-signout" aria-label="Sign out" onClick={onSignOut}><Icon name="logout" /><span>Sign out</span></button>
             </div>

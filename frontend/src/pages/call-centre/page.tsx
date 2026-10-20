@@ -12,7 +12,7 @@ import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import Director from './engagement/Director';
 import Imports from './engagement/Imports';
-import { DESK_MENUS, deskLabel, failingSources, human, longDate, setHolidays } from './engagement/model';
+import { DESK_MENUS, deskLabel, failingSources, human, longDate, setHolidays, when } from './engagement/model';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
@@ -142,7 +142,7 @@ export default function CallCentrePage() {
       <div id="engagement-centre" className="ec ed">
         <p className="ec-alert">
           Workspace: {deskAgent?.display_name || overview.access.display_name}. Showing this specialist's allocated contacts plus the shared queue.
-          {' '}Last successful cycle: {overview.cycle?.last_success_at ? new Date(overview.cycle.last_success_at).toLocaleString() : 'Not recorded'}.
+          {' '}Last successful cycle: {overview.cycle?.last_success_at ? `${when(overview.cycle.last_success_at)} (London)` : 'Not recorded'}.
         </p>
         {failingSources(overview).length > 0 && <p className="ec-alert" role="alert">
           Some data sources are unavailable ({failingSources(overview).map(source => human(source.name.replace(/^source:/, ''))).join(', ')}).

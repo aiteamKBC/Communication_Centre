@@ -113,6 +113,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
           {edited && !sent && !attempted && <button type="button" className="ed-sheet-link" onClick={() => setEdited(false)}>Reset to the standard wording</button>}
           {error && <p className="ec-alert" role="alert">{error}</p>}
           <div className="ec-buttons">
+            {draft.link.url && <a className="ec-button" href={draft.link.url} target="_blank" rel="noopener noreferrer">{draft.link.label} ↗</a>}
             <button type="button" className="primary" onClick={() => void send()}
               disabled={sending || !!sent || uncertain || !!blocked || !session.canAct || session.preview || !subject.trim() || !message.trim()}>
               {sending ? 'Sending…' : sent ? (sent.status === 'dry_run' ? 'Recorded' : 'Sent') : attempted ? 'Check / retry this email' : dryRun ? 'Send (dry run: record only)' : 'Send email'}
@@ -124,7 +125,10 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
           {sendError && <p className="ec-alert" role="alert">{sendError}</p>}
           <p role="status">{sentText || copied}</p>
         </div>
-        <iframe className="ed-email-preview" title="Email preview" sandbox="" srcDoc={draft.html} />
+        <div>
+          {draft.link.url && <p className="ec-muted">The booking page opens in a new tab. Your email draft stays here.</p>}
+          <iframe className="ed-email-preview" title="Email preview" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={draft.html} />
+        </div>
       </div>
       <section className="ed-email-checks" aria-label="What this email needs before it can be sent">
         {groups.map(([title, checks]) => (

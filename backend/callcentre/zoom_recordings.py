@@ -12,6 +12,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import ZoomPhoneRecording
+from .call_scope import system_recordings
 from .zoom_phone import ZoomError, call_datetime
 
 
@@ -285,7 +286,10 @@ def sync_recordings(client, key, account_id, state, lease, start, end):
         current = window_end + timedelta(days=1)
 
     # Retry pending/failed transcripts even after their recording leaves the normal overlap window.
-    queue = ZoomPhoneRecording.objects.filter(source_account=key, zoom_account_id=account_id).exclude(
+    # Metadata remains archived for all calls; only verified in-system calls may
+    # download transcripts or send audio for transcription. Newly matched calls
+    # become eligible on the next sync if matching has not run yet.
+    queue = system_recordings().filter(source_account=key, zoom_account_id=account_id).exclude(
         transcript_status='ready',
     ).filter(Q(transcript_next_retry_at__isnull=True) | Q(transcript_next_retry_at__lte=timezone.now()))
     first_error = ''

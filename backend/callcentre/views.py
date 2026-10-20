@@ -18,6 +18,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import email_settings, helpdesk, lms_booking, satisfaction_email
+from .aptem_summaries import parse_date_safe
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback
 from .access import is_director, refused
 from .ai import ai_enabled, call_reviews
@@ -30,6 +31,9 @@ from .db import DB
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
 from .reports import performance
+from .call_scope import system_case_calls
+from .history import monthly_history
+from .lecture_details import add_lecture_times
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
@@ -82,6 +86,25 @@ def issue_json(ticket):
         'status': ticket.status,
         'issue_name': name or ISSUE_NAMES.get(ticket.source_type, ticket.source_type.title()),
         'issue_date': ticket.overdue_since,
+        'missed_lecture': {
+            'module': str(data.get('module') or '').strip(),
+            'title': str(data.get('module') or '').strip(),
+            'date': ticket.overdue_since,
+            'starts_at': None, 'ends_at': None, 'time_status': 'missing',
+        } if ticket.source_type == 'attendance' else None,
+    }
+
+
+def epa_dates(ticket):
+    """Dates from the last Aptem snapshot, without querying or changing source records."""
+    if ticket.source_type != 'epa':
+        return {}
+    data = ticket.source_data if isinstance(ticket.source_data, dict) else {}
+    metrics = data.get('epa_metrics')
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return {
+        'programme_end_date': parse_date_safe(metrics.get('end_date')),
+        'gateway_review_date': parse_date_safe(metrics.get('gateway_review_date')),
     }
 
 
@@ -119,7 +142,7 @@ def body(request, limit=16000):
 
 def with_last_call(cases):
     """Annotate each case with its latest call's Zoom result, which flags a missed call."""
-    latest = CaseCall.objects.filter(ticket=OuterRef('pk')).exclude(processed_result='').order_by(
+    latest = system_case_calls().filter(ticket=OuterRef('pk')).exclude(processed_result='').order_by(
         '-match__call__started_at', '-match__call_id')
     return cases.annotate(last_call_result=Subquery(latest.values('processed_result')[:1]))
 
@@ -134,7 +157,7 @@ def ticket_json(ticket):
     active_claim = bool(ticket.claimed_by_id and ticket.last_activity_at and ticket.last_activity_at > now - timedelta(minutes=30))
     score = priority(ticket, now)
     return {
-        **issue_json(ticket), 'source_id': ticket.source_id,
+        **issue_json(ticket), **epa_dates(ticket), 'source_id': ticket.source_id,
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
         'contact_key': contact_key(ticket),
         'programme_status': ticket.source_data.get('programme_status', ''),
@@ -252,6 +275,7 @@ def overview(request):
                                       else learner_owner(ticket.learner_email, allocated))
         cases.append(item)
 
+    add_lecture_times(cases)
     agents = []
     for row in report['agents']:
         current = next((day for day in row['daily'] if day['date'] == today.isoformat()), None)
@@ -350,6 +374,7 @@ def queue(request):
         selected = ordered[(page - 1) * 30:page * 30]
     for group in selected:
         group.pop('_priority')
+    add_lecture_times([item for group in selected for item in group['tickets']])
     coaches = list(CaseTicket.objects.exclude(coach='').values_list('coach', flat=True).distinct().order_by('coach'))
     return JsonResponse({'groups': selected, 'total': total, 'page': page, 'has_next': page * 30 < total, 'coaches': coaches})
 
@@ -362,9 +387,11 @@ def detail(request, pk):
     if not 1 <= page <= 100000:
         raise ValueError('Invalid timeline page.')
     events = ticket.events.order_by('-id')
-    calls = ticket.calls.select_related('match__call', 'match__agent').order_by('-match__call__started_at')
+    calls = system_case_calls(ticket.calls.all()).select_related('match__call', 'match__agent').order_by('-match__call__started_at')
     issues = CaseTicket.objects.open().filter(same_contact(ticket) if ticket.learner_email else Q(pk=ticket.pk))
-    return JsonResponse({'ticket': ticket_json(ticket),
+    payload = ticket_json(ticket)
+    add_lecture_times([payload])
+    return JsonResponse({'ticket': payload,
         'issues': [issue_json(issue) for issue in issues],
         'events': list(events.values('id', 'kind', 'actor', 'data', 'call_id', 'created_at')[(page - 1) * 50:page * 50]),
         'has_more_events': events.count() > page * 50,
@@ -580,6 +607,30 @@ def agent_report(request):
     if start > end or end > today or (end - start).days > 365:
         raise ValueError('Choose a date range of at most 366 days, ending no later than today.')
     return JsonResponse(performance(start, end))
+
+
+@never_cache
+@authenticated
+@require_GET
+def my_history(request):
+    now = timezone.now()
+    today = now.astimezone(LONDON).date()
+    month, _, _, (lower, upper) = report_month(request, today)
+    page = int(request.GET.get('page', '1'))
+    if not 1 <= page <= 1000000:
+        raise ValueError('Invalid page.')
+    agent_id = request.GET.get('agent_id')
+    if agent_id and is_director(request.user):
+        agent = Agent.objects.select_related('user').get(pk=int(agent_id))
+    else:
+        agent = agent_for(request.user)
+        if agent is None or (agent_id and int(agent_id) != agent.pk):
+            raise PermissionDenied('You can only see your own monthly achievements.')
+    return JsonResponse({
+        'month': month, 'current_month': today.strftime('%Y-%m'), 'timezone': 'Europe/London',
+        'agent': {'id': agent.pk, 'name': agent.display_name, 'email': agent.user.email},
+        **monthly_history(agent, lower, upper, now, page),
+    })
 
 
 @authenticated

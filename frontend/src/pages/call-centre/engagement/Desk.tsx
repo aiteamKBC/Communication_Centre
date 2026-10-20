@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentStats, Overview } from '../api';
-import { api } from '../api';
-import type { Case } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
 import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
+import Dialog from './Dialog';
 import LearnerPanel from './LearnerPanel';
 import NextCall from './NextCall';
+import MonthlyHistory from './MonthlyHistory';
 import {
-  CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, promiseLabel, badges, categoryCases, contactKey, downloadBlob, dueForCall,
+  CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
   duration, human, issueLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners,
 } from './model';
 
@@ -27,7 +27,7 @@ function ProgressStrip({ agent, overview }: { agent: AgentStats | undefined; ove
   return (
     <div className="ed-score">
       <div className="ed-target">
-        <span>Connected call time</span>
+        <span title="Only Zoom-verified calls started from this system count.">Connected call time</span>
         <strong>{duration(today.seconds)} <small>/ {duration(target)}</small></strong>
         <progress max={target || 1} value={Math.min(today.seconds, target || 1)} aria-label="Daily connected call time" />
       </div>
@@ -37,51 +37,6 @@ function ProgressStrip({ agent, overview }: { agent: AgentStats | undefined; ove
         ? <strong>{reviews.excellent} <small>excellent ·</small> {reviews.good} <small>good ·</small> {reviews.bad} <small>bad</small></strong>
         : <strong>Unscored<small>{today.attempts} calls today</small></strong>}</div>
     </div>
-  );
-}
-
-type HistoryGroup = { learner_email: string; learner_name: string; tickets: Case[] };
-
-function History({ onOpen }: { onOpen: (id: number) => void }) {
-  const [page, setPage] = useState(1);
-  const [data, setData] = useState<{ groups: HistoryGroup[]; has_next: boolean } | null>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let live = true;
-    setData(null);
-    setError('');
-    api<{ groups: HistoryGroup[]; has_next: boolean }>(`queue/?view=history&page=${page}`)
-      .then(result => { if (live) setData(result); })
-      .catch(reason => { if (live) setError(reason instanceof Error ? reason.message : 'History could not be loaded.'); });
-    return () => { live = false; };
-  }, [page]);
-  return (
-    <section className="ec-card">
-      <h2>Resolved and archived cases</h2>
-      {error && <p role="alert">{error}</p>}
-      {!data ? !error && <p role="status">Loading history…</p> : (
-        <div className="ec-table-wrap">
-          <table>
-            <thead><tr><th>Learner</th><th>Issue</th><th>Resolved</th><th /></tr></thead>
-            <tbody>
-              {data.groups.flatMap(group => group.tickets.map(ticket => (
-                <tr key={ticket.id}>
-                  <td><strong>{group.learner_name}</strong><small>{group.learner_email}</small></td>
-                  <td>{issueLabel(ticket)}<small>{ticket.coach || 'Coach not recorded'}</small></td>
-                  <td>{longDate(ticket.resolved_at)}<small>{human(ticket.resolved_by) || 'Archived'}{ticket.resolution_option ? ` · ${promiseLabel(ticket.resolution_option)}` : ''}</small></td>
-                  <td><button type="button" onClick={() => onOpen(ticket.id)}>Full case</button></td>
-                </tr>
-              )))}
-              {!data.groups.length && <tr><td colSpan={4}>No resolved cases yet.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div className="ec-buttons">
-        <button type="button" disabled={page === 1} onClick={() => setPage(value => value - 1)}>Newer</button>
-        <button type="button" disabled={!data?.has_next} onClick={() => setPage(value => value + 1)}>Older</button>
-      </div>
-    </section>
   );
 }
 
@@ -153,23 +108,14 @@ export default function Desk({ overview, agent, session, section, name, status, 
   );
 
   let body: ReactNode;
-  if (detailId !== null) {
-    body = (
-      <>
-        <button type="button" onClick={() => setDetailId(null)}>Back to call sheet</button>
-        <div style={{ marginTop: '1rem' }}>
-          <LearnerPanel id={detailId} hidden={false} overview={overview} session={session} onOpen={setDetailId} onNext={() => setDetailId(null)} hasNext={false} onSaved={message => { notify(message); onRefresh(); }} notify={notify} onRefresh={onRefresh} />
-        </div>
-      </>
-    );
-  } else if (section === 'next') {
+  if (section === 'next') {
     body = <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={setDetailId} />;
   } else if (tab) {
     body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'history') {
-    body = <History onOpen={setDetailId} />;
+    body = null;
   } else if (section === 'progress') {
     const today = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
     const earned = badges(today, agent?.target_seconds || 0);
@@ -188,7 +134,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
             <summary>How points are earned</summary>
             <p>Up to 100 points for reaching your call-time target, and 5 points per answered call up to 100.</p>
           </details>
-          <p className="ec-muted">{agent ? 'Figures use verified Zoom Phone records.' : 'No agent profile is linked, so no telephone activity is shown. Zero recorded activity is not evidence that no work took place.'}</p>
+          <p className="ec-muted">{agent ? 'Figures include only Zoom-verified calls started from this system.' : 'No agent profile is linked, so no telephone activity is shown. Zero recorded activity is not evidence that no work took place.'}</p>
         </section>
       </>
     );
@@ -225,7 +171,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
             </tbody>
           </table>
         </div>
-        <p className="ec-muted">Covers your own Zoom-verified calls only. Missing telephone coverage must not be treated as poor performance.</p>
+        <p className="ec-muted">Covers your own Zoom-verified calls started from this system only. Missing telephone coverage must not be treated as poor performance.</p>
       </section>
     );
   } else {
@@ -304,9 +250,19 @@ export default function Desk({ overview, agent, session, section, name, status, 
           <button type="button" onClick={onRefresh}>Refresh</button>
         </div>
       </header>
-      <ProgressStrip agent={agent} overview={overview} />
+      {section !== 'history' && <ProgressStrip agent={agent} overview={overview} />}
       {status}
+      {section === 'history' && <div>
+        <MonthlyHistory key={session.agentId} agentId={session.agentId} today={overview.today}
+          revision={overview.generated_at} onOpen={setDetailId} />
+      </div>}
       {body}
+      <Dialog open={detailId !== null} onClose={() => setDetailId(null)} title="Full case"
+        className="ed-case-dialog" preservePosition>
+        {detailId !== null && <LearnerPanel key={detailId} id={detailId} hidden={false} overview={overview} session={session}
+          onOpen={setDetailId} onNext={() => setDetailId(null)} hasNext={false}
+          onSaved={message => { notify(message); onRefresh(); }} notify={notify} onRefresh={onRefresh} />}
+      </Dialog>
     </>
   );
 }

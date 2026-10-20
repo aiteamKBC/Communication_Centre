@@ -82,12 +82,12 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
           </label>
           {!closesCase(choice, ticket) && (
             <div>
-              <label>{outcome === 'callback' ? 'Callback date and time' : 'Follow-up date (optional)'}
+              <label>{outcome === 'callback' ? 'Callback date and time (London)' : 'Follow-up date (London, optional)'}
                 <input type="datetime-local" required={outcome === 'callback'} value={callback} onChange={event => setCallback(event.target.value)} />
               </label>
               <div className="ec-buttons">
                 {QUICK_FOLLOW_UPS.map(([days, label]) => (
-                  <button key={days} type="button" title={`${longDate(workdayInput(days))} at 10:00`} onClick={() => setCallback(workdayInput(days))}>{label}</button>
+                  <button key={days} type="button" title={`${longDate(workdayInput(days))} at 10:00 London`} onClick={() => setCallback(workdayInput(days))}>{label}</button>
                 ))}
               </div>
             </div>

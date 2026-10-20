@@ -27,7 +27,7 @@ def main():
     from django.db import connections
     from callcentre.learner_satisfaction import complete, generate, next_review_at
     from callcentre.learners import merge
-    from callcentre.models import Agent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
+    from callcentre.models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
     from callcentre.rules import LONDON
     from callcentre.services import Conflict, apply_call_result, record_outcome, resolve
     from callcentre.test_learner_satisfaction import aptem, lms
@@ -75,6 +75,9 @@ def main():
             source_account='student', zoom_account_id='test-account', history_id='one', direction='outbound',
             started_at=now + timedelta(minutes=1), ended_at=now + timedelta(minutes=5), result='no_answer')
         match = CallMatch.objects.create(call=call, agent=agent, learner_email=ticket.learner_email)
+        intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email,
+                                          number=ticket.learner_phone, matched_call=call)
+        intent.tickets.add(ticket)
         link = CaseCall.objects.create(ticket=ticket, match=match)
         apply_call_result(match)
         ticket.refresh_from_db()
@@ -158,7 +161,7 @@ def check_employers(user, agent, raises):
                                                  next_review_at)
     from callcentre.learners import merge
     from callcentre.lms_booking import session_types
-    from callcentre.models import CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
+    from callcentre.models import CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
     from callcentre.rules import LONDON, due_at
     from callcentre.services import apply_call_result, resolve
     from callcentre.test_learner_satisfaction import aptem, lms
@@ -186,6 +189,9 @@ def check_employers(user, agent, raises):
             source_account='student', zoom_account_id='test-account', history_id='employer', direction='outbound',
             started_at=now + timedelta(minutes=1), ended_at=now + timedelta(minutes=5), result='answered')
         match = CallMatch.objects.create(call=call, agent=agent, learner_email=ticket.learner_email)
+        intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email,
+                                          number=ticket.learner_phone, matched_call=call)
+        intent.tickets.add(ticket)
         CaseCall.objects.create(ticket=ticket, match=match)
         apply_call_result(match)
         completed_at = now + timedelta(minutes=10)

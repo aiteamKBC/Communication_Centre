@@ -277,7 +277,7 @@ export default function ZoomPhone({ overview, csrf, isManager, smartEmbed }: { o
 
       <section className="ec-card" style={{ marginTop: '1rem' }}>
         <h2>2. Save evidence</h2>
-        <p>Recordings and transcripts are imported from Zoom into the call-centre database. Transcript text is searchable by managers; each specialist can read the calls they made.</p>
+        <p>Only calls started from this system appear in reports and have their recordings transcribed and analysed. Transcript text is searchable by managers; each specialist can read their own calls.</p>
         <p className="ec-muted">An archive copy in private Azure storage is not connected yet; recordings stay in Zoom under its retention policy.</p>
       </section>
 

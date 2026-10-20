@@ -6,11 +6,11 @@ from datetime import date, datetime, time, timedelta
 import requests
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from .db import DB
-from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneRecording
+from .call_scope import recording_call_filter, system_case_calls, system_matches, system_recordings
+from .models import AIAnalysis, CaseTicket
 from .rules import LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES
 from .services import event, release_fields
 from .zoom_views import current_account_filter
@@ -18,7 +18,7 @@ from .zoom_views import current_account_filter
 FIELDS = {'outcome', 'absence_reason', 'chosen_option', 'promised_date', 'commitments', 'sentiment',
           'call_rating', 'went_wrong', 'needs_change', 'summary', 'confidence'}
 RATINGS = ('excellent', 'good', 'bad', 'not_rated')
-# New transcripts are rated even without an open case; the lookback stops a first run paying for the whole archive.
+# In-system calls with closed cases can still be rated within this lookback.
 RATING_LOOKBACK = timedelta(days=30)
 
 # Kept short on purpose so specialists and managers read the same rules the AI applies.
@@ -80,7 +80,7 @@ def ai_enabled():
 
 
 def analyze_recording(recording):
-    if not ai_enabled() or not recording.transcript_text:
+    if not ai_enabled() or not recording.transcript_text or not recording_match(recording):
         return None
     digest = hashlib.sha256(recording.transcript_text.encode()).hexdigest()
     analysis, _ = AIAnalysis.objects.get_or_create(recording=recording, transcript_hash=digest,
@@ -125,12 +125,12 @@ def analyze_recording(recording):
 
 
 def recording_match(recording):
-    query = Q(call__history_id=recording.call_log_id) if recording.call_log_id else Q(pk__in=[])
-    if recording.call_id:
-        query |= Q(call__call_id=recording.call_id)
-    matches = list(CallMatch.objects.filter(query, call__zoom_account_id=recording.zoom_account_id,
-                                            call__source_account=recording.source_account)[:2])
-    return matches[0] if len(matches) == 1 else None
+    if not system_recordings().filter(pk=recording.pk).exists():
+        return None
+    from .models import ZoomPhoneCall
+    return system_matches().filter(
+        call_id__in=ZoomPhoneCall.objects.filter(recording_call_filter(recording)).values('pk'),
+    ).first()
 
 
 def apply_analysis(analysis):
@@ -138,7 +138,7 @@ def apply_analysis(analysis):
     match = recording_match(recording)
     if not match:
         return
-    for link in match.cases.all():
+    for link in system_case_calls(match.cases.all()):
         with transaction.atomic(using=DB):
             ticket = CaseTicket.objects.select_for_update().get(pk=link.ticket_id)
             if ticket.evidence_after and recording.started_at <= ticket.evidence_after:
@@ -181,9 +181,9 @@ def process_ai(limit=10):
         return 0
     # Only the cycle calls this, under its lease, so any row still 'processing' was abandoned by a
     # crashed worker. Without this it would be skipped forever.
-    AIAnalysis.objects.filter(state='processing').update(state='pending')
+    AIAnalysis.objects.filter(state='processing', recording__in=system_recordings()).update(state='pending')
     done = 0
-    ready = ZoomPhoneRecording.objects.filter(current_account_filter(), transcript_status='ready').exclude(transcript_text='')
+    ready = system_recordings().filter(current_account_filter(), transcript_status='ready').exclude(transcript_text='')
     for recording in ready.order_by('pk').iterator():
         match = recording_match(recording)
         if not match or not match.cases.exclude(ticket__status='resolved').filter(ticket__archived=False).exists():
@@ -201,7 +201,7 @@ def process_ai(limit=10):
         done += 1
         if done >= limit:
             return done
-    # Every other recent transcript still gets its call rating, newest first, without touching any case.
+    # Other recent in-system calls still get a rating without touching closed cases.
     unrated = ready.filter(started_at__gte=timezone.now() - RATING_LOOKBACK).exclude(
         pk__in=AIAnalysis.objects.exclude(state='pending').values('recording_id'))
     for recording in unrated.order_by('-started_at', '-pk')[:limit - done]:
@@ -221,6 +221,8 @@ def review_json(analysis):
 
 
 def latest_review(recording):
+    if not recording_match(recording):
+        return None
     return review_json(AIAnalysis.objects.filter(recording=recording, state='ready').order_by('-created_at', '-pk').first())
 
 
@@ -231,7 +233,7 @@ def call_reviews(lower, upper, agents, own_only=False, all_calls=False):
     all_calls also lists every rated call, not just the bad ones."""
     from .services import identify_agent
     from .zoom_views import recording_calls
-    recordings = ZoomPhoneRecording.objects.filter(current_account_filter(), started_at__gte=lower, started_at__lt=upper)
+    recordings = system_recordings().filter(current_account_filter(), started_at__gte=lower, started_at__lt=upper)
     latest = {}
     for analysis in (AIAnalysis.objects.filter(state='ready', recording__in=recordings).select_related('recording')
                      .order_by('recording_id', '-created_at', '-pk')):

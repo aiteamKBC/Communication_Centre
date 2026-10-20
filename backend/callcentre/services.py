@@ -7,8 +7,9 @@ from django.utils import timezone
 
 from .access import is_director
 from .allocation import learner_owner, manager_owners, owners
+from .call_scope import system_case_calls, system_matches
 from .db import DB
-from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, CycleState, TicketEvent, ZoomPhoneCall
+from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
 from .zoom_views import current_account_filter
@@ -256,6 +257,8 @@ def match_call(call_id):
         return None
     match = CallMatch.objects.filter(call=call).first()
     if match:
+        if not system_matches().filter(pk=match.pk).exists():
+            return None
         apply_call_result(match)
         return match
     agent = identify_agent(call)
@@ -266,37 +269,17 @@ def match_call(call_id):
         agent=agent, number=number, matched_call__isnull=True,
         created_at__lte=call.started_at, created_at__gte=call.started_at - timedelta(minutes=10),
     )[:2])
-    if len(intents) > 1:
+    if len(intents) != 1:
         return None
-    intent = intents[0] if intents else None
-    candidates = CaseTicket.objects.filter(created_at__lte=call.started_at)
-    if intent:
-        candidates = candidates.filter(intents=intent)
-        learner_email = intent.learner_email
-    else:
-        candidates = candidates.filter(Q(status='resolved', resolved_at__gte=call.started_at) | ~Q(status='resolved'))
-        # Include historical cases in ambiguity detection, even if one is resolved.
-        emails = list(CaseTicket.objects.filter(learner_phone=number).exclude(source_type__in=('satisfaction', 'employer_feedback'))
-                      .values_list('learner_email', flat=True).distinct()[:2])
-        if len(emails) != 1:
-            return None
-        learner_email = emails[0]
-        # The queue is not a complete address book. Confirm uniqueness across the
-        # latest successful Aptem contact snapshot, including learners without cases.
-        directory = CycleState.objects.filter(name='phone_directory').first()
-        if not directory or not directory.last_success_at or directory.last_success_at < timezone.now() - timedelta(hours=24):
-            return None
-        if directory.details.get(number) != [learner_email]:
-            return None
-        # A manual dial is matched as a learner contact only (the email above came from learner cases).
-        candidates = candidates.filter(learner_phone=number, learner_email=learner_email).exclude(source_type='employer_feedback')
+    intent = intents[0]
+    candidates = CaseTicket.objects.filter(created_at__lte=call.started_at, intents=intent)
+    learner_email = intent.learner_email
     tickets = list(candidates.exclude(source_type='satisfaction').order_by('pk'))
     if not tickets:
         return None
-    match = CallMatch.objects.create(call=call, agent=agent, learner_email=learner_email, manual=intent is None)
-    if intent:
-        intent.matched_call = call
-        intent.save(update_fields=['matched_call'])
+    match = CallMatch.objects.create(call=call, agent=agent, learner_email=learner_email, manual=False)
+    intent.matched_call = call
+    intent.save(update_fields=['matched_call'])
     for ticket in tickets:
         CaseCall.objects.create(ticket=ticket, match=match)
         event(ticket, 'zoom_call', {'manual': match.manual, 'match_id': match.pk}, agent=agent, call=call)
@@ -305,22 +288,25 @@ def match_call(call_id):
 
 
 def apply_call_result(match):
+    if not system_matches().filter(pk=match.pk).exists():
+        return
     call = match.call
     if not call.ended_at or call.result not in FAILED_RESULTS | {'answered'}:
         return
-    for link in match.cases.select_for_update().select_related('ticket'):
+    for link in system_case_calls(match.cases.all()).select_for_update().select_related('ticket'):
         if link.processed_result == call.result:
             continue
         ticket = CaseTicket.objects.select_for_update().get(pk=link.ticket_id)
         link.processed_result = call.result
         link.save(update_fields=['processed_result'])
         # Recompute from distinct real calls so re-syncs and out-of-order imports cannot inflate counts.
-        failed = ticket.calls.filter(processed_result__in=FAILED_RESULTS)
+        eligible = system_case_calls(ticket.calls.all())
+        failed = eligible.filter(processed_result__in=FAILED_RESULTS)
         if ticket.evidence_after:
             # A reopened or sent-back case starts a fresh count.
             failed = failed.filter(match__call__started_at__gt=ticket.evidence_after)
         ticket.attempts = failed.count()
-        latest = ticket.calls.exclude(processed_result='').select_related('match__call').order_by('-match__call__started_at', '-match__call_id').first()
+        latest = eligible.exclude(processed_result='').select_related('match__call').order_by('-match__call__started_at', '-match__call_id').first()
         other_claim = (ticket.claimed_by_id and ticket.claimed_by_id != match.agent_id and ticket.last_activity_at
                        and ticket.last_activity_at > timezone.now() - timedelta(minutes=30))
         before_reopen = bool(latest and ticket.evidence_after and latest.match.call.started_at <= ticket.evidence_after)
@@ -382,9 +368,9 @@ def record_outcome(ticket_id, user, call_id, outcome, option='', note='', callba
     agent = can_work(ticket, user, acting_agent=acting_agent)
     if ticket.status == 'resolved':
         raise Conflict('Reopen the case before recording another outcome.')
-    link = CaseCall.objects.select_related('match__call', 'match__agent').filter(ticket=ticket, match__call_id=call_id).first()
+    link = system_case_calls().select_related('match__call', 'match__agent').filter(ticket=ticket, match__call_id=call_id).first()
     if not link:
-        raise ValueError('An actual linked Zoom call is required.')
+        raise ValueError('A verified call started from this system is required.')
     if link.match.call.started_at < (ticket.evidence_after or ticket.created_at):
         raise ValueError('Use a call made since this case was opened or last reopened.')
     # can_work admits a manager without an Agent profile; only a non-manager is limited to their own calls.
@@ -411,7 +397,7 @@ def plan_outcome(ticket_id, user, outcome, option='', note='', callback_at=None,
     intent = ticket.intents.filter(agent=agent, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW).order_by('-created_at').first()
     if not intent:
         raise ValueError('Call the learner first.')
-    link = (CaseCall.objects.select_related('match__call').filter(ticket=ticket, match__call_id=intent.matched_call_id).first()
+    link = (system_case_calls().select_related('match__call').filter(ticket=ticket, match__call_id=intent.matched_call_id).first()
             if intent.matched_call_id else None)
     if link and link.processed_result:
         check_call_result(outcome, link.match.call)
@@ -443,6 +429,8 @@ def apply_pending_outcome(ticket, link, match):
 
 def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at):
     """Record a validated outcome on a locked case and move the case on."""
+    if not system_case_calls().filter(pk=link.pk).exists():
+        raise ValueError('A verified call started from this system is required.')
     promises = PROMISES.get(ticket.source_type, {})
     link.outcome, link.outcome_at = outcome, timezone.now()
     link.save(update_fields=['outcome', 'outcome_at'])

@@ -14,6 +14,7 @@ from django.views.decorators.http import require_GET
 
 from .access import is_director, refused
 from .db import APTEM
+from .call_scope import system_calls, system_recordings
 from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
 from .zoom_phone import ACCOUNT_LABELS, ZoomError, account_config, missing_credentials, validate_config
 from .rules import normalize_phone
@@ -124,7 +125,7 @@ def zoom_call_report(request):
         if account_id:
             configured_ids |= Q(source_account=key, zoom_account_id=account_id)
     try:
-        base = ZoomPhoneCall.objects.filter(configured_ids, started_at__gte=start_time, started_at__lt=end_time)
+        base = system_calls().filter(configured_ids, started_at__gte=start_time, started_at__lt=end_time)
         if direction != 'all':
             base = base.filter(direction=direction)
         states = {state.source_account: state for state in ZoomSyncState.objects.all()}
@@ -244,7 +245,7 @@ def zoom_transcript_report(request):
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
     end_time = datetime.combine(end + timedelta(days=1), time.min, tzinfo=report_zone)
     try:
-        base = ZoomPhoneRecording.objects.filter(
+        base = system_recordings().filter(
             current_account_filter(), started_at__gte=start_time, started_at__lt=end_time,
         )
         if source != 'all':
@@ -301,7 +302,7 @@ def zoom_call_recordings(request, call_pk):
     if refused(request.user):
         return refused(request.user)
     try:
-        call = ZoomPhoneCall.objects.filter(current_account_filter(), pk=call_pk).first()
+        call = system_calls().filter(current_account_filter(), pk=call_pk).first()
         if call is None:
             return JsonResponse({'detail': 'Call not found.'}, status=404)
         if not can_view_call(request.user, call):
@@ -309,7 +310,7 @@ def zoom_call_recordings(request, call_pk):
         match = Q(call_log_id=call.history_id)
         if call.call_id:
             match |= Q(call_id=call.call_id)
-        recordings = ZoomPhoneRecording.objects.filter(
+        recordings = system_recordings().filter(
             match, source_account=call.source_account, zoom_account_id=call.zoom_account_id,
         )
         return JsonResponse({'call_id': call.pk, 'recordings': list(recordings.values(
@@ -330,7 +331,7 @@ def zoom_recording_transcript(request, recording_pk):
     if refused(request.user):
         return refused(request.user)
     try:
-        recording = ZoomPhoneRecording.objects.filter(current_account_filter(), pk=recording_pk).first()
+        recording = system_recordings().filter(current_account_filter(), pk=recording_pk).first()
         if recording is None:
             return JsonResponse({'detail': 'Recording not found.'}, status=404)
         if not is_director(request.user) and not any(

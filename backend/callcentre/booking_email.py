@@ -102,7 +102,7 @@ def layout(subject, greeting, message, sender, button='', url='', help_line='', 
     buttons = list(buttons) or ([(button, url)] if url else [])
     if buttons:
         link_text = '\n'.join(f'{label}: {link}' for label, link in buttons) + (f'\n{help_line}' if help_line else '')
-        action = ''.join(f'<p style="margin:14px 0 8px"><a href="{escape(link, quote=True)}" style="display:inline-block;'
+        action = ''.join(f'<p style="margin:14px 0 8px"><a href="{escape(link, quote=True)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;'
                          'background:#241453;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;'
                          f'padding:12px 22px;border-radius:6px">{escape(label)}</a></p>' for label, link in buttons)
         if help_line:

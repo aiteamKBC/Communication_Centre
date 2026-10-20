@@ -8,6 +8,13 @@ import { csrfToken as cookieCsrfToken } from '../../utils/apiSession';
 export type Case = {
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
   issue_name: string; issue_date: string | null;
+  missed_lecture?: {
+    module: string; title: string; date: string | null;
+    starts_at: string | null; ends_at: string | null;
+    time_status: 'matched' | 'missing' | 'ambiguous' | 'unavailable';
+  } | null;
+  /** EPA dates from the last synced Aptem snapshot; absent on older servers. */
+  programme_end_date?: string | null; gateway_review_date?: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
   contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
   /** Employer feedback calls: the line manager's learners in the directory. */

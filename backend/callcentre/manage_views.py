@@ -27,6 +27,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from . import booking_links, email_settings, mailer
 from .access import is_director
+from .call_scope import system_calls
 from .db import DB
 from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
@@ -145,7 +146,7 @@ def activity_log(request):
     month = request.GET.get('month') or today.strftime('%Y-%m')
     start = date.fromisoformat(month + '-01')
     end = date(start.year + start.month // 12, start.month % 12 + 1, 1)
-    outbound = ZoomPhoneCall.objects.filter(direction='outbound')
+    outbound = system_calls()
     # order_by() clears the model's default ordering, which would otherwise defeat DISTINCT.
     months = sorted({value.astimezone(LONDON).strftime('%Y-%m') for value in outbound.order_by().annotate(
         month=TruncMonth('started_at', tzinfo=LONDON)).values_list('month', flat=True).distinct()} | {today.strftime('%Y-%m')},

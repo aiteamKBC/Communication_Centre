@@ -8,6 +8,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
+import CaseDates from './CaseDates';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
 import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
@@ -73,6 +74,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <div className="ed-phone-line"><strong>{c.learner_phone || 'Phone number not recorded'}</strong>{!employer && <span>Coach: {c.coach || 'Not recorded'}</span>}</div>
       {employer && <p className="ec-muted">Learners: {c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'}</p>}
       <p className="ed-purpose">{casePurpose(c)}</p>
+      <CaseDates ticket={c} />
       {c.helpdesk && (
         <p className="ec-muted">Ticket {c.helpdesk.ticket} ({c.helpdesk.subcategory}) · {helpdeskStatus(c.helpdesk)} · raised by {c.helpdesk.raised_by}
           {c.helpdesk.helpdesk_error ? ` · Last status check failed: ${c.helpdesk.helpdesk_error}` : ''}</p>
@@ -109,7 +111,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       {epa && (
         <details className="ed-disclosure" open>
           <summary>EPA readiness</summary>
-          <p className="ec-muted">Live figures from Aptem — check the learner’s real position before agreeing the next step.</p>
+          <p className="ec-muted">Figures from the last Aptem sync — check the learner’s current position before agreeing the next step.</p>
           <dl className="ec-dl">
             {[
               ['Gateway review', epa.gateway_review_date],

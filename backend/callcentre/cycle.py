@@ -9,9 +9,10 @@ from django.utils import timezone
 
 from .ai import process_ai
 from .db import DB
+from .call_scope import system_calls
 from .emails import process_emails
 from .evidence import EvidenceSnapshot, check_evidence
-from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
+from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
@@ -96,8 +97,15 @@ def match_calls():
     if earliest:
         # Calls before the module's first case cannot be its contact attempts.
         changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('result'))
+        pending_intent = CallIntent.objects.filter(
+            matched_call__isnull=True, agent__zoom_account=OuterRef('source_account'),
+            created_at__lte=OuterRef('started_at'),
+            created_at__gte=OuterRef('started_at') - timedelta(minutes=10),
+        )
         calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
-            needs_result=Exists(changed_result)).filter(Q(callmatch__isnull=True) | Q(needs_result=True)).order_by('started_at')
+            needs_result=Exists(changed_result), pending_intent=Exists(pending_intent),
+            system_call=Exists(system_calls().filter(pk=OuterRef('pk'))),
+        ).filter(Q(callmatch__isnull=True, pending_intent=True) | Q(needs_result=True, system_call=True)).order_by('started_at')
         for pk in calls.values_list('pk', flat=True).iterator():
             if match_call(pk):
                 matched += 1
