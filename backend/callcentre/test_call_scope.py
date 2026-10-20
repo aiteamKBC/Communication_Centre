@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.db import connections
+from django.db.models import Q
 from django.test import RequestFactory, TestCase, override_settings
 
 from . import ai
@@ -36,6 +37,7 @@ class SystemCallScopeTests(TestCase):
             patch('django.utils.timezone.now', return_value=self.now),
             patch('callcentre.services.allocated_owner', return_value=None),
             patch('callcentre.sources.on_break_emails', return_value=frozenset()),
+            patch('callcentre.sources.active_case_contacts', return_value=Q()),
             patch.dict(os.environ, {'ZOOM_STUDENT_ACCOUNT_ID': 'account', 'ZOOM_OFFICE_ACCOUNT_ID': 'office-account'}),
         ):
             mocked.start()
@@ -125,6 +127,47 @@ class SystemCallScopeTests(TestCase):
         CallIntent.objects.filter(pk=intent.pk).update(number=call.callee_number)
         self.intent()
         self.assertIsNone(match_call(call.pk))
+
+    def test_one_call_covers_lectures_and_reviews_but_not_employer_or_future_callback(self):
+        CaseTicket.objects.filter(pk=self.ticket.pk).update(source_data={'person_id': 'person-one', 'review_type': 'progress'})
+        lecture = self.case(source_type='attendance', overdue_since=self.now.date() - timedelta(days=14),
+                            source_data={'person_id': 'person-one', 'module': 'Risk management'})
+        alias = self.case(source_type='mcm', learner_email='alias@test.test',
+                          source_data={'person_id': 'person-one', 'review_type': 'monthly'})
+        employer = self.case(source_type='employer_feedback', source_data={'person_id': 'person-one'})
+        future = self.case(source_type='pr_missed', next_followup_at=self.now + timedelta(days=2))
+        self.case(learner_email='another@test.test')
+        with patch('django.utils.timezone.now', return_value=self.now - timedelta(minutes=6)):
+            intent = create_intent(lecture.pk, self.agent)
+        self.assertEqual(set(intent.tickets.values_list('pk', flat=True)), {self.ticket.pk, lecture.pk, alias.pk})
+        match = match_call(self.call().pk)
+        self.assertEqual(set(match.cases.values_list('ticket_id', flat=True)), {self.ticket.pk, lecture.pk, alias.pk})
+        employer.refresh_from_db()
+        future.refresh_from_db()
+        self.assertIsNone(employer.claimed_by_id)
+        self.assertIsNone(future.claimed_by_id)
+
+    def test_case_detail_groups_all_open_categories_and_identity_aliases_only_for_learner(self):
+        from .views import detail
+        CaseTicket.objects.filter(pk=self.ticket.pk).update(source_data={'person_id': 'person-one', 'review_type': 'progress'})
+        lecture = self.case(source_type='attendance', overdue_since=self.now.date() - timedelta(days=14),
+                            source_data={'module': 'Risk management'})
+        alias = self.case(source_type='mcm', learner_email='alias@test.test',
+                          source_data={'person_id': 'person-one', 'review_type': 'monthly'})
+        self.case(source_type='employer_feedback', source_data={'person_id': 'person-one'})
+        self.case(source_type='epa', status='resolved')
+        self.case(source_type='manual', archived=True)
+        self.case(learner_email='another@test.test')
+        request = RequestFactory().get('/detail/')
+        request.user = self.user
+        with patch('callcentre.views.refused', return_value=None), \
+                patch('callcentre.views.booking_links', return_value={}), \
+                patch('callcentre.views.add_lecture_times'):
+            response = detail(request, self.ticket.pk)
+        self.assertEqual(response.status_code, 200)
+        issues = json.loads(response.content)['issues']
+        self.assertEqual({i['id'] for i in issues}, {self.ticket.pk, lecture.pk, alias.pk})
+        self.assertTrue(all('created_at' in i and 'next_followup_at' in i for i in issues))
 
     def test_wrong_agent_or_account_cannot_consume_intent(self):
         self.intent()

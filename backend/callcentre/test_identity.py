@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.db.models import Q
 from django.utils import timezone
 
 from . import identity, lms_booking, sources, evidence
@@ -374,7 +375,8 @@ class IdentityWorkflowTests(TestCase):
                                              learner_phone='+447700900123', due_at=now, reason_key='manager-quarter')
         learner = CaseTicket.objects.create(source_type='attendance', learner_email='shared@example.org',
                                             learner_phone='+447700900123', due_at=now, reason_key='student-absence')
-        with patch('callcentre.services.owners', return_value={}), patch('callcentre.sources.on_break_emails', return_value=set()):
+        with patch('callcentre.services.owners', return_value={}), patch('callcentre.sources.on_break_emails', return_value=set()), \
+                patch('callcentre.sources.active_case_contacts', return_value=Q()):
             intent = create_intent(employer.pk, agent)
         self.assertEqual(list(intent.tickets.values_list('pk', flat=True)), [employer.pk])
         learner.refresh_from_db()

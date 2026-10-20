@@ -11,14 +11,14 @@ export const satisfactionRecipient = (c: Pick<OverviewCase, 'source_type' | 'lea
   c.source_type === 'employer_feedback' ? c.manager_email : c.learner_email;
 
 export const CALL_TABS: CallTab[] = [
-  { key: 'missed', label: 'Missed', icon: 'calendar',
-    reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
-    hint: 'Missed lectures, reviews that were booked but are not completed, and finished reviews waiting for a signature. Agree a catch-up or a new review time; for a signature, ask the learner to sign in the LMS (nothing to book).' },
   // Off-the-job hours cases are paused on the server (rules.PAUSED_CATEGORIES); add ['otj', 'Off-the-job hours'] back with them.
   { key: 'due', label: 'Due', icon: 'calendar', reasons: [['mcm', 'Monthly coaching'], ['pr', 'Progress review'], ['epa', 'EPA']],
     hint: 'Progress reviews and monthly coaching that are due but not booked yet: send the booking email. EPA: learners past their end date; check their gateway and EPA position and agree the next step.' },
   { key: 'nextday', label: 'Next Day', icon: 'calendar', reasons: [],
     hint: 'Appointments on the next working day. Confirm each learner will attend; if they cannot, ask them to contact their coach to rearrange.' },
+  { key: 'missed', label: 'Missed', icon: 'calendar',
+    reasons: [['attendance', 'Missed session'], ['mcm_missed', 'Missed monthly coaching'], ['pr_missed', 'Missed progress review'], ['signature', 'Missing signature']],
+    hint: 'Missed lectures, reviews that were booked but are not completed, and finished reviews waiting for a signature. Agree a catch-up or a new review time; for a signature, ask the learner to sign in the LMS (nothing to book).' },
   { key: 'learner_satisfaction', label: 'Learner Satisfaction', icon: 'people', reasons: [],
     hint: 'Active, Delivery and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
@@ -207,8 +207,10 @@ export const failingSources = (overview: Pick<Overview, 'sources'>, now = Date.n
 export const categoryCases = (cases: OverviewCase[], key: string, today: string, nextWorkday: string) =>
   cases.filter(c => activeCase(c) && categoryFor(c, today, nextWorkday) === key);
 
-export const contactKey = (c: Pick<OverviewCase, 'learner_email'> & { contact_key?: string; id?: number }) =>
-  c.contact_key || c.learner_email.toLowerCase() || `case:${c.id}`;
+export const contactKey = (c: Pick<OverviewCase, 'learner_email'> & { contact_key?: string; id?: number; source_type?: string }) =>
+  c.contact_key || (c.learner_email.trim()
+    ? `${c.source_type === 'employer_feedback' ? 'employer:' : ''}${c.learner_email.trim().toLowerCase()}`
+    : `case:${c.id}`);
 
 /** The server already orders by priority; keep the first case per learner. */
 export function uniqueLearners(cases: OverviewCase[]) {

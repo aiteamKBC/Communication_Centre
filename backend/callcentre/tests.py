@@ -12,6 +12,7 @@ from unittest import mock
 from django.conf import settings
 from django.core import signing
 from django.db import DatabaseError, ProgrammingError
+from django.db.models import Q
 from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.utils import timezone
 
@@ -102,7 +103,8 @@ class PromiseTests(SimpleTestCase):
 
 class ScopeTests(SimpleTestCase):
     def test_open_cases_leave_out_paused_types_old_missed_lectures_and_learners_on_a_break(self):
-        with mock.patch('callcentre.sources.on_break_emails', return_value=frozenset({'resting@example.com'})):
+        with mock.patch('callcentre.sources.on_break_emails', return_value=frozenset({'resting@example.com'})), \
+                mock.patch('callcentre.sources.active_case_contacts', return_value=Q()):
             sql = str(CaseTicket.objects.open().query)
         self.assertIn('NOT "callcenter_case"."archived"', sql)
         self.assertIn('otj', sql)
@@ -230,7 +232,7 @@ def lms_row(**values):
 def aptem_row(**values):
     return {'ID': 7, 'FullName': 'Aptem Name', 'Email': 'learner@example.com', 'Learner Phone': '07700 900123',
             'OwnerName': 'Aptem Coach', 'OrganizationName': 'Aptem Org', 'Program Name': 'Aptem Programme',
-            'ManagerName': 'Manager', 'ManagerEmail': 'Manager@Example.com', **values}
+            'ManagerName': 'Manager', 'ManagerEmail': 'Manager@Example.com', 'Program-Status': 'Active', **values}
 
 
 class LearnerMergeTests(SimpleTestCase):
@@ -264,7 +266,7 @@ class LearnerMergeTests(SimpleTestCase):
     def test_learners_on_a_break_are_left_out_and_aptem_cannot_add_them_back(self):
         people = learners.merge([lms_row(aptem_id='7', Programme_status='On Break'), lms_row(Email='done@example.com',
                                  Programme_status='Completed')], [aptem_row(Email='Other@Example.com')])
-        self.assertEqual(list(people), ['done@example.com'])
+        self.assertEqual(list(people), [])
         self.assertNotIn('other@example.com', people)
         self.assertEqual(people.on_break, {'learner@example.com', 'other@example.com'})
 
@@ -928,7 +930,8 @@ class StaleCaseTests(SimpleTestCase):
     def test_set_aside_cases_and_past_reminders_leave_every_list(self):
         from django.db.models import Q
         from .rules import out_of_scope
-        with mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()):
+        with mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()), \
+                mock.patch('callcentre.sources.active_case_contacts', return_value=Q()):
             conditions = out_of_scope().children
         tomorrow = datetime.combine(next_workday(timezone.now().astimezone(LONDON).date()), datetime.min.time(), tzinfo=LONDON)
         self.assertIn(Q(source_data__has_key='eligible', source_data__eligible=False), conditions)

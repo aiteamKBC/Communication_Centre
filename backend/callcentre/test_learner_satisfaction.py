@@ -18,7 +18,7 @@ def lms(**changes):
 def aptem(**changes):
     return {'ID': 10, 'FullName': 'Learner', 'Email': 'learner@example.org', 'Learner Phone': '',
             'OwnerName': 'Coach', 'OrganizationName': 'Company', 'Program Name': 'Programme',
-            'ManagerName': 'Manager', 'ManagerEmail': 'manager@example.org', 'Program-Status': 'Onboarding', **changes}
+            'ManagerName': 'Manager', 'ManagerEmail': 'manager@example.org', 'Program-Status': 'Active', **changes}
 
 
 class LearnerSatisfactionRulesTests(SimpleTestCase):
@@ -32,10 +32,10 @@ class LearnerSatisfactionRulesTests(SimpleTestCase):
         self.assertEqual((due.month, due.hour, due.utcoffset().total_seconds()), (4, 10, 3600))
 
     @override_settings(CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS=[])
-    def test_only_active_delivery_and_onboarding(self):
-        for status in ('Active', ' Onboarding ', 'active', 'Delivery'):
+    def test_only_active_and_delivery(self):
+        for status in ('Active', 'active', 'Delivery'):
             self.assertTrue(eligible({'programme_status': status, 'identifiers': ['lms:1']}))
-        for status in ('Withdrawn', 'Completed', 'OnBreak', '', 'ReadyToEnrol'):
+        for status in ('Withdrawn', 'Completed', 'OnBreak', '', 'ReadyToEnrol', ' Onboarding '):
             self.assertFalse(eligible({'programme_status': status, 'identifiers': ['lms:1']}))
 
     @override_settings(CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS=['lms:1'])
@@ -53,7 +53,7 @@ class LearnerSatisfactionRulesTests(SimpleTestCase):
 
     def test_missing_phone_does_not_remove_learner(self):
         person = learners.merge([], [aptem()]).satisfaction[0]
-        self.assertEqual(person['programme_status'], 'Onboarding')
+        self.assertEqual(person['programme_status'], 'Active')
         self.assertEqual(person['profile']['learner_phone'], '')
         self.assertTrue(eligible(person))
 

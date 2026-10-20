@@ -8,6 +8,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
+import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
@@ -44,6 +45,7 @@ const CALLBACKS: [string, () => Date][] = [
 
 /** The simple calling screen: one learner, one Call button, then one tap per issue for what happened. */
 export default function NextCall({ overview, session, onRefresh, notify, onOpen }: Props) {
+  const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [done, setDone] = useState<Set<string>>(new Set());
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   // Learners who did not answer this session go to the bottom straight away, before Zoom reports it.
@@ -61,10 +63,11 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const [busy, setBusy] = useState(false);
 
   // Same order as the server's priority: missed calls are already at the bottom.
-  const queue = useMemo(() => uniqueLearners(overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
+  const eligible = useMemo(() => overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
     && c.source_type !== 'employer_feedback' && !!c.learner_phone && dueForCall(c)
-    && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId))).filter(c => !done.has(contactKey(c))),
-  [overview, session.agentId, done]);
+    && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId)), [overview, session.agentId]);
+  const queue = useMemo(() => uniqueLearners(eligible.filter(c => matchesCaseFilters(c, caseFilters)))
+    .filter(c => !done.has(contactKey(c))), [eligible, caseFilters, done]);
   const open = queue.filter(c => !skipped.has(contactKey(c)));
   const waiting = [...open.filter(c => !later.has(contactKey(c))), ...open.filter(c => later.has(contactKey(c)))];
   const next = waiting[0] || null;
@@ -182,6 +185,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   if (!current) {
     return (
       <section className="ec-card ed-next">
+        <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
         <div className="ec-empty">
           <h3>Nobody else to call right now</h3>
           <p>{skipped.size ? `You skipped ${skipped.size} ${skipped.size === 1 ? 'learner' : 'learners'}.` : 'Learners come back here when their follow-up is due.'}</p>
@@ -196,6 +200,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const needsCallback = issues.some(c => picked.get(c.id) === 'callback');
   return (
     <section className="ec-card ed-next">
+      <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
       <p className="ec-muted">{calling ? 'On the call' : `Next call · ${waiting.length} ${waiting.length === 1 ? 'learner' : 'learners'} to call`}</p>
       <Dialog open={feedbackFor !== null} onClose={() => setFeedbackFor(null)}>
         {feedbackFor && <SatisfactionFeedback key={feedbackFor.id} caseId={feedbackFor.id} name={feedbackFor.learner_name} session={session} onSaved={feedbackSaved} />}

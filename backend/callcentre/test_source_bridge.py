@@ -32,7 +32,7 @@ class SourceBridgeTests(SimpleTestCase):
         people = learners.merge([lms(id=100, aptem_id=None, Programme_status='Onboarding')], [])
         self.assertEqual(len(people.satisfaction), 1)
         person = people.satisfaction[0]
-        self.assertTrue(eligible(person))
+        self.assertFalse(eligible(person))
         self.assertIn('lms:100', person['identifiers'])
         self.assertFalse(person['profile']['learner_phone'])
 

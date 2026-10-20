@@ -34,6 +34,7 @@ from .reports import performance
 from .call_scope import system_case_calls
 from .history import monthly_history
 from .lecture_details import add_lecture_times
+from .case_filters import add_filter_contexts
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
@@ -156,14 +157,20 @@ def ticket_json(ticket):
     now = timezone.now()
     active_claim = bool(ticket.claimed_by_id and ticket.last_activity_at and ticket.last_activity_at > now - timedelta(minutes=30))
     score = priority(ticket, now)
+    employer_learners = ticket.source_data.get('learners', []) if ticket.source_type == 'employer_feedback' else []
+    if employer_learners and ticket.status != 'resolved' and not ticket.archived:
+        from .sources import cached_directory
+        active = cached_directory().active
+        employer_learners = [person for person in employer_learners if person.get('email', '').strip().lower() in active]
     return {
         **issue_json(ticket), **epa_dates(ticket), 'source_id': ticket.source_id,
+        'module': str(ticket.source_data.get('module') or '').strip(),
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
         'contact_key': contact_key(ticket),
         'programme_status': ticket.source_data.get('programme_status', ''),
         'contact_sources': ticket.source_data.get('contact_sources', {}),
         'satisfaction_next_due_at': ticket.source_data.get('next_due_at'),
-        'employer_learners': ticket.source_data.get('learners', []) if ticket.source_type == 'employer_feedback' else [],
+        'employer_learners': employer_learners,
         'coach': ticket.coach, 'organisation': ticket.organisation, 'programme': ticket.programme,
         'manager_name': ticket.manager_name, 'manager_email': ticket.manager_email,
         'status': ticket.status, 'risk': ticket.risk, 'claimed_by': ticket.claimed_by.display_name if active_claim else None,
@@ -276,6 +283,7 @@ def overview(request):
         cases.append(item)
 
     add_lecture_times(cases)
+    add_filter_contexts(cases)
     agents = []
     for row in report['agents']:
         current = next((day for day in row['daily'] if day['date'] == today.isoformat()), None)
@@ -389,10 +397,17 @@ def detail(request, pk):
     events = ticket.events.order_by('-id')
     calls = system_case_calls(ticket.calls.all()).select_related('match__call', 'match__agent').order_by('-match__call__started_at')
     issues = CaseTicket.objects.open().filter(same_contact(ticket) if ticket.learner_email else Q(pk=ticket.pk))
+    person_id = ticket.source_data.get('person_id')
+    if person_id and ticket.source_type != 'employer_feedback':
+        same_person = Q(source_data__person_id=person_id)
+        if ticket.learner_email:
+            same_person |= same_contact(ticket)
+        issues = CaseTicket.objects.open().exclude(source_type='employer_feedback').filter(same_person)
     payload = ticket_json(ticket)
     add_lecture_times([payload])
     return JsonResponse({'ticket': payload,
-        'issues': [issue_json(issue) for issue in issues],
+        'issues': [{**issue_json(issue), 'created_at': issue.created_at, 'booking_at': issue.booking_at,
+                    'next_followup_at': issue.next_followup_at} for issue in issues],
         'events': list(events.values('id', 'kind', 'actor', 'data', 'call_id', 'created_at')[(page - 1) * 50:page * 50]),
         'has_more_events': events.count() > page * 50,
         'calls': [{'call_id': item.match.call_id, 'agent': item.match.agent.display_name, 'agent_id': item.match.agent_id,

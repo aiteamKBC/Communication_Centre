@@ -133,6 +133,25 @@
 .ed .ed-dialog-header h2{margin:0;font-size:1.1rem}
 .kbc-portals .workspace-app .ec button.ed-dialog-close{min-width:44px;min-height:44px;padding:0;border:1px solid var(--line);background:#f4f0fa;color:var(--purple);font-size:1.8rem;line-height:1;border-radius:8px}
 .ed-dialog-content{padding:1rem}
+.ec dialog.ed-case-dialog:has(.ed-contact-workspace){max-width:1380px}
+.ed-contact-workspace{display:grid;grid-template-columns:minmax(230px,300px) minmax(0,1fr);gap:1rem;align-items:start}
+.ed-contact-workspace>aside{position:sticky;top:5rem;max-height:calc(90vh - 7rem);overflow:auto;scrollbar-width:thin}
+.ed-contact-panel{min-width:0}
+.ed-contact-panel>.ed-learner{margin:0}
+.ed-contact-panel>[hidden]{display:none}
+.ed-learner-cases{background:#faf8fd;border:1px solid var(--line);border-radius:10px;padding:.85rem}
+.ed-learner-cases h3{margin:0 0 .4rem}
+.ed-learner-cases>p{font-size:.85rem;color:var(--muted);margin:0 0 1rem}
+.ed-case-group h4{display:flex;justify-content:space-between;gap:.5rem;font-size:.9rem;margin:1rem 0 .5rem;overflow-wrap:anywhere}
+.ed-case-group h4>span{background:#ede6f7;border-radius:12px;padding:0 .5rem}
+.ed-case-group ul{list-style:none;margin:0;padding:0;display:grid;gap:.4rem}
+.kbc-portals .workspace-app .ec .ed-case-group button{display:block;width:100%;text-align:left;white-space:normal;padding:.65rem .75rem}
+.kbc-portals .workspace-app .ec .ed-case-group button[aria-pressed=true]{background:#eee7f7;border-color:var(--purple);box-shadow:inset 3px 0 var(--purple)}
+.ed-case-group button>span,.ed-case-group button>small{display:block;font-size:.8rem}
+.ed-case-group button>.ed-case-list-title{font-weight:700;font-size:.85rem}
+.ed-case-group button>small{color:var(--muted)}
+.kbc-portals .workspace-app .ec button.ed-all-cases{margin-top:.45rem;color:var(--purple);background:#f2edf9;font-weight:600}
+@media(max-width:800px){.ed-contact-workspace{grid-template-columns:1fr}.ed-contact-workspace>aside{position:static;max-height:280px}.ed-contact-panel>.ed-learner{padding:.85rem}}
 .ed .ed-dialog-content>.ed-learner{margin:0}
 .ed-date-filter{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;flex:0 1 auto}
 .ed-date-filter label{display:flex;align-items:center;gap:.4rem;font-size:.85rem}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { post } from '../api';
-import { ZOOM_EMBED_URL, ZOOM_ORIGIN, attachPhone } from './smartEmbed';
+import { ZOOM_EMBED_URL, ZOOM_ORIGIN, attachPhone, markPhoneReady } from './smartEmbed';
 
 type Props = { csrf: string; notify: (message: string, error?: boolean) => void; onCallLogged: () => void };
 
@@ -13,13 +13,32 @@ export default function SmartEmbedPhone({ csrf, notify, onCallLogged }: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [open, setOpen] = useState(false);
   const timers = useRef<number[]>([]);
+  const dialTimer = useRef<number | undefined>(undefined);
+  const pendingDial = useRef<{ number: string; desktopUrl?: string } | null>(null);
+  const [unconfirmed, setUnconfirmed] = useState<{ desktopUrl?: string } | null>(null);
   // The latest callbacks, without re-adding the message listener on every render.
   const latest = useRef({ csrf, notify, onCallLogged });
   latest.current = { csrf, notify, onCallLogged };
 
   useEffect(() => {
-    if (frame.current) attachPhone({ frame: frame.current, show: () => setOpen(true) });
-    return () => attachPhone(null);
+    if (frame.current) attachPhone({
+      frame: frame.current, show: () => setOpen(true),
+      onDial: (number, desktopUrl) => {
+        window.clearTimeout(dialTimer.current);
+        setUnconfirmed(null);
+        pendingDial.current = { number, desktopUrl };
+        // Lack of an event does not prove failure. Offer a manual route, never auto-redial.
+        dialTimer.current = window.setTimeout(() => {
+          setUnconfirmed({ desktopUrl });
+          setOpen(true);
+          latest.current.notify('Zoom has not confirmed that the call started. Check the Phone panel.', true);
+        }, 12000);
+      },
+    });
+    return () => {
+      attachPhone(null);
+      window.clearTimeout(dialTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -34,8 +53,22 @@ export default function SmartEmbedPhone({ csrf, notify, onCallLogged }: Props) {
     function receive(event: MessageEvent) {
       if (event.origin !== ZOOM_ORIGIN || event.source !== frame.current?.contentWindow) return;
       const type = (event.data as { type?: string } | null)?.type;
+      if (type === 'zp-ready') {
+        configure();
+        markPhoneReady();
+        return;
+      }
       const direction = (event.data as { data?: { direction?: string } } | null)?.data?.direction;
       if (direction && direction !== 'outbound') return;
+      const callee = (event.data as { data?: { callee?: { phoneNumber?: string } } } | null)?.data?.callee?.phoneNumber;
+      const digits = (value: string) => value.replace(/\D/g, '');
+      if (direction === 'outbound' && typeof callee === 'string' && pendingDial.current
+        && digits(callee) === digits(pendingDial.current.number)
+        && ['zp-call-ringing-event', 'zp-call-connected-event', 'zp-call-ended-event'].includes(type || '')) {
+        window.clearTimeout(dialTimer.current);
+        pendingDial.current = null;
+        setUnconfirmed(null);
+      }
       if (type === 'zp-call-connected-event') latest.current.notify('Connected. Record what was agreed when the call ends.');
       else if (type === 'zp-call-ended-event') ended();
     }
@@ -59,10 +92,20 @@ export default function SmartEmbedPhone({ csrf, notify, onCallLogged }: Props) {
 
   return (
     <div className={`ec-phone-dock${open ? ' is-open' : ''}`}>
+      {open && unconfirmed && (
+        <div role="alert" style={{ width: 360, maxWidth: '100%', padding: 12, background: '#fff8e8', border: '1px solid #d8b36a', borderRadius: 8 }}>
+          <strong>Call start not confirmed</strong>
+          <p>Check that Zoom desktop and this Phone panel use the same account, allow call control, and that the selected caller ID is available.</p>
+          {unconfirmed.desktopUrl?.startsWith('zoomphonecall://') && (
+            <p>If no call is ringing or connected, <a href={unconfirmed.desktopUrl}>open this call in Zoom desktop</a>.</p>
+          )}
+          <button type="button" onClick={() => setUnconfirmed(null)}>Dismiss</button>
+        </div>
+      )}
       <div className="ec-phone-panel" aria-hidden={!open}>
         <iframe
           ref={frame} id="zoom-embeddable-phone-iframe" title="Zoom Phone" src={ZOOM_EMBED_URL}
-          allow={`clipboard-read; clipboard-write ${ZOOM_ORIGIN}`} onLoad={configure}
+          allow={`clipboard-read; clipboard-write ${ZOOM_ORIGIN}`}
         />
       </div>
       <button type="button" className="ec-phone-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { Overview, OverviewCase } from '../../src/pages/call-centre/api';
 import { matchesTicketDate, orderTickets } from '../../src/pages/call-centre/engagement/ticketOrder';
+import { contactKey } from '../../src/pages/call-centre/engagement/model';
 
 function ticket(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
   return {
@@ -64,7 +65,8 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
     if (detail) {
       const selected = cases.find(c => c.id === Number(detail[1]));
       return json({ ticket: { ...selected, source_data: {}, priority_why: '' },
-        issues: [], calls: [], events: [], emails: [], has_more_events: false });
+        issues: cases.filter(c => selected && c.status !== 'resolved' && contactKey(c) === contactKey(selected)),
+        calls: [], events: [], emails: [], has_more_events: false });
     }
     if (url.pathname === '/api/auth/access/') return json({ id: 1, email: 'operator@example.org', access: {}, groups: [] });
     return json({});
@@ -77,6 +79,158 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
 }
 
 const rowIds = (page: Page) => page.locator('[data-sheet-row]').evaluateAll(rows => rows.map(row => Number(row.getAttribute('data-sheet-row'))));
+
+test('coach, cohort and module combine before contact grouping and preserve hidden drafts', async ({ page }) => {
+  const fields = (coach: string, cohort: string, module: string): Partial<OverviewCase> => ({
+    coach, module, filter_contexts: [{ coach, cohort, module }],
+  });
+  const cases = Array.from({ length: 25 }, (_, index) =>
+    ticket(index + 1, fields('Coach A', 'Cohort 1', 'Marketing')));
+  cases.push(ticket(30, { ...fields('Coach B', 'Cohort 2', 'Finance'),
+    learner_email: 'learner1@example.org', learner_name: 'Learner 1' }));
+  cases.push(ticket(31, fields('Coach B', 'Cohort 1', 'Finance')));
+  cases.push(ticket(32, fields('', '', '')));
+  const writes = await openSheet(page, cases);
+  await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Keep these notes on the Marketing ticket.');
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach B' });
+  expect(await rowIds(page)).toEqual([30, 31]);
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 2' });
+  await page.getByLabel('Filter by module', { exact: true }).selectOption({ label: 'Finance' });
+  expect(await rowIds(page)).toEqual([30]);
+  await page.getByLabel('Search the call sheet').fill('nobody');
+  expect(await rowIds(page)).toEqual([]);
+  await page.getByLabel('Search the call sheet').fill('');
+  await page.getByLabel('Filter by module', { exact: true }).selectOption({ label: 'Marketing' });
+  expect(await rowIds(page)).toEqual([]);
+  await page.getByRole('button', { name: 'Clear coach / cohort / module', exact: true }).click();
+  await expect(page.locator('[data-sheet-row="1"] textarea')).toHaveValue('Keep these notes on the Marketing ticket.');
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Not recorded' });
+  expect(await rowIds(page)).toEqual([32]);
+  expect(writes.filter(path => path.startsWith('/api/callcentre/'))).toEqual([]);
+});
+
+for (const [section, source] of [
+  ['due', 'pr'], ['nextday', 'reminder'], ['learner_satisfaction', 'learner_satisfaction'],
+  ['employer_satisfaction', 'employer_feedback'], ['manager', 'manual'], ['tech', 'tech_support'],
+]) {
+  test(`${section} supports coach, cohort and module filters`, async ({ page }) => {
+    await openSheet(page, [
+      ticket(1, { source_type: source, booking_at: '2026-10-21T10:00:00Z',
+        filter_contexts: [{ coach: 'Coach A', cohort: 'Cohort 1', module: 'Module A' }] }),
+      ticket(2, { source_type: source, booking_at: '2026-10-21T10:00:00Z',
+        filter_contexts: [{ coach: 'Coach B', cohort: 'Cohort 2', module: 'Module B' }] }),
+    ], section);
+    await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach B' });
+    await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 2' });
+    await page.getByLabel('Filter by module', { exact: true }).selectOption({ label: 'Module B' });
+    expect(await rowIds(page)).toEqual([2]);
+  });
+}
+
+test('employer filters must match the same learner', async ({ page }) => {
+  await openSheet(page, [
+    ticket(1, { source_type: 'employer_feedback', filter_contexts: [
+      { coach: 'Coach A', cohort: 'Cohort 1', module: '' },
+      { coach: 'Coach B', cohort: 'Cohort 2', module: '' },
+    ] }),
+  ], 'employer_satisfaction');
+  await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach A' });
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 2' });
+  expect(await rowIds(page)).toEqual([]);
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 1' });
+  expect(await rowIds(page)).toEqual([1]);
+});
+
+test('Next call and Follow-ups use the same filters and can recover from an empty result', async ({ page }) => {
+  await openSheet(page, [
+    ticket(1, { learner_phone: '+447700900001',
+      filter_contexts: [{ coach: 'Coach A', cohort: 'Cohort 1', module: 'Marketing' }] }),
+    ticket(2, { learner_phone: '+447700900002',
+      filter_contexts: [{ coach: 'Coach B', cohort: 'Cohort 2', module: 'Finance' }] }),
+  ]);
+  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await expect(page.locator('.ed-next-name')).toBeVisible();
+  await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach B' });
+  await expect(page.locator('.ed-next-name')).toHaveText('Learner 2');
+  await page.getByLabel('Filter by module', { exact: true }).selectOption({ label: 'Marketing' });
+  await expect(page.getByRole('heading', { name: 'Nobody else to call right now', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear coach / cohort / module', exact: true }).click();
+  await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
+  await page.getByRole('button', { name: 'Follow-ups', exact: true }).click();
+  await expect(page.locator('.ed-person').first()).toBeVisible();
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 2' });
+  await expect(page.locator('.ed-person')).toHaveCount(1);
+  await expect(page.locator('.ed-person')).toContainText('Learner 2');
+});
+
+test('one learner opens lectures, MCM, PR and other cases across filters without losing drafts', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const person = { learner_email: 'same@example.org', learner_name: 'Same Learner', learner_phone: '+447700900123' };
+  const cases = [
+    ticket(1, { ...person, issue_name: 'Risk management' }),
+    ticket(2, { ...person, issue_name: 'Risk management', issue_date: '2026-09-01' }),
+    ticket(3, { ...person, source_type: 'mcm', issue_name: 'Monthly coaching', issue_date: '2026-10-01' }),
+    ticket(4, { ...person, source_type: 'pr', issue_name: 'Progress review', issue_date: '2026-10-05' }),
+    ticket(5, { ...person, source_type: 'epa', issue_name: 'EPA preparation' }),
+    ticket(6, { ...person, source_type: 'employer_feedback', learner_name: 'Same person as employer' }),
+    ticket(7, { learner_name: 'Another learner' }),
+  ];
+  const writes = await openSheet(page, cases);
+  await page.getByLabel('Date filter', { exact: true }).selectOption('day');
+  await page.getByLabel('Ticket date', { exact: true }).fill('2026-09-15');
+  const row = page.locator('[data-sheet-row="1"]');
+  await row.getByRole('button', { name: 'All cases (5)', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Full case', exact: true });
+  const list = modal.getByRole('region', { name: 'All cases for this contact' });
+  await expect(list.getByRole('heading', { name: 'All cases (5)', exact: true })).toBeVisible();
+  await expect(list.locator('[data-contact-case]')).toHaveCount(5);
+  await expect(list).toContainText('Lectures · Risk management');
+  await expect(list).toContainText('Monthly coaching (MCM)');
+  await expect(list).toContainText('Progress reviews (PR)');
+  await expect(list.locator('[data-contact-case="2"]')).toContainText('1 Sept 2026');
+  await expect(list.locator('[data-contact-case="6"]')).toHaveCount(0);
+  await expect(list.locator('[data-contact-case="7"]')).toHaveCount(0);
+  const note = modal.getByRole('textbox', { name: 'Outcome and agreed action', exact: true });
+  await note.fill('Discuss every missed lecture during this single conversation.');
+  await list.locator('[data-contact-case="3"]').click();
+  await note.fill('Monthly coaching needs a separate agreed action.');
+  await list.locator('[data-contact-case="4"]').click();
+  await expect(modal.getByText('Review due: 5 Oct 2026', { exact: true })).toBeVisible();
+  await list.locator('[data-contact-case="1"]').click();
+  await expect(note).toHaveValue('Discuss every missed lecture during this single conversation.');
+  await list.locator('[data-contact-case="3"]').click();
+  await expect(note).toHaveValue('Monthly coaching needs a separate agreed action.');
+  await page.screenshot({ path: test.info().outputPath('all-learner-cases.png') });
+  // One dial request covers the learner; switching cases must not place another call.
+  await modal.getByRole('button', { name: 'Call learner', exact: true }).click();
+  await list.locator('[data-contact-case="4"]').click();
+  expect(writes.filter(path => path.endsWith('/call/'))).toEqual(['/api/callcentre/tickets/3/call/']);
+  await modal.getByRole('button', { name: 'Close full case', exact: true }).click();
+  await expect(page.getByLabel('Ticket date', { exact: true })).toHaveValue('2026-09-15');
+  await page.getByRole('button', { name: 'Due (1)', exact: true }).click();
+  await expect(page.locator('[data-sheet-row]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'All cases (5)', exact: true }).click();
+  await expect(page.locator('[data-contact-case]')).toHaveCount(5);
+});
+
+test('all cases includes server-only issues and fits a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 600, height: 900 });
+  const first = ticket(1);
+  const extra = ticket(2, { learner_email: first.learner_email, source_type: 'mcm', issue_name: 'Monthly coaching' });
+  await openSheet(page, [first]);
+  await page.route('**/api/callcentre/tickets/1/', route => route.fulfill({ json: {
+    ticket: { ...first, source_data: {}, priority_why: '' }, issues: [first, extra],
+    calls: [], events: [], emails: [], has_more_events: false,
+  } }));
+  await page.getByRole('button', { name: 'All cases (1)', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Full case', exact: true });
+  await expect(modal.locator('[data-contact-case]')).toHaveCount(2);
+  await expect(modal.locator('[data-contact-case="2"]')).toContainText('Monthly coaching');
+  expect(await modal.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await expect(modal.getByRole('button', { name: 'Close full case', exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('all-cases-mobile.png') });
+});
 
 test.describe('London times on a Cairo computer', () => {
   test.use({ timezoneId: 'Africa/Cairo' });
@@ -114,7 +268,8 @@ test('oldest/newest uses issue dates, chooses the matching ticket per contact, a
     ticket(3, { issue_date: '2026-09-30', source_type: 'pr_missed', issue_name: 'Progress review' }),
     ticket(4, { learner_email: 'learner1@example.org', learner_name: 'Learner 1', issue_date: '2026-09-01' }),
   ]);
-  expect(await rowIds(page)).toEqual([1, 2, 3]);
+  await expect(page.getByLabel('Ticket order', { exact: true })).toHaveValue('newest');
+  expect(await rowIds(page)).toEqual([3, 1, 2]);
   await page.getByLabel('Ticket order', { exact: true }).selectOption('oldest');
   expect(await rowIds(page)).toEqual([4, 2, 3]);
   await expect(page.locator('.ed-sheet-count')).toContainText('Oldest first');
@@ -232,6 +387,7 @@ for (const section of ['missed', 'due']) {
       issue_date: `2026-09-${String(index % 28 + 1).padStart(2, '0')}`,
     }));
     await openSheet(page, cases, section);
+    await page.getByLabel('Ticket order', { exact: true }).selectOption('priority');
     await expect(page.locator('[data-sheet-row]')).toHaveCount(20);
     await expect(page.getByRole('button', { name: 'Previous page', exact: true })).toBeDisabled();
     await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Keep the agreed follow-up while moving between pages.');
@@ -324,6 +480,7 @@ for (const section of ['missed', 'due']) {
       issue_date: index === 0 ? '2026-09-10' : index >= 20 && index <= 22 ? `2026-09-${index - 9}` : '2026-09-01',
     }));
     const writes = await openSheet(page, cases, section);
+    await page.getByLabel('Ticket order', { exact: true }).selectOption('priority');
     await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Keep this note when filtering by date.');
     await page.getByRole('button', { name: 'Next page', exact: true }).click();
     await page.getByLabel('Date filter', { exact: true }).selectOption('day');
@@ -357,6 +514,7 @@ test('day filtering selects a matching secondary ticket and uses UK dates for th
     ticket(3, { issue_date: null, created_at: '2026-09-10T23:30:00Z' }),
     ticket(4, { issue_date: null, created_at: '' }),
   ]);
+  await page.getByLabel('Ticket order', { exact: true }).selectOption('priority');
   await page.getByLabel('Date filter', { exact: true }).selectOption('day');
   await page.getByLabel('Ticket date', { exact: true }).fill('2026-09-11');
   expect(await rowIds(page)).toEqual([2, 3]);

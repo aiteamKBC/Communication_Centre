@@ -12,7 +12,7 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import connections
-from django.db.models import ProtectedError
+from django.db.models import ProtectedError, Q
 from django.test import TestCase
 from django.utils import timezone
 
@@ -30,7 +30,8 @@ class CallFlowTests(TestCase):
 
     def setUp(self):
         patches = [mock.patch('callcentre.services.allocated_owner', return_value=None),
-                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset())]
+                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()),
+                   mock.patch('callcentre.sources.active_case_contacts', return_value=Q())]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -191,7 +192,8 @@ class AgentRemovalTests(TestCase):
 
     def setUp(self):
         patches = [mock.patch('callcentre.sources.cached_directory', return_value=Directory()),
-                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset())]
+                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()),
+                   mock.patch('callcentre.sources.active_case_contacts', return_value=Q())]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)

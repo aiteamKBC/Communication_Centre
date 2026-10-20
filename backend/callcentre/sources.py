@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from django.db import DatabaseError, connections, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from . import aptem_summaries as summaries
@@ -136,8 +137,25 @@ def cached_directory():
 
 
 def on_break_emails():
-    """Emails of learners the LMS has on a break."""
+    """Emails of learners either source has on a break."""
     return cached_directory().on_break
+
+
+def active_case_contacts():
+    """Allow current active learners and employers with at least one active learner.
+
+    This is evaluated when queues are read, independently of old case snapshots
+    and whether the background worker has reconciled eligibility yet.
+    """
+    from .learner_satisfaction import eligible, employer_contacts
+    people = cached_directory()
+    identities = {identifier for person in people.satisfaction if eligible(person)
+                  for identifier in person['identifiers'] if not identifier.startswith('email:')}
+    learners_scope = Q(learner_email__in=people.active) | (
+        Q(learner_email='') & (Q(source_data__person_id__in=identities)
+                              | Q(source_data__identifiers__0__in=identities)))
+    return ((~Q(source_type='employer_feedback') & learners_scope)
+            | Q(source_type='employer_feedback', learner_email__in=list(employer_contacts(people))))
 
 
 def coach_email(name):
@@ -588,7 +606,7 @@ def load_bookings(people):
 
 
 def program_is_paused(person):
-    return learners.program_status(person['programme_status']) in ('break', 'withdrawn', 'completed')
+    return learners.program_status(person['programme_status']) != 'active'
 
 
 def generate_reminders(people, bookings):

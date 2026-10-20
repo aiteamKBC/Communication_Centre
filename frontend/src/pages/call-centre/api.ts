@@ -8,6 +8,8 @@ import { csrfToken as cookieCsrfToken } from '../../utils/apiSession';
 export type Case = {
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
   issue_name: string; issue_date: string | null;
+  module?: string;
+  filter_contexts?: { coach: string; cohort: string; module: string }[];
   missed_lecture?: {
     module: string; title: string; date: string | null;
     starts_at: string | null; ends_at: string | null;
@@ -42,7 +44,8 @@ export type Case = {
   booking_email: boolean;
 };
 
-export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>;
+export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>
+  & Partial<Pick<Case, 'created_at' | 'booking_at' | 'next_followup_at'>>;
 
 /** A case as listed by overview/ (no source_data). */
 export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null; contact_sources?: Record<string, string> };

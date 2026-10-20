@@ -10,9 +10,10 @@ import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
+import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { matchesTicketDate, orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
 import type { CallTab } from './model';
-import { ISSUE_LABELS, QUICK_FOLLOW_UPS, bookingHint, closesCase, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, QUICK_FOLLOW_UPS, activeCase, bookingHint, closesCase, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 const PAGE_SIZE = 20;
@@ -27,8 +28,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [dialling, setDialling] = useState<number | null>(null);
   const [search, setSearch] = useState('');
+  const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [reason, setReason] = useState('all');
-  const [order, setOrder] = useState<TicketOrder>('priority');
+  const [order, setOrder] = useState<TicketOrder>('newest');
   const [dateMode, setDateMode] = useState<'all' | 'day' | 'range'>('all');
   const [selectedDay, setSelectedDay] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -46,8 +48,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const eligible = useMemo(() => categoryCases(overview.cases, tab.key, overview.today, overview.next_workday), [overview, tab.key]);
   const matching = useMemo(() => orderTickets(eligible.filter(c =>
     (reason === 'all' || c.source_type === reason) && (scope !== 'due' || dueForCall(c)) && matchesSearch(c, search)
-    && matchesTicketDate(c, from, to),
-  ), order), [eligible, reason, scope, search, order, from, to]);
+    && matchesTicketDate(c, from, to) && matchesCaseFilters(c, caseFilters),
+  ), order), [eligible, reason, scope, search, order, from, to, caseFilters]);
   const ticketsByContact = useMemo(() => {
     const grouped = new Map<string, OverviewCase[]>();
     for (const c of matching) {
@@ -58,6 +60,14 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     }
     return grouped;
   }, [matching]);
+  const allCasesByContact = useMemo(() => {
+    const grouped = new Map<string, OverviewCase[]>();
+    for (const c of overview.cases.filter(activeCase)) {
+      const key = contactKey(c);
+      grouped.set(key, [...(grouped.get(key) || []), c]);
+    }
+    return grouped;
+  }, [overview.cases]);
   const rows = useMemo(() => {
     const chosen = new Map<string, OverviewCase>();
     for (const c of matching) {
@@ -74,9 +84,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const visibleRows = rows.slice(firstRow, firstRow + PAGE_SIZE);
   const unsavedCount = [...drafts.values()].filter(draft => draft.dirty).length;
 
-  useEffect(() => { setPage(1); }, [reason, scope, search, order, from, to, tab.key]);
+  useEffect(() => { setPage(1); }, [reason, scope, search, order, from, to, tab.key, caseFilters]);
   useEffect(() => { setPage(value => Math.min(value, pageCount)); }, [pageCount]);
-  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); }, [currentPage, reason, scope, search, order, from, to]);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); }, [currentPage, reason, scope, search, order, from, to, caseFilters]);
 
   const update = (c: OverviewCase, field: 'outcome' | 'notes' | 'next_contact', value: string) => setDrafts(current => {
     const next = new Map(current);
@@ -184,6 +194,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
           }}>Clear dates</button>}
         </div>
       </div>
+      <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
       {invalidDateRange && <p className="ed-sheet-hint" id="ed-date-error" role="alert">The end date must be on or after the start date.</p>}
       <p className="ed-sheet-hint" id="ed-ticket-order-help">
         Date filters and oldest / newest use the issue date, then the appointment date or ticket opened date if unavailable.
@@ -215,6 +226,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <th scope="row">
                       <strong>{c.learner_name}</strong>
                       <span>{c.learner_phone || 'No phone recorded'}</span>
+                      {!employer && <button type="button" className="ed-all-cases" onClick={() => onOpen(c.id)}>
+                        All cases ({allCasesByContact.get(contactKey(c))?.length || 1}{overview.cases_truncated ? '+' : ''})
+                      </button>}
                       {!employer && c.source_type !== 'tech_support' && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
                       {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
                       {employer ? (

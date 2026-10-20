@@ -144,11 +144,11 @@ def create_intent(ticket_id, agent, actor=None):
     # Claim every active issue included in the intent, or roll back the entire operation.
     candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
     person_id = ticket.source_data.get('person_id')
-    if person_id:
+    if person_id and ticket.source_type != 'employer_feedback':
         same_person = Q(source_data__person_id=person_id)
         if ticket.learner_email:
             same_person |= same_contact(ticket)
-        candidates = candidates.filter(same_person)
+        candidates = candidates.exclude(source_type='employer_feedback').filter(same_person)
     else:
         candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
     # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise

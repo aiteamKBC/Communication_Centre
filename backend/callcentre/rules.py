@@ -36,10 +36,11 @@ def missed_lectures_ready_until(today):
 
 def out_of_scope():
     """Open cases the call centre does not work on now. They stay in the database, untouched."""
-    from .sources import on_break_emails   # sources imports this module
+    from .sources import active_case_contacts, on_break_emails   # sources imports this module
     today = datetime.now(LONDON).date()
     ready = missed_lectures_ready_until(today)
     return (Q(source_type__in=PAUSED_CATEGORIES)
+            | ~active_case_contacts()
             # Set aside by the cycle while its source no longer reports the issue (sources.set_eligible).
             | Q(source_data__has_key='eligible', source_data__eligible=False)
             # A reminder is for the next working day's appointment; once that day is today or past, the call is moot.

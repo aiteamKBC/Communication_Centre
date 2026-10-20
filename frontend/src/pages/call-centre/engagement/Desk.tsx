@@ -5,8 +5,10 @@ import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
 import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
+import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import Dialog from './Dialog';
 import LearnerPanel from './LearnerPanel';
+import LearnerWorkspace from './LearnerWorkspace';
 import NextCall from './NextCall';
 import MonthlyHistory from './MonthlyHistory';
 import {
@@ -46,6 +48,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
   const [current, setCurrent] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
+  const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [issue, setIssue] = useState('all');
   const [focus, setFocus] = useState(false);
   const [advance, setAdvance] = useState(true);
@@ -59,7 +62,8 @@ export default function Desk({ overview, agent, session, section, name, status, 
 
   const active = useMemo(() => overview.cases.filter(activeCase), [overview.cases]);
   const queue = useMemo(() => uniqueLearners(active.filter(c => (issue === 'all' || c.source_type === issue)
-    && !touched.has(contactKey(c)) && matchesSearch(c, search))), [active, issue, touched, search]);
+    && !touched.has(contactKey(c)) && matchesSearch(c, search) && matchesCaseFilters(c, caseFilters))),
+  [active, issue, touched, search, caseFilters]);
   const currentCase = overview.cases.find(c => c.id === current);
 
   function open(id: number) {
@@ -185,6 +189,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
         )}
         <div className="ed-desk">
           <aside className="ed-queue ec-card">
+            <CaseFilters cases={active} value={caseFilters} onChange={setCaseFilters} />
             <div className="ed-filters">
               <input type="search" aria-label="Find a learner" placeholder="Find a learner…" value={search} onChange={event => setSearch(event.target.value)} />
               <select aria-label="Reason for calling" value={issue} onChange={event => setIssue(event.target.value)}>
@@ -259,8 +264,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
       {body}
       <Dialog open={detailId !== null} onClose={() => setDetailId(null)} title="Full case"
         className="ed-case-dialog" preservePosition>
-        {detailId !== null && <LearnerPanel key={detailId} id={detailId} hidden={false} overview={overview} session={session}
-          onOpen={setDetailId} onNext={() => setDetailId(null)} hasNext={false}
+        {detailId !== null && <LearnerWorkspace key={detailId} id={detailId} overview={overview} session={session}
           onSaved={message => { notify(message); onRefresh(); }} notify={notify} onRefresh={onRefresh} />}
       </Dialog>
     </>

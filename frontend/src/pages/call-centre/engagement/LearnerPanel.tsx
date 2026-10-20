@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Overview } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
@@ -9,6 +9,7 @@ import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
+import LearnerCases from './LearnerCases';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
 import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
@@ -20,15 +21,17 @@ type Props = {
   onSaved: (message: string) => void; notify: (message: string, error?: boolean) => void;
   /** Reloads the desk's case list (a booking can close a case). */
   onRefresh?: () => void;
+  showRelated?: boolean;
 };
 
 /** One learner's call workspace inside the operator desk. */
-export default function LearnerPanel({ id, overview, session, hidden, onOpen, onNext, hasNext, onSaved, notify, onRefresh }: Props) {
+export default function LearnerPanel({ id, overview, session, hidden, onOpen, onNext, hasNext, onSaved, notify, onRefresh, showRelated = true }: Props) {
   const { detail, error, refresh } = useCase(id);
   const [recording, setRecording] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [bookingEmailOpen, setBookingEmailOpen] = useState(false);
+  useEffect(() => { if (!hidden) refresh(); }, [hidden, overview.generated_at, refresh]);
 
   if (error) return <article className="ec-card ed-learner" hidden={hidden}><p role="alert">{error}</p></article>;
   if (!detail) return <article className="ec-card ed-learner" hidden={hidden}><p role="status">Loading the learner’s workspace…</p></article>;
@@ -52,6 +55,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       await caseAction(session, c.id, 'call');
       notify('Zoom Phone opened. Record the outcome once Zoom reports the call.');
       refresh();
+      onRefresh?.();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
     } finally {
@@ -71,6 +75,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         </div>
         <span className="ec-tag">{human(c.status)}</span>
       </div>
+      {showRelated && !!related.length && <LearnerCases cases={[c, ...related]} selected={c.id} onOpen={onOpen} />}
       <div className="ed-phone-line"><strong>{c.learner_phone || 'Phone number not recorded'}</strong>{!employer && <span>Coach: {c.coach || 'Not recorded'}</span>}</div>
       {employer && <p className="ec-muted">Learners: {c.employer_learners?.map(l => l.name).join(', ') || 'None in the directory'}</p>}
       <p className="ed-purpose">{casePurpose(c)}</p>
@@ -100,12 +105,6 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
             .map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
         </dl>
         {lastCall ? <><h3>Last call</h3><p>{longDate(lastCall.started_at)} · {human(lastCall.result)}{lastCall.outcome ? ` · ${human(lastCall.outcome)}` : ''}</p></> : <p className="ec-muted">No verified call yet.</p>}
-        {!!related.length && (
-          <>
-            <h3>Other open issues</h3>
-            {related.map(issue => <button key={issue.id} type="button" onClick={() => onOpen(issue.id)}>{issueLabel(issue)}</button>)}
-          </>
-        )}
       </details>
 
       {epa && (

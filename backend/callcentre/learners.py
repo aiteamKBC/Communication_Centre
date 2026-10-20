@@ -9,8 +9,8 @@ Field rules: name, programme and organisation come from the LMS first; the learn
 from Aptem first; line-manager details come from Aptem. The coach follows ``pick_coach``, from
 ``enrolment`` only (never ``"Learner".learners``) with Aptem as the last resort.
 
-Learners the LMS has on a break in learning are left out entirely (Aptem cannot add them back);
-their emails are kept in ``Learners.on_break`` so their open cases can be hidden too.
+Only learners confirmed active are included in the calling directory. A non-active
+status in either source takes precedence over Active in the other source.
 """
 from functools import cached_property
 
@@ -31,6 +31,14 @@ def program_status(raw):
     if normalized in ACTIVE_STATUSES:
         return 'active'
     return normalized
+
+
+def calling_status(lms_status, aptem_status):
+    """Retain source provenance; a known non-active status wins over Active."""
+    supplied = [(str(value).strip(), source) for value, source in (
+        (lms_status or '', 'lms'), (aptem_status or '', 'aptem')) if str(value).strip()]
+    return next((item for item in supplied if program_status(item[0]) != 'active'),
+                supplied[0] if supplied else ('', ''))
 
 
 # Owner names that are not a coach: a learner showing one of these needs the next source.
@@ -78,7 +86,8 @@ class Learners(dict):
     rows recorded under the Aptem email still find the learner. ``cohorts`` holds each LMS
     learner's cohort and group, kept apart from the profile because profiles are copied onto cases;
     ``coach_emails`` maps each coach name (casefolded) to its email where only one email is known;
-    ``active`` holds every email of the learners the LMS has as Active or Delivery.
+    ``active`` holds every email of confirmed Active/Delivery learners, with no
+    conflicting non-active status in either source.
     ``manager_phones`` maps each line-manager (employer) email to the one phone Aptem gives them,
     left out when their rows disagree.
     """
@@ -153,9 +162,9 @@ def satisfaction_person(profile, lms=None, aptem=None):
         identifiers.append('lms:' + str(lms['id']))
     identifiers.extend('email:' + email for email in sorted({
         email_key(profile.get('learner_email')), email_key(aptem.get('Email'))} - {''}))
+    status, source = calling_status(lms.get('Programme_status'), aptem.get('Program-Status'))
     return {'profile': profile, 'identifiers': identifiers,
-            'programme_status': _text(lms.get('Programme_status')) or _text(aptem.get('Program-Status')),
-            'status_source': 'lms' if _text(lms.get('Programme_status')) else 'aptem'}
+            'programme_status': status, 'status_source': source}
 
 
 def merge(lms_rows, aptem_rows, staff_rows=()):
@@ -170,19 +179,23 @@ def merge(lms_rows, aptem_rows, staff_rows=()):
         return name
 
     aptem_by_email = _unique_by_email(aptem_rows, 'Email')
-    aptem_by_id = {str(row['ID']): row for row in aptem_by_email.values() if row.get('ID') is not None}
+    aptem_ids = {}
+    for row in aptem_rows:
+        if row.get('ID') is not None:
+            aptem_ids.setdefault(_text(row['ID']), []).append(row)
+    aptem_by_id = {key: rows[0] for key, rows in aptem_ids.items() if len(rows) == 1}
     lms_by_email = _unique_by_email(
         [row for row in lms_rows if _text(row.get('Programme_status')).lower() not in SKIPPED_LMS_STATUSES], 'Email')
 
-    profiles, aliases, used, cohorts, on_break, active = {}, {}, set(), {}, set(), set()
+    profiles, aliases, used, cohorts, on_break = {}, {}, set(), {}, set()
     satisfaction = []
     for email, row in lms_by_email.items():
-        if program_status(row.get('Programme_status')) == 'break':
-            aptem = aptem_by_id.get(_text(row.get('aptem_id'))) or aptem_by_email.get(email)
-            on_break.update({email, email_key(aptem['Email'])} if aptem else {email})
+        aptem = aptem_by_id.get(_text(row.get('aptem_id'))) or aptem_by_email.get(email)
+        status, _ = calling_status(row.get('Programme_status'), (aptem or {}).get('Program-Status'))
+        if program_status(status) == 'break':
+            on_break.update(({email, email_key(aptem['Email'])} if aptem else {email}) - {''})
             continue
         cohorts[email] = {'cohort': _text(row.get('Cohort')), 'group': _text(row.get('Group'))}
-        aptem = aptem_by_id.get(_text(row.get('aptem_id'))) or aptem_by_email.get(email)
         fallback = _aptem_profile(aptem) if aptem else {}
         profiles[email] = {
             'learner_email': email,
@@ -195,26 +208,20 @@ def merge(lms_rows, aptem_rows, staff_rows=()):
             'manager_email': fallback.get('manager_email', ''),
         }
         satisfaction.append(satisfaction_person(profiles[email], row, aptem))
-        lms_active = program_status(row.get('Programme_status')) == 'active'
-        if lms_active:
-            active.add(email)
         if aptem:
             aptem_email = email_key(aptem['Email'])
             used.add(aptem_email)
-            if aptem_email != email:
+            if aptem_email and aptem_email != email:
                 aliases[aptem_email] = email
-            if lms_active:
-                active.add(aptem_email)
 
-    # Aptem learners the LMS does not have yet (or no longer lists) keep their cases.
+    # Aptem-only learners still need a positive Active status.
     for email, row in aptem_by_email.items():
         if email not in used and email not in profiles and email not in aliases and email not in on_break:
             profiles[email] = {**_aptem_profile(row), 'coach': coach('', '', '', row['OwnerName'])}
             satisfaction.append(satisfaction_person(profiles[email], aptem=row))
+            if program_status(row.get('Program-Status')) == 'break':
+                on_break.add(email)
     # Contacts without email still have a stable source identity; never invent an email.
-    aptem_ids = {}
-    for row in aptem_rows:
-        aptem_ids.setdefault(_text(row.get('ID')), []).append(row)
     for row in lms_rows:
         if email_key(row.get('Email')) or row.get('id') is None:
             continue
@@ -247,7 +254,15 @@ def merge(lms_rows, aptem_rows, staff_rows=()):
         manager, phone = email_key(row.get('ManagerEmail')), normalize_phone(row.get('Manager Phone'))
         if manager and phone:
             manager_phones.setdefault(manager, set()).add(phone)
-    return Learners(profiles, {alias: email for alias, email in aliases.items() if alias not in profiles}, cohorts,
+    # Keep inactive source identities in satisfaction for reconciliation, but never
+    # expose their profiles to call requests, allocations, reminders or risk imports.
+    active = {identifier[6:] for person in satisfaction if program_status(person['programme_status']) == 'active'
+              for identifier in person['identifiers'] if identifier.startswith('email:')} - on_break
+    profiles = {email: profile for email, profile in profiles.items() if email in active}
+    aliases = {alias: email for alias, email in aliases.items()
+               if alias not in profiles and alias in active and email in profiles}
+    active &= set(profiles) | set(aliases)
+    return Learners(profiles, aliases, cohorts,
                     frozenset(on_break), {name: next(iter(emails)) for name, emails in coaches.items() if len(emails) == 1},
                     frozenset(active), satisfaction=satisfaction,
                     manager_phones={manager: next(iter(phones)) for manager, phones in manager_phones.items() if len(phones) == 1})

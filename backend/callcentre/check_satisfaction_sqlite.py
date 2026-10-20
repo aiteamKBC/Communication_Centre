@@ -4,6 +4,7 @@ Does not import project settings, read .env, or connect to any external database
 """
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from django.db.models import Q
 
 
 def main():
@@ -51,7 +52,8 @@ def main():
             return
         raise AssertionError(f'Expected {expected.__name__}')
 
-    with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]):
+    with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]), \
+            patch('callcentre.sources.active_case_contacts', return_value=Q()):
         assert generate(people)['created'] == 1
         assert generate(people)['created'] == 0
         assert CaseTicket.objects.count() == 1
@@ -172,7 +174,8 @@ def check_employers(user, agent, raises):
                    [aptem(ID=31, Email='a@example.org', FullName='Ann', **boss), aptem(ID=32, Email='b@example.org', FullName='Ben', **boss)])
     employers = CaseTicket.objects.filter(source_type=EMPLOYER)
     checked = 0
-    with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]):
+    with patch('django.utils.timezone.now', return_value=now), patch('callcentre.sources.on_break_emails', return_value=[]), \
+            patch('callcentre.sources.active_case_contacts', return_value=Q()):
         assert generate_employers(people)['created'] == 1
         assert generate_employers(people)['created'] == 0
         ticket = employers.get(manager_email='boss@example.org')

@@ -33,10 +33,10 @@ def next_review_at(completed_at):
 
 
 def eligible(person):
-    # Active (including Delivery, still on the old LMS) and onboarding learners, grouped as the LMS groups them.
+    # Only Active (including Delivery, the LMS's equivalent active state).
     # Explicit confirmations only. Suspected test names are not evidence of a test account.
     confirmed = set(getattr(settings, 'CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', []))
-    return (program_status(person['programme_status']) in {'active', 'onboarding'}
+    return (program_status(person['programme_status']) == 'active'
             and not confirmed.intersection(person['identifiers']))
 
 

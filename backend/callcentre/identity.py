@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from django.conf import settings
 
-from .learners import Learners, SKIPPED_LMS_STATUSES, pick_coach, program_status, staff_emails
+from .learners import Learners, SKIPPED_LMS_STATUSES, calling_status, pick_coach, program_status, staff_emails
 from .rules import email_key, normalize_phone
 
 APTEM_SQL = '''SELECT "ID", "FullName", "Email", "Learner Phone", "OwnerName", "OwnerEmail",
@@ -179,13 +179,13 @@ def build(enrolments, aptem_rows, staff=(), profiles=(), mappings=(), accounts=(
             'programme': text(row.get('Programme')) or text(aptem.get('Program Name')),
             'manager_name': text(aptem.get('ManagerName')) or text(row.get('Line_manager')),
             'manager_email': email_key(aptem.get('ManagerEmail'))}
-        status = text(row.get('Programme_status')) or text(aptem.get('Program-Status'))
+        status, status_source = calling_status(row.get('Programme_status'), aptem.get('Program-Status'))
         person = {'person_id': person_id, 'profile': profile, 'emails': sorted(emails),
                   'source_ids': sorted(source_ids), 'coach_email': coach_email,
                   'manager_phone': normalize_phone(aptem.get('Manager Phone')),
-                  'programme_status': status, 'status_source': 'lms' if row.get('Programme_status') else 'aptem',
+                  'programme_status': status, 'status_source': status_source,
                   'identifiers': sorted(f'{s}:{v}' for s, v in source_ids) + ['email:' + e for e in sorted(emails)],
-                  'provenance': {'status': 'enrolment.Created_users' if row.get('Programme_status') else 'LMS.Aptem_users',
+                  'provenance': {'status': 'enrolment.Created_users' if status_source == 'lms' else 'LMS.Aptem_users',
                                  'email': 'enrolment.Created_users' if email_key(row.get('Email')) == email else 'LMS.Aptem_users',
                                  'phone': 'LMS.Aptem_users' if normalize_phone(aptem.get('Learner Phone')) else 'enrolment.Created_users',
                                  'manager': 'LMS.Aptem_users'},
@@ -241,12 +241,11 @@ def build(enrolments, aptem_rows, staff=(), profiles=(), mappings=(), accounts=(
         person = persons[0]
         result.by_email[email] = person
         main = person['profile']['learner_email']
-        if program_status(person['programme_status']) != 'break' and main and len(mail_claims[main]) == 1:
+        if program_status(person['programme_status']) == 'active' and main and len(mail_claims[main]) == 1:
             result[main] = person['profile']
             if email != main:
                 result.aliases[email] = main
-            if program_status(person['programme_status']) == 'active':
-                result.active = result.active | {email}
+            result.active = result.active | {email}
     result.coach_emails = {k: next(iter(v)) for k, v in coaches.items() if len(v) == 1}
     manager_phones = defaultdict(set)
     for person in result.records.values():
