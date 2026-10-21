@@ -4,6 +4,7 @@ import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
+import BookingPage from './BookingPage';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
@@ -87,6 +88,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
       <div className="ec-buttons">
         <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
         {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
+        {c.status !== 'resolved' && <BookingPage c={c} />}
         {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
         {!employer && c.source_type !== 'tech_support' && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={() => { refresh(); onRefresh?.(); }} />}
         {isSatisfaction(c) && <button type="button"

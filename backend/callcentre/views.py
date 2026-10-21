@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import date, datetime, time, timedelta
 from functools import wraps
@@ -24,7 +25,7 @@ from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
 from .allocation import learner_owner, manager_owners, owners
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
-                            send as send_booking_email)
+                            send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
 from .db import DB
 from .evidence import satisfaction_evidence
@@ -34,9 +35,11 @@ from .call_scope import system_case_calls
 from .history import monthly_history
 from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, holidays_from, missed_call, next_workday,
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
+
+logger = logging.getLogger(__name__)
 
 
 ISSUE_NAMES = {
@@ -273,8 +276,12 @@ def overview(request):
     allocated = owners()
     employers = manager_owners(allocated)
     cases = []
-    for ticket in tickets[:OVERVIEW_CASE_LIMIT]:
+    listed = tickets[:OVERVIEW_CASE_LIMIT]
+    # One contact per person, also when only some of their cases carry the person ID.
+    keys = contact_keys(listed)
+    for ticket in listed:
         item = ticket_json(ticket)
+        item['contact_key'] = keys[ticket.pk]
         item.pop('source_data')
         item.pop('priority_why')
         item['allocated_agent_id'] = (employers.get(ticket.learner_email) if ticket.source_type == 'employer_feedback'
@@ -519,7 +526,7 @@ def booking(request, pk):
 
 
 def booked_response(request, pk, data, agent, booked):
-    """Record a made booking on the case; a booked catch-up closes a missed-lecture case."""
+    """Record a made booking on the case (a booked catch-up closes a missed-lecture case), then email the learner."""
     record = {'session_type': data['session_type'], 'event_key': booked['event_key'], 'start': booked['start'].isoformat(),
               'coach': booked['coach'], 'join_url': booked['join_url'], 'lms_report_id': booked['report_id'],
               'link_warning': booked['link_warning']}
@@ -536,7 +543,15 @@ def booked_response(request, pk, data, agent, booked):
             ticket.source_data = {**ticket.source_data, 'catchup_booking': record}
             close(ticket, agent, 'agent', 'catch_up_session',
                   {'note': 'Catch-up booked in the LMS.', 'booking': record}, actor)
-    return JsonResponse({'booking': record, 'warning': booked['link_warning'] or booked.get('option_warning', '')}, status=201)
+    try:
+        confirmation = send_confirmation(pk, booked, data['session_type'], agent, actor)
+    except Exception:
+        # The booking is made and recorded; a confirmation problem must not report it as failed.
+        logger.exception('Booking confirmation email failed for case %s', pk)
+        confirmation = {'status': 'failed', 'recipient': booked.get('learner_email', ''),
+                        'error': 'Something went wrong while sending it.'}
+    return JsonResponse({'booking': record, 'warning': booked['link_warning'] or booked.get('option_warning', ''),
+                         'confirmation': confirmation}, status=201)
 
 
 @authenticated

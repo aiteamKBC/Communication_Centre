@@ -444,7 +444,8 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
         raise Conflict('Another booking for this learner landed at the same moment. Reload and try again.') from exc
     if not created and row['sync_state'] == 'synced':
         return {'event_key': row['event_key'], 'start': start, 'join_url': row['meeting_link'], 'report_id': None,
-                'link_warning': '', 'coach': row['owner_name'], 'replayed': True}
+                'link_warning': '', 'coach': row['owner_name'], 'learner_name': row['learner_name'],
+                'learner_email': row['learner_email'], 'replayed': True}
     if not created:
         raise Conflict('This booking is still being processed or failed earlier. Close the panel and book again.')
 
@@ -485,4 +486,5 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
     option_warning = graph.apply_meeting_options(row['owner_email'], meeting['join_url'],
                                                  [row['learner_email'], row['owner_email']]) if meeting['join_url'] else ''
     return {'event_key': row['event_key'], 'start': start, 'join_url': meeting['meeting_link'], 'report_id': report_id,
-            'link_warning': link_warning, 'option_warning': option_warning, 'coach': row['owner_name'], 'replayed': False}
+            'link_warning': link_warning, 'option_warning': option_warning, 'coach': row['owner_name'],
+            'learner_name': row['learner_name'], 'learner_email': row['learner_email'], 'replayed': False}

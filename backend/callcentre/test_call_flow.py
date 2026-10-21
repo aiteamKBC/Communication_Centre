@@ -20,7 +20,7 @@ from .allocation import owners
 from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
-                       record_outcome)
+                       plan_outcome, record_outcome)
 from .views import rank, with_last_call
 
 
@@ -75,11 +75,19 @@ class CallFlowTests(TestCase):
 
     # Not answered
 
+    def test_zoom_reporting_an_unanswered_call_does_not_move_the_case(self):
+        ann = self.case('ann', status='in_progress')
+        self.zoom(ann, 'no_answer')
+        ann = self.fresh(ann)
+        # Counted and flagged, but only the specialist's saved outcome moves the case on.
+        self.assertEqual((ann.status, ann.attempts, ann.next_followup_at), ('in_progress', 1, None))
+        self.assertTrue(missed_call(ann))
+
     def test_an_unanswered_learner_waits_for_the_next_working_day_then_comes_back_at_the_bottom(self):
         ann = self.case('ann', risk='red', overdue_since=self.now.date() - timedelta(days=30))
         self.case('ben')
         self.case('cat')
-        self.zoom(ann, 'no_answer')
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'no_answer').pk, 'no_answer')
         ann = self.fresh(ann)
         self.assertEqual((ann.status, ann.attempts, ann.next_followup_at), ('new', 1, self.morning()))
         self.assertTrue(missed_call(ann))
@@ -99,16 +107,31 @@ class CallFlowTests(TestCase):
         ann = self.case('ann')
         self.case('ben')
         self.zoom(ann, 'no_answer', 30)
-        self.zoom(ann, 'answered', 10)
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'answered', 10).pk, 'reached', 'epa_step')
         ann = self.fresh(ann)
         self.assertFalse(missed_call(ann))
-        # Reached with nothing agreed yet: back next working morning, not due before then.
-        self.assertEqual((ann.status, ann.next_followup_at), ('pending_verification', self.morning()))
+        self.assertEqual(ann.status, 'pending_verification')
 
     def test_an_unanswered_satisfaction_review_comes_back_next_working_morning(self):
         ann = self.case('ann', source_type='learner_satisfaction')
-        self.zoom(ann, 'no_answer')
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'no_answer').pk, 'no_answer')
         self.assertEqual(self.fresh(ann).next_followup_at, self.morning())
+
+    def test_no_answer_saved_before_zoom_reports_the_call_is_applied_when_it_does(self):
+        ann = self.case('ann')
+        intent = CallIntent.objects.create(agent=self.agent, learner_email=ann.learner_email, number=ann.learner_phone)
+        intent.tickets.add(ann)
+        self.assertFalse(plan_outcome(ann.pk, self.user, 'no_answer'))
+        self.assertIsNone(self.fresh(ann).next_followup_at)
+        call = ZoomPhoneCall.objects.create(
+            source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()), direction='outbound',
+            started_at=self.now - timedelta(minutes=2), ended_at=self.now - timedelta(minutes=1), result='no_answer')
+        match = CallMatch.objects.create(call=call, agent=self.agent, learner_email=ann.learner_email)
+        CallIntent.objects.filter(pk=intent.pk).update(matched_call=call)
+        CaseCall.objects.create(ticket=ann, match=match)
+        apply_call_result(match)
+        ann = self.fresh(ann)
+        self.assertEqual((ann.status, ann.attempts, ann.next_followup_at), ('new', 1, self.morning()))
 
     def test_a_broken_promise_ranks_with_red_risk_above_everyone_else(self):
         self.case('ben', overdue_since=self.now.date() - timedelta(days=30))

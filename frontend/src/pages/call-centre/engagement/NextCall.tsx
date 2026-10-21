@@ -4,76 +4,71 @@ import { caseAction, callDisabledReason } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
+import BookingPage from './BookingPage';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import TechIssue from './TechIssue';
+import CaseDates from './CaseDates';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
-import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, isSatisfaction, issueLabel, londonWorkdayAt, promiseLabel, shortDate, uniqueLearners } from './model';
+import { orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
+import {
+  QUICK_FOLLOW_UPS, activeCase, appointmentTime, casePurpose, categoryFor, closesCase, contactKey, dueForCall, isSatisfaction,
+  issueLabel, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, shortDate, splitOutcome, uniqueLearners, workdayInput,
+} from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
 
-/** One button per thing that can happen on the call. `done` closes cases with nothing to prove. */
-type Choice = { key: string; label: string; outcome: string; option?: string; note?: boolean; callback?: boolean };
-
-function choicesFor(c: OverviewCase): Choice[] {
-  const agreed: Choice[] = Object.entries(c.promises).map(([option, days]) => ({
-    key: `reached:${option}`, outcome: 'reached', option,
-    label: `${promiseLabel(option)}${days === null ? '' : ` (${days} days)`}`,
-  }));
-  // A satisfaction review is completed with its feedback form, not with an ordinary outcome.
-  const reached: Choice[] = isSatisfaction(c) ? [{ key: 'feedback', outcome: 'feedback', label: 'Complete feedback' }]
-    : agreed.length ? agreed : c.specialist_closes ? [{ key: 'done', outcome: 'done', label: 'Done' }] : [{ key: 'reached', outcome: 'reached', label: 'Spoke to them' }];
-  return [
-    ...reached,
-    { key: 'callback', outcome: 'callback', label: 'Call me back', callback: true },
-    { key: 'wrong_number', outcome: 'wrong_number', label: 'Wrong number', note: true },
-    { key: 'refused', outcome: 'refused', label: 'Refused or problem', note: true },
-  ];
-}
-
+// Outcomes beyond the call sheet's: a case the specialist closes is resolved, a satisfaction review completed in its form.
+const DONE = 'done';
+const FEEDBACK = 'feedback';
 // Marks an issue whose catch-up was booked from Next call (the booking closed its case).
 const BOOKED = 'booked';
 
-const CALLBACKS: [string, () => Date][] = [
-  ['In 2 hours', () => new Date(Date.now() + 2 * 3600000)],
-  // London time, working days only.
-  ['Next working day 10:00', () => londonWorkdayAt(1, 10)],
-  ['In 3 working days', () => londonWorkdayAt(3, 10)],
-  ['In 5 working days', () => londonWorkdayAt(5, 10)],
-];
+/** The call sheet's outcome choices, plus Done for a case the specialist closes and the feedback form for a review. */
+function choicesFor(c: OverviewCase): [string, string][] {
+  const choices = outcomeChoices(c);
+  if (isSatisfaction(c)) return [[FEEDBACK, 'Reached: complete feedback'], ...choices.slice(1)];
+  if (c.specialist_closes) return [[DONE, 'Done: resolve the case'], ...choices];
+  return choices;
+}
 
-/** The simple calling screen: one learner, one Call button, then one tap per issue for what happened. */
+function helpFor(choice: string, c: OverviewCase) {
+  if (choice === FEEDBACK) return 'Save opens the feedback form. Only a completed review starts the next three-month period.';
+  if (choice === DONE) return 'The case is resolved when you save.';
+  return outcomeHelp(choice, c);
+}
+
+/** The simple calling screen: one learner, Call, End call, then the outcome of each issue, saved together. */
 export default function NextCall({ overview, session, onRefresh, notify, onOpen }: Props) {
   const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
+  const [order, setOrder] = useState<TicketOrder>('newest');
   const [done, setDone] = useState<Set<string>>(new Set());
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
-  // Learners who did not answer this session go to the bottom straight away, before Zoom reports it.
-  const [later, setLater] = useState<Set<string>>(new Set());
   // The person being called and their issues, kept as they were when Call was pressed: a Zoom result arriving
-  // mid-call must not move them off the screen before the outcome is saved.
-  const [calling, setCalling] = useState<{ key: string; person: OverviewCase; issues: OverviewCase[] } | null>(null);
+  // mid-call must not move them off the screen before the outcome is saved. `ended` once End call is pressed.
+  const [calling, setCalling] = useState<{ key: string; person: OverviewCase; issues: OverviewCase[]; ended: boolean } | null>(null);
   const [saved, setSaved] = useState<Set<number>>(new Set());
   const [feedbackFor, setFeedbackFor] = useState<OverviewCase | null>(null);
   const [emailFor, setEmailFor] = useState<number | null>(null);
   const [satisfactionEmailFor, setSatisfactionEmailFor] = useState<number | null>(null);
   const [picked, setPicked] = useState<Map<number, string>>(new Map());
-  const [callback, setCallback] = useState(0);
   const [note, setNote] = useState('');
+  const [followUp, setFollowUp] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Same order as the server's priority: missed calls are already at the bottom.
   const eligible = useMemo(() => overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
     && c.source_type !== 'employer_feedback' && !!c.learner_phone && dueForCall(c)
     && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId)), [overview, session.agentId]);
-  const queue = useMemo(() => uniqueLearners(eligible.filter(c => matchesCaseFilters(c, caseFilters)))
-    .filter(c => !done.has(contactKey(c))), [eligible, caseFilters, done]);
-  const open = queue.filter(c => !skipped.has(contactKey(c)));
-  const waiting = [...open.filter(c => !later.has(contactKey(c))), ...open.filter(c => later.has(contactKey(c)))];
+  // The same order as the call sheets: one learner per contact, in the chosen ticket order.
+  const queue = useMemo(() => uniqueLearners(orderTickets(eligible.filter(c => matchesCaseFilters(c, caseFilters)), order))
+    .filter(c => !done.has(contactKey(c))), [eligible, caseFilters, order, done]);
+  const waiting = queue.filter(c => !skipped.has(contactKey(c)));
   const next = waiting[0] || null;
   const current = calling ? calling.person : next;
-  const issues = calling ? calling.issues : next ? overview.cases.filter(c => contactKey(c) === contactKey(next) && activeCase(c)
-    && c.source_type !== 'employer_feedback' && dueForCall(c)) : [];
+  const issues = calling ? calling.issues : next ? orderTickets(overview.cases.filter(c => contactKey(c) === contactKey(next) && activeCase(c)
+    && c.source_type !== 'employer_feedback' && dueForCall(c)), order) : [];
+  const allCases = current ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(current)).length : 0;
 
   function reset(next: Set<string>) {
     setDone(next);
@@ -81,8 +76,8 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     setSaved(new Set());
     setFeedbackFor(null);
     setPicked(new Map());
-    setCallback(0);
     setNote('');
+    setFollowUp('');
   }
 
   async function call() {
@@ -90,7 +85,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     setBusy(true);
     try {
       await caseAction(session, current.id, 'call');
-      setCalling({ key: contactKey(current), person: current, issues });
+      setCalling({ key: contactKey(current), person: current, issues, ended: false });
     } catch (failure) {
       notify(failure instanceof Error ? failure.message : 'The call could not start.', true);
     } finally {
@@ -100,9 +95,19 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
 
   async function save() {
     if (!current) return;
-    const chosen = issues.map(c => [c, choicesFor(c).find(choice => choice.key === picked.get(c.id))] as const);
-    if (chosen.some(([, choice]) => choice?.note) && !note.trim()) {
-      notify('Add a short note saying what happened.', true);
+    const chosen = issues.map(c => [c, picked.get(c.id)] as const);
+    const outcomes = chosen.map(([, choice]) => splitOutcome(choice || '').outcome);
+    if (note.trim().length < 10) {
+      notify('Add a short note: what was agreed and the next action (at least 10 characters).', true);
+      return;
+    }
+    if (outcomes.includes('callback') && !followUp) {
+      notify('Choose the date and time for the callback.', true);
+      return;
+    }
+    const at = followUp ? londonInput(followUp) : null;
+    if (at && at.getTime() <= Date.now()) {
+      notify('Choose a follow-up time in the future.', true);
       return;
     }
     setBusy(true);
@@ -110,28 +115,26 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
       let held = false;
       const savedNow = new Set(saved);
       for (const [c, choice] of chosen) {
-        if (!choice || savedNow.has(c.id) || choice.outcome === 'feedback') continue;
-        if (choice.outcome === 'done') {
-          await caseAction(session, c.id, 'resolve', { note: note.trim() || 'Call completed.', option: 'other' });
-          savedNow.add(c.id);
-          setSaved(new Set(savedNow));
-          continue;
+        if (!choice || savedNow.has(c.id) || choice === FEEDBACK || choice === BOOKED) continue;
+        if (choice === DONE) {
+          await caseAction(session, c.id, 'resolve', { note: note.trim(), option: 'other' });
+        } else {
+          // Held until Zoom reports the call when it has not yet; Zoom's result must fit the outcome.
+          const result = await caseAction(session, c.id, 'plan', {
+            ...splitOutcome(choice), note: note.trim(), callback_at: at ? at.toISOString() : null,
+          });
+          held = held || !result.applied;
         }
-        const result = await caseAction(session, c.id, 'plan', {
-          outcome: choice.outcome, option: choice.option || '', note: note.trim(),
-          callback_at: choice.callback ? CALLBACKS[callback][1]().toISOString() : null,
-        });
-        held = held || !result.applied;
         savedNow.add(c.id);
         setSaved(new Set(savedNow));
       }
-      const feedback = chosen.find(([c, choice]) => choice?.outcome === 'feedback' && !savedNow.has(c.id));
+      const feedback = chosen.find(([c, choice]) => choice === FEEDBACK && !savedNow.has(c.id));
       if (feedback) {
         // The other issues are saved; the review is completed in its form, then the call moves on.
         setFeedbackFor(feedback[0]);
         return;
       }
-      notify(held ? `Saved for ${current.learner_name}. It is attached as soon as Zoom reports the call.` : `Saved for ${current.learner_name}.`);
+      notify(held ? `Saved for ${current.learner_name}. It is applied as soon as Zoom reports the call.` : `Saved for ${current.learner_name}.`);
       reset(new Set(done).add(contactKey(current)));
       onRefresh();
     } catch (failure) {
@@ -139,14 +142,6 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     } finally {
       setBusy(false);
     }
-  }
-
-  function noAnswer() {
-    if (!current) return;
-    notify(`No answer from ${current.learner_name}. Once Zoom reports the call, they are held until the next working morning, then come back at the bottom of the list.`);
-    setLater(new Set(later).add(contactKey(current)));
-    reset(done);
-    onRefresh();
   }
 
   // A booked catch-up is the proof a missed-lecture case waits for: the case is closed, so no outcome is needed for it.
@@ -158,7 +153,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     onRefresh();
   }
 
-  /** The same actions as the calling sheet: book with the coach, the booking email, the satisfaction email. */
+  /** The same actions as the calling sheet: book with the coach or on the coach's page, the booking email, the satisfaction email. */
   function tools(c: OverviewCase) {
     if (picked.get(c.id) === BOOKED) return <p className="ec-tag">Catch-up booked: case closed</p>;
     const bookable = c.bookable.length > 0;
@@ -167,6 +162,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     return (
       <div className="ec-buttons ed-next-tools">
         {bookable && <BookSession caseId={c.id} session={session} notify={notify} onBooked={type => booked(c, type)} />}
+        <BookingPage c={c} />
         {c.booking_email && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
         {c.source_type === 'learner_satisfaction' && <button type="button" disabled={session.preview || !c.learner_email}
           onClick={() => setSatisfactionEmailFor(c.id)}>Email</button>}
@@ -182,9 +178,18 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     onRefresh();
   }
 
+  const toolbar = (
+    <div className="ed-sheet-toolbar">
+      <select aria-label="Ticket order" value={order} disabled={!!calling} onChange={event => setOrder(event.target.value as TicketOrder)}>
+        {Object.entries(TICKET_ORDERS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </select>
+    </div>
+  );
+
   if (!current) {
     return (
       <section className="ec-card ed-next">
+        {toolbar}
         <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
         <div className="ec-empty">
           <h3>Nobody else to call right now</h3>
@@ -197,11 +202,12 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
 
   const reason = callDisabledReason(current, session);
   const ready = issues.length > 0 && issues.every(c => picked.has(c.id));
-  const needsCallback = issues.some(c => picked.get(c.id) === 'callback');
+  const closing = issues.every(c => [DONE, FEEDBACK, BOOKED].includes(picked.get(c.id) || '') || closesCase(picked.get(c.id) || '', c));
   return (
     <section className="ec-card ed-next">
+      {toolbar}
       <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
-      <p className="ec-muted">{calling ? 'On the call' : `Next call · ${waiting.length} ${waiting.length === 1 ? 'learner' : 'learners'} to call`}</p>
+      <p className="ec-muted">{calling ? (calling.ended ? 'Call ended: record what happened' : 'On the call') : `Next call · ${waiting.length} ${waiting.length === 1 ? 'learner' : 'learners'} to call · ${TICKET_ORDERS[order]}`}</p>
       <Dialog open={feedbackFor !== null} onClose={() => setFeedbackFor(null)}>
         {feedbackFor && <SatisfactionFeedback key={feedbackFor.id} caseId={feedbackFor.id} name={feedbackFor.learner_name} session={session} onSaved={feedbackSaved} />}
       </Dialog>
@@ -215,8 +221,9 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
       <p className="ec-muted">{current.programme || 'Programme not recorded'} · Coach: {current.coach || 'not recorded'} · {current.learner_phone}</p>
       {current.missed_call && <p className="ec-tag">Missed call · {current.attempts} unanswered</p>}
       {current.promise_missed && <p className="ec-tag">Promise missed: call again</p>}
+      <button type="button" className="ed-sheet-link" onClick={() => onOpen(current.id)}>All cases ({allCases}{overview.cases_truncated ? '+' : ''})</button>
 
-      {!calling ? (
+      {!calling?.ended ? (
         <>
           <h3>Why you are calling</h3>
           <ul>
@@ -224,50 +231,70 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
               <li key={c.id}>
                 <strong>{issueLabel(c)}</strong>{c.source_type === 'attendance' && c.issue_date ? ` · ${shortDate(c.issue_date)}` : ''}
                 {c.source_type === 'reminder' && c.booking_at ? ` · ${c.issue_name} · ${appointmentTime(c.booking_at)}` : ''}
+                <CaseDates ticket={c} />
                 <div className="ec-muted">{Object.keys(c.promises).length ? `Ask them to: ${Object.keys(c.promises).map(promiseLabel).join(' or ')}` : casePurpose(c)}</div>
                 {tools(c)}
               </li>
             ))}
           </ul>
-          <button type="button" className="primary ed-next-call" disabled={busy || !!reason} title={reason || undefined} onClick={() => void call()}>
-            {busy ? 'Opening Zoom…' : '📞 Call'}
-          </button>
-          {reason && <p className="ec-muted">{reason}</p>}
-          <div className="ec-buttons" style={{ marginTop: '1rem' }}>
-            <button type="button" onClick={() => setSkipped(new Set(skipped).add(contactKey(current)))}>Skip</button>
-            <button type="button" className="ed-sheet-link" onClick={() => onOpen(current.id)}>Full case</button>
-          </div>
+          {calling ? (
+            <>
+              <button type="button" className="primary ed-next-call ed-end-call" onClick={() => setCalling({ ...calling, ended: true })}>
+                End call
+              </button>
+              <p className="ec-muted">Hang up in Zoom, then press End call to record the outcome. Nothing changes on the case until you save.</p>
+              <div className="ec-buttons" style={{ marginTop: '.5rem' }}>
+                <button type="button" onClick={() => reset(done)}>Cancel: the call did not go out</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <button type="button" className="primary ed-next-call" disabled={busy || !!reason} title={reason || undefined} onClick={() => void call()}>
+                {busy ? 'Opening Zoom…' : '📞 Call'}
+              </button>
+              {reason && <p className="ec-muted">{reason}</p>}
+              <div className="ec-buttons" style={{ marginTop: '1rem' }}>
+                <button type="button" onClick={() => setSkipped(new Set(skipped).add(contactKey(current)))}>Skip</button>
+                <button type="button" className="ed-sheet-link" onClick={() => onOpen(current.id)}>Full case</button>
+              </div>
+            </>
+          )}
         </>
       ) : (
         <>
           {issues.map(c => (
-            <div key={c.id}>
-              <h3>{issueLabel(c)}: what happened?</h3>
-              {picked.get(c.id) !== BOOKED && <div className="ed-next-choices">
-                {choicesFor(c).map(choice => (
-                  <button key={choice.key} type="button" aria-pressed={picked.get(c.id) === choice.key} disabled={busy}
-                    onClick={() => setPicked(new Map(picked).set(c.id, choice.key))}>{choice.label}</button>
-                ))}
-              </div>}
+            <div key={c.id} className="ed-next-outcome">
+              <label>{issueLabel(c)}: what happened?
+                {picked.get(c.id) === BOOKED ? <p className="ec-tag">Catch-up booked: case closed</p> : (
+                  <select aria-label={`Outcome for ${issueLabel(c)}`} disabled={busy || saved.has(c.id)} value={picked.get(c.id) || ''}
+                    onChange={event => setPicked(new Map(picked).set(c.id, event.target.value))}>
+                    <option value="">Choose outcome…</option>
+                    {choicesFor(c).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                )}
+              </label>
+              {picked.get(c.id) && picked.get(c.id) !== BOOKED && <small>{helpFor(picked.get(c.id)!, c)}</small>}
               {tools(c)}
             </div>
           ))}
-          {needsCallback && (
-            <div className="ed-next-choices" aria-label="When to call back">
-              {CALLBACKS.map(([label], index) => (
-                <button key={label} type="button" aria-pressed={callback === index} onClick={() => setCallback(index)}>{label}</button>
-              ))}
-            </div>
-          )}
-          <label>Note (needed for wrong number or refused)
-            <textarea rows={2} maxLength={5000} value={note} onChange={event => setNote(event.target.value)} />
+          <label>Notes / agreed action
+            <textarea rows={3} maxLength={3500} placeholder="What was agreed? Who will do what, by when?" value={note} onChange={event => setNote(event.target.value)} />
           </label>
+          <label>Follow-up (London time)
+            <input type="datetime-local" value={followUp} onChange={event => setFollowUp(event.target.value)} />
+          </label>
+          <div className="ed-quick-dates">
+            {QUICK_FOLLOW_UPS.map(([days, label]) => (
+              <button key={days} type="button" className="ed-sheet-link" title={`${longDate(workdayInput(days))} at 10:00 London`}
+                onClick={() => setFollowUp(workdayInput(days))}>{label}</button>
+            ))}
+          </div>
+          {followUp && <small>{closing ? 'These outcomes close the case, so the date is not used.' : `Back in the list ${longDate(followUp)}`}</small>}
           <div className="ec-buttons" style={{ marginTop: '1rem' }}>
             <button type="button" className="primary ed-next-call" disabled={busy || !ready} onClick={() => void save()}>{busy ? 'Saving…' : 'Save and next'}</button>
           </div>
           <div className="ec-buttons" style={{ marginTop: '.5rem' }}>
-            <button type="button" disabled={busy} onClick={noAnswer}>No answer: next</button>
-            <button type="button" disabled={busy} onClick={() => reset(done)}>Back</button>
+            <button type="button" disabled={busy} onClick={() => setCalling({ ...calling, ended: false })}>Back to the call</button>
           </div>
         </>
       )}

@@ -44,10 +44,14 @@ export function pickCall(calls: CaseCall[], outcome: string, session: Session) {
   return usable.find(call => !call.outcome && fits(call)) || usable.find(fits) || usable[0];
 }
 
-/** Records an outcome against the Zoom call it belongs to (``pickCall``). */
-export async function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null }) {
+/** Records an outcome against the Zoom call it belongs to (``pickCall``). Straight after a call (`justCalled`), or
+ * before Zoom has reported any call, the outcome is held for the latest call and applied once Zoom reports it. */
+export async function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null },
+  justCalled = false) {
+  const values = { option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null };
+  if (justCalled) return caseAction(session, id, 'plan', values);
   const detail = await loadCase(id);
   const call = pickCall(detail.calls, data.outcome, session);
-  if (!call) throw new Error('Zoom has not reported a call for this case yet. Call the learner, then save once the call appears (sync runs every few minutes).');
-  return caseAction(session, id, 'outcome', { call_id: call.call_id, option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null });
+  if (!call) return caseAction(session, id, 'plan', values);
+  return caseAction(session, id, 'outcome', { call_id: call.call_id, ...values });
 }

@@ -83,9 +83,9 @@
 .kbc-portals .ed-next{max-width:46rem;margin:0 auto}
 .kbc-portals .ed-next-name{font-size:1.75rem;margin:.25rem 0}
 .kbc-portals .ed-next-call{width:100%;font-size:1.2rem;padding:1rem 2rem}
-.kbc-portals .ed-next-choices{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 1rem}
-.kbc-portals .ed-next-choices button{font-size:1rem;padding:.8rem 1.1rem}
-.kbc-portals .ed-next-choices button[aria-pressed=true]{background:var(--purple);color:#fff;border-color:var(--purple)}
+.kbc-portals .workspace-app .ec button.ed-end-call{background:#b42318;border-color:#b42318;color:#fff}
+.kbc-portals .ed-next-outcome{margin:.75rem 0}
+.kbc-portals .ed-next-outcome small{display:block;color:var(--muted)}
 .kbc-portals .ed-next-tools{margin:.4rem 0 .8rem;gap:.5rem}
 /* Booking email: wording on the left, the rendered email on the right, what sending needs below. */
 .ec dialog:has(#ed-booking-email){max-width:1100px}

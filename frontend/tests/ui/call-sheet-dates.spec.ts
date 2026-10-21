@@ -473,6 +473,28 @@ test('catch-up booking opens outside the email preview and keeps the draft witho
   expect(writes.filter(path => path.endsWith('/send/') || path.endsWith('/booking/'))).toEqual([]);
 });
 
+test('a due review opens the coach’s booking page for that review, and only when the coach has one', async ({ page, context }) => {
+  const links = { pr: 'https://booking.example.test/pr', mcm: 'https://booking.example.test/mcm', support: 'https://booking.example.test/support' };
+  const writes = await openSheet(page, [
+    ticket(1, { source_type: 'pr', booking_email: true, booking_links: links }),
+    ticket(2, { source_type: 'mcm', booking_email: true, booking_links: links }),
+    ticket(3, { source_type: 'pr', booking_email: true, booking_links: { support: links.support } }),
+  ], 'due');
+  await context.route('https://booking.example.test/**', route => route.fulfill({
+    contentType: 'text/html', body: `<html><body><h1>${new URL(route.request().url()).pathname}</h1></body></html>`,
+  }));
+  const button = (id: number) => page.locator(`[data-sheet-row="${id}"]`).getByRole('button', { name: 'Book on coach’s page', exact: true });
+  for (const [id, path] of [[1, '/pr'], [2, '/mcm']] as const) {
+    const popupPromise = page.waitForEvent('popup');
+    await button(id).click();
+    const popup = await popupPromise;
+    await expect(popup.getByRole('heading', { name: path, exact: true })).toBeVisible();
+    await popup.close();
+  }
+  await expect(button(3)).toHaveCount(0);
+  expect(writes.filter(path => path.startsWith('/api/callcentre/'))).toEqual([]);
+});
+
 for (const section of ['missed', 'due']) {
   test(`${section} filters a day or inclusive date range and combines with sorting, search and pagination`, async ({ page }) => {
     const cases = Array.from({ length: 25 }, (_, index) => ticket(index + 1, {
@@ -611,4 +633,59 @@ test('closing a nested booking window keeps the full case open', async ({ page }
   await expect(modal.getByRole('heading', { name: 'Learner 1', exact: true })).toBeVisible();
   await modal.getByRole('button', { name: 'Close full case', exact: true }).click();
   await expect(page.locator('dialog[open]')).toHaveCount(0);
+});
+
+/** The JSON body of every write the page sent, by path. */
+function capturePosts(page: Page) {
+  const posts: [string, Record<string, unknown>][] = [];
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && path.startsWith('/api/callcentre/tickets/')) posts.push([path, request.postDataJSON() || {}]);
+  });
+  return posts;
+}
+
+test('Next call starts with the newest ticket by default', async ({ page }) => {
+  await openSheet(page, [
+    ticket(1, { learner_phone: '+447700900001', issue_date: '2026-09-01' }),
+    ticket(2, { learner_phone: '+447700900002', issue_date: '2026-10-10' }),
+  ]);
+  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await expect(page.getByLabel('Ticket order', { exact: true })).toHaveValue('newest');
+  await expect(page.locator('.ed-next-name')).toHaveText('Learner 2');
+  await page.getByLabel('Ticket order', { exact: true }).selectOption('oldest');
+  await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
+});
+
+test('Next call: Call becomes End call, and only Save records the outcome', async ({ page }) => {
+  await openSheet(page, [ticket(1, { learner_phone: '+447700900001' })]);
+  const posts = capturePosts(page);
+  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: '📞 Call', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'End call', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Outcome for Missed lecture', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'End call', exact: true }).click();
+  await page.getByLabel('Outcome for Missed lecture', { exact: true }).selectOption('no_answer');
+  await page.getByLabel('Notes / agreed action').fill('No answer, voicemail left.');
+  await page.getByRole('button', { name: 'Save and next', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Nobody else to call right now', exact: true })).toBeVisible();
+  expect(posts.map(([path]) => path)).toEqual(['/api/callcentre/tickets/1/call/', '/api/callcentre/tickets/1/plan/']);
+  expect(posts[1][1]).toMatchObject({ outcome: 'no_answer', note: 'No answer, voicemail left.', agent_id: 1 });
+});
+
+test('call sheet: Call becomes End call and the outcome is held for the call just made', async ({ page }) => {
+  await openSheet(page, [ticket(1, { learner_phone: '+447700900001' })]);
+  const posts = capturePosts(page);
+  // Zoom has not reported the call yet, so the server holds the outcome.
+  await page.route('**/api/callcentre/tickets/1/plan/', route => route.fulfill({ json: { ok: true, applied: false } }));
+  await page.getByRole('button', { name: 'Call Learner 1', exact: true }).click();
+  await page.getByRole('button', { name: 'End call with Learner 1', exact: true }).click();
+  await expect(page.getByLabel('Outcome for Learner 1', { exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Call Learner 1', exact: true })).toBeVisible();
+  await page.getByLabel('Outcome for Learner 1', { exact: true }).selectOption('no_answer');
+  await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('No answer, try tomorrow.');
+  await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('[data-sheet-row="1"] .ed-row-status')).toHaveText('Saved: applied when Zoom reports the call');
+  expect(posts.map(([path]) => path)).toEqual(['/api/callcentre/tickets/1/call/', '/api/callcentre/tickets/1/plan/']);
+  expect(posts[1][1]).toMatchObject({ outcome: 'no_answer', note: 'No answer, try tomorrow.' });
 });

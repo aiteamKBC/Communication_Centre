@@ -11,7 +11,17 @@ type Options = {
   reasons: { key: string; label: string }[];
   slots: { start: string; date: string; time: string }[];
 };
-type Booked = { booking: { start: string; coach: string; session_type: string }; warning: string };
+type Booked = {
+  booking: { start: string; coach: string; session_type: string }; warning: string;
+  confirmation: { status: string; recipient: string; error?: string };
+};
+
+/** What happened to the learner's confirmation email, for the success message. */
+function confirmationText({ status, recipient, error }: Booked['confirmation']) {
+  if (status === 'accepted') return ` Confirmation email sent to ${recipient}.`;
+  if (status === 'dry_run') return ' Confirmation email recorded on the case (dry run: not sent).';
+  return ` The confirmation email was not sent${error ? `: ${error}` : '.'}`;
+}
 
 const dayLabel = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' });
 const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : 'Something went wrong. Try again.');
@@ -73,7 +83,7 @@ function BookingForm({ caseId, session, notify, onDone }: { caseId: number; sess
         session_type: type, start, request_id: requestId, reason_category: catchUp ? reason : '', reason_note: catchUp ? note : '', agent_id: session.agentId,
       });
       const at = new Date(result.booking.start).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
-      notify(`Booked with ${result.booking.coach} on ${at}. The learner and coach have the Teams invitation.${result.warning ? ` Note: ${result.warning}` : ''}`);
+      notify(`Booked with ${result.booking.coach} on ${at}. The learner and coach have the Teams invitation.${confirmationText(result.confirmation)}${result.warning ? ` Note: ${result.warning}` : ''}`);
       onDone(type);
     } catch (reason) {
       setError(errorText(reason));

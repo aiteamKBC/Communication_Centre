@@ -5,6 +5,7 @@ import { callDisabledReason, caseAction, saveOutcome } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
+import BookingPage from './BookingPage';
 import Dialog from './Dialog';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
@@ -27,6 +28,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const [drafts, setDrafts] = useState<Map<number, Draft>>(new Map());
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [dialling, setDialling] = useState<number | null>(null);
+  // Rows on a call (Call pressed, End call not yet) and rows whose call ended in this session.
+  const [onCall, setOnCall] = useState<Set<number>>(new Set());
+  const [ended, setEnded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [reason, setReason] = useState('all');
@@ -105,12 +109,14 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       if (draft.outcome === 'callback' && !draft.next_contact) throw new Error('Choose the date and time for the callback.');
       const followUp = draft.next_contact ? londonInput(draft.next_contact) : null;
       if (followUp && followUp.getTime() <= Date.now()) throw new Error('Choose a follow-up time in the future.');
-      await saveOutcome(session, c.id, {
+      const result = await saveOutcome(session, c.id, {
         ...splitOutcome(draft.outcome), note: draft.notes.trim(),
         // The chosen follow-up applies to every outcome; an outcome that closes the case ignores it.
         callback_at: followUp ? followUp.toISOString() : null,
-      });
-      setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false, status: 'Saved' }));
+      }, ended.has(c.id));
+      setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false,
+        status: result.applied === false ? 'Saved: applied when Zoom reports the call' : 'Saved' }));
+      setEnded(current => { const next = new Set(current); next.delete(c.id); return next; });
       onSaved();
     } catch (reason) {
       setDrafts(current => new Map(current).set(c.id, { ...draft, error: reason instanceof Error ? reason.message : 'Save failed.' }));
@@ -128,13 +134,20 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     setDialling(c.id);
     try {
       await caseAction(session, c.id, 'call');
-      notify(`Zoom Phone opened for ${c.learner_name}. Update the row during the call, then save once Zoom reports it.`);
+      setOnCall(current => new Set(current).add(c.id));
+      notify(`Zoom opened for ${c.learner_name}. When you hang up, press End call, then choose the outcome and Save.`);
       onSaved();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
     } finally {
       setDialling(null);
     }
+  }
+
+  function endCall(c: OverviewCase) {
+    setOnCall(current => { const next = new Set(current); next.delete(c.id); return next; });
+    setEnded(current => new Set(current).add(c.id));
+    document.querySelector<HTMLSelectElement>(`[data-sheet-row="${c.id}"] select`)?.focus();
   }
 
   const onKey = (event: KeyboardEvent, c: OverviewCase) => {
@@ -202,11 +215,11 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
         Tickets with unsaved edits stay selected for their contact.
       </p>
       <p className="ed-sheet-hint">
-        Call, update the row, then Save. {session.preview
+        Call, press End call when you hang up, choose the outcome, then Save. {session.preview
           ? `Calls are disabled in the director preview. ${session.name} must sign in to call. `
           : !session.agentId ? 'Ask a manager to set up your agent profile before calling. '
             : 'Zoom Phone opens with your caller ID; keep the Zoom desktop app signed in. '}
-        An outcome is saved against the call Zoom reports, so save once the call has synced.
+        Nothing changes on the case until you save; the outcome is applied once Zoom reports the call.
       </p>
       <div id="ed-sheet-body">
         <p className="ed-sheet-hint">This section contains {eligible.length} open tickets across {uniqueLearners(eligible).length} contacts before the filters below. A contact can have multiple tickets.</p>
@@ -276,19 +289,28 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     </td>
                     <td>
                       <div className="ed-call-actions">
-                        <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
-                          {session.preview ? 'Preview' : 'Call'}
-                        </button>
+                        {onCall.has(c.id) ? (
+                          <button type="button" className="primary ed-call-action ed-end-call" aria-label={`End call with ${c.learner_name}`} onClick={() => endCall(c)}>
+                            End call
+                          </button>
+                        ) : (
+                          <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
+                            {session.preview ? 'Preview' : 'Call'}
+                          </button>
+                        )}
                         {isSatisfaction(c) && <button type="button" className="ed-call-action"
                           disabled={disabled || !satisfactionRecipient(c)}
                           title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
                       </div>
-                      {callReason && <span className="ed-call-reason">{callReason}</span>}
+                      {onCall.has(c.id) ? <span className="ed-call-reason">On the call: press End call when you hang up</span>
+                        : ended.has(c.id) ? <span className="ed-call-reason">Call ended: choose the outcome and Save</span>
+                          : callReason && <span className="ed-call-reason">{callReason}</span>}
                     </td>
                     <td className="ed-booking-cell">
                       {employer ? <small>No coach booking for employer calls</small> : <>
                         <strong>{c.coach || 'Coach not recorded'}</strong>
                         {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />}
+                        <BookingPage c={c} className="ed-sheet-link" />
                         {c.booking_email && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
                         <small>{bookingHint(c)}</small>
                       </>}

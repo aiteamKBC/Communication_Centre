@@ -440,6 +440,61 @@ class IdentityWorkflowTests(TestCase):
         self.assertEqual(case.status, 'new')
         self.assertIsNone(case.resolved_at)
 
+    def test_booking_emails_the_learner_once_with_the_coach_and_time(self):
+        import json
+        from datetime import datetime
+        from django.test import RequestFactory
+        from django.contrib.auth import get_user_model
+        from . import mailer
+        from .models import CaseTicket, EmailDelivery
+        from .rules import LONDON
+        from .views import booking
+        user = get_user_model().objects.create(username='confirm-manager', is_staff=True, is_superuser=True)
+        case = CaseTicket.objects.create(source_type='otj', learner_email='alias@example.org', learner_name='Sam Learner',
+                                         due_at=timezone.now(), reason_key='confirm-booking')
+        start = datetime(2026, 10, 27, 14, 0, tzinfo=LONDON)
+        request = RequestFactory().post('/booking/', json.dumps({'session_type': 'student-support',
+            'start': start.isoformat(), 'request_id': 'confirm-booking-1'}), content_type='application/json')
+        request.user = user
+        request._dont_enforce_csrf_checks = True
+        result = {'event_key': 'student-support:1:1:2026-10-27', 'start': start, 'coach': 'Casey Coach',
+                  'join_url': 'https://teams.example.org/join', 'report_id': None, 'link_warning': '',
+                  'learner_name': 'Sam Learner', 'learner_email': 'Sam@Example.org', 'replayed': False}
+        live = {'email_mode': 'live'}
+        with patch('callcentre.views.operating_agent', return_value=None), patch('callcentre.views.can_work'), \
+                patch('callcentre.lms_booking.book', return_value=result), \
+                patch('callcentre.booking_email.email_settings.current', return_value=live), \
+                patch('callcentre.booking_email.mailer.configured', return_value=True), \
+                patch('callcentre.booking_email.mailer.send') as send:
+            response = booking(request, case.pk)
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(json.loads(response.content)['confirmation']['status'], 'accepted')
+            # A replay of the same booking does not email the learner again.
+            self.assertEqual(booking(request, case.pk).status_code, 201)
+        send.assert_called_once()
+        recipient, subject, html = send.call_args.args
+        # The address the LMS booking (and its Teams invitation) used, not the case's alias.
+        self.assertEqual(recipient, 'sam@example.org')
+        self.assertEqual(subject, 'Your student support with Casey Coach is booked')
+        self.assertIn('Tuesday 27 October 2026 at 14:00 (UK time)', html)
+        self.assertIn('https://teams.example.org/join', html)
+        delivery = EmailDelivery.objects.get(ticket=case)
+        self.assertEqual((delivery.kind, delivery.status), ('booking_confirmation', 'accepted'))
+        self.assertEqual(case.events.filter(kind='email_accepted', data__stage='booking_confirmation').count(), 1)
+
+        # A mail failure is recorded, and the booking still reports as made.
+        other = CaseTicket.objects.create(source_type='otj', learner_email='other@example.org',
+                                          due_at=timezone.now(), reason_key='confirm-booking-failed')
+        with patch('callcentre.views.operating_agent', return_value=None), patch('callcentre.views.can_work'), \
+                patch('callcentre.lms_booking.book', return_value={**result, 'event_key': 'student-support:1:2:2026-10-27'}), \
+                patch('callcentre.booking_email.email_settings.current', return_value=live), \
+                patch('callcentre.booking_email.mailer.configured', return_value=True), \
+                patch('callcentre.booking_email.mailer.send', side_effect=mailer.MailError('refused')):
+            response = booking(request, other.pk)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(json.loads(response.content)['confirmation']['status'], 'failed')
+        self.assertEqual(other.events.filter(kind='session_booked').count(), 1)
+
     def test_satisfaction_refresh_keeps_case_and_cycle_when_email_changes(self):
         from .learner_satisfaction import generate
         from .models import CaseTicket

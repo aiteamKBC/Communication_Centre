@@ -4,6 +4,7 @@ import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
+import BookingPage from './BookingPage';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
@@ -93,6 +94,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
                 </button>
               )}
               {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onChanged(); }} />}
+              {c.status !== 'resolved' && <BookingPage c={c} />}
               {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
               {isSatisfaction(c) && <button type="button"
                 disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}

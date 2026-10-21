@@ -28,7 +28,7 @@ from .emails import survey_token
 from .access import AGENT_GROUP, DIRECTOR_GROUP, has_access, is_director, refused
 from .manage_views import allocations, call_requests, phone_keys, require_manager
 from .models import Agent, CaseTicket
-from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, due_at, missed_call, missed_lectures_ready_until, next_workday, normalize_phone,
+from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, contact_keys, due_at, missed_call, missed_lectures_ready_until, next_workday, normalize_phone,
                     priority, promise_deadline, promise_missed)
 from .zoom_views import can_view_call, zoom_transcript_report
 
@@ -60,6 +60,18 @@ class RulesTests(SimpleTestCase):
     @override_settings(CALLCENTRE_HOLIDAYS=['2026-10-05'])
     def test_next_workday_also_skips_college_closures(self):
         self.assertEqual(next_workday(date(2026, 10, 2)), date(2026, 10, 6))
+
+    def test_a_learners_cases_are_one_contact_when_only_some_carry_the_person_id(self):
+        case = lambda pk, email, person='', kind='attendance': SimpleNamespace(  # noqa: E731
+            pk=pk, learner_email=email, source_type=kind, source_data={'person_id': person} if person else {})
+        tickets = [case(1, 'akmal@x.test', 'lms:7'), case(2, 'Akmal@X.test'), case(3, 'akmal.work@x.test', 'lms:7'),
+                   case(4, 'other@x.test'), case(5, 'akmal@x.test', kind='employer_feedback'), case(6, '')]
+        keys = contact_keys(tickets)
+        self.assertEqual(len({keys[1], keys[2], keys[3]}), 1)
+        self.assertEqual(keys[4], 'other@x.test')
+        self.assertEqual(keys[5], 'employer:akmal@x.test')  # a line manager's feedback call stays its own contact
+        self.assertEqual(keys[6], 'case:6')
+        self.assertEqual(contact_keys(list(reversed(tickets))), keys)
 
     def test_missed_lecture_waits_three_days(self):
         # Absent on the 1st: not ready on the 3rd, ready on the 4th.
