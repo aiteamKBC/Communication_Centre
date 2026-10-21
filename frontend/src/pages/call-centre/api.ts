@@ -93,8 +93,6 @@ export type CaseDetail = {
 
 export type Config = {
   csrf_token: string; agent_id: number | null; is_manager: boolean; is_superuser: boolean; email_mode: string; ai_enabled: boolean;
-  /** In-page calling with Zoom Phone Smart Embed is switched on for this server. */
-  smart_embed: boolean;
   /** Specialists can raise technical issues in the technical support system. */
   helpdesk: boolean;
   agents: { id: number; display_name: string; zoom_account: string; zoom_phone_number: string }[];

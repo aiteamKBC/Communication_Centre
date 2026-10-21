@@ -266,9 +266,6 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', '')
 OPENAI_TRANSCRIPTION_MODEL = os.getenv('OPENAI_TRANSCRIPTION_MODEL', 'gpt-transcribe')
 ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').lower() in ('1', 'true', 'yes')
-# In-page calling with Zoom Phone Smart Embed (the Zoom admin installs the Smart Embed app first). Off: the Call
-# button opens the Zoom desktop app.
-CALLCENTRE_SMART_EMBED = os.getenv('CALLCENTRE_SMART_EMBED', '').lower() in ('1', 'true', 'yes')
 # The KBC technical support (help-desk) site, e.g. https://technicalsupport.kentbusinesscollege.net. Empty: specialists
 # cannot raise technical issues and open ones are not followed up.
 CALLCENTRE_HELPDESK_URL = os.getenv('CALLCENTRE_HELPDESK_URL', '').strip().rstrip('/')

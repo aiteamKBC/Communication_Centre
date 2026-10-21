@@ -82,8 +82,6 @@ export default defineConfig({
   server: {
     port: 3000,
     host: "0.0.0.0",
-    // Cloudflare quick tunnels give HTTPS for testing Zoom Smart Embed locally.
-    allowedHosts: [".trycloudflare.com"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",

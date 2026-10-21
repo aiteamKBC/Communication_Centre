@@ -173,7 +173,7 @@ function Activity() {
 }
 
 /** Zoom Phone: account health, specialists, call evidence with recordings and transcripts, and learner call activity. */
-export default function ZoomPhone({ overview, csrf, isManager, smartEmbed }: { overview: Overview; csrf: string; isManager: boolean; smartEmbed: boolean }) {
+export default function ZoomPhone({ overview, csrf, isManager }: { overview: Overview; csrf: string; isManager: boolean }) {
   const [filters, setFilters] = useState(() => {
     const today = londonDay();
     return { from: `${today.slice(0, 7)}-01`, to: today, account: 'all', direction: 'outbound', page: 1 };
@@ -283,13 +283,8 @@ export default function ZoomPhone({ overview, csrf, isManager, smartEmbed }: { o
 
       <section className="ec-card" style={{ marginTop: '1rem' }}>
         <h2>3. Enable the call buttons</h2>
-        {smartEmbed ? <>
-          <p>The Call button dials in the Zoom phone docked at the bottom right of the Engagement Centre (Zoom Phone Smart Embed), with the learner’s number and the specialist’s engagement caller ID. Each specialist signs in to that phone once with their college Zoom account; if it is not open, the Zoom desktop app is used instead.</p>
-          <p className="ec-muted">When a call ends, the Engagement Centre asks Zoom for its call history straight away, so the call reaches the case within about a minute. The result still comes from Zoom’s records, not from the browser.</p>
-        </> : <>
-          <p>The Call button opens the Zoom desktop app with the learner’s number and the specialist’s engagement caller ID. Each specialist keeps the Zoom desktop app signed in with their college account.</p>
-          <p className="ec-muted">In-page calling (Zoom Phone Smart Embed) is switched off on this server (CALLCENTRE_SMART_EMBED). Outcomes are recorded once Zoom reports the call.</p>
-        </>}
+        <p>The Call button opens the Zoom desktop app with the learner’s number and the specialist’s engagement caller ID. Each specialist keeps the Zoom desktop app signed in with their college account.</p>
+        <p className="ec-muted">Outcomes are recorded once Zoom reports the call.</p>
       </section>
 
       <section className="ec-card" style={{ marginTop: '1rem' }}>

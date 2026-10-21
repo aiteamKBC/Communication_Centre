@@ -16,7 +16,6 @@ import { DESK_MENUS, deskLabel, failingSources, human, longDate, setHolidays, wh
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
-import SmartEmbedPhone from './engagement/SmartEmbedPhone';
 import type { NavGroup } from './engagement/Shell';
 import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
@@ -181,7 +180,7 @@ export default function CallCentrePage() {
             <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
           ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
-              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} smartEmbed={!!config.data?.smart_embed} />
+              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
                 : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
                   : view === 'connections' ? <Connections overview={overview} />
                         : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
@@ -213,10 +212,6 @@ export default function CallCentrePage() {
       >
         {content}
       </Shell>
-      {/* Anyone who can call: a specialist, or a director working a specialist's desk. */}
-      {config.data?.smart_embed && (ownAgent !== null || director) && (
-        <SmartEmbedPhone csrf={config.data.csrf_token} notify={notify} onCallLogged={refresh} />
-      )}
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import { api, post } from '../api';
 import type { CaseCall, CaseDetail, OverviewCase } from '../api';
-import { dialInPage, preparePhoneCall } from './smartEmbed';
 
 /** Who is working: `name` is the specialist whose desk is shown (the signed-in user outside a preview). */
 export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string;
@@ -11,14 +10,10 @@ export type Session = { csrf: string; agentId: number | null; canAct: boolean; i
 
 type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean };
 
-/** Runs a case command as the session's operating agent. A call dials in the page's Zoom phone (Smart Embed)
- * when it is there, otherwise it hands the number to the Zoom desktop app. */
+/** Runs a case command as the session's operating agent. A call hands the number to the Zoom desktop app. */
 export async function caseAction(session: Session, id: number, command: string, payload: Record<string, unknown> = {}) {
-  if (command === 'call') preparePhoneCall();
   const result = await post<ActionResult>(`tickets/${id}/${command}/`, session.csrf, { ...payload, agent_id: session.agentId });
-  if (command === 'call' && !(result.number && dialInPage(result.number, result.caller_id, result.zoom_url)) && result.zoom_url) {
-    window.location.href = result.zoom_url;
-  }
+  if (command === 'call' && result.zoom_url) window.location.href = result.zoom_url;
   return result;
 }
 

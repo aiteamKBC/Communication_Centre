@@ -4,7 +4,6 @@ from datetime import date, datetime, time, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
-from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.db import DatabaseError, transaction
@@ -237,7 +236,7 @@ def config(request):
         'agents': list(agents.order_by('zoom_account').values(
             'id', 'display_name', 'zoom_account', 'zoom_phone_number')),
         'email_mode': email_settings.current()['email_mode'], 'ai_enabled': ai_enabled(),
-        'smart_embed': settings.CALLCENTRE_SMART_EMBED, 'helpdesk': helpdesk.enabled(),
+        'helpdesk': helpdesk.enabled(),
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details', 'locked_until').first(),
     })
@@ -435,7 +434,6 @@ def action(request, pk, command):
         caller_id = normalize_phone(agent.zoom_phone_number)
         if caller_id:
             zoom_url += '?' + urlencode({'callerid': caller_id})
-        # number + caller_id dial in the page (Smart Embed); zoom_url opens the desktop app.
         return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number,
                              'number': intent.number, 'caller_id': caller_id})
     if command == 'complete_feedback':
