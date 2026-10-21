@@ -25,12 +25,19 @@ from . import lms_booking
 from . import lms_reviews
 from .ai import ai_enabled, validate_analysis
 from .emails import survey_token
-from .access import refused
+from .access import AGENT_GROUP, DIRECTOR_GROUP, has_access, is_director, refused
 from .manage_views import allocations, call_requests, phone_keys, require_manager
 from .models import Agent, CaseTicket
 from .rules import (LONDON, OPTIONS, PROMISES, SPECIALIST_CLOSES, due_at, missed_call, missed_lectures_ready_until, next_workday, normalize_phone,
                     priority, promise_deadline, promise_missed)
 from .zoom_views import can_view_call, zoom_transcript_report
+
+
+def member_of(*names):
+    """A stand-in for ``user.groups`` holding exactly these access groups."""
+    groups = mock.Mock()
+    groups.using.return_value.filter.side_effect = lambda name: mock.Mock(exists=mock.Mock(return_value=name in names))
+    return groups
 
 
 class RulesTests(SimpleTestCase):
@@ -198,29 +205,41 @@ class AccessTests(SimpleTestCase):
     def test_only_directors_manage_agents(self):
         require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True))
         with self.assertRaises(Exception):
-            require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False))
+            require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=member_of()))
 
     def test_directors_can_view_any_call(self):
         self.assertTrue(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True), object()))
 
     def test_user_without_agent_cannot_view_call(self):
         with mock.patch('callcentre.services.agent_for', return_value=None):
-            self.assertFalse(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False), object()))
+            self.assertFalse(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=member_of()), object()))
 
     @mock.patch('callcentre.access.has_access', return_value=True)
     def test_transcript_overview_is_manager_only(self, _access):
         request = RequestFactory().get('/api/zoom/transcripts/')
-        request.user = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False)
+        request.user = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=member_of())
         self.assertEqual(zoom_transcript_report(request).status_code, 403)
 
     def test_engagement_centre_needs_call_centre_access(self):
-        groups = mock.Mock()
-        groups.using.return_value.filter.return_value.exists.return_value = False
-        staff = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=groups)
-        self.assertEqual(refused(staff).status_code, 403)
-        groups.using.return_value.filter.return_value.exists.return_value = True
-        self.assertIsNone(refused(staff))
+        def staff(*groups):
+            return SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=member_of(*groups))
+        self.assertEqual(refused(staff()).status_code, 403)
+        self.assertEqual(refused(staff('Call Centre Access')).status_code, 403)
+        self.assertIsNone(refused(staff(AGENT_GROUP)))
+        self.assertIsNone(refused(staff(DIRECTOR_GROUP)))
         self.assertIsNone(refused(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True)))
+
+    def test_director_is_the_director_group_or_a_super_admin(self):
+        def user(*groups, superuser=False):
+            return SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=superuser, groups=member_of(*groups))
+        self.assertTrue(is_director(user(DIRECTOR_GROUP)))
+        self.assertTrue(is_director(user(superuser=True)))
+        self.assertFalse(is_director(user(AGENT_GROUP)))
+        self.assertTrue(has_access(user(AGENT_GROUP)))
+        self.assertFalse(is_director(SimpleNamespace(is_authenticated=True, is_active=False, is_superuser=False, groups=member_of(DIRECTOR_GROUP))))
+        require_manager(user(DIRECTOR_GROUP))
+        with self.assertRaises(Exception):
+            require_manager(user(AGENT_GROUP))
 
 
 def lms_row(**values):
@@ -304,7 +323,7 @@ class CallRequestTests(SimpleTestCase):
     manager = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=True, get_username=lambda: 'manager')
 
     def test_only_managers_can_request_calls(self):
-        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
+        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False, groups=member_of(AGENT_GROUP))
         self.assertEqual(self.post(agent)[0], 403)
 
     def test_learner_must_be_in_the_directory(self):
@@ -332,7 +351,7 @@ class AllocationTests(SimpleTestCase):
         return response.status_code, json.loads(response.content)
 
     def test_only_managers_allocate(self):
-        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
+        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False, groups=member_of(AGENT_GROUP))
         self.assertEqual(self.post(agent, {})[0], 403)
 
     def test_a_reason_and_a_selection_are_required(self):
@@ -734,7 +753,7 @@ class CoachPagesViewTests(SimpleTestCase):
         return response.status_code, json.loads(response.content), confirm
 
     def test_only_directors_link_pages(self):
-        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False)
+        agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False, groups=member_of(AGENT_GROUP))
         self.assertEqual(self.call(agent)[0], 403)
         status, _, confirm = self.call(agent, {'email': AFAAN, 'slug': 'rukshana'})
         self.assertEqual(status, 403)

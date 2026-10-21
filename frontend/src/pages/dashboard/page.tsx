@@ -19,9 +19,9 @@ type DashboardLink = {
   expireSoon?: boolean;
   expireMessage?: string;
   adminOnly?: boolean;
-  /** Open to call-centre agents; an agent without admin rights sees only these. */
+  /** Open to call-centre agents and directors even when the link is admin-only. */
   callCentre?: boolean;
-  /** The Engagement Centre itself: only call-centre agents and super admins can use it. */
+  /** The Engagement Centre itself: only call-centre agents and directors can use it. */
   engagementCentre?: boolean;
 };
 
@@ -187,10 +187,9 @@ const dashboardLinks: DashboardLink[] = [
 ];
 
 export default function DashboardPage() {
-  const { adminAccess, callCentreAccess, callCentreOnly, superuser } = useAccessControl();
+  const { adminAccess, callCentreAccess } = useAccessControl();
   const visibleDashboardLinks = dashboardLinks.filter(link => {
-    if (link.engagementCentre && !callCentreAccess && !superuser) return false;
-    if (callCentreOnly) return !!link.callCentre;
+    if (link.engagementCentre) return callCentreAccess;
     return !link.adminOnly || adminAccess || (!!link.callCentre && callCentreAccess);
   });
 

@@ -10,9 +10,12 @@ ACCESS_GROUPS: dict[str, str] = {
     'access_marketing': 'Marketing Access',
     'access_support': 'Support Access',
     'access_coach': 'Coach Access',
-    # Engagement Centre specialist (call-centre agent); see callcentre/access.py.
-    'access_call_centre': 'Call Centre Access',
+    # Engagement Centre roles; see callcentre/access.py.
+    'access_call_centre_agent': 'Call Centre Agent Access',
+    'access_call_centre_director': 'Call Centre Director Access',
 }
+# The single "Call Centre Access" group became the agent group; renaming it keeps its members.
+LEGACY_CALL_CENTRE_GROUP = 'Call Centre Access'
 
 
 def _reset_group_sequence(using: str) -> None:
@@ -28,6 +31,9 @@ def _reset_group_sequence(using: str) -> None:
 
 def ensure_access_groups(using: str = 'login_db') -> None:
     _reset_group_sequence(using)
+    agent_group = ACCESS_GROUPS['access_call_centre_agent']
+    if not Group.objects.using(using).filter(name=agent_group).exists():
+        Group.objects.using(using).filter(name=LEGACY_CALL_CENTRE_GROUP).update(name=agent_group)
     for group_name in ACCESS_GROUPS.values():
         if not Group.objects.using(using).filter(name=group_name).exists():
             with transaction.atomic(using=using):
@@ -46,8 +52,9 @@ def get_user_access_payload(user) -> dict:
     marketing_access = admin_access or ACCESS_GROUPS['access_marketing'] in group_names
     support_access = admin_access or ACCESS_GROUPS['access_support'] in group_names
     coach_access = admin_access or ACCESS_GROUPS['access_coach'] in group_names
-    # Not implied by admin access: a call-centre agent is a specific job, and it limits the dashboards shown.
-    call_centre_access = ACCESS_GROUPS['access_call_centre'] in group_names
+    # Not implied by admin access: Engagement Centre roles are specific jobs. A super admin is always a director.
+    call_centre_director_access = bool(user.is_superuser) or ACCESS_GROUPS['access_call_centre_director'] in group_names
+    call_centre_agent_access = ACCESS_GROUPS['access_call_centre_agent'] in group_names
 
     return {
         'adminAccess': admin_access,
@@ -57,7 +64,9 @@ def get_user_access_payload(user) -> dict:
         'marketingAccess': marketing_access,
         'supportAccess': support_access,
         'coachAccess': coach_access,
-        'callCentreAccess': call_centre_access,
+        'callCentreAccess': call_centre_agent_access or call_centre_director_access,
+        'callCentreAgentAccess': call_centre_agent_access,
+        'callCentreDirectorAccess': call_centre_director_access,
         'isSuperuser': bool(user.is_superuser),
         'canManageEvents': event_manager_access,
         'canManageCohorts': operations_access,

@@ -229,7 +229,7 @@ def call_sync(request):
 def config(request):
     agent = agent_for(request.user)
     agents = Agent.objects.filter(active=True, user__is_active=True)
-    if not request.user.is_superuser:
+    if not is_director(request.user):
         agents = agents.filter(user=request.user)
     return JsonResponse({
         'csrf_token': get_token(request), 'agent_id': agent.pk if agent else None,

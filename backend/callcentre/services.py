@@ -28,7 +28,7 @@ def operating_agent(user, agent_id=None):
     if not user.is_authenticated or not user.is_active:
         raise PermissionDenied('An active signed-in account is required.')
     own = agent_for(user)
-    if user.is_superuser:
+    if is_director(user):
         if not agent_id:
             return own
         agent = Agent.objects.filter(pk=agent_id, active=True, user__is_active=True).first()

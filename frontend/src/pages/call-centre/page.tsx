@@ -87,13 +87,12 @@ export default function CallCentrePage() {
   const deskAgent = overview?.agents.find(agent => agent.id === deskAgentId);
   const session: Session = useMemo(() => {
     const isManager = !!overview && (overview.access.role === 'director');
-    const superuser = !!overview?.access.is_superuser;
     const csrf = config.data?.csrf_token || '';
     const self = overview?.access.display_name || '';
     const helpdesk = !!config.data?.helpdesk;
     if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self, helpdesk };
     const own = deskAgentId !== null && deskAgentId === ownAgent;
-    const preview = role === 'viewer' || (!own && !superuser);
+    const preview = role === 'viewer' || (!own && !isManager);
     return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own, helpdesk };
   }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role]);
 
@@ -214,8 +213,8 @@ export default function CallCentrePage() {
       >
         {content}
       </Shell>
-      {/* Anyone who can call: a specialist, or a super admin working a specialist's desk. */}
-      {config.data?.smart_embed && (ownAgent !== null || !!overview?.access.is_superuser) && (
+      {/* Anyone who can call: a specialist, or a director working a specialist's desk. */}
+      {config.data?.smart_embed && (ownAgent !== null || director) && (
         <SmartEmbedPhone csrf={config.data.csrf_token} notify={notify} onCallLogged={refresh} />
       )}
     </div>

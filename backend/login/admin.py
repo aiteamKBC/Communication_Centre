@@ -48,9 +48,13 @@ class AccessCheckboxForm(forms.ModelForm):
 	access_marketing = forms.BooleanField(required=False, label='Marketing access')
 	access_support = forms.BooleanField(required=False, label='Support access')
 	access_coach = forms.BooleanField(required=False, label='Coach access')
-	access_call_centre = forms.BooleanField(
-		required=False, label='Call centre access',
-		help_text='Engagement Centre specialist: sees only the call-centre dashboards. Saving creates (or switches off) their specialist profile.',
+	access_call_centre_agent = forms.BooleanField(
+		required=False, label='Call centre agent',
+		help_text='Engagement Centre specialist with their own calling desk. Saving creates (or switches off) their specialist profile.',
+	)
+	access_call_centre_director = forms.BooleanField(
+		required=False, label='Call centre director',
+		help_text='Engagement Centre director: the director overview, every desk, allocation and settings. Super admins are always directors.',
 	)
 
 	class Meta:
@@ -104,7 +108,8 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 					'access_marketing',
 					'access_support',
 					'access_coach',
-					'access_call_centre',
+					'access_call_centre_agent',
+					'access_call_centre_director',
 					'groups',
 					'user_permissions',
 				)
@@ -212,7 +217,7 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 		user.groups.set(final_groups)
 
 		from callcentre.access import sync_agent
-		warning = sync_agent(user, bool(form.cleaned_data.get('access_call_centre')))
+		warning = sync_agent(user, bool(form.cleaned_data.get('access_call_centre_agent')))
 		if warning:
 			admin_messages.warning(request, warning)
 
