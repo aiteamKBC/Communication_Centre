@@ -231,8 +231,8 @@ def call_reviews(lower, upper, agents, own_only=False, all_calls=False):
 
     own_only drops calls matched to none of ``agents`` (a specialist sees only their own calls);
     all_calls also lists every rated call, not just the bad ones."""
-    from .services import identify_agent
     from .zoom_views import recording_calls
+    by_pk = {agent.pk: agent for agent in agents}
     recordings = system_recordings().filter(current_account_filter(), started_at__gte=lower, started_at__lt=upper)
     latest = {}
     for analysis in (AIAnalysis.objects.filter(state='ready', recording__in=recordings).select_related('recording')
@@ -242,7 +242,9 @@ def call_reviews(lower, upper, agents, own_only=False, all_calls=False):
     calls = []
     for analysis in latest.values():
         review, recording = review_json(analysis), analysis.recording
-        agent = next((found for call in recording_calls(recording) if (found := identify_agent(call, agents))), None)
+        # The verified match names the specialist: a shared Zoom line reports no caller email.
+        agent = next((by_pk[match.agent_id] for match in system_matches().filter(call__in=recording_calls(recording))
+                      if match.agent_id in by_pk), None)
         if agent:
             counts[agent.pk][review['rating']] += 1
         elif own_only:
