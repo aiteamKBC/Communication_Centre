@@ -131,18 +131,54 @@ def lms_learner(email):
             'coach_email': coach_email, 'coach_name': coach_name}
 
 
-def missed_lecture(ticket):
-    """The register row this missed-lecture case is about, read-only from kbc_attendance."""
+def _lecture_emails(ticket):
+    """The learner's emails for a missed-lecture lookup; raises when identity needs review."""
+    from .identity import enabled
+    if not enabled():
+        return [ticket.learner_email]
+    from .sources import learner_directory
+    person = learner_directory().resolve(email=ticket.learner_email)
+    if not person:
+        raise Conflict('Learner identity requires review before linking a missed lecture.')
+    return person['emails']
+
+
+def live_missed_lecture(ticket, emails):
+    """The LMS live-session occurrence this missed-lecture case is about (current LMS learners), read-only.
+
+    Matches on the case's (learner, lecture date, module) in ``curriculum.live_session_learner_attendance``.
+    Returns the same shape as the kbc path, keyed by the per-learner attendance row id (``la.id``) so a catch-up
+    booked from the call centre links through the same ``kbc_report_id(key)`` as the register path and never
+    collides between learners who share a session's attendance report. ``None`` when the LMS has no single matching
+    absence, so the caller can report that the lecture is no longer shown as missed.
+    """
     from .sources import rows
     module = str((ticket.source_data or {}).get('module') or '').strip()
-    from .identity import enabled
-    emails = [ticket.learner_email]
-    if enabled():
-        from .sources import learner_directory
-        person = learner_directory().resolve(email=ticket.learner_email)
-        if not person:
-            raise Conflict('Learner identity requires review before linking a missed lecture.')
-        emails = person['emails']
+    found = rows(LMS, '''SELECT la.id AS row_id, (o.scheduled_start)::date AS day,
+            o.session_number AS session_number,
+            COALESCE(NULLIF(trim(m.title), ''), la.module_catalogue_id) AS module
+        FROM curriculum.live_session_learner_attendance la
+        JOIN curriculum.live_session_occurrences o ON o.id = la.occurrence_id
+        LEFT JOIN curriculum.modules m ON m.module_catalogue_id = la.module_catalogue_id
+        WHERE la.attendance_status = 'absent' AND lower(trim(la.learner_email)) = ANY(%s)
+          AND (o.scheduled_start)::date = %s''', [emails, ticket.overdue_since])
+    missed = [r for r in found if str(r['module'] or '').strip() == module and r['row_id'] is not None]
+    if len({r['row_id'] for r in missed}) != 1:
+        return None
+    row = missed[0]
+    title = module or 'Attendance session'
+    if row['session_number']:
+        title = f'{title} — Session {row["session_number"]}'
+    return {'key': f'live:{row["row_id"]}', 'register_id': None, 'date': row['day'], 'title': title,
+            'source': 'live_session', 'learner_email': ticket.learner_email}
+
+
+def missed_lecture(ticket):
+    """The lecture this missed-lecture case is about, read-only. Tries the legacy kbc_attendance register first,
+    then the LMS live-session attendance (current learners), so both case sources can book a catch-up."""
+    from .sources import rows
+    module = str((ticket.source_data or {}).get('module') or '').strip()
+    emails = _lecture_emails(ticket)
     found = rows(DB, '''SELECT "ID", "key", "date", "Attendance", "module", "lecture_name" FROM public.kbc_attendance
         WHERE lower(trim("Email")) = ANY(%s) AND "date" = %s AND trim(coalesce("module", '')) = %s''',
                  [emails, ticket.overdue_since, module])
@@ -151,6 +187,10 @@ def missed_lecture(ticket):
     if recorded_key:
         missed = [r for r in missed if str(r['key']) == str(recorded_key)]
     if not missed:
+        # No kbc register row: the case may come from the LMS live-session source instead.
+        live = live_missed_lecture(ticket, emails)
+        if live:
+            return live
         raise Conflict('The register no longer shows this lecture as missed.')
     if len({str(r['key']).strip() for r in missed}) > 1:
         raise Conflict('The register has more than one entry for this lecture. Book it from the LMS.')
@@ -374,8 +414,9 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
     A new report is 'pending' with no evidence: the call centre took the reason by phone, the coach approves it.
     An existing report keeps its status.
     """
-    # Created_users.aptem_id is text; the register "ID" is a number.
-    if str(lecture['register_id']).strip() != str(person['aptem_id'] or '').strip():
+    # Created_users.aptem_id is text; the kbc register "ID" is a number. Live-session cases carry no register id:
+    # the absence is already keyed to the learner by email in the LMS, so this register check does not apply.
+    if lecture.get('source') != 'live_session' and str(lecture['register_id']).strip() != str(person['aptem_id'] or '').strip():
         return None, 'The register id does not match the learner’s LMS Aptem id, so the LMS cannot show the link.'
     taken = _fetch(cursor, '''SELECT id FROM "Coach".coach_absence_report WHERE catchup_event_key = %s
         AND status <> 'declined' ''', [row['event_key']])
