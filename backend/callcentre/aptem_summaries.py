@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 
 from django.db import connections
 
-from .db import APTEM, DB
+from .db import APTEM, DB, LMS
 
 # EPA cases are only raised while the learner is recently overdue: 7 days to 7+EPA_RECENCY_DAYS
 # days past their End-Date. Older entries drop off so the queue stays to recent EPA entrants.
@@ -119,6 +119,61 @@ def epa_overdue_rows(today=None):
             result.append({'id': row.get('ID'), 'email': str(row.get('Email') or '').strip().lower(),
                            'endDate': end_date.isoformat()})
     return result
+
+
+def live_attendance_missed_for_week(week_start, week_end):
+    """Missed live-session lectures in the window, from the LMS ``curriculum`` attendance (current learners).
+
+    A learner is absent from one occurrence when ``attendance_status = 'absent'``. The lecture date is the
+    occurrence's ``scheduled_start``; the module name comes from ``curriculum.modules`` (the catalogue id when
+    the title is absent). The return shape matches :func:`attendance_missed_for_week` so the old ``kbc_attendance``
+    source and this one feed the same case pipeline. ``missed_count`` is the number of distinct absent
+    (module) sessions for the learner up to that date, for the red/amber risk threshold.
+    """
+    rows = _fetch(LMS, '''SELECT lower(trim(la.learner_email)) AS email, (o.scheduled_start)::date AS day,
+            COALESCE(NULLIF(trim(m.title), ''), la.module_catalogue_id) AS module, la.id AS key
+        FROM curriculum.live_session_learner_attendance la
+        JOIN curriculum.live_session_occurrences o ON o.id = la.occurrence_id
+        LEFT JOIN curriculum.modules m ON m.module_catalogue_id = la.module_catalogue_id
+        WHERE la.attendance_status = 'absent' AND o.scheduled_start::date >= %s AND o.scheduled_start::date <= %s''',
+                    [week_start, week_end])
+    learners = [{'email': row['email'], 'attendance_date': row['day'].isoformat(),
+                 'attendance_module': str(row['module'] or '').strip(), 'attendance_key': str(row['key'])}
+                for row in rows if row['email'] and row['day']]
+    if not learners:
+        return []
+    emails = sorted({item['email'] for item in learners})
+    placeholders = ','.join(['%s'] * len(emails))
+    history = _fetch(LMS, f'''SELECT lower(trim(la.learner_email)) AS email, (o.scheduled_start)::date AS day,
+            COALESCE(NULLIF(trim(m.title), ''), la.module_catalogue_id) AS module
+        FROM curriculum.live_session_learner_attendance la
+        JOIN curriculum.live_session_occurrences o ON o.id = la.occurrence_id
+        LEFT JOIN curriculum.modules m ON m.module_catalogue_id = la.module_catalogue_id
+        WHERE la.attendance_status = 'absent' AND lower(trim(la.learner_email)) IN ({placeholders})''', emails)
+    dates = {}
+    for row in history:
+        if row['email'] and row['day']:
+            dates.setdefault((row['email'], str(row['module'] or '').strip()), set()).add(row['day'].isoformat())
+    for item in learners:
+        session_dates = dates.get((item['email'], item['attendance_module']), set())
+        item['missed_count'] = sum(1 for day in session_dates if day <= item['attendance_date']) or 1
+    return learners
+
+
+def lazy_learner_emails():
+    """Emails of learners on recorded-session ('lazy') attendance mode, from the LMS.
+
+    These learners follow the recordings instead of attending live, so a missed live
+    lecture is not a real absence for them and must not become a missed-lecture case.
+    Read from ``"Learner".attendance_preferences`` (``mode`` = ``lazy``) joined to the LMS
+    directory for the learner's email. ``live`` learners and learners with no preference
+    row are not returned, so they are still called about missed lectures as before.
+    """
+    rows = _fetch(LMS, '''SELECT lower(trim(u."Email")) AS email
+        FROM "Learner".attendance_preferences p
+        JOIN enrolment."Created_users" u ON u.id = p.learner_id
+        WHERE p.mode = 'lazy' ''')
+    return {row['email'] for row in rows if row['email']}
 
 
 def attendance_missed_for_week(week_start, week_end):
