@@ -20,7 +20,7 @@ function ticket(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
   };
 }
 
-async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', lastSync: string | null = null) {
+async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', lastSync: string | null = null, extra: Partial<Overview> = {}) {
   await page.addInitScript(() => {
     if (window.top !== window) return;
     localStorage.setItem('kbc-auth-user', JSON.stringify({
@@ -57,7 +57,7 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
           sync: { last_success_at: null, error: '', recordings_error: '' } }],
         cases, cases_truncated: false, resolutions: { agent: 0, ai: 0, system: 0 }, unclaimed_breaches: 0,
         sources: [], cycle: lastSync ? { last_success_at: lastSync, details: {} } : null,
-        connections: { calling: true, email_mode: 'dry_run', ai: false }, call_reviews: null,
+        connections: { calling: true, email_mode: 'dry_run', ai: false }, call_reviews: null, ...extra,
       };
       return json(overview);
     }
@@ -819,4 +819,30 @@ test('Full case calls the learner and records the call for every case at once, w
   await expect(modal.getByRole('heading', { name: /^Record this call/ })).toHaveCount(0);
   expect(saves).toEqual([{ path: '/api/callcentre/tickets/1/save_call/', note: 'Catch-up agreed; attending tomorrow.', callback_at: null, agent_id: 1,
     items: [{ id: 1, outcome: 'reached', option: 'catch_up_session', note: '' }, { id: 2, outcome: 'resolve', option: '', note: '' }] }]);
+});
+
+test('an employer specialist calls employers only, and everyone else no employers', async ({ page }) => {
+  const cases = [
+    ticket(1, { learner_phone: '+447700900001' }),
+    ticket(2, { source_type: 'employer_feedback', learner_name: 'Max Manager', learner_email: 'max@example.org',
+      learner_phone: '+447700900002', promises: {} }),
+  ];
+  // The operator (agent 1) is the employer specialist: only the employer calls and their own records.
+  await openSheet(page, cases, 'next', null, { employer_specialists: [1] });
+  await expect(page.locator('.ed-next-name')).toHaveText('Max Manager');
+  await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Missed/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Due/ })).toHaveCount(0);
+});
+
+test('with someone else as the employer specialist, the employer calls leave this desk', async ({ page }) => {
+  const cases = [
+    ticket(1, { learner_phone: '+447700900001' }),
+    ticket(2, { source_type: 'employer_feedback', learner_name: 'Max Manager', learner_email: 'max@example.org',
+      learner_phone: '+447700900002', promises: {} }),
+  ];
+  await openSheet(page, cases, 'next', null, { employer_specialists: [2] });
+  await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
+  await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Missed/ })).toBeVisible();
 });

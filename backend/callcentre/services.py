@@ -9,6 +9,7 @@ from .access import is_director
 from .allocation import learner_owner, manager_owners, owners
 from .call_scope import system_case_calls, system_matches
 from .db import DB
+from .employer_desk import EMPLOYER, scope_error, specialists
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
@@ -53,11 +54,14 @@ def release_fields(ticket):
     ticket.last_activity_at = None
 
 
-def allocated_owner(learner_email, source_type):
-    """The specialist who looks after this contact, or None for the shared queue."""
-    if source_type == 'employer_feedback':
-        return manager_owners().get(learner_email)
-    return learner_owner(learner_email, owners())
+def allocated_owner(learner_email, source_type, team=None):
+    """The specialist who looks after this contact, or None for the shared queue. With employer specialists
+    (``team``), employer cases are shared between them and a specialist's learners are in the shared queue."""
+    team = specialists() if team is None else team
+    if source_type == EMPLOYER:
+        return None if team else manager_owners().get(learner_email)
+    owner = learner_owner(learner_email, owners())
+    return None if owner in team else owner
 
 
 def can_work(ticket, user, now=None, acting_agent=None):
@@ -70,10 +74,14 @@ def can_work(ticket, user, now=None, acting_agent=None):
         if not agent or ticket.claimed_by_id != agent.pk:
             raise Conflict('Another agent is working on this ticket.')
     if agent and not director:
-        owner = allocated_owner(ticket.learner_email, ticket.source_type)
+        team = specialists()
+        owner = allocated_owner(ticket.learner_email, ticket.source_type, team)
         if owner and owner != agent.pk:
             raise PermissionDenied(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. '
                                    'Ask a manager to change the allocation.')
+        refused = scope_error(ticket.source_type, agent.pk, team)
+        if refused:
+            raise PermissionDenied(refused)
     return agent
 
 
@@ -83,9 +91,13 @@ def claim(ticket_id, agent, now=None, actor=None):
     if not agent.active or not agent.user.is_active:
         raise PermissionDenied('Agent is inactive.')
     learner, source = CaseTicket.objects.filter(pk=ticket_id).values_list('learner_email', 'source_type').first() or ('', '')
-    owner = allocated_owner(learner, source)
+    team = specialists()
+    owner = allocated_owner(learner, source, team)
     if owner and owner != agent.pk:
         raise Conflict(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. Ask a manager to change the allocation.')
+    refused = scope_error(source, agent.pk, team)
+    if refused:
+        raise Conflict(refused)
     # A single conditional UPDATE is the arbiter, including on SQLite.
     available = Q(claimed_by__isnull=True) | Q(last_activity_at__lte=now - timedelta(minutes=30)) | Q(claimed_by=agent)
     changed = CaseTicket.objects.open().filter(available, pk=ticket_id).update(

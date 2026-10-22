@@ -4,6 +4,7 @@ import { caseAction } from './actions';
 import type { Session } from './actions';
 import { CallReviewDialog, RatingRules } from './CallReview';
 import Dialog from './Dialog';
+import EmployerSpecialists from './EmployerSpecialists';
 import Register from './Register';
 import { ISSUE_LABELS, badges, dueForCall, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
 
@@ -142,6 +143,8 @@ export default function Director({ overview, month, session, onMonth, onChanged,
 
   return (
     <>
+      <EmployerSpecialists session={session} onChanged={onChanged} notify={notify} />
+
       <section className="ec-card ed-lower">
         <div className="ec-head">
           <div><h2>Call red flags</h2><p className="ec-muted">The AI rates each call transcript excellent, good or bad as it arrives. Calls rated bad are listed here with what went wrong and what to change. AI findings require a human review.</p></div>

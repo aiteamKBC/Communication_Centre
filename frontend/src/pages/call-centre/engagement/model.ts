@@ -342,6 +342,18 @@ export const DESK_MENUS: [string, string, string][] = [
   ['reports', 'Reports', 'file'],
 ];
 
+/** An employer specialist's desk: the employer calls and their own records, no learner lists. */
+const EMPLOYER_DESK = new Set(['next', 'employer_satisfaction', 'followups', 'history', 'progress', 'reviews', 'reports']);
+
+/** The desk's menu: everything, or with employer specialists chosen, only theirs for them and no employer calls for the rest. */
+export const deskMenus = (overview: Pick<Overview, 'employer_specialists'>, agentId: number | null) => {
+  const team = overview.employer_specialists || [];
+  if (!team.length) return DESK_MENUS;
+  return agentId !== null && team.includes(agentId)
+    ? DESK_MENUS.filter(([key]) => EMPLOYER_DESK.has(key))
+    : DESK_MENUS.filter(([key]) => key !== 'employer_satisfaction');
+};
+
 /** Calls the AI actually judged (excludes not rated). */
 export const ratedCalls = (counts: Record<CallRating, number> | undefined) => (counts ? counts.excellent + counts.good + counts.bad : 0);
 

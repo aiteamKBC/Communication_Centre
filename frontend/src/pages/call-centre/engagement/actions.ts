@@ -6,7 +6,9 @@ export type Session = { csrf: string; agentId: number | null; canAct: boolean; i
   /** False on another specialist's desk: Zoom records calls under the caller's own account, so they would not attach. */
   ownDesk?: boolean;
   /** Technical issues can be raised in the technical support system. */
-  helpdesk?: boolean };
+  helpdesk?: boolean;
+  /** This desk makes the employer satisfaction calls only (the director chose it as an employer specialist). */
+  employerDesk?: boolean };
 
 type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean;
   /** From Call: the cases the call covers. */

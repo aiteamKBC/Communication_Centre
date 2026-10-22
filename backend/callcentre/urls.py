@@ -28,4 +28,5 @@ urlpatterns = [
     path('allocations/', manage_views.allocations),
     path('coach-pages/', manage_views.coach_pages),
     path('settings/', manage_views.settings_view),
+    path('employer-specialists/', manage_views.employer_specialists),
 ]

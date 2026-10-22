@@ -38,7 +38,11 @@ function employerRows(learners: Learner[]): Row[] {
 }
 
 /** Learner allocation by employer: an employer's learners stay with one specialist, who also makes the employer's calls. */
-export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWorkspace: (agentId: number) => void }) {
+export default function Allocation({ csrf, employerSpecialists = [], onWorkspace }: {
+  csrf: string; onWorkspace: (agentId: number) => void;
+  /** Specialists the director chose for every employer satisfaction call: their learners wait in the shared queue. */
+  employerSpecialists?: number[];
+}) {
   const [data, setData] = useState<Data | null>(null);
   const [loadError, setLoadError] = useState('');
   const [picks, setPicks] = useState<Map<string, number | null>>(new Map());
@@ -66,6 +70,9 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
 
   const learners = useMemo(() => data?.learners || [], [data]);
   const operators = useMemo(() => data?.operators || [], [data]);
+  const specialistNames = operators.filter(p => employerSpecialists.includes(p.id)).map(p => p.display_name).join(', ') || 'the employer specialists';
+  const optionLabel = (p: Operator) => (employerSpecialists.includes(p.id) ? `${p.display_name} (employer specialist: shared queue for now)` : p.display_name);
+  const inSharedQueue = (owner: number | null) => owner === null || employerSpecialists.includes(owner);
   const rows = useMemo(() => employerRows(learners), [learners]);
   const byEmail = useMemo(() => new Map(learners.map(l => [l.email, l])), [learners]);
   const ownerOf = useCallback((email: string) => (picks.has(email) ? picks.get(email) ?? null : byEmail.get(email)?.agent_id ?? null), [picks, byEmail]);
@@ -153,7 +160,10 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
         <div className="ec-head">
           <div>
             <h2>Allocate by employer</h2>
-            <p>An employer’s learners stay with one specialist, who also makes that employer’s satisfaction calls. Other specialists cannot claim an allocated learner.</p>
+            {employerSpecialists.length ? (
+              <p>An employer’s learners stay with one specialist. Other specialists cannot claim an allocated learner.
+                {' '}<strong>Employer satisfaction calls are made by {specialistNames}</strong> (chosen on the Director overview): while they make them, the learners allocated to them are in the shared queue.</p>
+            ) : <p>An employer’s learners stay with one specialist, who also makes that employer’s satisfaction calls. Other specialists cannot claim an allocated learner.</p>}
           </div>
           <div className="ec-buttons">
             <button type="button" disabled={busy || !operators.length || !rows.length} onClick={() => balance(false)}>Balance by learners</button>
@@ -164,15 +174,25 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
         <div className="ec-grid">
           {operators.map(p => {
             const owned = learners.filter(l => ownerOf(l.email) === p.id);
+            if (employerSpecialists.includes(p.id)) {
+              return (
+                <div key={p.id} className="ec-stat">
+                  <span>{p.display_name} · employer specialist</span><strong>All employers</strong>
+                  <span>Makes every employer satisfaction call. Their {owned.length} allocated {owned.length === 1 ? 'learner is' : 'learners are'} in the shared queue meanwhile.</span>
+                  <button type="button" onClick={() => onWorkspace(p.id)}>View calling workspace</button>
+                </div>
+              );
+            }
             return (
               <div key={p.id} className="ec-stat">
                 <span>{p.display_name}</span><strong>{owned.length}</strong>
-                <span>learners · {rows.filter(r => r.employer && r.emails.some(email => ownerOf(email) === p.id)).length} employers · {owned.reduce((sum, l) => sum + l.active_cases, 0)} open cases</span>
+                <span>learners · {employerSpecialists.length ? '' : `${rows.filter(r => r.employer && r.emails.some(email => ownerOf(email) === p.id)).length} employers · `}{owned.reduce((sum, l) => sum + l.active_cases, 0)} open cases</span>
                 <button type="button" onClick={() => onWorkspace(p.id)}>View calling workspace</button>
               </div>
             );
           })}
-          <div className="ec-stat"><span>Shared queue</span><strong>{learners.filter(l => ownerOf(l.email) === null).length}</strong><span>learners any specialist can call</span></div>
+          <div className="ec-stat"><span>Shared queue</span><strong>{learners.filter(l => inSharedQueue(ownerOf(l.email))).length}</strong>
+            <span>learners any specialist can call{employerSpecialists.length ? `, including the employer specialists’ ${learners.filter(l => employerSpecialists.includes(ownerOf(l.email) ?? -1)).length}` : ''}</span></div>
         </div>
         {inactive.map(p => (
           <p key={p.id} className="ec-alert" role="alert">
@@ -184,7 +204,7 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
           <label>Hand over all learners of
             <select value={from} onChange={event => setFrom(event.target.value)}>
               <option value="">Choose a specialist…</option>
-              {operators.map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+              {operators.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
               {inactive.map(p => <option key={p.id} value={p.id}>{p.display_name} (switched off)</option>)}
             </select>
           </label>
@@ -235,7 +255,7 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
                             <label key={l.email} className="ec-allocation-learner">
                               {l.name || l.email}
                               <select aria-label={`Give ${l.name || l.email} to`} disabled={busy} value={optionValue(ownerOf(l.email))} onChange={event => give([l.email], event.target.value)}>
-                                {operators.map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+                                {operators.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
                                 <option value="none">Shared queue</option>
                               </select>
                             </label>
@@ -247,7 +267,7 @@ export default function Allocation({ csrf, onWorkspace }: { csrf: string; onWork
                     <td>
                       <select aria-label={`Give ${r.name} to`} disabled={busy} value={value} onChange={event => give(r.emails, event.target.value)}>
                         {value === 'mixed' && <option value="mixed" disabled>Split between specialists</option>}
-                        {operators.map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+                        {operators.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
                         <option value="none">Shared queue</option>
                       </select>
                     </td>
