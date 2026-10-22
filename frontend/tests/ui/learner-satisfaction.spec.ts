@@ -16,7 +16,7 @@ function sample(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
     booking_at: null, ai_summary: '', ai_confidence: null, resolution_option: '', resolved_at: null, resolved_by: '',
     archived: false, escalated: false, created_at: past, purpose: '', requested_by: '', promised_at: null,
     promise_missed: false, promises: {}, specialist_closes: false, missed_call: false,
-    bookable: [], booking_links: {}, allocated_agent_id: null, ...fields,
+    bookable: [], booking_links: {}, allocated_agent_id: null, followup_agent_id: null, ...fields,
   };
 }
 

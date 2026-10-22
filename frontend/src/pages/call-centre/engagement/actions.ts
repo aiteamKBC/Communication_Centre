@@ -8,7 +8,9 @@ export type Session = { csrf: string; agentId: number | null; canAct: boolean; i
   /** Technical issues can be raised in the technical support system. */
   helpdesk?: boolean };
 
-type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean };
+type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean;
+  /** From Call: the cases the call covers. */
+  ticket_ids?: number[] };
 
 /** Runs a case command as the session's operating agent. A call hands the number to the Zoom desktop app. */
 export async function caseAction(session: Session, id: number, command: string, payload: Record<string, unknown> = {}) {
@@ -17,7 +19,8 @@ export async function caseAction(session: Session, id: number, command: string, 
   return result;
 }
 
-export const loadCase = (id: number) => api<CaseDetail>(`tickets/${id}/`);
+/** One case; with `agentId`, its open call is the one that specialist's desk made. */
+export const loadCase = (id: number, agentId?: number | null) => api<CaseDetail>(`tickets/${id}/${agentId ? `?agent_id=${agentId}` : ''}`);
 
 /** Why the Call button is unavailable for a case, or '' when the session can call. */
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {

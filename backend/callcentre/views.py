@@ -29,7 +29,7 @@ from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readine
 from .booking_links import booking_links
 from .db import DB
 from .evidence import satisfaction_evidence
-from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction
+from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction, TicketEvent
 from .reports import performance
 from .call_scope import system_case_calls
 from .history import monthly_history
@@ -37,7 +37,7 @@ from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
-from .services import Conflict, agent_for, can_work, claim, close, create_intent, event, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve
+from .services import NOT_DISCUSSED, Conflict, agent_for, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,14 @@ def with_last_call(cases):
     latest = system_case_calls().filter(ticket=OuterRef('pk')).exclude(processed_result='').order_by(
         '-match__call__started_at', '-match__call_id')
     return cases.annotate(last_call_result=Subquery(latest.values('processed_result')[:1]))
+
+
+def with_followup_agent(cases):
+    """Annotate each case with the specialist whose saved call set its current follow-up: the latest outcome
+    recorded on the case since it was last reopened. Null when no specialist's call has set one."""
+    latest = TicketEvent.objects.filter(ticket=OuterRef('pk'), kind__in=('outcome', NOT_DISCUSSED)).filter(
+        Q(ticket__evidence_after__isnull=True) | Q(created_at__gt=F('ticket__evidence_after'))).order_by('-created_at', '-id')
+    return cases.annotate(followup_agent_id=Subquery(latest.values('agent_id')[:1]))
 
 
 def rank(ticket, now):
@@ -271,7 +279,7 @@ def overview(request):
     agent = agent_for(request.user)
     is_manager = is_director(request.user)
 
-    tickets = list(with_last_call(CaseTicket.objects.open().select_related('claimed_by')))
+    tickets = list(with_followup_agent(with_last_call(CaseTicket.objects.open().select_related('claimed_by'))))
     tickets.sort(key=lambda ticket: rank(ticket, now), reverse=True)
     allocated = owners()
     employers = manager_owners(allocated)
@@ -284,6 +292,7 @@ def overview(request):
         item['contact_key'] = keys[ticket.pk]
         item.pop('source_data')
         item.pop('priority_why')
+        item['followup_agent_id'] = ticket.followup_agent_id
         item['allocated_agent_id'] = (employers.get(ticket.learner_email) if ticket.source_type == 'employer_feedback'
                                       else learner_owner(ticket.learner_email, allocated))
         cases.append(item)
@@ -421,6 +430,9 @@ def detail(request, pk):
                    'duration_seconds': item.match.call.duration_seconds, 'outcome': item.outcome,
                    'current': item.match.call.started_at >= (ticket.evidence_after or ticket.created_at)} for item in calls],
         'emails': list(ticket.emails.order_by('-id').values('id', 'kind', 'status', 'mode', 'subject', 'text', 'error', 'created_at')[:30]),
+        # A call just made to this learner whose outcome is not saved yet: recorded for all its cases at once.
+        'open_call': open_call(ticket, operating_agent(request.user, int(request.GET['agent_id'])) if request.GET.get('agent_id')
+                               else agent_for(request.user)),
     })
 
 
@@ -428,7 +440,8 @@ def detail(request, pk):
 @require_POST
 @csrf_protect
 def action(request, pk, command):
-    data = body(request)
+    # A whole call carries every case's outcome and note.
+    data = body(request, limit=64000 if command == 'save_call' else 16000)
     agent = operating_agent(request.user, data.get('agent_id'))
     if command in ('claim', 'call'):
         if not agent:
@@ -442,7 +455,9 @@ def action(request, pk, command):
         if caller_id:
             zoom_url += '?' + urlencode({'callerid': caller_id})
         return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number,
-                             'number': intent.number, 'caller_id': caller_id})
+                             'number': intent.number, 'caller_id': caller_id,
+                             # The cases this call covers: the after-call form records exactly these.
+                             'ticket_ids': sorted(intent.tickets.values_list('pk', flat=True))})
     if command == 'complete_feedback':
         complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
                                  action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
@@ -455,6 +470,14 @@ def action(request, pk, command):
         applied = plan_outcome(pk, request.user, data.get('outcome', ''), option=data.get('option', ''),
                                note=str(data.get('note', ''))[:5000],
                                callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)
+        return JsonResponse({'ok': True, 'applied': applied})
+    elif command == 'save_call':
+        items = data.get('items')
+        if not isinstance(items, list) or len(items) > 50 or not all(
+                isinstance(item, dict) and type(item.get('id')) is int and isinstance(item.get('outcome'), str) for item in items):
+            raise ValueError('Send each case with its outcome.')
+        applied = save_call(pk, request.user, items, note=str(data.get('note', ''))[:5000],
+                            callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)
         return JsonResponse({'ok': True, 'applied': applied})
     elif command == 'close_review':
         close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''), acting_agent=agent)

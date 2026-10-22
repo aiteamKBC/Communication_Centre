@@ -11,7 +11,7 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import connections
+from django.db import connections, transaction
 from django.db.models import ProtectedError, Q
 from django.test import TestCase
 from django.utils import timezone
@@ -20,8 +20,12 @@ from .allocation import owners
 from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
-                       plan_outcome, record_outcome)
-from .views import rank, with_last_call
+                       event, open_call, plan_outcome, record_outcome, save_call)
+from .views import rank, with_followup_agent, with_last_call
+
+# Without routers these tests write to 'default'; in production the call-centre tables are on login_db, the alias
+# save_call's transaction uses. This is save_call in a transaction on the database the tests write to.
+one_transaction = transaction.atomic(using='default')(save_call.__wrapped__)
 
 
 @unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
@@ -203,6 +207,95 @@ class CallFlowTests(TestCase):
         CaseTicket.objects.filter(pk=ann.pk).update(next_followup_at=self.now - timedelta(minutes=1))
         create_intent(ann.pk, self.agent)   # due again: the call can start
 
+    # One call, every case saved together
+
+    def learner_with(self, *source_types):
+        """Ann with one case per source type, all on the call started from the first."""
+        tickets = [CaseTicket.objects.create(
+            source_type=source_type, reason_key=f'{source_type}:ann:{index}', learner_email='ann@x.test', learner_name='Ann',
+            learner_phone='+447700900001', due_at=self.now + timedelta(days=2)) for index, source_type in enumerate(source_types)]
+        CaseTicket.objects.filter(pk__in=[ticket.pk for ticket in tickets]).update(created_at=self.now - timedelta(hours=1))
+        create_intent(tickets[0].pk, self.agent)
+        return tickets
+
+    def outcomes(self, ticket):
+        return list(ticket.events.filter(kind='outcome_pending').values_list('data__outcome', flat=True))
+
+    def test_an_unanswered_call_is_saved_for_every_case_at_once(self):
+        tickets = self.learner_with('epa', 'epa', 'manual')
+        items = [{'id': ticket.pk, 'outcome': 'no_answer'} for ticket in tickets]
+        self.assertFalse(save_call(tickets[0].pk, self.user, items))   # held until Zoom reports the call
+        self.assertEqual([self.outcomes(ticket) for ticket in tickets], [['no_answer']] * 3)
+
+    def test_one_case_failing_saves_none_of_them(self):
+        epa, manual = self.learner_with('epa', 'manual')
+        # Refused needs a note: the second case fails, so the first one's outcome is rolled back too.
+        with self.assertRaisesMessage(ValueError, 'Say what the learner said.'):
+            one_transaction(epa.pk, self.user, [{'id': epa.pk, 'outcome': 'reached', 'option': 'epa_step'},
+                                          {'id': manual.pk, 'outcome': 'refused'}])
+        self.assertEqual((self.outcomes(epa), self.outcomes(manual)), ([], []))
+
+    def test_a_case_that_was_not_on_the_call_is_refused(self):
+        epa, = self.learner_with('epa')
+        ben = self.case('ben')
+        with self.assertRaisesMessage(Conflict, 'was not part of this call'):
+            one_transaction(epa.pk, self.user, [{'id': epa.pk, 'outcome': 'no_answer'}, {'id': ben.pk, 'outcome': 'no_answer'}])
+        self.assertEqual(self.outcomes(epa), [])
+
+    def test_the_call_must_have_been_made(self):
+        ann = self.case('ann')
+        with self.assertRaisesMessage(ValueError, 'Call the learner first.'):
+            save_call(ann.pk, self.user, [{'id': ann.pk, 'outcome': 'no_answer'}])
+
+    def test_answered_cases_get_their_own_outcomes_and_an_undiscussed_one_waits(self):
+        epa, manual, other = self.learner_with('epa', 'manual', 'epa')
+        save_call(epa.pk, self.user, [{'id': epa.pk, 'outcome': 'reached', 'option': 'epa_step'},
+                                      {'id': manual.pk, 'outcome': 'resolve'},
+                                      {'id': other.pk, 'outcome': 'not_discussed'}], note='Agreed the EPA step by Friday.')
+        epa, manual, other = (self.fresh(ticket) for ticket in (epa, manual, other))
+        self.assertEqual(self.outcomes(epa), ['reached'])
+        self.assertEqual(manual.status, 'resolved')
+        # Not discussed: no outcome, released and back in the list next working morning.
+        self.assertEqual((self.outcomes(other), other.status, other.claimed_by_id, other.next_followup_at),
+                         ([], 'new', None, self.morning()))
+
+
+    def test_full_case_offers_the_unsaved_call_until_it_is_saved_once(self):
+        epa, manual = self.learner_with('epa', 'manual')
+        # Straight after Call, any of its cases offers the whole call, before Zoom reports anything.
+        self.assertEqual(open_call(manual, self.agent), {'ticket_ids': sorted([epa.pk, manual.pk])})
+        save_call(manual.pk, self.user, [{'id': epa.pk, 'outcome': 'no_answer'}, {'id': manual.pk, 'outcome': 'no_answer'}])
+        self.assertIsNone(open_call(epa, self.agent))
+        # Saved in Full case, so the Next call screen cannot record it a second time.
+        with self.assertRaisesMessage(Conflict, 'This call has already been saved.'):
+            save_call(epa.pk, self.user, [{'id': epa.pk, 'outcome': 'no_answer'}])
+        self.assertEqual(self.outcomes(epa), ['no_answer'])
+
+    # Whose follow-up it is (the Follow-ups page)
+
+    def followup_agent(self, ticket):
+        return with_followup_agent(CaseTicket.objects.filter(pk=ticket.pk)).get().followup_agent_id
+
+    def test_a_follow_up_belongs_to_the_specialist_whose_call_set_it(self):
+        ann, ben, cat = self.case('ann'), self.case('ben'), self.case('cat')
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'no_answer').pk, 'no_answer')
+        record_outcome(ben.pk, self.user, self.zoom(ben, 'answered').pk, 'callback', '', '', add_workdays(self.now, 2))
+        self.assertEqual([self.followup_agent(ticket) for ticket in (ann, ben, cat)], [self.agent.pk, self.agent.pk, None])
+
+    def test_an_undiscussed_case_on_the_call_is_the_callers_follow_up_too(self):
+        epa, other = self.learner_with('epa', 'epa')
+        save_call(epa.pk, self.user, [{'id': epa.pk, 'outcome': 'not_discussed'}, {'id': other.pk, 'outcome': 'not_discussed'}])
+        self.assertEqual((self.followup_agent(epa), self.followup_agent(other)), (self.agent.pk, self.agent.pk))
+
+    def test_the_latest_call_owns_the_follow_up_and_a_reopen_clears_it(self):
+        ann = self.case('ann')
+        record_outcome(ann.pk, self.user, self.zoom(ann, 'no_answer').pk, 'no_answer')
+        bob = Agent.objects.create(user=get_user_model().objects.create_user('bob'), display_name='Bob',
+                                   zoom_email='bob@kbc.test', zoom_account='student')
+        event(ann, 'outcome', {'outcome': 'callback'}, bob)
+        self.assertEqual(self.followup_agent(ann), bob.pk)
+        CaseTicket.objects.filter(pk=ann.pk).update(evidence_after=timezone.now() + timedelta(seconds=1))
+        self.assertIsNone(self.followup_agent(ann))
 
 class Directory(dict):
     managers = {}

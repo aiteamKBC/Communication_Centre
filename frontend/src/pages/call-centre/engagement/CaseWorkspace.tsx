@@ -5,6 +5,7 @@ import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
 import BookingPage from './BookingPage';
+import CallOutcome from './CallOutcome';
 import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
@@ -22,6 +23,8 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
   const [busy, setBusy] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [bookingEmailOpen, setBookingEmailOpen] = useState(false);
+  // The cases the call just made from here covers, recorded together in the call's form.
+  const [onCall, setOnCall] = useState<number[] | null>(null);
 
   if (error) return <p role="alert">{error}</p>;
   if (!detail) return <p role="status">Loading the learner’s case…</p>;
@@ -61,6 +64,30 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
     }
   }
 
+  async function call() {
+    setBusy(true);
+    try {
+      const result = await caseAction(session, c.id, 'call');
+      notify('Zoom Phone opened. When you hang up, record the call for every case in “Record this call”.');
+      setOnCall(result.ticket_ids || [c.id]);
+      refresh();
+      onChanged();
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function callSaved(message: string) {
+    notify(message);
+    setOnCall(null);
+    refresh();
+    onChanged();
+  }
+
+  const callCases = onCall ? overview.cases.filter(item => onCall.includes(item.id)) : [];
+
   const saved = (message: string) => {
     notify(message);
     refresh();
@@ -87,7 +114,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
               {employer ? 'Ask how each of their learners is getting on.' : 'Check the learner’s current position before discussing a recorded gap.'}
             </div>
             <div className="ec-buttons">
-              <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void run('call', 'Zoom Phone opened. Record the outcome once Zoom reports the call.')}>{employer ? 'Call employer' : 'Call learner'}</button>
+              <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
               {!session.preview && c.status !== 'resolved' && (
                 <button type="button" disabled={busy || !session.agentId || (!!c.claimed_agent_id && !mine)} onClick={() => void run(mine ? 'release' : 'claim', mine ? 'Case released.' : 'Case claimed.')}>
                   {mine ? 'Release case' : 'Claim case'}
@@ -147,8 +174,17 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
             <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={c.source_type === 'employer_feedback'} session={session}
               onSaved={() => saved('Feedback completed. Next review is due in three calendar months.')} />
           </section>}
+          {callCases.length > 0 && (
+            <section className="ec-card">
+              <h2>Record this call</h2>
+              <p className="ec-muted">One form for every case on the call. You can save straight away; Zoom does not need to have reported the call.</p>
+              <CallOutcome key={onCall!.join()} callFrom={c.id} name={c.learner_name} issues={callCases} session={session} notify={notify}
+                onSaved={callSaved} saveLabel="Save the call" />
+              <button type="button" className="ed-sheet-link" onClick={() => setOnCall(null)}>Cancel: the call did not go out</button>
+            </section>
+          )}
           <section className="ec-card">
-            <h2>Next step</h2>
+            <h2>{callCases.length > 0 ? 'Next step for this case only' : 'Next step'}</h2>
             <NextStepForm detail={detail} session={session} onSaved={saved} onError={message => notify(message, true)} />
           </section>
           <section className="ec-card"><h2>Latest activity</h2><Timeline detail={detail} /></section>

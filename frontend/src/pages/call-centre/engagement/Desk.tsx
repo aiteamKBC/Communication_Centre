@@ -60,7 +60,10 @@ export default function Desk({ overview, agent, session, section, name, status, 
     setTouched(new Set());
   }, [section]);
 
-  const active = useMemo(() => overview.cases.filter(activeCase), [overview.cases]);
+  // Follow-ups: only the cases whose current follow-up was set by this specialist's own call.
+  const active = useMemo(() => overview.cases.filter(c => activeCase(c)
+    && (section !== 'followups' || (!!session.agentId && c.followup_agent_id === session.agentId))),
+  [overview.cases, section, session.agentId]);
   const queue = useMemo(() => uniqueLearners(active.filter(c => (issue === 'all' || c.source_type === issue)
     && !touched.has(contactKey(c)) && matchesSearch(c, search) && matchesCaseFilters(c, caseFilters))),
   [active, issue, touched, search, caseFilters]);
@@ -198,7 +201,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
               </select>
             </div>
             <div id="ed-queue-list">
-              <div className="ed-queue-heading"><strong>{queue.length} people with active cases</strong><span>Priority order</span></div>
+              <div className="ed-queue-heading"><strong>{queue.length} {section === 'followups' ? 'people with your follow-ups' : 'people with active cases'}</strong><span>Priority order</span></div>
               {queue.length ? queue.slice(0, 200).map(c => (
                 <button key={c.id} className={`ed-person ${current === c.id ? 'selected' : ''}`} type="button" aria-pressed={current === c.id} onClick={() => open(c.id)}>
                   <span className="ed-person-name">{c.learner_name}</span>
@@ -206,7 +209,8 @@ export default function Desk({ overview, agent, session, section, name, status, 
                   <small>{c.coach || 'Coach not recorded'} · {shortDate(c.next_followup_at || c.due_at)}</small>
                   <small>{human(c.status)}{dueForCall(c) ? ' · Due now' : ''}</small>
                 </button>
-              )) : <div className="ec-empty"><h3>No people in this list</h3><p>Try another reason or clear the search.</p></div>}
+              )) : <div className="ec-empty"><h3>No people in this list</h3><p>{section === 'followups' && !active.length
+                ? 'Follow-ups you set when saving a call appear here.' : 'Try another reason or clear the search.'}</p></div>}
             </div>
           </aside>
           <section className="ed-work">
