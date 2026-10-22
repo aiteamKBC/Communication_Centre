@@ -10,7 +10,7 @@ from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
-from django.db import DatabaseError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.utils import timezone
 
 from . import email_settings, mailer
@@ -18,6 +18,7 @@ from .booking_links import booking_links
 from .db import DB
 from .models import CaseTicket, EmailDelivery, EmailQuota
 from .rules import LONDON, email_key
+from .lms_booking import DURATION, TITLES
 from .services import Conflict, can_work, event
 
 SUBJECT_MAX, MESSAGE_MAX = 180, 5000
@@ -239,4 +240,69 @@ def send(ticket_id, user, sender, data, acting_agent=None):
         delivery.save(update_fields=['status', 'sent_at', 'error'])
         event(ticket, 'email_' + delivery.status,
               {'delivery_id': delivery.pk, 'stage': 'booking', 'recipient': recipient, 'mode': mode}, agent, actor)
+    return delivery_result(delivery)
+
+
+def confirmation(booked, session_type, lecture=''):
+    """(subject, text, html) telling the learner what was booked from the Engagement Centre: with whom and when."""
+    title = TITLES[session_type]
+    start = booked['start'].astimezone(LONDON)
+    when = f"{start:%A} {start.day} {start:%B %Y} at {start:%H:%M}"
+    subject = f'Your {title.lower()} with {booked["coach"]} is booked'
+    about = f' for {lecture}' if lecture else ''
+    message = (f'Your {title.lower()}{about} with {booked["coach"]} is booked for {when} (UK time). '
+               f'It lasts {DURATION} minutes.\n\nThe Microsoft Teams invitation has been sent to this email address. '
+               f'If the time no longer works, please contact {booked["coach"]} before the session starts.')
+    url = booked['join_url'] if str(booked.get('join_url') or '').startswith('https://') else ''
+    first = (booked.get('learner_name') or '').split(' ')[0] or 'there'
+    text, html = layout(subject, first, message, '', 'Join the Teams meeting', url)
+    return subject, text, html
+
+
+def send_confirmation(ticket_id, booked, session_type, agent=None, actor=None):
+    """Email the learner that their session is booked, once per booking, and record it on the case.
+
+    Runs after the booking is saved, so it can never undo or block it: the result is returned as a status and any
+    problem is recorded on the delivery. Dry run records the email without sending it.
+    """
+    key = f'booking-confirmation:{booked["event_key"]}'
+    recipient = email_key(booked.get('learner_email'))
+    with transaction.atomic(using=DB):
+        ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+        previous = EmailDelivery.objects.filter(dedupe_key=key).first()
+        if previous:
+            return delivery_result(previous)
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            return {'status': 'skipped', 'recipient': recipient, 'error': 'No valid learner email on the booking.'}
+        lecture = str(_data(ticket).get('module') or '').strip() if session_type == 'catch-up' else ''
+        subject, text, html = confirmation(booked, session_type, lecture)
+        mode = email_settings.current()['email_mode']
+        if mode == 'live' and not mailer.configured():
+            mode = 'dry_run'
+        try:
+            with transaction.atomic(using=DB):
+                delivery = EmailDelivery.objects.create(
+                    ticket=ticket, dedupe_key=key, recipient=recipient, kind='booking_confirmation', mode=mode,
+                    status='dry_run' if mode == 'dry_run' else 'sending', subject=subject, html=html, text=text)
+        except IntegrityError:
+            return delivery_result(EmailDelivery.objects.get(dedupe_key=key))
+        event(ticket, 'email_dry_run' if mode == 'dry_run' else 'email_requested',
+              {'delivery_id': delivery.pk, 'stage': 'booking_confirmation', 'recipient': recipient, 'mode': mode},
+              agent, actor)
+    if mode == 'dry_run':
+        return delivery_result(delivery)
+    try:
+        mailer.send(recipient, delivery.subject, delivery.html)
+        delivery.status, delivery.sent_at = 'accepted', timezone.now()
+    except mailer.MailError as exc:
+        delivery.status = 'unknown' if exc.uncertain else 'failed'
+        delivery.error = ('Microsoft acceptance is uncertain. Check Sent Items before retrying.' if exc.uncertain
+                          else 'Microsoft refused the email. Check the mail app permission and sender mailbox.')
+    with transaction.atomic(using=DB):
+        delivery.save(update_fields=['status', 'sent_at', 'error'])
+        event(ticket, 'email_' + delivery.status,
+              {'delivery_id': delivery.pk, 'stage': 'booking_confirmation', 'recipient': recipient, 'mode': mode},
+              agent, actor)
     return delivery_result(delivery)

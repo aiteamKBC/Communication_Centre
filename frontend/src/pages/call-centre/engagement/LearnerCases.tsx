@@ -14,7 +14,7 @@ export default function LearnerCases({ cases, selected, onOpen }: {
   }
   return <section className="ed-learner-cases" aria-label="All cases for this contact">
     <h3>All cases ({cases.length})</h3>
-    <p>Review the learner’s cases in one conversation. Save the agreed action for each case you discuss.</p>
+    <p>Review the learner’s cases in one conversation. One call covers them all: record what happened for every case in one form.</p>
     {[...groups].map(([label, items]) => <section key={label} className="ed-case-group">
       <h4>{label} <span>{items.length}</span></h4>
       <ul>{[...items].sort((a, b) => {

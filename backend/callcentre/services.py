@@ -307,22 +307,11 @@ def apply_call_result(match):
             failed = failed.filter(match__call__started_at__gt=ticket.evidence_after)
         ticket.attempts = failed.count()
         latest = eligible.exclude(processed_result='').select_related('match__call').order_by('-match__call__started_at', '-match__call_id').first()
-        other_claim = (ticket.claimed_by_id and ticket.claimed_by_id != match.agent_id and ticket.last_activity_at
-                       and ticket.last_activity_at > timezone.now() - timedelta(minutes=30))
         before_reopen = bool(latest and ticket.evidence_after and latest.match.call.started_at <= ticket.evidence_after)
-        if ticket.status != 'resolved' and latest and not other_claim and not before_reopen:
-            last = latest.match.call
-            ticket.last_contact_at = last.started_at
-            if last.result in FAILED_RESULTS:
-                # A missed call is held until the next working morning, then comes back flagged, at the bottom.
-                ticket.next_followup_at = next_workday_morning(last.ended_at)
-                ticket.status = 'new'
-            elif not (ticket.promised_at and ticket.promised_at > timezone.now()):
-                # Reached but nothing agreed yet: the case comes back next working day unless an outcome sets a promise.
-                ticket.status = 'pending_verification'
-                ticket.next_followup_at = next_workday_morning(last.ended_at)
-            release_fields(ticket)
-            ticket.save()
+        # Zoom's result is evidence only: the case moves on when the specialist saves the call's outcome.
+        if ticket.status != 'resolved' and latest and not before_reopen:
+            ticket.last_contact_at = latest.match.call.started_at
+            ticket.save(update_fields=['attempts', 'last_contact_at'])
         else:
             ticket.save(update_fields=['attempts'])
         event(ticket, 'zoom_result', {'result': call.result, 'failed_attempts': ticket.attempts}, agent=match.agent, call=call)
@@ -384,15 +373,13 @@ def record_outcome(ticket_id, user, call_id, outcome, option='', note='', callba
 @transaction.atomic(using=DB)
 def plan_outcome(ticket_id, user, outcome, option='', note='', callback_at=None, acting_agent=None):
     """Save the outcome straight after the call. Until Zoom reports the call it is held, then applied
-    automatically if Zoom confirms an answered call. Returns True when it was applied now."""
+    automatically once Zoom's result fits it (answered, or unanswered for No answer). Returns True when it was applied now."""
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
     if not agent:
         raise PermissionDenied('Only the specialist who made the call can save its outcome.')
     if ticket.status == 'resolved':
         raise Conflict('Reopen the case before recording another outcome.')
-    if outcome == 'no_answer':
-        raise ValueError('Zoom records unanswered calls by itself.')
     check_outcome(ticket, outcome, option, note, callback_at)
     intent = ticket.intents.filter(agent=agent, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW).order_by('-created_at').first()
     if not intent:
@@ -408,6 +395,85 @@ def plan_outcome(ticket_id, user, outcome, option='', note='', callback_at=None,
     ticket.last_activity_at = timezone.now()
     ticket.save(update_fields=['last_activity_at'])
     return False
+
+
+ALREADY_SAVED = 'This call has already been saved.'
+
+
+def call_saved(intent):
+    return TicketEvent.objects.filter(kind='call_saved', data__intent_id=intent.pk).exists()
+
+
+def open_call(ticket, agent):
+    """The call this specialist made in the last two hours that covers this case and is not saved yet: its cases,
+    for the after-call form. None when there is no such call."""
+    if not agent:
+        return None
+    intent = (CallIntent.objects.filter(agent=agent, tickets=ticket, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW)
+              .order_by('-created_at').first())
+    if not intent or call_saved(intent):
+        return None
+    return {'ticket_ids': sorted(intent.tickets.values_list('pk', flat=True))}
+
+
+# A case on the call that was not talked about: no outcome, it goes back to the list on the follow-up date.
+NOT_DISCUSSED = 'not_discussed'
+# Closes a case the specialist closes (nothing to prove): the call itself was the work.
+RESOLVE = 'resolve'
+
+
+@transaction.atomic(using=DB)
+def save_call(ticket_id, user, items, note='', callback_at=None, acting_agent=None):
+    """Save the outcome of every case on one call together, or none of them: one case failing rolls back the rest.
+    ``ticket_id`` is the case the call was started from; ``items`` are ``{'id', 'outcome', 'option', 'note'}`` for
+    cases on that call, a per-case note added to the shared one. Returns True when every outcome was applied now
+    (False when one is held until Zoom reports the call)."""
+    agent = can_work(CaseTicket.objects.get(pk=ticket_id), user, acting_agent=acting_agent)
+    if not agent:
+        raise PermissionDenied('Only the specialist who made the call can save its outcome.')
+    intent = (CallIntent.objects.filter(agent=agent, tickets=ticket_id, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW)
+              .order_by('-created_at').first())
+    if not intent:
+        raise ValueError('Call the learner first.')
+    if call_saved(intent):
+        raise Conflict(ALREADY_SAVED)
+    on_call = {ticket.pk: ticket for ticket in intent.tickets.all()}
+    if not items:
+        raise ValueError('Record an outcome for at least one case.')
+    if callback_at and callback_at <= timezone.now():
+        raise ValueError('Choose a future follow-up time.')
+    if callback_at and not working_day(callback_at.astimezone(LONDON).date()):
+        raise ValueError('Learners are not called at weekends or on bank holidays: choose a working day.')
+    applied = True
+    for item in items:
+        ticket = on_call.get(item['id'])
+        if not ticket:
+            raise Conflict('A case on the screen was not part of this call. Refresh the page and record the call again.')
+        outcome, option = item['outcome'], str(item.get('option') or '')
+        text = '\n\n'.join(part for part in (note.strip(), str(item.get('note') or '')[:3500].strip()) if part)
+        try:
+            if outcome == RESOLVE:
+                resolve(ticket.pk, user, note=text, option='other', acting_agent=agent)
+            elif outcome == NOT_DISCUSSED:
+                locked = CaseTicket.objects.select_for_update().get(pk=ticket.pk)
+                if locked.status == 'resolved':
+                    raise Conflict('This case is already closed.')
+                if locked.status == 'in_progress':
+                    locked.status = 'new'
+                locked.next_followup_at = callback_at or next_workday_morning(timezone.now())
+                release_fields(locked)
+                locked.save()
+                event(locked, NOT_DISCUSSED, {'note': text, 'intent_id': intent.pk,
+                                              'callback_at': locked.next_followup_at.isoformat()}, agent)
+            else:
+                applied = plan_outcome(ticket.pk, user, outcome, option=option, note=text, callback_at=callback_at,
+                                       acting_agent=agent) and applied
+        except (ValueError, PermissionDenied) as exc:
+            # Name the case, so the specialist knows which row to fix.
+            raise type(exc)(f'{ticket.get_source_type_display()}: {exc}') from exc
+    # Marks the call as recorded, so it is not offered or saved again (Next call and Full case show the same call).
+    event(on_call[ticket_id], 'call_saved', {'intent_id': intent.pk}, agent)
+    return applied
 
 
 def apply_pending_outcome(ticket, link, match):
@@ -451,8 +517,8 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
         ticket.status = 'pending_verification'
         ticket.next_followup_at = callback_at or ticket.promised_at or next_workday_morning(timezone.now())
     elif outcome == 'no_answer':
-        # Held until the chosen follow-up, else the next working morning (as apply_call_result does).
-        ticket.next_followup_at = callback_at or next_workday_morning(timezone.now())
+        # Held until the chosen follow-up, else the next working morning, then back at the bottom of the list.
+        ticket.status, ticket.next_followup_at = 'new', callback_at or next_workday_morning(timezone.now())
     release_fields(ticket)
     ticket.save()
     event(ticket, 'outcome', {'outcome': outcome, 'option': option, 'note': note,

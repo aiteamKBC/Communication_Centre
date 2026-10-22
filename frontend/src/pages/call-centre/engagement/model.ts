@@ -1,5 +1,5 @@
 // Presentation rules for the Engagement Centre screens. The server stays authoritative for access and outcomes.
-import type { AgentStats, CallRating, Case, Overview, OverviewCase } from '../api';
+import type { AgentStats, BookingLinks, CallRating, Case, Overview, OverviewCase } from '../api';
 
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
@@ -250,10 +250,23 @@ export const appointmentTime = (value: string) => {
   return `${day} at ${at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })}`;
 };
 
+const REVIEW_PAGES: Record<string, ['pr' | 'mcm', string]> = {
+  pr: ['pr', 'progress review'], pr_missed: ['pr', 'progress review'],
+  mcm: ['mcm', 'monthly coaching'], mcm_missed: ['mcm', 'monthly coaching'],
+};
+
+/** The coach's Bookings page for a due or missed review, when the coach has one. */
+export function reviewBookingPage(c: { source_type: string; booking_links: BookingLinks }) {
+  const [kind, noun] = REVIEW_PAGES[c.source_type] || [];
+  const url = kind && c.booking_links[kind];
+  return url && url.startsWith('https://') ? { url, noun } : null;
+}
+
 /** What the booking tools do for this case, or why there is nothing to book. */
-export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable'>) {
+export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links'>) {
   if (c.bookable.includes('catch-up')) return 'Book a catch-up or support session in the coach’s LMS calendar, or send the booking email.';
   if (c.bookable.length) return 'Book a support session in the coach’s LMS calendar, or send the booking email.';
+  if (reviewBookingPage(c)) return 'Book it with the learner on the coach’s page (use the learner’s own name and email), or send the booking email. The coach links it to the LMS review.';
   const rebook = 'The learner rebooks the review from the coach’s page in the booking email.';
   return ({
     pr: 'The learner books the review from the coach’s page in the booking email.',
