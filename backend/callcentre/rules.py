@@ -99,6 +99,34 @@ def contact_key(ticket):
     return ticket.source_data.get('person_id') or ticket.learner_email or f'case:{ticket.pk}'
 
 
+def contact_keys(tickets):
+    """One key per person across these cases: cases that share a person ID or an email are the same contact, even
+    when only some of them carry the person ID. Employer contacts keep their own key (``contact_key``)."""
+    parent = {}
+
+    def find(node):
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    labels = {}
+    for ticket in tickets:
+        if ticket.source_type == 'employer_feedback':
+            continue
+        person_id = ticket.source_data.get('person_id') if isinstance(ticket.source_data, dict) else None
+        labels[ticket.pk] = [label for label in (person_id, email_key(ticket.learner_email)) if label]
+        for label in labels[ticket.pk]:
+            parent[find(label)] = find(f'case:{ticket.pk}')
+    groups = {}
+    for pk, own in labels.items():
+        groups.setdefault(find(f'case:{pk}'), []).extend(own)
+    # The smallest label names the group, so the key stays the same from one refresh to the next.
+    return {ticket.pk: min(groups.get(find(f'case:{ticket.pk}')) or [contact_key(ticket)])
+            if ticket.pk in labels else contact_key(ticket) for ticket in tickets}
+
+
 def email_key(value):
     return str(value or '').strip().lower()
 

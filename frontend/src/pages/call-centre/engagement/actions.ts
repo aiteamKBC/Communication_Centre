@@ -8,7 +8,9 @@ export type Session = { csrf: string; agentId: number | null; canAct: boolean; i
   /** Technical issues can be raised in the technical support system. */
   helpdesk?: boolean };
 
-type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean };
+type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean;
+  /** From Call: the cases the call covers. */
+  ticket_ids?: number[] };
 
 /** Runs a case command as the session's operating agent. A call hands the number to the Zoom desktop app. */
 export async function caseAction(session: Session, id: number, command: string, payload: Record<string, unknown> = {}) {
@@ -17,7 +19,8 @@ export async function caseAction(session: Session, id: number, command: string, 
   return result;
 }
 
-export const loadCase = (id: number) => api<CaseDetail>(`tickets/${id}/`);
+/** One case; with `agentId`, its open call is the one that specialist's desk made. */
+export const loadCase = (id: number, agentId?: number | null) => api<CaseDetail>(`tickets/${id}/${agentId ? `?agent_id=${agentId}` : ''}`);
 
 /** Why the Call button is unavailable for a case, or '' when the session can call. */
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {
@@ -44,10 +47,14 @@ export function pickCall(calls: CaseCall[], outcome: string, session: Session) {
   return usable.find(call => !call.outcome && fits(call)) || usable.find(fits) || usable[0];
 }
 
-/** Records an outcome against the Zoom call it belongs to (``pickCall``). */
-export async function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null }) {
+/** Records an outcome against the Zoom call it belongs to (``pickCall``). Straight after a call (`justCalled`), or
+ * before Zoom has reported any call, the outcome is held for the latest call and applied once Zoom reports it. */
+export async function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null },
+  justCalled = false) {
+  const values = { option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null };
+  if (justCalled) return caseAction(session, id, 'plan', values);
   const detail = await loadCase(id);
   const call = pickCall(detail.calls, data.outcome, session);
-  if (!call) throw new Error('Zoom has not reported a call for this case yet. Call the learner, then save once the call appears (sync runs every few minutes).');
-  return caseAction(session, id, 'outcome', { call_id: call.call_id, option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null });
+  if (!call) return caseAction(session, id, 'plan', values);
+  return caseAction(session, id, 'outcome', { call_id: call.call_id, ...values });
 }

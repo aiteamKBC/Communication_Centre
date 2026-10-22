@@ -320,28 +320,32 @@ def generate_risks(people, categories=None):
     ready = missed_lectures_ready_until(today)
     # Attendance is read for the four weeks up to ``ready``; only cases in that window can be checked against it.
     first_week = ready - timedelta(days=ready.weekday()) - timedelta(weeks=3)
-    # Learners on recorded-session ('lazy') mode (LMS attendance_preferences) follow the recordings instead of
+    # Learners whose LMS Attendance_type is 'Recorded' (Created_users) follow the recordings instead of
     # attending live, so their missed live lectures are never raised as cases. Empty when the LMS cannot be read,
     # so a source outage never hides genuine missed lectures.
-    lazy = set()
+    recorded = set()
     if categories is None or 'attendance' in categories:
-        lazy = get_source('attendance_mode', _read(summaries.lazy_learner_emails, LMS)) or set()
+        recorded = get_source('attendance_mode', _read(summaries.recorded_learner_emails, LMS)) or set()
 
     def attendance():
         # Rows newer than the delay are not read at all, so a fresh absence cannot hide an older one in its week.
         # Two sources feed missed lectures: the legacy ``kbc_attendance`` register (login_db) and the LMS
-        # ``curriculum`` live-session attendance (current LMS learners). Each is read read-only on its own alias;
-        # the same (learner, date, module) from both collapses to one case downstream (shared reason_key).
-        output = []
+        # ``curriculum`` live-session attendance (current LMS learners). Each is read read-only on its own alias.
+        legacy, live = [], []
         with source_transaction(DB):
             for week in range(4):
                 start = first_week + timedelta(weeks=week)
-                output.extend(summaries.attendance_missed_for_week(start, min(ready, start + timedelta(days=6))))
+                legacy.extend(summaries.attendance_missed_for_week(start, min(ready, start + timedelta(days=6))))
         with source_transaction(LMS):
             for week in range(4):
                 start = first_week + timedelta(weeks=week)
-                output.extend(summaries.live_attendance_missed_for_week(start, min(ready, start + timedelta(days=6))))
-        return output
+                live.extend(summaries.live_attendance_missed_for_week(start, min(ready, start + timedelta(days=6))))
+        # When both sources report the same learner on the same date, keep the LMS live-session rows (current
+        # learners) and drop the legacy kbc rows for that (learner, date): the same lecture named differently in
+        # each source is then raised once, not twice. Legacy days the LMS does not cover are kept as before.
+        live_days = {(email_key(row['email']), row['attendance_date']) for row in live}
+        legacy = [row for row in legacy if (email_key(row['email']), row['attendance_date']) not in live_days]
+        return legacy + live
 
     loaders = {
         'otj': _read(summaries.otj_rows, APTEM),
@@ -362,8 +366,8 @@ def generate_risks(people, categories=None):
         seen = set()
         for item in data:
             email = email_key(item.get('email'))
-            # A recorded-session ('lazy') learner is not called about a missed live lecture.
-            if category == 'attendance' and email in lazy:
+            # A recorded-session learner (Attendance_type = Recorded) is not called about a missed live lecture.
+            if category == 'attendance' and email in recorded:
                 continue
             if email not in people:
                 continue
@@ -399,15 +403,15 @@ def generate_risks(people, categories=None):
         retire(people, [c for c in existing if c['source_type'] == category and not c['archived']
                         and in_window.get(category, lambda c: True)(c)],
                seen, 'No longer reported by the source (register corrected, EPA date changed or learner no longer active).')
-    # A recorded-session ('lazy') learner never keeps a missed-lecture case, including older ones outside the
-    # four-week generation window above, so they drop out of the queue entirely while on that mode.
-    if lazy and (categories is None or 'attendance' in categories):
+    # A recorded-session learner never keeps a missed-lecture case, including older ones outside the
+    # four-week generation window above, so they drop out of the queue entirely while Attendance_type is Recorded.
+    if recorded and (categories is None or 'attendance' in categories):
         for case in existing:
             if (case['source_type'] == 'attendance' and not case['archived']
-                    and email_key(case['learner_email']) in lazy
+                    and email_key(case['learner_email']) in recorded
                     and case['source_data'].get('eligible', True)):
                 set_eligible(case['pk'], False,
-                             'Learner is on recorded-session (lazy) attendance mode; missed live lectures are not called.')
+                             'Learner Attendance_type is Recorded; missed live lectures are not called.')
     return total + (generate_review_cases(people, today, open_reasons, existing) if categories is None else 0)
 
 

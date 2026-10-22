@@ -83,10 +83,35 @@
 .kbc-portals .ed-next{max-width:46rem;margin:0 auto}
 .kbc-portals .ed-next-name{font-size:1.75rem;margin:.25rem 0}
 .kbc-portals .ed-next-call{width:100%;font-size:1.2rem;padding:1rem 2rem}
-.kbc-portals .ed-next-choices{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 1rem}
-.kbc-portals .ed-next-choices button{font-size:1rem;padding:.8rem 1.1rem}
-.kbc-portals .ed-next-choices button[aria-pressed=true]{background:var(--purple);color:#fff;border-color:var(--purple)}
+.kbc-portals .workspace-app .ec button.ed-end-call{background:#b42318;border-color:#b42318;color:#fff}
+.kbc-portals .ed-next-outcome{margin:.75rem 0}
+.kbc-portals .ed-next-outcome small{display:block;color:var(--muted)}
 .kbc-portals .ed-next-tools{margin:.4rem 0 .8rem;gap:.5rem}
+/* After the call: did they answer, then one compact row per kind of case, one Save for all of them. */
+.ed-call-outcome{display:grid;gap:.9rem}
+.ed-call-outcome small{display:block;color:var(--muted);font-size:.85rem}
+.ed-call-answer{border:0;padding:0;margin:0;min-width:0}
+.ed-call-answer legend{font-weight:700;font-size:1.05rem;margin-bottom:.5rem}
+.ed-call-answer .ec-buttons{gap:.5rem}
+.ed-call-answer small{margin-top:.5rem}
+.ed-call-cases{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.ed-call-cases-head{display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;padding:.6rem .8rem;background:#f6f3fb;font-size:.875rem;font-weight:600}
+.ec .ed-call-cases-head select{width:auto;max-width:100%;font-size:.85rem;padding:.4rem .5rem}
+.ed-call-group,.ed-call-cases>.ed-call-case{padding:.65rem .8rem;border-top:1px solid var(--line)}
+.ed-call-case-line{display:grid;grid-template-columns:minmax(0,1fr) minmax(12rem,1.2fr);gap:.75rem;align-items:center}
+.ed-call-case-line>span{min-width:0;overflow-wrap:anywhere}
+.ec .ed-call-case-line select{margin:0;font-size:.875rem;padding:.45rem .55rem}
+.ec .ed-call-case-line button.ed-sheet-link{display:inline;min-height:0;margin-left:.5rem;padding:0;border:0;background:transparent;color:var(--purple);font-size:.8rem;font-weight:400;text-decoration:underline;text-underline-offset:3px}
+.ed-call-members{margin-top:.5rem;padding-left:.8rem;border-left:3px solid #ded6eb;display:grid;gap:.5rem}
+.ec .ed-call-more{margin:.25rem 0 0;padding:0;border:0}
+.ec .ed-call-more summary{font-size:.8rem;font-weight:400;color:var(--purple)}
+.ec .ed-call-more[open] summary{margin-bottom:.4rem}
+.ec .ed-call-more textarea{min-height:3.5rem}
+.ec .ed-call-record{margin-bottom:1rem;border-color:#ceb9e6}
+.ec .ed-call-record h2{font-size:1.15rem;margin-bottom:.75rem}
+.ed-call-save{position:sticky;bottom:0;z-index:1;display:grid;gap:.4rem;padding:.75rem 0 .25rem;background:#fff}
+.ed-call-save small[role=status]{color:#80561e}
+@media(max-width:600px){.ed-call-case-line{grid-template-columns:1fr}}
 /* Booking email: wording on the left, the rendered email on the right, what sending needs below. */
 .ec dialog:has(#ed-booking-email){max-width:1100px}
 .ed-email-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:1.2rem;align-items:start}

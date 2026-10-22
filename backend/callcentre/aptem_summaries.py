@@ -160,19 +160,16 @@ def live_attendance_missed_for_week(week_start, week_end):
     return learners
 
 
-def lazy_learner_emails():
-    """Emails of learners on recorded-session ('lazy') attendance mode, from the LMS.
+def recorded_learner_emails():
+    """Emails of learners on recorded-session attendance, from the LMS directory.
 
-    These learners follow the recordings instead of attending live, so a missed live
-    lecture is not a real absence for them and must not become a missed-lecture case.
-    Read from ``"Learner".attendance_preferences`` (``mode`` = ``lazy``) joined to the LMS
-    directory for the learner's email. ``live`` learners and learners with no preference
-    row are not returned, so they are still called about missed lectures as before.
+    A learner whose ``Attendance_type`` is ``Recorded`` in ``enrolment."Created_users"`` follows the
+    recordings instead of attending live, so a missed live lecture is not a real absence for them and
+    must not become a missed-lecture case. ``Not recorded`` learners (and any with no value) attend live
+    and are still called about missed lectures as before.
     """
-    rows = _fetch(LMS, '''SELECT lower(trim(u."Email")) AS email
-        FROM "Learner".attendance_preferences p
-        JOIN enrolment."Created_users" u ON u.id = p.learner_id
-        WHERE p.mode = 'lazy' ''')
+    rows = _fetch(LMS, '''SELECT lower(trim("Email")) AS email FROM enrolment."Created_users"
+        WHERE "Attendance_type" = 'Recorded' ''')
     return {row['email'] for row in rows if row['email']}
 
 
