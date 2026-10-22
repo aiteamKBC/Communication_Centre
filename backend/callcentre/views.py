@@ -24,6 +24,7 @@ from .access import is_director, refused
 from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
 from .allocation import learner_owner, manager_owners, owners
+from .employer_desk import specialists
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
                             send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
@@ -283,6 +284,8 @@ def overview(request):
     tickets.sort(key=lambda ticket: rank(ticket, now), reverse=True)
     allocated = owners()
     employers = manager_owners(allocated)
+    # With employer specialists, employer cases are shared between them and their own learners are in the shared queue.
+    team = specialists()
     cases = []
     listed = tickets[:OVERVIEW_CASE_LIMIT]
     # One contact per person, also when only some of their cases carry the person ID.
@@ -293,8 +296,11 @@ def overview(request):
         item.pop('source_data')
         item.pop('priority_why')
         item['followup_agent_id'] = ticket.followup_agent_id
-        item['allocated_agent_id'] = (employers.get(ticket.learner_email) if ticket.source_type == 'employer_feedback'
-                                      else learner_owner(ticket.learner_email, allocated))
+        if ticket.source_type == 'employer_feedback':
+            owner = None if team else employers.get(ticket.learner_email)
+        else:
+            owner = learner_owner(ticket.learner_email, allocated)
+        item['allocated_agent_id'] = None if owner in team else owner
         cases.append(item)
 
     add_lecture_times(cases)
@@ -324,7 +330,7 @@ def overview(request):
             'display_name': (agent.display_name if agent else '') or request.user.get_full_name() or request.user.get_username(),
             'email': request.user.email,
         },
-        'agents': agents, 'cases': cases, 'cases_truncated': len(tickets) > OVERVIEW_CASE_LIMIT,
+        'agents': agents, 'employer_specialists': sorted(team), 'cases': cases, 'cases_truncated': len(tickets) > OVERVIEW_CASE_LIMIT,
         'resolutions': report['resolutions'], 'unclaimed_breaches': report['unclaimed_breaches'],
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details').first(),

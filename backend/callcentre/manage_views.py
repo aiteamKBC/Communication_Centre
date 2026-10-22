@@ -25,8 +25,9 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, email_settings, mailer
+from . import booking_links, email_settings, employer_desk, mailer
 from .access import is_director
+from .allocation import owners
 from .call_scope import system_calls
 from .db import DB
 from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
@@ -266,6 +267,31 @@ def settings_view(request):
         'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing(),
                     'live_allowed': settings.CALLCENTRE_EMAIL_LIVE_ALLOWED},
         'history': email_settings.history(),
+    })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def employer_specialists(request):
+    """Director overview card: whether employer satisfaction calls go to chosen specialists, and to whom."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        if type(data.get('revision')) is not int:
+            raise ValueError('Reload the page and try again.')
+        revision = employer_desk.save(data.get('values'), data['revision'], data.get('reason'), request.user.get_username())
+        return JsonResponse({'ok': True, 'revision': revision})
+    values, revision, set_up = employer_desk.stored()
+    # Learners still allocated to each specialist: they wait in the shared queue while that specialist calls employers.
+    allocated = Counter(owners().values())
+    agents = Agent.objects.filter(active=True, user__is_active=True).order_by('display_name')
+    return JsonResponse({
+        'values': values, 'revision': revision, 'set_up': set_up, 'not_set_up': '' if set_up else employer_desk.NOT_SET_UP,
+        'agents': [{'id': agent.pk, 'display_name': agent.display_name, 'allocated_learners': allocated.get(agent.pk, 0)}
+                   for agent in agents],
+        'open_employer_cases': CaseTicket.objects.open().filter(source_type=employer_desk.EMPLOYER).count(),
+        'history': employer_desk.history(),
     })
 
 

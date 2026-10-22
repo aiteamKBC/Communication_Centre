@@ -408,3 +408,71 @@ class AgentRemovalTests(TestCase):
         self.ticket.refresh_from_db()
         rejected.refresh_from_db()
         self.assertEqual((self.ticket.status, rejected.status), ('resolved', 'new'))
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class EmployerSpecialistTests(TestCase):
+    """The director hands employer satisfaction calls to chosen specialists: only they work them, and only those."""
+    databases = {'default', 'login_db'}
+
+    def setUp(self):
+        patches = [mock.patch('callcentre.sources.cached_directory', return_value=Directory()),
+                   mock.patch('callcentre.sources.on_break_emails', return_value=frozenset()),
+                   mock.patch('callcentre.sources.active_case_contacts', return_value=Q())]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        users = get_user_model().objects
+        self.alice = Agent.objects.create(user=users.create_user('alice'), display_name='Alice', zoom_email='alice@kbc.test', zoom_account='student')
+        self.bob = Agent.objects.create(user=users.create_user('bob'), display_name='Bob', zoom_email='bob@kbc.test', zoom_account='student')
+        # Ann is Bob's learner; Max is a line manager with an employer satisfaction case.
+        Allocation.objects.create(learner_email='ann@x.test', agent=self.bob, updated_by='manager')
+        due = timezone.now() + timedelta(days=2)
+        self.learner = CaseTicket.objects.create(source_type='epa', reason_key='epa:ann', learner_email='ann@x.test', learner_name='Ann',
+                                                 learner_phone='+447700900001', due_at=due)
+        self.employer = CaseTicket.objects.create(source_type='employer_feedback', reason_key='employer:max', learner_email='max@x.test',
+                                                  learner_name='Max', learner_phone='+447700900002', due_at=due)
+
+    def make_specialists(self, *agents, enabled=True, revision=0):
+        from .employer_desk import save
+        return save({'enabled': enabled, 'agent_ids': [agent.pk for agent in agents]}, revision, 'Employer calls week', 'director')
+
+    def test_it_is_off_until_a_director_switches_it_on(self):
+        from .employer_desk import specialists
+        self.assertEqual(specialists(), frozenset())
+        claim(self.employer.pk, self.alice)   # anyone may call an employer
+        self.assertEqual(allocated_owner('ann@x.test', 'epa'), self.bob.pk)
+
+    def test_only_the_specialists_call_employers_and_they_call_nobody_else(self):
+        self.make_specialists(self.bob)
+        with self.assertRaisesMessage(Conflict, 'made by the employer specialists'):
+            create_intent(self.employer.pk, self.alice)
+        with self.assertRaisesMessage(PermissionDenied, 'made by the employer specialists'):
+            can_work(self.employer, self.alice.user)
+        create_intent(self.employer.pk, self.bob)
+        with self.assertRaisesMessage(Conflict, 'employer satisfaction calls only'):
+            create_intent(self.learner.pk, self.bob)
+
+    def test_a_specialists_learners_go_to_the_shared_queue_and_come_back_when_it_is_switched_off(self):
+        revision = self.make_specialists(self.bob)
+        self.assertIsNone(allocated_owner('ann@x.test', 'epa'))
+        self.assertIsNone(allocated_owner('max@x.test', 'employer_feedback'))
+        claim(self.learner.pk, self.alice)   # Ann is in the shared queue now
+        self.make_specialists(enabled=False, revision=revision)
+        self.assertEqual(allocated_owner('ann@x.test', 'epa'), self.bob.pk)
+
+    def test_a_switched_off_specialist_no_longer_counts(self):
+        self.make_specialists(self.bob)
+        Agent.objects.filter(pk=self.bob.pk).update(active=False)
+        from .employer_desk import specialists
+        self.assertEqual(specialists(), frozenset())
+
+    def test_the_choice_is_checked_and_kept_with_its_reason(self):
+        from .employer_desk import history
+        with self.assertRaisesMessage(ValueError, 'Choose at least one employer specialist'):
+            self.make_specialists()
+        revision = self.make_specialists(self.alice)
+        with self.assertRaisesMessage(Conflict, 'since you opened them'):
+            self.make_specialists(self.bob)   # an out-of-date revision
+        self.make_specialists(self.bob, revision=revision)
+        self.assertEqual([entry['value']['agent_ids'] for entry in history()], [[self.bob.pk], [self.alice.pk]])

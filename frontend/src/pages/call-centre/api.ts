@@ -70,6 +70,8 @@ export type Overview = {
   holidays: string[];
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
+  /** Specialists who make every employer satisfaction call (director's choice); empty when that is off. */
+  employer_specialists?: number[];
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;
   sources: Config['sources']; cycle: Config['cycle'];
   connections: { calling: boolean; email_mode: string; ai: boolean };

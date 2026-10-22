@@ -12,7 +12,7 @@ import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import Director from './engagement/Director';
 import Imports from './engagement/Imports';
-import { DESK_MENUS, deskLabel, failingSources, human, longDate, setHolidays, when } from './engagement/model';
+import { DESK_MENUS, deskLabel, deskMenus, failingSources, human, longDate, setHolidays, when } from './engagement/model';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
@@ -78,11 +78,15 @@ export default function CallCentrePage() {
   const director = role === 'director';
   const view = director ? params.get('view') || 'director' : params.get('view') === 'phone' ? 'phone' : 'operator';
   const inDesk = view === 'operator';
-  const section = DESK_MENUS.some(item => item[0] === params.get('section')) ? params.get('section')! : 'next';
   const caseId = director && params.get('case') ? Number(params.get('case')) : null;
 
   const ownAgent = overview?.access.agent_id ?? null;
   const deskAgentId = director ? Number(params.get('operator')) || ownAgent || overview?.agents[0]?.id || null : ownAgent;
+  // With employer specialists chosen, they make the employer calls only, and everyone else none of them.
+  const team = useMemo(() => overview?.employer_specialists || [], [overview]);
+  const employerDesk = deskAgentId !== null && team.includes(deskAgentId);
+  const menus = overview ? deskMenus(overview, deskAgentId) : DESK_MENUS;
+  const section = menus.some(item => item[0] === params.get('section')) ? params.get('section')! : 'next';
   const deskAgent = overview?.agents.find(agent => agent.id === deskAgentId);
   const session: Session = useMemo(() => {
     const isManager = !!overview && (overview.access.role === 'director');
@@ -92,24 +96,26 @@ export default function CallCentrePage() {
     if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self, helpdesk };
     const own = deskAgentId !== null && deskAgentId === ownAgent;
     const preview = role === 'viewer' || (!own && !isManager);
-    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own, helpdesk };
-  }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role]);
+    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own, helpdesk, employerDesk };
+  }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role, employerDesk]);
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
-  // A specialist's desk holds their allocated learners plus the shared queue.
+  // A specialist's desk holds their allocated learners plus the shared queue; with employer specialists chosen, theirs
+  // holds the employer calls only and everyone else's none.
   const deskOverview = useMemo(() => (overview && deskAgentId
-    ? { ...overview, cases: overview.cases.filter(c => !c.allocated_agent_id || c.allocated_agent_id === deskAgentId) }
-    : overview), [overview, deskAgentId]);
+    ? { ...overview, cases: overview.cases.filter(c => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
+      && (!team.length || (c.source_type === 'employer_feedback') === employerDesk)) }
+    : overview), [overview, deskAgentId, team, employerDesk]);
 
   const groups: NavGroup[] = !overview || !deskOverview ? [] : inDesk
     ? [
-      { title: 'My calling day', items: DESK_MENUS.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
+      { title: 'My calling day', items: menus.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
       ...(director ? [{ title: 'Director', items: [{ key: 'exit', label: 'Return to director', icon: 'back' }] }]
         : [{ title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] }]),
     ]
     : director ? [{ title: 'Director', items: DIRECTOR_NAV.map(([key, label, icon]) => ({ key: `view:${key}`, label, icon })) }]
       : [
-        { title: 'My calling day', items: DESK_MENUS.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
+        { title: 'My calling day', items: menus.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
         { title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] },
       ];
   const activeKey = inDesk ? `desk:${section}` : `view:${view}`;
@@ -178,7 +184,7 @@ export default function CallCentrePage() {
         <div id="ec-body">
           {caseId ? (
             <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
-          ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
+          ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
               : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
                 : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
