@@ -253,12 +253,24 @@ def next_workday_morning(moment):
     return datetime.combine(add_workdays(moment, 1).date(), time(9), tzinfo=LONDON)
 
 
-def identify_agent(call, agents=None):
+def line_agents(call, agents=None):
+    """The specialists who may have made the call: by Zoom user, else by their assigned Zoom number.
+
+    A shared line (a common-area phone or team number) reports no user email, so several
+    specialists can share it; the dial request then tells them apart."""
     if agents is None:
         agents = Agent.objects.filter(active=True, user__is_active=True, zoom_account=call.source_account)
-    matches = [a for a in agents if a.zoom_account == call.source_account and (
-        (a.zoom_user_id and a.zoom_user_id == call.caller_user_id)
-        or (a.zoom_email and a.zoom_email == email_key(call.caller_email)))]
+    agents = [a for a in agents if a.zoom_account == call.source_account]
+    matches = [a for a in agents if (a.zoom_user_id and a.zoom_user_id == call.caller_user_id)
+               or (a.zoom_email and a.zoom_email == email_key(call.caller_email))]
+    if matches:
+        return matches
+    line = normalize_phone(call.caller_number)
+    return [a for a in agents if line and normalize_phone(a.zoom_phone_number) == line]
+
+
+def identify_agent(call, agents=None):
+    matches = line_agents(call, agents)
     return matches[0] if len(matches) == 1 else None
 
 
@@ -273,17 +285,18 @@ def match_call(call_id):
             return None
         apply_call_result(match)
         return match
-    agent = identify_agent(call)
+    agents = line_agents(call)
     number = normalize_phone(call.callee_number)
-    if not agent or not number:
+    if not agents or not number:
         return None
     intents = list(CallIntent.objects.select_for_update().filter(
-        agent=agent, number=number, matched_call__isnull=True,
+        agent__in=agents, number=number, matched_call__isnull=True,
         created_at__lte=call.started_at, created_at__gte=call.started_at - timedelta(minutes=10),
     )[:2])
     if len(intents) != 1:
         return None
     intent = intents[0]
+    agent = intent.agent
     candidates = CaseTicket.objects.filter(created_at__lte=call.started_at, intents=intent)
     learner_email = intent.learner_email
     tickets = list(candidates.exclude(source_type='satisfaction').order_by('pk'))

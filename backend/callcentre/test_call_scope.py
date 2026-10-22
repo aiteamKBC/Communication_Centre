@@ -128,6 +128,26 @@ class SystemCallScopeTests(TestCase):
         self.intent()
         self.assertIsNone(match_call(call.pk))
 
+    def test_shared_line_call_is_matched_to_the_specialist_who_pressed_call(self):
+        Agent.objects.filter(pk=self.agent.pk).update(zoom_phone_number='+441622958989')
+        tina = Agent.objects.create(user=get_user_model().objects.create_user('tina'), display_name='Tina',
+                                    zoom_email='tina@test.test', zoom_account='student', zoom_phone_number='+441622958989')
+        # Zoom reports the team line, not the specialist: no email and a user ID neither agent holds.
+        shared = dict(caller_email='', caller_user_id='team-line', caller_number='+441622958989')
+        self.intent(agent=tina)
+        call = self.call(**shared)
+        self.assertEqual(match_call(call.pk).agent_id, tina.pk)
+        rows = {row['id']: row for row in performance(self.now.date(), self.now.date())['agents']}
+        self.assertEqual((rows[tina.pk]['calls'], rows[tina.pk]['seconds']), (1, 120))
+        self.assertEqual(rows[self.agent.pk]['calls'], 0)
+        # Both specialists pressing Call for the same number leaves the call unmatched.
+        self.intent(agent=tina)
+        self.intent()
+        self.assertIsNone(match_call(self.call(**shared).pk))
+        # A line nobody is assigned to is never attributed.
+        self.intent()
+        self.assertIsNone(match_call(self.call(caller_email='', caller_number='+441622000000').pk))
+
     def test_one_call_covers_lectures_and_reviews_but_not_employer_or_future_callback(self):
         CaseTicket.objects.filter(pk=self.ticket.pk).update(source_data={'person_id': 'person-one', 'review_type': 'progress'})
         lecture = self.case(source_type='attendance', overdue_since=self.now.date() - timedelta(days=14),
