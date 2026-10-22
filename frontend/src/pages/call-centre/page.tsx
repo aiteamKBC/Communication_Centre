@@ -104,7 +104,7 @@ export default function CallCentrePage() {
   // holds the employer calls only and everyone else's none.
   const deskOverview = useMemo(() => (overview && deskAgentId
     ? { ...overview, cases: overview.cases.filter(c => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
-      && (!team.length || (c.source_type === 'employer_feedback') === employerDesk)) }
+      && (!team.length || (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk)) }
     : overview), [overview, deskAgentId, team, employerDesk]);
 
   const groups: NavGroup[] = !overview || !deskOverview ? [] : inDesk

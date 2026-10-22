@@ -22,14 +22,15 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
   const { detail, error, refresh } = useCase(id, session.agentId);
   useEffect(() => { refresh(); }, [overview.generated_at, refresh]);
   const initial = detail?.ticket || overview.cases.find(c => c.id === id);
+  // The learner's open cases: one closed during the call (a booked catch-up, a resolved case) drops off the page.
   const cases = new Map<number, Issue>();
   if (initial) {
     for (const c of overview.cases) {
       if (activeCase(c) && contactKey(c) === contactKey(initial)) cases.set(c.id, c);
     }
-    for (const c of detail?.issues || []) cases.set(c.id, c);
-    // Keep the selected starting case available even when it was resolved during this conversation.
-    cases.set(initial.id, initial);
+    for (const c of detail?.issues || []) {
+      if (activeCase(c)) cases.set(c.id, c);
+    }
   }
 
   // The call: shown as soon as it is made, from here or from Next call before Full case was opened.
@@ -114,6 +115,7 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
           ) : <p className="ec-muted">No case is due for a call now: learners come back when their follow-up is due.</p>}
         </section>
       )}
+      {initial && detail && !cases.size && <section className="ec-card"><p>All of {initial.learner_name}’s cases are closed.</p></section>}
       {[...cases.keys()].map(caseId => <LearnerPanel key={caseId} id={caseId} overview={overview} session={session} inWorkspace
         hidden={false} showRelated={false} onOpen={open} onNext={() => {}} hasNext={false}
         onSaved={message => { refresh(); onSaved(message); }} notify={notify}

@@ -13,6 +13,7 @@ from .models import Agent, Setting, SettingHistory
 
 KEY = 'employer_specialists'
 EMPLOYER = 'employer_feedback'
+SATISFACTION = 'learner_satisfaction'
 NOT_SET_UP = 'Settings are not set up yet. Run docs/callcentre-port/settings.sql on the call-centre database.'
 CHANGED = 'Someone changed the employer specialists since you opened them. Reload and check again.'
 
@@ -43,13 +44,19 @@ def specialists():
                      .values_list('pk', flat=True))
 
 
-def scope_error(source_type, agent_id, team):
-    """Why this specialist may not work a case of this type ('' when they may)."""
+def optional(source_data):
+    """An optional call a specialist made to a learner of their choosing (``optional_calls``)."""
+    return isinstance(source_data, dict) and bool(source_data.get('optional'))
+
+
+def scope_error(source_type, agent_id, team, source_data=None):
+    """Why this specialist may not work a case of this type ('' when they may). An employer specialist also makes
+    optional calls to any learner, and can complete that learner's satisfaction review on one."""
     if not team:
         return ''
     if source_type == EMPLOYER and agent_id not in team:
         return 'Employer satisfaction calls are made by the employer specialists.'
-    if source_type != EMPLOYER and agent_id in team:
+    if agent_id in team and source_type not in (EMPLOYER, SATISFACTION) and not optional(source_data):
         return 'You make the employer satisfaction calls only.'
     return ''
 

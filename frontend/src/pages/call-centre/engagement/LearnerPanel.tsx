@@ -13,7 +13,7 @@ import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
 import LearnerCases from './LearnerCases';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
+import { casePurpose, feedbackMessage, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -170,11 +170,11 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
         <details className="ed-disclosure">
           <summary>Complete the satisfaction feedback</summary>
           <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={employer} session={session}
-            onSaved={() => { refresh(); onSaved('Feedback completed. Next review is due in three calendar months.'); }} />
+            held={detail.held_feedback} onSaved={held => { refresh(); onSaved(feedbackMessage(held)); }} />
         </details>
       ) : <section className="ed-disclosure">
         <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={employer} session={session}
-          onSaved={() => { refresh(); onSaved('Feedback completed. Next review is due in three calendar months.'); }} />
+          held={detail.held_feedback} onSaved={held => { refresh(); onSaved(feedbackMessage(held)); }} />
       </section>)}
       {isSatisfaction(c) && c.status === 'resolved' && c.satisfaction_next_due_at &&
         <p>Next satisfaction review: {longDate(c.satisfaction_next_due_at)}</p>}

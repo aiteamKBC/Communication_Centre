@@ -7,6 +7,7 @@ urlpatterns = [
     path('call-sync/', views.call_sync),
     path('overview/', views.overview),
     path('queue/', views.queue),
+    path('optional-calls/', views.optional_call),
     path('tickets/<int:pk>/', views.detail),
     path('tickets/<int:pk>/booking/', views.booking),
     path('tickets/<int:pk>/booking-email/', views.booking_email),

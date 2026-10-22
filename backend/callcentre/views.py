@@ -17,14 +17,14 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, helpdesk, lms_booking, satisfaction_email
+from . import email_settings, helpdesk, lms_booking, optional_calls, satisfaction_email
 from .aptem_summaries import parse_date_safe
-from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback
+from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback, held_feedback
 from .access import is_director, refused
 from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
 from .allocation import learner_owner, manager_owners, owners
-from .employer_desk import specialists
+from .employer_desk import optional, specialists
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
                             send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
@@ -293,14 +293,18 @@ def overview(request):
     for ticket in listed:
         item = ticket_json(ticket)
         item['contact_key'] = keys[ticket.pk]
+        # An optional call (optional_calls) belongs to the specialist who made it and is on nobody else's list.
+        item['optional'] = optional(ticket.source_data)
         item.pop('source_data')
         item.pop('priority_why')
         item['followup_agent_id'] = ticket.followup_agent_id
-        if ticket.source_type == 'employer_feedback':
+        if item['optional']:
+            owner = ticket.source_data.get('agent_id')
+        elif ticket.source_type == 'employer_feedback':
             owner = None if team else employers.get(ticket.learner_email)
         else:
             owner = learner_owner(ticket.learner_email, allocated)
-        item['allocated_agent_id'] = None if owner in team else owner
+        item['allocated_agent_id'] = owner if item['optional'] or owner not in team else None
         cases.append(item)
 
     add_lecture_times(cases)
@@ -439,7 +443,38 @@ def detail(request, pk):
         # A call just made to this learner whose outcome is not saved yet: recorded for all its cases at once.
         'open_call': open_call(ticket, operating_agent(request.user, int(request.GET['agent_id'])) if request.GET.get('agent_id')
                                else agent_for(request.user)),
+        # Satisfaction feedback saved before Zoom reported its call: still waiting, or dropped (call not answered).
+        'held_feedback': held_feedback(ticket),
     })
+
+
+def dial_json(intent, agent):
+    """What the browser needs to dial a call: the Zoom Phone link, and the cases the call covers."""
+    zoom_url = 'zoomphonecall://' + intent.number
+    caller_id = normalize_phone(agent.zoom_phone_number)
+    if caller_id:
+        zoom_url += '?' + urlencode({'callerid': caller_id})
+    return {'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number,
+            'number': intent.number, 'caller_id': caller_id,
+            # The cases this call covers: the after-call form records exactly these.
+            'ticket_ids': sorted(intent.tickets.values_list('pk', flat=True))}
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def optional_call(request):
+    """An employer specialist's optional calls: GET the learner directory to choose from, POST to call a learner."""
+    if request.method == 'GET':
+        agent = operating_agent(request.user, int(request.GET['agent_id']) if request.GET.get('agent_id') else None)
+        optional_calls.require_caller(request.user, agent)
+        return JsonResponse({'learners': optional_calls.directory()})
+    data = body(request)
+    agent = operating_agent(request.user, data.get('agent_id'))
+    optional_calls.require_caller(request.user, agent)
+    case, intent = optional_calls.start(agent, data.get('learner_email'), request.user.get_username())
+    satisfaction = intent.tickets.exclude(pk=case.pk).filter(source_type='learner_satisfaction').first()
+    return JsonResponse({**dial_json(intent, agent), 'case_id': case.pk, 'satisfaction_case_id': satisfaction.pk if satisfaction else None})
 
 
 @authenticated
@@ -456,17 +491,17 @@ def action(request, pk, command):
             ticket = claim(pk, agent, actor=request.user.get_username())
             return JsonResponse({'ticket': ticket_json(ticket)})
         intent = create_intent(pk, agent, actor=request.user.get_username())
-        zoom_url = 'zoomphonecall://' + intent.number
-        caller_id = normalize_phone(agent.zoom_phone_number)
-        if caller_id:
-            zoom_url += '?' + urlencode({'callerid': caller_id})
-        return JsonResponse({'intent_id': intent.pk, 'zoom_url': zoom_url, 'tel_url': 'tel:' + intent.number,
-                             'number': intent.number, 'caller_id': caller_id,
-                             # The cases this call covers: the after-call form records exactly these.
-                             'ticket_ids': sorted(intent.tickets.values_list('pk', flat=True))})
+        return JsonResponse(dial_json(intent, agent))
     if command == 'complete_feedback':
-        complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
-                                 action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
+        completed = complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
+                                              action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
+        # Held: given straight after the call, it completes the review once Zoom reports the call answered.
+        # The worker fetches the call now rather than at its next cycle.
+        if not completed:
+            request_call_sync(request.user.get_username())
+        return JsonResponse({'ok': True, 'held': not completed})
+    elif command == 'extra_feedback':
+        optional_calls.extra_feedback(pk, request.user, data, acting_agent=agent)
     elif command == 'release':
         release(pk, request.user, acting_agent=agent)
     elif command == 'resolve':
@@ -476,6 +511,8 @@ def action(request, pk, command):
         applied = plan_outcome(pk, request.user, data.get('outcome', ''), option=data.get('option', ''),
                                note=str(data.get('note', ''))[:5000],
                                callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)
+        if not applied:
+            request_call_sync(request.user.get_username())
         return JsonResponse({'ok': True, 'applied': applied})
     elif command == 'save_call':
         items = data.get('items')
@@ -484,6 +521,8 @@ def action(request, pk, command):
             raise ValueError('Send each case with its outcome.')
         applied = save_call(pk, request.user, items, note=str(data.get('note', ''))[:5000],
                             callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)
+        if not applied:
+            request_call_sync(request.user.get_username())
         return JsonResponse({'ok': True, 'applied': applied})
     elif command == 'close_review':
         close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''), acting_agent=agent)

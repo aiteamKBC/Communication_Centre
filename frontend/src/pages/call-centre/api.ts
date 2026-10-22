@@ -49,6 +49,8 @@ export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 
 
 /** A case as listed by overview/ (no source_data). */
 export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null;
+  /** An optional call an employer specialist chose to make (to any learner): theirs only, never a task. */
+  optional?: boolean;
   /** The specialist whose saved call set the case's current follow-up; null when no call has set one. */
   followup_agent_id: number | null; contact_sources?: Record<string, string> };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
@@ -89,12 +91,16 @@ export type CaseCall = {
   /** Made since the case (or its current satisfaction cycle) was opened, reopened or sent back. */
   current: boolean;
 };
+export type HeldFeedback = { state: 'held' | 'dropped'; at: string; by: string; reason: string };
+
 export type CaseDetail = {
   ticket: Case & { booking_links: BookingLinks }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
   events: { id: number; kind: string; actor: string; data: Record<string, unknown>; call_id: number | null; created_at: string }[];
   emails: { id: number; kind: string; status: string; mode: string; subject: string; text: string; error: string; created_at: string }[];
   /** The signed-in specialist's call to this learner (last two hours) whose outcome is not saved yet: the cases it covers. */
   open_call?: { ticket_ids: number[] } | null;
+  /** Satisfaction feedback saved before Zoom reported its call: waiting (`held`), or `dropped` (call not answered). */
+  held_feedback?: HeldFeedback | null;
 };
 
 export type Config = {

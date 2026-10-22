@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { AgentStats, Overview } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
+import CallLearner from './CallLearner';
 import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
@@ -119,6 +120,8 @@ export default function Desk({ overview, agent, session, section, name, status, 
     body = <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={setDetailId} />;
   } else if (tab) {
     body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
+  } else if (section === 'learners') {
+    body = <CallLearner overview={overview} session={session} notify={notify} onRefresh={onRefresh} />;
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'history') {

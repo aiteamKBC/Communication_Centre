@@ -66,7 +66,8 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
       const selected = cases.find(c => c.id === Number(detail[1]));
       return json({ ticket: { ...selected, source_data: {}, priority_why: '' },
         issues: cases.filter(c => selected && c.status !== 'resolved' && contactKey(c) === contactKey(selected)),
-        calls: [], events: [], emails: [], has_more_events: false });
+        calls: [], events: [], emails: [], has_more_events: false,
+        held_feedback: (selected as { held_feedback?: unknown } | undefined)?.held_feedback ?? null });
     }
     if (url.pathname === '/api/auth/access/') return json({ id: 1, email: 'operator@example.org', access: {}, groups: [] });
     return json({});
@@ -844,5 +845,87 @@ test('with someone else as the employer specialist, the employer calls leave thi
   await openSheet(page, cases, 'next', null, { employer_specialists: [2] });
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
   await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Call a learner', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Missed/ })).toBeVisible();
+});
+
+test('an employer specialist calls any learner, saves the call and gives their satisfaction feedback', async ({ page }) => {
+  const optionalCall = ticket(5, { source_type: 'manual', learner_name: 'Ann Lee', learner_email: 'ann@example.org', learner_phone: '+447700900005',
+    issue_name: 'Optional call', promises: {}, specialist_closes: true, optional: true, allocated_agent_id: 1 });
+  await openSheet(page, [optionalCall], 'next', null, { employer_specialists: [1] });
+  const posts: [string, Record<string, unknown>][] = [];
+  await page.route(/\/api\/callcentre\/optional-calls\/(\?.*)?$/, route => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ json: { learners: [
+        { email: 'ann@example.org', name: 'Ann Lee', phone: '+447700900005', programme: 'Marketing L3', organisation: 'Acme', coach: 'Coach A',
+          manager: 'Max Manager', open_cases: 2, satisfaction: { due: true, last_completed_at: null, score: null, next_due_at: null } },
+        { email: 'bob@example.org', name: 'Bob Jones', phone: '', programme: 'Finance', organisation: 'Beta', coach: 'Coach B',
+          manager: '', open_cases: 0, satisfaction: null },
+      ] } });
+    }
+    posts.push([new URL(route.request().url()).pathname, route.request().postDataJSON()]);
+    return route.fulfill({ json: { intent_id: 1, ticket_ids: [5, 6], case_id: 5, satisfaction_case_id: 6 } });
+  });
+  await page.route('**/api/callcentre/tickets/*/save_call/', route => {
+    posts.push([new URL(route.request().url()).pathname, route.request().postDataJSON()]);
+    return route.fulfill({ json: { ok: true, applied: false } });
+  });
+  await page.route('**/api/callcentre/tickets/6/complete_feedback/', route => {
+    posts.push([new URL(route.request().url()).pathname, route.request().postDataJSON()]);
+    return route.fulfill({ json: { ok: true, held: true } });
+  });
+  await page.getByRole('button', { name: 'Call a learner', exact: true }).click();
+  await page.getByLabel('Search learners', { exact: true }).fill('acme');
+  await page.getByRole('button', { name: /^Ann Lee/ }).click();
+  await expect(page.getByText('Satisfaction review due now.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: '📞 Call', exact: true }).click();
+  await page.getByRole('button', { name: 'No answer', exact: true }).click();
+  await page.getByRole('button', { name: 'Save the call', exact: true }).click();
+  await expect(page.getByText('Call saved.', { exact: true })).toBeVisible();
+  // The learner's due review can be completed on the call; it counts once Zoom confirms the call was answered.
+  await page.getByRole('combobox', { name: /^Satisfaction score/ }).selectOption('5');
+  await page.getByLabel('Learner feedback', { exact: true }).fill('Very happy with the course so far.');
+  await page.getByLabel(/^Issue raised/).fill('None');
+  await page.getByLabel(/^Agreed action/).fill('No action needed');
+  await page.getByRole('button', { name: 'Complete review', exact: true }).click();
+  await expect(page.getByText('Satisfaction feedback saved.', { exact: true })).toBeVisible();
+  expect(posts.map(([path]) => path)).toEqual(['/api/callcentre/optional-calls/', '/api/callcentre/tickets/5/save_call/',
+    '/api/callcentre/tickets/6/complete_feedback/']);
+  expect(posts[0][1]).toMatchObject({ learner_email: 'ann@example.org', agent_id: 1 });
+  expect(posts[1][1]).toMatchObject({ items: [{ id: 5, outcome: 'no_answer' }] });
+  expect(posts[2][1]).toMatchObject({ score: 5, problem: 'None' });
+});
+
+test('Full case shows satisfaction feedback already saved and waiting for Zoom, not an empty form', async ({ page }) => {
+  const review = (id: number, state: 'held' | 'dropped') => ({
+    ...ticket(id, { source_type: 'learner_satisfaction', learner_phone: `+44770090000${id}`, promises: {} }),
+    held_feedback: { state, at: '2026-10-20T10:05:00Z', by: 'Operator',
+      reason: state === 'dropped' ? 'Zoom did not report an answered call.' : '' },
+  });
+  await openSheet(page, [review(1, 'held'), review(2, 'dropped')], 'learner_satisfaction');
+  await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'All cases (1)', exact: true }).click();
+  let modal = page.getByRole('dialog', { name: 'Full case', exact: true });
+  await modal.getByText('Complete the satisfaction feedback', { exact: true }).click();
+  await expect(modal.getByRole('heading', { name: 'Learner feedback saved', exact: true })).toBeVisible();
+  await expect(modal.getByRole('button', { name: 'Complete review', exact: true })).toHaveCount(0);
+  await modal.getByRole('button', { name: 'Change the feedback', exact: true }).click();
+  await expect(modal.getByRole('button', { name: 'Complete review', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.locator('[data-sheet-row="2"]').getByRole('button', { name: 'All cases (1)', exact: true }).click();
+  modal = page.getByRole('dialog', { name: 'Full case', exact: true });
+  await modal.getByText('Complete the satisfaction feedback', { exact: true }).click();
+  await expect(modal.getByRole('alert')).toContainText('Zoom reported the call as not answered');
+  await expect(modal.getByRole('button', { name: 'Complete review', exact: true })).toBeVisible();
+});
+
+test('End call asks the worker to fetch the call from Zoom straight away', async ({ page }) => {
+  const writes = await openSheet(page, [ticket(1, { learner_phone: '+447700900001' })]);
+  await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'Call Learner 1', exact: true }).click();
+  expect(writes).not.toContain('/api/callcentre/call-sync/');
+  await page.getByRole('button', { name: 'End call with Learner 1', exact: true }).click();
+  await expect.poll(() => writes.filter(path => path === '/api/callcentre/call-sync/').length).toBe(1);
+  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: '📞 Call', exact: true }).click();
+  await page.getByRole('button', { name: 'End call', exact: true }).click();
+  await expect.poll(() => writes.filter(path => path === '/api/callcentre/call-sync/').length).toBe(2);
 });

@@ -10,7 +10,7 @@ export type Session = { csrf: string; agentId: number | null; canAct: boolean; i
   /** This desk makes the employer satisfaction calls only (the director chose it as an employer specialist). */
   employerDesk?: boolean };
 
-type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean;
+type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; caller_id?: string; applied?: boolean; held?: boolean;
   /** From Call: the cases the call covers. */
   ticket_ids?: number[] };
 
@@ -19,6 +19,12 @@ export async function caseAction(session: Session, id: number, command: string, 
   const result = await post<ActionResult>(`tickets/${id}/${command}/`, session.csrf, { ...payload, agent_id: session.agentId });
   if (command === 'call' && result.zoom_url) window.location.href = result.zoom_url;
   return result;
+}
+
+/** The call just ended: ask the worker to fetch it from Zoom now instead of at its next cycle. Best effort only. */
+export function requestCallSync(session: Session) {
+  if (session.preview || !session.canAct) return;
+  post('call-sync/', session.csrf, {}).catch(() => {});
 }
 
 /** One case; with `agentId`, its open call is the one that specialist's desk made. */

@@ -21,6 +21,7 @@ from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTick
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
                        event, open_call, plan_outcome, record_outcome, save_call)
+from .learner_satisfaction import held_feedback
 from .views import rank, with_followup_agent, with_last_call
 
 # Without routers these tests write to 'default'; in production the call-centre tables are on login_db, the alias
@@ -476,3 +477,72 @@ class EmployerSpecialistTests(TestCase):
             self.make_specialists(self.bob)   # an out-of-date revision
         self.make_specialists(self.bob, revision=revision)
         self.assertEqual([entry['value']['agent_ids'] for entry in history()], [[self.bob.pk], [self.alice.pk]])
+
+    # Optional calls: the employer specialist calls any learner, and can complete their satisfaction review
+
+    def optional_call(self, agent):
+        ann_review = CaseTicket.objects.create(source_type='learner_satisfaction', reason_key='satisfaction:ann', learner_email='ann@x.test',
+                                               learner_name='Ann', learner_phone='+447700900001', due_at=timezone.now() + timedelta(days=2))
+        case = CaseTicket.objects.create(source_type='manual', reason_key='optional:ann', learner_email='ann@x.test', learner_name='Ann',
+                                         learner_phone='+447700900001', due_at=timezone.now() + timedelta(days=365),
+                                         source_data={'title': 'Optional call', 'optional': True, 'agent_id': agent.pk})
+        return case, ann_review, create_intent(case.pk, agent)
+
+    def zoom_reports(self, intent, result):
+        # The call made just now, after the review was opened.
+        call = ZoomPhoneCall.objects.create(
+            source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()), direction='outbound',
+            started_at=timezone.now(), ended_at=timezone.now(), result=result)
+        match = CallMatch.objects.create(call=call, agent=intent.agent, learner_email=intent.learner_email)
+        CallIntent.objects.filter(pk=intent.pk).update(matched_call=call)
+        for ticket in intent.tickets.all():
+            CaseCall.objects.create(ticket=ticket, match=match)
+        apply_call_result(match)
+
+    def test_an_optional_call_covers_only_itself_and_the_learners_satisfaction_review(self):
+        self.make_specialists(self.bob)
+        case, review, intent = self.optional_call(self.bob)
+        self.assertEqual(set(intent.tickets.all()), {case, review})
+        # Only the call itself is Bob's: the review and Ann's other case stay on everyone else's lists.
+        review.refresh_from_db()
+        self.learner.refresh_from_db()
+        self.assertEqual((review.claimed_by_id, self.learner.claimed_by_id), (None, None))
+        with self.assertRaisesMessage(PermissionDenied, 'Bob looks after this learner'):
+            can_work(case, self.alice.user)
+
+    def test_saving_an_optional_call_closes_it_unless_a_callback_is_booked(self):
+        self.make_specialists(self.bob)
+        case, _, _ = self.optional_call(self.bob)
+        save_call(case.pk, self.bob.user, [{'id': case.pk, 'outcome': 'no_answer'}])
+        case.refresh_from_db()
+        self.assertEqual(case.status, 'resolved')
+
+    def test_feedback_on_the_call_completes_the_review_once_zoom_reports_it_answered(self):
+        from .learner_satisfaction import complete
+        self.make_specialists(self.bob)
+        _, review, intent = self.optional_call(self.bob)
+        feedback = dict(score=5, problem='None', action='No action needed', note='Very happy with the course so far.')
+        self.assertFalse(complete(review.pk, self.bob.user, **feedback))   # held: Zoom has not reported the call
+        review.refresh_from_db()
+        self.assertNotEqual(review.status, 'resolved')
+        # The case shows the feedback as saved and waiting, so the form is not offered again as if nothing happened.
+        self.assertEqual((held_feedback(review)['state'], held_feedback(review)['by']), ('held', 'Bob'))
+        self.zoom_reports(intent, 'answered')
+        review.refresh_from_db()
+        self.assertEqual((review.status, review.source_data['feedback']['score']), ('resolved', 5))
+        self.assertIsNone(held_feedback(review))
+        self.assertIn('next_due_at', review.source_data)
+
+    def test_held_feedback_is_dropped_when_zoom_reports_the_call_unanswered(self):
+        from .learner_satisfaction import complete
+        self.make_specialists(self.bob)
+        _, review, intent = self.optional_call(self.bob)
+        complete(review.pk, self.bob.user, score=4, problem='None', action='No action needed', note='Happy with the coaching.')
+        self.zoom_reports(intent, 'no_answer')
+        review.refresh_from_db()
+        self.assertNotEqual(review.status, 'resolved')
+        self.assertTrue(review.events.filter(kind='feedback_pending_dropped').exists())
+        self.assertEqual(held_feedback(review)['state'], 'dropped')
+        self.assertIn('answered', held_feedback(review)['reason'])
+        with self.assertRaisesMessage(ValueError, 'not answered'):
+            complete(review.pk, self.bob.user, score=4, problem='None', action='No action needed', note='Happy with the coaching.')

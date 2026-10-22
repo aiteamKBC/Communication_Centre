@@ -16,9 +16,9 @@ from .access import is_director
 from .call_scope import system_case_calls
 from .db import DB
 from .learners import program_status
-from .models import CaseTicket, CycleState
+from .models import CallIntent, CaseTicket, CycleState
 from .rules import LONDON, due_at, parse_moment
-from .services import Conflict, can_work, close, event, release_fields
+from .services import PENDING_OUTCOME_WINDOW, Conflict, can_work, close, event, release_fields
 
 SOURCE = 'learner_satisfaction'
 EMPLOYER = 'employer_feedback'
@@ -221,14 +221,8 @@ def generate_employers(people, now=None):
     return counts
 
 
-@transaction.atomic(using=DB)
-def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None):
-    ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
-    agent = can_work(ticket, user, acting_agent=acting_agent)
-    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived or not ticket.source_data.get('eligible', True):
-        raise Conflict('This is not an active satisfaction case.')
-    if ticket.status == 'resolved':
-        raise Conflict('This satisfaction review has already been completed.')
+def clean_feedback(score, problem, action, note):
+    """The feedback form's fields, checked; raises ValueError with what to fix."""
     if type(score) is not int or score not in range(1, 6):
         raise ValueError('Choose a satisfaction score from 1 to 5.')
     note, problem, action = (str(value or '').strip() for value in (note, problem, action))
@@ -236,24 +230,83 @@ def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None
         raise ValueError('Record the feedback, any issue (or None) and the agreed action (or No action needed).')
     if any(len(value) > 3500 for value in (note, problem, action)):
         raise ValueError('Each feedback field must be at most 3500 characters.')
+    return {'score': score, 'problem': problem, 'agreed_action': action, 'note': note}
+
+
+@transaction.atomic(using=DB)
+def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None):
+    """Complete the review after an answered call. Straight after the call, before Zoom reports it, the feedback is
+    held and completes the review once Zoom reports the call answered (``apply_pending_feedback``).
+    Returns True when the review was completed now, False when it is held."""
+    ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
+    agent = can_work(ticket, user, acting_agent=acting_agent)
+    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived or not ticket.source_data.get('eligible', True):
+        raise Conflict('This is not an active satisfaction case.')
+    if ticket.status == 'resolved':
+        raise Conflict('This satisfaction review has already been completed.')
+    fields = clean_feedback(score, problem, action, note)
     # Sending a message, dialing, or a failed Zoom call is never completion evidence.
     calls = system_case_calls(ticket.calls.all()).filter(processed_result='answered', match__call__ended_at__lte=timezone.now())
     calls = calls.filter(match__call__started_at__gte=ticket.evidence_after or ticket.created_at)
     if not is_director(user):
         calls = calls.filter(match__agent=agent)
     call = calls.select_related('match__call').order_by('-match__call__started_at').first()
-    if not call:
-        raise ValueError('An answered, synced Zoom call in this review cycle is required before completing feedback.')
+    if call:
+        record_feedback(ticket, agent, None if agent else user.get_username(), fields, call.match.call)
+        return True
+    # A call just made from the system that Zoom has not reported yet: hold the feedback for it.
+    intent = agent and (ticket.intents.filter(agent=agent, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW)
+                        .order_by('-created_at').first())
+    if intent:
+        link = (system_case_calls(ticket.calls.all()).filter(match__call_id=intent.matched_call_id).first()
+                if intent.matched_call_id else None)
+        if not link or not link.processed_result:
+            event(ticket, 'feedback_pending', {'intent_id': intent.pk, **fields}, agent)
+            return False
+        if link.processed_result != 'answered':
+            raise ValueError('Zoom reports this call as not answered, so it cannot complete the review.')
+    raise ValueError('An answered, synced Zoom call in this review cycle is required before completing feedback.')
+
+
+def record_feedback(ticket, agent, actor, fields, call):
+    """Complete a locked review with its feedback, given on ``call``; the next review is due in three months."""
     now = timezone.now()
-    feedback = {'score': score, 'problem': problem, 'agreed_action': action, 'note': note,
-                'completed_at': now.isoformat(), 'call_id': call.match.call_id,
-                'next_due_at': next_review_at(now).isoformat()}
+    feedback = {**fields, 'completed_at': now.isoformat(), 'call_id': call.pk, 'next_due_at': next_review_at(now).isoformat()}
     ticket.source_data = {**ticket.source_data, 'feedback': feedback, 'last_completed_at': now.isoformat(),
                           'next_due_at': feedback['next_due_at']}
     kind = 'employer_feedback_completed' if ticket.source_type == EMPLOYER else 'learner_feedback_completed'
-    event(ticket, kind, feedback, agent, None if agent else user.get_username(), call=call.match.call)
-    close(ticket, agent, 'agent', kind, feedback, None if agent else user.get_username())
-    return ticket
+    event(ticket, kind, feedback, agent, actor, call=call)
+    close(ticket, agent, 'agent', kind, feedback, actor)
+
+
+def apply_pending_feedback(ticket, match):
+    """Complete a review whose feedback was given before Zoom reported its call, once Zoom reports it answered."""
+    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.status == 'resolved':
+        return
+    intent = CallIntent.objects.filter(matched_call=match.call).first()
+    pending = intent and ticket.events.filter(kind='feedback_pending', data__intent_id=intent.pk).order_by('-id').first()
+    if not pending:
+        return
+    call = match.call
+    if call.result != 'answered' or call.started_at < (ticket.evidence_after or ticket.created_at):
+        event(ticket, 'feedback_pending_dropped', {'reason': 'Zoom did not report an answered call.', 'pending_event': pending.pk},
+              match.agent, call=call)
+        return
+    fields = {key: pending.data[key] for key in ('score', 'problem', 'agreed_action', 'note')}
+    record_feedback(ticket, match.agent, None, fields, call)
+
+
+def held_feedback(ticket):
+    """Feedback given before Zoom reported its call, for an open review: ``held`` while it waits for Zoom, ``dropped``
+    when Zoom reported the call not answered. None when nothing is waiting (or the review is closed)."""
+    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.status == 'resolved':
+        return None
+    latest = ticket.events.filter(kind__in=('feedback_pending', 'feedback_pending_dropped'),
+                                  created_at__gte=ticket.evidence_after or ticket.created_at).order_by('-id').first()
+    if not latest:
+        return None
+    return {'state': 'held' if latest.kind == 'feedback_pending' else 'dropped', 'at': latest.created_at,
+            'by': latest.actor, 'reason': str(latest.data.get('reason') or '')}
 
 
 CLOSE_REASONS = {'wrong_number': 'Wrong number', 'refused': 'Refused feedback', 'unreachable': 'Could not be reached'}

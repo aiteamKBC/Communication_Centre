@@ -335,7 +335,7 @@ export const csvText = (headers: string[], rows: Record<string, unknown>[]) =>
   [headers.join(','), ...rows.map(row => headers.map(h => csvCell(row[h])).join(','))].join('\r\n');
 
 export const DESK_MENUS: [string, string, string][] = [
-  ['next', 'Next call', 'phone'],
+  ['next', 'Next call', 'phone'], ['learners', 'Call a learner', 'phone'],
   ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
   ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'],
   ['history', 'Monthly achievements', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
@@ -343,16 +343,20 @@ export const DESK_MENUS: [string, string, string][] = [
 ];
 
 /** An employer specialist's desk: the employer calls and their own records, no learner lists. */
-const EMPLOYER_DESK = new Set(['next', 'employer_satisfaction', 'followups', 'history', 'progress', 'reviews', 'reports']);
+const EMPLOYER_DESK = new Set(['next', 'learners', 'employer_satisfaction', 'followups', 'history', 'progress', 'reviews', 'reports']);
 
-/** The desk's menu: everything, or with employer specialists chosen, only theirs for them and no employer calls for the rest. */
+/** The desk's menu: with employer specialists chosen, only theirs for them (with Call a learner, for any learner) and
+ * no employer calls for the rest; otherwise everything but Call a learner. */
 export const deskMenus = (overview: Pick<Overview, 'employer_specialists'>, agentId: number | null) => {
   const team = overview.employer_specialists || [];
-  if (!team.length) return DESK_MENUS;
-  return agentId !== null && team.includes(agentId)
-    ? DESK_MENUS.filter(([key]) => EMPLOYER_DESK.has(key))
-    : DESK_MENUS.filter(([key]) => key !== 'employer_satisfaction');
+  if (agentId !== null && team.includes(agentId)) return DESK_MENUS.filter(([key]) => EMPLOYER_DESK.has(key));
+  return DESK_MENUS.filter(([key]) => key !== 'learners' && (!team.length || key !== 'employer_satisfaction'));
 };
+
+/** What saving the satisfaction feedback did: completed now, or held until Zoom reports the call answered. */
+export const feedbackMessage = (held?: boolean) => (held
+  ? 'Feedback saved. It completes the review as soon as Zoom reports the call answered (usually within 10 minutes).'
+  : 'Feedback completed. Next review is due in three calendar months.');
 
 /** Calls the AI actually judged (excludes not rated). */
 export const ratedCalls = (counts: Record<CallRating, number> | undefined) => (counts ? counts.excellent + counts.good + counts.bad : 0);

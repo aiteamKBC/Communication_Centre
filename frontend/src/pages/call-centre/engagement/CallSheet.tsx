@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { callDisabledReason, caseAction, saveOutcome } from './actions';
+import { callDisabledReason, caseAction, requestCallSync, saveOutcome } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
@@ -14,7 +14,7 @@ import CaseDates from './CaseDates';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { matchesTicketDate, orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
 import type { CallTab } from './model';
-import { ISSUE_LABELS, QUICK_FOLLOW_UPS, activeCase, bookingHint, closesCase, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, QUICK_FOLLOW_UPS, activeCase, bookingHint, closesCase, feedbackMessage, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
 const PAGE_SIZE = 20;
@@ -145,6 +145,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   }
 
   function endCall(c: OverviewCase) {
+    requestCallSync(session);
     setOnCall(current => { const next = new Set(current); next.delete(c.id); return next; });
     setEnded(current => new Set(current).add(c.id));
     document.querySelector<HTMLSelectElement>(`[data-sheet-row="${c.id}"] select`)?.focus();
@@ -377,7 +378,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       </Dialog>
       <Dialog open={feedbackCase !== null} onClose={() => setFeedbackCase(null)}>
         {feedbackCase && <SatisfactionFeedback key={feedbackCase.id} caseId={feedbackCase.id} name={feedbackCase.learner_name}
-          employer={feedbackCase.source_type === 'employer_feedback'} session={session} onSaved={() => { setFeedbackCase(null); onSaved(); notify('Feedback completed. Next review is due in three calendar months.'); }} />}
+          employer={feedbackCase.source_type === 'employer_feedback'} session={session} onSaved={held => { setFeedbackCase(null); onSaved(); notify(feedbackMessage(held)); }} />}
       </Dialog>
       <Dialog open={satisfactionEmail !== null} onClose={() => setSatisfactionEmail(null)}>
         {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id}

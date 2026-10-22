@@ -10,7 +10,7 @@ import Dialog from './Dialog';
 import SatisfactionEmail from './SatisfactionEmail';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, caseTone, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
+import { casePurpose, caseTone, feedbackMessage, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -172,7 +172,7 @@ export default function CaseWorkspace({ id, overview, session, onOpen, notify, o
         <div className="ec-stack">
           {isSatisfaction(c) && c.status !== 'resolved' && <section className="ec-card">
             <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={c.source_type === 'employer_feedback'} session={session}
-              onSaved={() => saved('Feedback completed. Next review is due in three calendar months.')} />
+              held={detail.held_feedback} onSaved={held => saved(feedbackMessage(held))} />
           </section>}
           {callCases.length > 0 && (
             <section className="ec-card">

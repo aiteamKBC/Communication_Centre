@@ -9,7 +9,7 @@ from .access import is_director
 from .allocation import learner_owner, manager_owners, owners
 from .call_scope import system_case_calls, system_matches
 from .db import DB
-from .employer_desk import EMPLOYER, scope_error, specialists
+from .employer_desk import EMPLOYER, SATISFACTION, optional, scope_error, specialists
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
@@ -54,9 +54,12 @@ def release_fields(ticket):
     ticket.last_activity_at = None
 
 
-def allocated_owner(learner_email, source_type, team=None):
+def allocated_owner(learner_email, source_type, team=None, source_data=None):
     """The specialist who looks after this contact, or None for the shared queue. With employer specialists
-    (``team``), employer cases are shared between them and a specialist's learners are in the shared queue."""
+    (``team``), employer cases are shared between them and a specialist's learners are in the shared queue.
+    An optional call belongs to the specialist who made it."""
+    if optional(source_data):
+        return source_data.get('agent_id')
     team = specialists() if team is None else team
     if source_type == EMPLOYER:
         return None if team else manager_owners().get(learner_email)
@@ -75,11 +78,11 @@ def can_work(ticket, user, now=None, acting_agent=None):
             raise Conflict('Another agent is working on this ticket.')
     if agent and not director:
         team = specialists()
-        owner = allocated_owner(ticket.learner_email, ticket.source_type, team)
+        owner = allocated_owner(ticket.learner_email, ticket.source_type, team, ticket.source_data)
         if owner and owner != agent.pk:
             raise PermissionDenied(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. '
                                    'Ask a manager to change the allocation.')
-        refused = scope_error(ticket.source_type, agent.pk, team)
+        refused = scope_error(ticket.source_type, agent.pk, team, ticket.source_data)
         if refused:
             raise PermissionDenied(refused)
     return agent
@@ -90,12 +93,13 @@ def claim(ticket_id, agent, now=None, actor=None):
     now = now or timezone.now()
     if not agent.active or not agent.user.is_active:
         raise PermissionDenied('Agent is inactive.')
-    learner, source = CaseTicket.objects.filter(pk=ticket_id).values_list('learner_email', 'source_type').first() or ('', '')
+    learner, source, data = (CaseTicket.objects.filter(pk=ticket_id).values_list('learner_email', 'source_type', 'source_data')
+                             .first() or ('', '', {}))
     team = specialists()
-    owner = allocated_owner(learner, source, team)
+    owner = allocated_owner(learner, source, team, data)
     if owner and owner != agent.pk:
         raise Conflict(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. Ask a manager to change the allocation.')
-    refused = scope_error(source, agent.pk, team)
+    refused = scope_error(source, agent.pk, team, data)
     if refused:
         raise Conflict(refused)
     # A single conditional UPDATE is the arbiter, including on SQLite.
@@ -169,6 +173,12 @@ def create_intent(ticket_id, agent, actor=None):
     # A technical issue still with support is not part of another call: the call would send it back to the list.
     candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
     tickets = list(candidates.order_by('pk'))
+    # An optional call is about that call alone; it is linked to the learner's open satisfaction review (not claimed,
+    # so it stays on the other agents' lists) so feedback given on it can complete the review.
+    linked = []
+    if optional(ticket.source_data):
+        tickets = [ticket]
+        linked = list(CaseTicket.objects.open().filter(source_type=SATISFACTION, learner_email=ticket.learner_email))
     if not tickets:
         raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')
     for item in tickets:
@@ -178,7 +188,7 @@ def create_intent(ticket_id, agent, actor=None):
     if prior:
         return prior
     intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email, number=number)
-    intent.tickets.add(*tickets)
+    intent.tickets.add(*tickets, *linked)
     for item in tickets:
         event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number}, agent=agent, actor=actor)
     return intent
@@ -328,6 +338,8 @@ def apply_call_result(match):
             ticket.save(update_fields=['attempts'])
         event(ticket, 'zoom_result', {'result': call.result, 'failed_attempts': ticket.attempts}, agent=match.agent, call=call)
         apply_pending_outcome(ticket, link, match)
+        from .learner_satisfaction import apply_pending_feedback   # learner_satisfaction imports this module
+        apply_pending_feedback(ticket, match)
 
 
 OUTCOMES = {'reached', 'no_answer', 'wrong_number', 'callback', 'refused'}
@@ -464,7 +476,11 @@ def save_call(ticket_id, user, items, note='', callback_at=None, acting_agent=No
         outcome, option = item['outcome'], str(item.get('option') or '')
         text = '\n\n'.join(part for part in (note.strip(), str(item.get('note') or '')[:3500].strip()) if part)
         try:
-            if outcome == RESOLVE:
+            if optional(ticket.source_data) and outcome != 'callback':
+                # An optional call is never a task: saving it closes it, whatever happened (a callback keeps it).
+                event(ticket, 'optional_outcome', {'outcome': outcome, 'option': option, 'note': text, 'intent_id': intent.pk}, agent)
+                resolve(ticket.pk, user, note=text or f'Optional call: {outcome.replace("_", " ")}', option='other', acting_agent=agent)
+            elif outcome == RESOLVE:
                 resolve(ticket.pk, user, note=text, option='other', acting_agent=agent)
             elif outcome == NOT_DISCUSSED:
                 locked = CaseTicket.objects.select_for_update().get(pk=ticket.pk)

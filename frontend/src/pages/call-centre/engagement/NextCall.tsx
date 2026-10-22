@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { caseAction, callDisabledReason, loadCase } from './actions';
+import { caseAction, callDisabledReason, loadCase, requestCallSync } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
@@ -18,7 +18,7 @@ type Props = { overview: Overview; session: Session; onRefresh: () => void; noti
 
 /** The simple calling screen: one learner, Call, End call, then the outcome of the whole call (CallOutcome), saved together. */
 export default function NextCall({ overview, session, onRefresh, notify, onOpen }: Props) {
-  // An employer specialist's next calls are the employers; everyone else's are learners.
+  // An employer specialist's next calls are the employers (and their own optional calls' callbacks); everyone else's are learners.
   const employerDesk = !!session.employerDesk;
   const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [order, setOrder] = useState<TicketOrder>('newest');
@@ -35,7 +35,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const [busy, setBusy] = useState(false);
 
   const eligible = useMemo(() => overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
-    && (c.source_type === 'employer_feedback') === employerDesk && !!c.learner_phone && dueForCall(c)
+    && (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk && !!c.learner_phone && dueForCall(c)
     && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId)), [overview, session.agentId, employerDesk]);
   // The same order as the call sheets: one learner per contact, in the chosen ticket order.
   const queue = useMemo(() => uniqueLearners(orderTickets(eligible.filter(c => matchesCaseFilters(c, caseFilters)), order))
@@ -44,7 +44,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const next = queue[at] || null;
   const current = calling ? calling.person : next;
   const issues = calling ? calling.issues : next ? orderTickets(overview.cases.filter(c => contactKey(c) === contactKey(next) && activeCase(c)
-    && (c.source_type === 'employer_feedback') === employerDesk && dueForCall(c)), order) : [];
+    && (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk && dueForCall(c)), order) : [];
   const allCases = current ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(current)).length : 0;
 
   function reset(next: Set<string>) {
@@ -164,7 +164,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
           </ul>
           {calling ? (
             <>
-              <button type="button" className="primary ed-next-call ed-end-call" onClick={() => setCalling({ ...calling, ended: true })}>
+              <button type="button" className="primary ed-next-call ed-end-call" onClick={() => { requestCallSync(session); setCalling({ ...calling, ended: true }); }}>
                 End call
               </button>
               <p className="ec-muted">Hang up in Zoom, then press End call to record the outcome. Nothing changes on the case until you save.</p>

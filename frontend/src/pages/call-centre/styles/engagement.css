@@ -109,6 +109,10 @@
 .ec .ed-call-more textarea{min-height:3.5rem}
 .ec .ed-call-record{margin-bottom:1rem;border-color:#ceb9e6}
 .ec .ed-call-record h2{font-size:1.15rem;margin-bottom:.75rem}
+.ed-learner-results{list-style:none;margin:.75rem 0 0;padding:0;display:grid;gap:.4rem}
+.ec.ed .ed-learner-results button{width:100%;display:grid;gap:.1rem;text-align:left;font-weight:400}
+.ed-learner-results span,.ed-learner-results small{color:var(--muted);font-size:.85rem}
+.ed-call-learner>input[type=search]{margin:.5rem 0}
 .ed-call-save{position:sticky;bottom:0;z-index:1;display:grid;gap:.4rem;padding:.75rem 0 .25rem;background:#fff}
 .ed-call-save small[role=status]{color:#80561e}
 @media(max-width:600px){.ed-call-case-line{grid-template-columns:1fr}}
