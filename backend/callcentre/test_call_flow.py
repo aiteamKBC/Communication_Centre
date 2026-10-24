@@ -736,6 +736,36 @@ class PhoneLineTests(TestCase):
         self.tina.refresh_from_db()
         self.assertEqual(self.tina.zoom_account, 'office')
 
+    def test_refresh_brings_each_number_up_to_date_with_zoom_and_tests_them_all(self):
+        from .zoom_lines import add, refresh, stored
+        add({'number': self.LINE, 'account': 'student', 'label': 'Alice Saunders', 'from_zoom': True}, 'director')
+        add({'number': '+441622958955', 'account': 'student', 'label': 'My own name'}, 'director')
+        add({'number': '+441622958000', 'account': 'student'}, 'director')
+        self.give(self.tina, self.LINE)
+        in_zoom = {'student': [{'number': '+441622958955', 'display_name': 'Engagement Team', 'assignee': 'Team', 'status': 'normal'}],
+                   'office': [{'number': self.LINE, 'display_name': 'Tina line', 'assignee': 'Tina Wright', 'status': 'normal'}]}
+        with mock.patch('callcentre.zoom_accounts.zoom_numbers', side_effect=lambda key: in_zoom[key]):
+            result = refresh('director')
+        lines = {line['number']: line for line in stored()}
+        # Zoom renamed and moved the first number; the second keeps the name typed here; the third is not in Zoom any more.
+        self.assertEqual((lines[self.LINE]['label'], lines[self.LINE]['account'], lines[self.LINE]['zoom_owner']), ('Tina line', 'office', 'Tina Wright'))
+        self.assertEqual((lines['+441622958955']['label'], lines['+441622958955']['zoom_name']), ('My own name', 'Engagement Team'))
+        self.assertEqual(result['not_in_zoom'], ['+441622958000'])
+        self.assertEqual(len(result['changes']), 2)
+        self.tina.refresh_from_db()
+        self.assertEqual(self.tina.zoom_account, 'office')   # the specialist follows the number
+        self.assertTrue(all(line['test'] for line in lines.values()))
+        self.assertEqual(lines['+441622958000']['test']['status'], 'not_found')
+
+    def test_calls_from_before_a_change_no_longer_raise_warnings(self):
+        from .zoom_lines import test, update
+        self.line()
+        self.give(self.tina, self.LINE)
+        self.call(matched=True, caller_email='old@kbc.test', started_at=timezone.now() - timedelta(hours=2))
+        self.assertIn('old@kbc.test', test(self.LINE, 'director')['warnings'][0])
+        update(self.LINE, {'account': 'student', 'zoom_email': 'new@kbc.test'}, 'director')
+        self.assertEqual(test(self.LINE, 'director')['warnings'], [])   # the old call was made before the change
+
     def test_a_number_in_use_cannot_be_removed(self):
         from .zoom_lines import remove, stored
         self.line()

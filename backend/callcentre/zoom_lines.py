@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from .db import DB
 from .models import Agent, CallMatch, Setting, ZoomPhoneCall, ZoomPhoneRecording
-from .rules import email_key, normalize_phone
+from .rules import email_key, normalize_phone, parse_moment
 from .errors import FieldError
 from .zoom_phone import ZoomClient, ZoomError, account_labels, missing_credentials, validate_config
 
@@ -104,10 +104,13 @@ def _check_unique(lines, line):
 
 def add(data, actor):
     line = clean_line(data)
+    now = timezone.now().isoformat()
+    # A name taken from Zoom (Add on an account's numbers) follows Zoom on Refresh; a name typed here is kept.
+    custom = bool(line['label']) and not data.get('from_zoom')
 
     def change(lines):
         _check_unique(lines, line)
-        return [*lines, {**line, 'added_by': actor, 'added_at': timezone.now().isoformat(), 'test': None}]
+        return [*lines, {**line, 'custom_label': custom, 'added_by': actor, 'added_at': now, 'test': None}]
     return _save(change, actor)
 
 
@@ -120,7 +123,11 @@ def update(number, data, actor):
         if not any(item['number'] == number for item in lines):
             raise ValueError('This number is not in the list.')
         _check_unique([item for item in lines if item['number'] != number], line)
-        return [{**item, **line, 'test': None} if item['number'] == number else item for item in lines]
+        now = timezone.now().isoformat()
+        return [{**item, **line, 'test': None, 'changed_at': now,
+                 # Kept as typed unless it is Zoom's own name for the number.
+                 'custom_label': bool(line['label']) and line['label'] != item.get('zoom_name')}
+                if item['number'] == number else item for item in lines]
     with transaction.atomic(using=DB):
         lines = _save(change, actor)
         holders = [agent for agent in Agent.objects.exclude(zoom_account=line['account'])
@@ -225,8 +232,10 @@ def discover(number, now=None):
     seen = seen_on(number, (now or timezone.now()) - timedelta(days=90))
     zoom = zoom_lookup(number)
     account = zoom['account'] or (seen['accounts'].most_common(1)[0][0] if seen['accounts'] else '')
-    return {'number': number, 'account': account, 'zoom_email': seen['emails'].most_common(1)[0][0] if seen['emails'] else '',
-            'zoom_user_id': seen['user_ids'].most_common(1)[0][0] if seen['user_ids'] else '', 'calls_90_days': seen['calls'],
+    latest = ZoomPhoneCall.objects.filter(direction='outbound', caller_number=number).order_by('-started_at')
+    email = latest.exclude(caller_email='').values_list('caller_email', flat=True).first() or ''
+    user_id = latest.exclude(caller_user_id='').values_list('caller_user_id', flat=True).first() or ''
+    return {'number': number, 'account': account, 'zoom_email': email_key(email), 'zoom_user_id': user_id, 'calls_90_days': seen['calls'],
             'zoom': zoom}
 
 
@@ -257,14 +266,21 @@ def setup_warnings(line, holders, seen):
     return warnings
 
 
-def test(number, actor, now=None):
+def since_change(line, now):
+    """The calls that tell about the number's current setup: the last 30 days, but none from before it last changed."""
+    since = now - timedelta(days=30)
+    changed = parse_moment(line['changed_at']) if line.get('changed_at') else None
+    return max(since, changed) if changed else since
+
+
+def test(number, actor, now=None, zoom=None):
     """Check a line end to end and keep the result: Zoom, its setup, its calls in the last 7 days, and who has it."""
     number = clean_number(number)
     line = next((item for item in stored() if item['number'] == number), None)
     if not line:
         raise ValueError('Add the number to the list before testing it.')
     now = now or timezone.now()
-    zoom = zoom_lookup(number)
+    zoom = zoom if zoom is not None else zoom_lookup(number)
     week = now - timedelta(days=7)
     calls = ZoomPhoneCall.objects.filter(direction='outbound', caller_number=number)
     recent = calls.filter(started_at__gte=week)
@@ -272,7 +288,7 @@ def test(number, actor, now=None):
     last_call = calls.order_by('-started_at').values_list('started_at', flat=True).first()
     recordings = ZoomPhoneRecording.objects.filter(caller_number=number, started_at__gte=week)
     holders = agents_by_number().get(number, [])
-    warnings = setup_warnings(line, holders, seen_on(number, now - timedelta(days=30)))
+    warnings = setup_warnings(line, holders, seen_on(number, since_change(line, now)))
     if zoom['found'] and line.get('account') and zoom['account'] != line['account']:
         warnings.append(f'Zoom has this number on the {account_labels().get(zoom["account"], zoom["account"])} account.')
     active = [holder['name'] for holder in holders if holder['active']]
@@ -303,3 +319,61 @@ def test(number, actor, now=None):
         return [{**item, 'test': result} if item['number'] == number else item for item in lines]
     _save(change, actor)
     return result
+
+
+def refresh(actor, now=None):
+    """Refresh from Zoom: read every account's numbers from Zoom, bring each listed number's Zoom name, owner and account up
+    to date (a name typed here is kept), then Test every number. Returns what changed, and what could not be read."""
+    from .zoom_accounts import zoom_numbers
+    now = now or timezone.now()
+    labels = account_labels()
+    in_zoom, problems, read = {}, [], set()
+    for key, label in labels.items():
+        try:
+            for row in zoom_numbers(key):
+                in_zoom.setdefault(row['number'], {**row, 'account': key})
+            read.add(key)
+        except (ZoomError, ValueError) as exc:
+            problems.append(f'{label}: {exc}')
+    changes, moved = [], {}
+
+    def change(lines):
+        changes.clear()
+        moved.clear()
+        updated = []
+        for line in lines:
+            zoom = in_zoom.get(line['number'])
+            if not zoom:
+                updated.append(line)
+                continue
+            line = {**line, 'zoom_name': zoom['display_name'], 'zoom_owner': zoom['assignee'], 'refreshed_at': now.isoformat()}
+            name = zoom['display_name'] or zoom['assignee']
+            if name and not line.get('custom_label') and line.get('label') != name:
+                changes.append(f'{line["number"]}: name {line.get("label") or "(none)"} → {name}')
+                line['label'] = name
+            if zoom['account'] != line.get('account'):
+                changes.append(f'{line["number"]}: account {labels.get(line.get("account"), line.get("account") or "(none)")} → '
+                               f'{labels[zoom["account"]]}')
+                line.update(account=zoom['account'], changed_at=now.isoformat())
+                moved[line['number']] = zoom['account']
+            updated.append(line)
+        return updated
+    with transaction.atomic(using=DB):
+        lines = _save(change, actor)
+        # A number that moved account takes its specialist with it (as Edit does).
+        for agent in Agent.objects.all():
+            account = moved.get(normalize_phone(agent.zoom_phone_number))
+            if account and agent.zoom_account != account:
+                agent.zoom_account = account
+                agent.save(update_fields=['zoom_account'])
+    # Only an account Zoom answered for can say a number is not on it.
+    checked = len(read) == len(labels) and bool(labels)
+    missing = [line['number'] for line in lines if line['number'] not in in_zoom and checked]
+    for line in lines:
+        zoom = in_zoom.get(line['number'])
+        result = ({'checked': True, 'found': True, 'account': zoom['account'], 'status': zoom['status'], 'assignee': zoom['assignee'],
+                   'problem': ''} if zoom else
+                  {'checked': checked, 'found': False if checked else None, 'account': '', 'status': '', 'assignee': '',
+                   'problem': '' if checked else '; '.join(problems)})
+        test(line['number'], actor, now, zoom=result)
+    return {'numbers': len(lines), 'changes': changes, 'not_in_zoom': missing, 'problems': problems}

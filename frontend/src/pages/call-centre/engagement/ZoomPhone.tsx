@@ -32,7 +32,8 @@ type LineTest = {
 type Holder = { id: number; name: string; active: boolean; account: string };
 /** A number and everything Zoom uses to recognise it. */
 type LineFields = { number: string; label: string; account: string; zoom_email: string; zoom_user_id: string };
-type Line = LineFields & { test: LineTest | null; agents: Holder[] };
+type Line = LineFields & { test: LineTest | null; agents: Holder[]; zoom_name?: string; zoom_owner?: string; refreshed_at?: string };
+type Refreshed = { numbers: number; changes: string[]; not_in_zoom: string[]; problems: string[] };
 type Lines = { lines: Line[]; unlisted: { number: string; agents: Holder[] }[]; scope: string };
 type Found = { account: string; zoom_email: string; zoom_user_id: string; calls_90_days: number; zoom: LineTest['zoom'] };
 const emptyLine: LineFields = { number: '', label: '', account: '', zoom_email: '', zoom_user_id: '' };
@@ -73,6 +74,7 @@ function PhoneLines({ csrf, data, accounts, onChanged }: { csrf: string; data: L
   const [busy, setBusy] = useState('');
   const [problem, setProblem] = useState<Problem>(null);
   const [fieldError, setFieldError] = useState<FieldProblem>(null);
+  const [refreshed, setRefreshed] = useState<Refreshed | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const setField = <K extends keyof LineFields>(key: K, value: string) => {
     setForm(current => ({ ...current, [key]: value }));
@@ -90,7 +92,7 @@ function PhoneLines({ csrf, data, accounts, onChanged }: { csrf: string; data: L
     setProblem(null);
     setBusy(doing);
     try {
-      const result = await post<{ found?: Found }>('phone-lines/', csrf, payload);
+      const result = await post<{ found?: Found; refresh?: Refreshed }>('phone-lines/', csrf, payload);
       if (payload.action !== 'discover') onChanged();
       return result;
     } catch (error) {
@@ -156,6 +158,13 @@ function PhoneLines({ csrf, data, accounts, onChanged }: { csrf: string; data: L
     window.setTimeout(() => (gap ? focusField(formRef.current, gap.field) : formRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })), 0);
   }
 
+  /** Re-read every number from Zoom (name, owner, account) and Test them all. */
+  async function refresh() {
+    setRefreshed(null);
+    const result = await act({ action: 'refresh' }, 'refresh', 'Refreshing the numbers from Zoom');
+    if (result?.refresh) setRefreshed(result.refresh);
+  }
+
   const scopeMissing = data?.lines.some(line => line.test && !line.test.zoom.checked && line.test.zoom.problem.includes('scope'));
   const known = (key: string) => accounts.some(account => account.key === key);
   return (
@@ -167,7 +176,18 @@ function PhoneLines({ csrf, data, accounts, onChanged }: { csrf: string; data: L
             (Edit on their profile below). A call on a number counts for the one specialist who has it, whatever email Zoom shows; a call
             made from the Zoom app directly is not counted, so always start calls with Call.</p>
         </div>
+        <button type="button" disabled={!!busy || !data?.lines.length} title={data?.lines.length ? undefined : 'Add a number first'}
+          onClick={() => void refresh()}>{busy === 'refresh' ? 'Refreshing from Zoom…' : 'Refresh from Zoom'}</button>
       </div>
+      {refreshed && (
+        <div className={`ec-alert ${refreshed.problems.length || refreshed.not_in_zoom.length ? '' : 'ec-success'}`} role="status">
+          <strong>Refreshed {refreshed.numbers} {refreshed.numbers === 1 ? 'number' : 'numbers'} from Zoom and tested them all.</strong>
+          {refreshed.changes.length ? <ul>{refreshed.changes.map(item => <li key={item}>{item}</li>)}</ul> : <p>Nothing had changed in Zoom.</p>}
+          {!!refreshed.not_in_zoom.length && <p className="danger">Not in Zoom any more: {refreshed.not_in_zoom.join(', ')}. Remove them, or check them in Zoom.</p>}
+          {refreshed.problems.map(item => <p key={item} className="danger">Could not read {item}</p>)}
+          <button type="button" onClick={() => setRefreshed(null)}>Dismiss</button>
+        </div>
+      )}
       {!!data?.unlisted.length && (
         <p className="ec-alert">On a specialist’s profile but not in the list yet:{' '}
           {data.unlisted.map(item => (
@@ -224,7 +244,9 @@ function PhoneLines({ csrf, data, accounts, onChanged }: { csrf: string; data: L
           <tbody>
             {(data?.lines || []).map(line => (
               <tr key={line.number}>
-                <td><strong>{line.number}</strong><small>{line.label}</small></td>
+                <td><strong>{line.number}</strong><small>{line.label}</small>
+                  {line.refreshed_at && <small>In Zoom: {[line.zoom_name, line.zoom_owner && `owner ${line.zoom_owner}`].filter(Boolean).join(' · ') || 'no name'}
+                    {' '}(read {when(line.refreshed_at)})</small>}</td>
                 <td>{line.account && known(line.account) ? label(line.account)
                   : <span className="danger">{line.account ? `Account ${line.account} is not in Zoom accounts: Edit` : 'Account not set'}</span>}
                   {line.zoom_email && <small>{line.zoom_email}</small>}{line.zoom_user_id && <small>ID {line.zoom_user_id}</small>}</td>

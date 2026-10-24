@@ -340,6 +340,8 @@ def phone_lines(request):
             zoom_lines.remove(data.get('number'), actor)
         elif action == 'test':
             return JsonResponse({'ok': True, 'test': zoom_lines.test(data.get('number'), actor)})
+        elif action == 'refresh':
+            return JsonResponse({'ok': True, 'refresh': zoom_lines.refresh(actor)})
         else:
             raise ValueError('Unknown action.')
         return JsonResponse({'ok': True})

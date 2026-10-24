@@ -296,18 +296,17 @@ def test(key, actor, now=None):
     return result
 
 
-def numbers(key):
-    """Every phone number on the account as Zoom lists it, with who has it in Zoom and whether it is in our list.
-    Read-only: needs the app's phone numbers scope (zoom_lines.NUMBERS_SCOPE)."""
+def zoom_numbers(key, client=None):
+    """Every phone number Zoom lists on the account: number, Zoom's display name, owner, status. Needs the app's phone
+    numbers scope (zoom_lines.NUMBERS_SCOPE); raises ZoomError naming it when Zoom refuses."""
     from . import zoom_lines
     from .rules import normalize_phone
     from .zoom_phone import ZoomClient, ZoomError, validate_config
     if not find(key):
         raise ValueError('This Zoom account is not in the list any more. Reload the page.')
-    listed = {line['number']: line for line in zoom_lines.stored()}
-    holders = zoom_lines.agents_by_number()
+    own = client is None
+    client = client or ZoomClient(validate_config(key))
     found = []
-    client = ZoomClient(validate_config(key))
     try:
         token = ''
         while True:
@@ -326,20 +325,38 @@ def numbers(key):
                     continue
                 assignee = row.get('assignee') if isinstance(row.get('assignee'), dict) else {}
                 site = row.get('site') if isinstance(row.get('site'), dict) else {}
-                line = listed.get(number)
                 found.append({
-                    '_owner_id': str(assignee.get('id') or '') if assignee.get('type') == 'user' else '',
+                    'owner_id': str(assignee.get('id') or '') if assignee.get('type') == 'user' else '',
                     'number': number, 'display_name': str(row.get('display_name') or ''), 'status': str(row.get('status') or ''),
                     'assignee': str(assignee.get('name') or ''), 'assignee_type': str(assignee.get('type') or ''),
                     'extension': str(assignee.get('extension_number') or ''), 'site': str(site.get('name') or ''),
                     'capability': [str(item) for item in row.get('capability') or []],
-                    # In our list, and on which account: a number listed on another account is a setup mistake.
-                    'listed': bool(line), 'listed_account': line.get('account', '') if line else '',
-                    'specialists': [holder['name'] for holder in holders.get(number, []) if holder['active']],
                 })
             token = payload.get('next_page_token') or ''
             if not token:
-                break
+                return found
+    finally:
+        if own:
+            client.close()
+
+
+def numbers(key):
+    """Every phone number on the account as Zoom lists it, with who has it in Zoom, its auto-recording, and whether it is
+    in our list. Read-only."""
+    from . import zoom_lines
+    from .zoom_phone import ZoomClient, validate_config
+    if not find(key):
+        raise ValueError('This Zoom account is not in the list any more. Reload the page.')
+    listed = {line['number']: line for line in zoom_lines.stored()}
+    holders = zoom_lines.agents_by_number()
+    client = ZoomClient(validate_config(key))
+    try:
+        found = zoom_numbers(key, client)
+        for item in found:
+            line = listed.get(item['number'])
+            # In our list, and on which account: a number listed on another account is a setup mistake.
+            item.update(listed=bool(line), listed_account=line.get('account', '') if line else '',
+                        specialists=[holder['name'] for holder in holders.get(item['number'], []) if holder['active']])
         recording_status(client, found)
     finally:
         client.close()
@@ -365,7 +382,7 @@ def recording_status(client, found):
     from .zoom_phone import ZoomError
     cache, refused = {}, ''
     for item in found:
-        owner = item.pop('_owner_id')
+        owner = item.pop('owner_id')
         if not owner:
             item['recording'] = {'state': 'not_user', 'calls': '', 'transcription': None,
                                  'reason': 'Set on the owner in Zoom (not a user).' if item['assignee'] else 'Nobody has this number in Zoom.'}

@@ -2,7 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 
 type Accounts = { accounts: unknown[]; secrets_problem: string; secret_setting: string };
 
-async function openZoomPhone(page: Page, accounts: Accounts, answers: Record<string, (body: Record<string, string>) => { status: number; json: unknown }>) {
+async function openZoomPhone(page: Page, accounts: Accounts, answers: Record<string, (body: Record<string, string>) => { status: number; json: unknown }>,
+  lines: unknown[] = []) {
   await page.addInitScript(() => {
     if (window.top !== window) return;
     localStorage.setItem('kbc-auth-user', JSON.stringify({
@@ -45,7 +46,7 @@ async function openZoomPhone(page: Page, accounts: Accounts, answers: Record<str
     }
     if (url.pathname === '/api/callcentre/zoom-accounts/') return json(accounts);
     if (url.pathname === '/api/callcentre/phone-lines/') {
-      return json({ lines: [], scope: 'phone:read:list_numbers:admin',
+      return json({ lines, scope: 'phone:read:list_numbers:admin',
         unlisted: [{ number: '+441622958955', agents: [{ id: 3, name: 'Alice', active: true, account: 'student' }] }] });
     }
     if (url.pathname === '/api/callcentre/activity-log/') return json({ month: '2026-10', months: ['2026-10'], daily: [], total_calls: 0, recent_calls: [] });
@@ -143,4 +144,20 @@ test('an account’s numbers are listed from Zoom and added to our list with one
   expect(posts.find(post => post.path === '/api/callcentre/phone-lines/')).toMatchObject(
     { action: 'add', number: '+441622958955', account: 'student', label: 'Alice line' });
   await panel.screenshot({ path: test.info().outputPath('account-numbers.png') });
+});
+
+test('Refresh from Zoom re-reads every number and says what changed', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const line = { number: '+441622958955', label: 'Engagement Team', account: 'office', zoom_email: '', zoom_user_id: '', agents: [],
+    zoom_name: 'Engagement Team', zoom_owner: 'Team', refreshed_at: '2026-10-24T13:10:00Z', test: null };
+  const posts = await openZoomPhone(page, { accounts: [], secrets_problem: '', secret_setting: 'ZOOM_SECRETS_KEY' }, {
+    '/api/callcentre/phone-lines/:refresh': () => ({ status: 200, json: { ok: true, refresh: { numbers: 3,
+      changes: ['+441622958772: name Alice Saunders → Engagement 2'], not_in_zoom: ['+441622958775'], problems: [] } } }),
+  }, [line]);
+  await expect(page.getByRole('row').filter({ hasText: '+441622958955' })).toContainText('In Zoom: Engagement Team · owner Team');
+  await page.getByRole('button', { name: 'Refresh from Zoom' }).click();
+  const result = page.getByRole('status').filter({ hasText: 'Refreshed 3 numbers' });
+  await expect(result).toContainText('Alice Saunders → Engagement 2');
+  await expect(result).toContainText('Not in Zoom any more: +441622958775');
+  expect(posts.some(post => post.action === 'refresh')).toBe(true);
 });

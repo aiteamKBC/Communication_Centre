@@ -96,7 +96,7 @@ function AccountNumbers({ csrf, account, accounts, onChanged, onClose }: {
     for (const item of items) {
       setBusy(item.number);
       try {
-        await post('phone-lines/', csrf, { action: 'add', number: item.number, account: account.key, label: item.display_name || item.assignee });
+        await post('phone-lines/', csrf, { action: 'add', number: item.number, account: account.key, label: item.display_name || item.assignee, from_zoom: 'true' });
         setNumbers(current => (current || []).map(row => (row.number === item.number ? { ...row, listed: true, listed_account: account.key } : row)));
       } catch (error) {
         setProblem({ action: `Adding ${item.number}`, error });
