@@ -22,9 +22,15 @@ type LineTest = {
   status: string; label: string; tested_at: string; calls_7_days: number; matched_7_days: number; unmatched_7_days: number;
   last_call_at: string | null; transcripts_ready_7_days: number; transcripts_waiting_7_days: number; agents: string[];
   zoom: { checked: boolean; found: boolean | null; account: string; status: string; assignee: string; problem: string };
+  warnings: string[];
 };
-type Line = { number: string; label: string; test: LineTest | null; agents: { id: number; name: string; active: boolean }[] };
-type Lines = { lines: Line[]; unlisted: { number: string; agents: { id: number; name: string; active: boolean }[] }[]; scope: string };
+type Holder = { id: number; name: string; active: boolean; account: string };
+/** A number and everything Zoom uses to recognise it. */
+type LineFields = { number: string; label: string; account: string; zoom_email: string; zoom_user_id: string };
+type Line = LineFields & { test: LineTest | null; agents: Holder[] };
+type Lines = { lines: Line[]; unlisted: { number: string; agents: Holder[] }[]; scope: string };
+type Found = { account: string; zoom_email: string; zoom_user_id: string; calls_90_days: number; zoom: LineTest['zoom'] };
+const emptyLine: LineFields = { number: '', label: '', account: '', zoom_email: '', zoom_user_id: '' };
 
 const emptyForm: Form = { user_id: 0, display_name: '', zoom_email: '', zoom_user_id: '', zoom_phone_number: '', zoom_account: 'student', daily_talk_target_minutes: 180, active: true };
 const roles: Record<string, string> = { learner: 'Learner', line_manager: 'Line manager' };
@@ -37,7 +43,7 @@ function contact(call: Call) {
   return { name, role: roles[call.contact_role] || 'Unmatched number', number: outbound ? call.callee_number : call.caller_number };
 }
 
-const STATUS_TONE: Record<string, string> = { working: 'green', ready: 'green', unmatched: 'amber', no_agent: 'amber', not_found: 'red' };
+const STATUS_TONE: Record<string, string> = { working: 'green', ready: 'green', unmatched: 'amber', check_setup: 'red', no_agent: 'amber', not_found: 'red' };
 
 /** What a number's last Test found, in words. */
 function testDetail(test: LineTest) {
@@ -53,37 +59,57 @@ function testDetail(test: LineTest) {
   return `${zoom} ${calls}${unmatched}${transcripts}`;
 }
 
-/** The Zoom numbers the team calls from: add each one, Test it, and give each specialist one (in their profile). */
+/** The Zoom numbers the team calls from, each with what Zoom uses to recognise it: add, Fill from Zoom, Test, and give
+ * each specialist one (in their profile). */
 function PhoneLines({ csrf, data, onChanged }: { csrf: string; data: Lines | null; onChanged: () => void }) {
-  const [number, setNumber] = useState('');
-  const [label, setLabel] = useState('');
-  const [testing, setTesting] = useState('');
+  const [form, setForm] = useState<LineFields>(emptyLine);
+  const [editing, setEditing] = useState('');
+  const [found, setFound] = useState('');
+  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const setField = <K extends keyof LineFields>(key: K, value: string) => setForm(current => ({ ...current, [key]: value }));
 
-  async function act(payload: Record<string, string>) {
+  async function act(payload: Record<string, string>, doing: string) {
     setError('');
+    setBusy(doing);
     try {
-      await post('phone-lines/', csrf, payload);
-      onChanged();
-      return true;
+      const result = await post<{ found?: Found }>('phone-lines/', csrf, payload);
+      if (payload.action !== 'discover') onChanged();
+      return result;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The number could not be saved.');
-      return false;
+      return null;
+    } finally {
+      setBusy('');
     }
   }
 
-  async function add(event: FormEvent) {
+  async function save(event: FormEvent) {
     event.preventDefault();
-    if (await act({ action: 'add', number, label })) {
-      setNumber('');
-      setLabel('');
+    if (await act({ ...form, action: editing ? 'update' : 'add', number: editing || form.number }, 'save')) {
+      setForm(emptyLine);
+      setEditing('');
+      setFound('');
     }
   }
 
-  async function test(value: string) {
-    setTesting(value);
-    await act({ action: 'test', number: value });
-    setTesting('');
+  /** Fill the account and Zoom identity from Zoom and from the calls Zoom has already sent for the number. */
+  async function fill() {
+    const result = await act({ action: 'discover', number: editing || form.number }, 'fill');
+    const info = result?.found;
+    if (!info) return;
+    setForm(current => ({ ...current, account: info.account || current.account, zoom_email: info.zoom_email || current.zoom_email,
+      zoom_user_id: info.zoom_user_id || current.zoom_user_id }));
+    setFound(info.calls_90_days || info.zoom.found
+      ? `Filled from ${info.zoom.found ? 'Zoom and ' : ''}${info.calls_90_days} ${info.calls_90_days === 1 ? 'call' : 'calls'} on this number in the last 90 days. Check, then save.`
+      : `Zoom has sent no calls on this number yet${info.zoom.checked ? ', and it is not in either Zoom account' : ''}: choose the account yourself.`);
+  }
+
+  function edit(line: Line) {
+    setEditing(line.number);
+    setForm({ number: line.number, label: line.label, account: line.account || '', zoom_email: line.zoom_email || '', zoom_user_id: line.zoom_user_id || '' });
+    setFound('');
+    setError('');
   }
 
   const scopeMissing = data?.lines.some(line => line.test && !line.test.zoom.checked && line.test.zoom.problem.includes('scope'));
@@ -92,41 +118,64 @@ function PhoneLines({ csrf, data, onChanged }: { csrf: string; data: Lines | nul
       <div className="ec-head" style={{ marginTop: '1rem' }}>
         <div>
           <h3>Phone numbers</h3>
-          <p className="ec-muted">Add every Zoom number the team calls from, test it, then give each specialist one number (Edit on their profile below).
-            A call on a number counts for the specialist who has it and pressed Call; a call made from the Zoom app directly is not counted.</p>
+          <p className="ec-muted">Add every Zoom number the team calls from with its Zoom details, test it, then give each specialist one number
+            (Edit on their profile below). A call on a number counts for the one specialist who has it, whatever email Zoom shows; a call
+            made from the Zoom app directly is not counted, so always start calls with Call.</p>
         </div>
       </div>
-      <form className="ec-tools" onSubmit={event => void add(event)}>
-        <input aria-label="Phone number" required placeholder="+441622958989" value={number} onChange={event => setNumber(event.target.value)} />
-        <input aria-label="Label" placeholder="Label, e.g. Student line" maxLength={80} value={label} onChange={event => setLabel(event.target.value)} />
-        <button type="submit" className="primary">Add number</button>
+      <form className="ec-form ed-line-form" onSubmit={event => void save(event)}>
+        <label>Phone number
+          <input required disabled={!!editing} placeholder="+441622958989" value={editing || form.number} onChange={event => setField('number', event.target.value)} />
+        </label>
+        <label>Label<input placeholder="e.g. Student line 2" maxLength={80} value={form.label} onChange={event => setField('label', event.target.value)} /></label>
+        <label>Zoom account
+          <select required value={form.account} onChange={event => setField('account', event.target.value)}>
+            <option value="">Choose…</option><option value="student">Student</option><option value="office">Office (Accountant)</option>
+          </select>
+        </label>
+        <label>Zoom user email on its calls (if Zoom shows one)
+          <input type="email" placeholder="Filled from Zoom" value={form.zoom_email} onChange={event => setField('zoom_email', event.target.value)} />
+        </label>
+        <label>Zoom user ID on its calls (if Zoom shows one)
+          <input placeholder="Filled from Zoom" value={form.zoom_user_id} onChange={event => setField('zoom_user_id', event.target.value)} />
+        </label>
+        <div className="ec-buttons wide">
+          <button type="button" disabled={!!busy || !(editing || form.number)} onClick={() => void fill()}>{busy === 'fill' ? 'Looking in Zoom…' : 'Fill from Zoom'}</button>
+          <button type="submit" className="primary" disabled={!!busy}>{editing ? 'Save number' : 'Add number'}</button>
+          {editing && <button type="button" disabled={!!busy} onClick={() => { setEditing(''); setForm(emptyLine); setFound(''); }}>Cancel</button>}
+        </div>
+        {found && <p className="ec-muted wide">{found}</p>}
       </form>
       {error && <p className="ec-status danger" role="alert">{error}</p>}
       {scopeMissing && (
         <p className="ec-alert">Zoom did not let us look numbers up: the Zoom app needs the <code>{data?.scope}</code> scope (Zoom Marketplace, the app’s Scopes).
-          Until then the Test checks the calls Zoom has already sent.</p>
+          Until then the Test and Fill from Zoom use the calls Zoom has already sent.</p>
       )}
       <div className="ec-table-wrap">
         <table>
-          <thead><tr><th>Number</th><th>Status</th><th>Specialists</th><th /></tr></thead>
+          <thead><tr><th>Number</th><th>Zoom</th><th>Status</th><th>Specialist</th><th /></tr></thead>
           <tbody>
             {(data?.lines || []).map(line => (
               <tr key={line.number}>
                 <td><strong>{line.number}</strong><small>{line.label}</small></td>
+                <td>{line.account ? accountLabel(line.account) : <span className="danger">Account not set</span>}
+                  {line.zoom_email && <small>{line.zoom_email}</small>}{line.zoom_user_id && <small>ID {line.zoom_user_id}</small>}</td>
                 <td>
                   <span className={`ec-tag ${line.test ? STATUS_TONE[line.test.status] || '' : 'amber'}`}>{line.test ? line.test.label : 'Not tested'}</span>
+                  {line.test?.warnings?.map(warning => <small key={warning} className="danger">{warning}</small>)}
                   {line.test && <small>{testDetail(line.test)} Tested {when(line.test.tested_at)}.</small>}
                 </td>
                 <td>{line.agents.length ? line.agents.map(agent => `${agent.name}${agent.active ? '' : ' (switched off)'}`).join(', ') : 'Nobody yet'}</td>
                 <td>
                   <div className="ec-buttons">
-                    <button type="button" disabled={!!testing} onClick={() => void test(line.number)}>{testing === line.number ? 'Testing…' : 'Test'}</button>
-                    <button type="button" disabled={!!testing} onClick={() => void act({ action: 'remove', number: line.number })}>Remove</button>
+                    <button type="button" disabled={!!busy} onClick={() => void act({ action: 'test', number: line.number }, line.number)}>{busy === line.number ? 'Testing…' : 'Test'}</button>
+                    <button type="button" disabled={!!busy} onClick={() => edit(line)}>Edit</button>
+                    <button type="button" disabled={!!busy} onClick={() => void act({ action: 'remove', number: line.number }, 'remove')}>Remove</button>
                   </div>
                 </td>
               </tr>
             ))}
-            {data && !data.lines.length && <tr><td colSpan={4}>No numbers yet. Add the first one above.</td></tr>}
+            {data && !data.lines.length && <tr><td colSpan={5}>No numbers yet. Add the first one above.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -134,7 +183,8 @@ function PhoneLines({ csrf, data, onChanged }: { csrf: string; data: Lines | nul
         <p className="ec-alert">On a specialist’s profile but not in the list yet:{' '}
           {data.unlisted.map(item => (
             <span key={item.number}>{item.number} ({item.agents.map(agent => agent.name).join(', ')}){' '}
-              <button type="button" onClick={() => void act({ action: 'add', number: item.number, label: '' })}>Add</button>{' '}</span>
+              <button type="button" onClick={() => { setEditing(''); setForm({ ...emptyLine, number: item.number, account: item.agents[0]?.account || '' }); setFound('Check the details, Fill from Zoom, then add it.'); }}>
+                Add</button>{' '}</span>
           ))}
         </p>
       )}
@@ -172,6 +222,7 @@ function Agents({ csrf, lines, revision: linesRevision, onChanged }: { csrf: str
   }, [revision, linesRevision]);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm(current => ({ ...current, [key]: value }));
+  const chosenLine = lines.find(line => line.number === form.zoom_phone_number);
   async function save(event: FormEvent) {
     event.preventDefault();
     setError('');
@@ -223,16 +274,21 @@ function Agents({ csrf, lines, revision: linesRevision, onChanged }: { csrf: str
             </label>
           )}
           <label>Display name<input required value={form.display_name} onChange={event => set('display_name', event.target.value)} /></label>
-          <label>Zoom account
-            <select value={form.zoom_account} onChange={event => set('zoom_account', event.target.value)}>
+          <label>Zoom account{chosenLine?.account ? ' (from the phone number)' : ''}
+            <select value={chosenLine?.account || form.zoom_account} disabled={!!chosenLine?.account} onChange={event => set('zoom_account', event.target.value)}>
               <option value="student">Student</option><option value="office">Office (Accountant)</option>
             </select>
           </label>
-          <label>Zoom email<input type="email" required value={form.zoom_email} onChange={event => set('zoom_email', event.target.value)} /></label>
+          <label>Sign-in email for Zoom matching<input type="email" required value={form.zoom_email} onChange={event => set('zoom_email', event.target.value)} />
+            <small>Only used for calls not on a listed phone number.</small></label>
           <label>Phone number
             <select value={form.zoom_phone_number} onChange={event => set('zoom_phone_number', event.target.value)}>
               <option value="">No number</option>
-              {lines.map(line => <option key={line.number} value={line.number}>{line.number}{line.label ? ` · ${line.label}` : ''}</option>)}
+              {lines.map(line => {
+                const taken = line.agents.find(agent => agent.active && agent.id !== editing?.id);
+                return <option key={line.number} value={line.number} disabled={!!taken}>
+                  {line.number}{line.label ? ` · ${line.label}` : ''}{taken ? ` (${taken.name} has it)` : ''}</option>;
+              })}
               {form.zoom_phone_number && !lines.some(line => line.number === form.zoom_phone_number) && (
                 <option value={form.zoom_phone_number}>{form.zoom_phone_number} (not in the list)</option>
               )}

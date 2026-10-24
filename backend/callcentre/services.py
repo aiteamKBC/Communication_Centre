@@ -271,6 +271,11 @@ def line_agents(call, agents=None):
     if agents is None:
         agents = Agent.objects.filter(active=True, user__is_active=True, zoom_account=call.source_account)
     agents = [a for a in agents if a.zoom_account == call.source_account]
+    # A line on the Zoom Phone page is the identity: a call on it is its specialist's, whatever email Zoom shows.
+    from .zoom_lines import line_for   # zoom_lines reads this module's Conflict
+    line = line_for(call)
+    if line:
+        return [a for a in agents if normalize_phone(a.zoom_phone_number) == line['number']]
     matches = [a for a in agents if (a.zoom_user_id and a.zoom_user_id == call.caller_user_id)
                or (a.zoom_email and a.zoom_email == email_key(call.caller_email))]
     if matches:

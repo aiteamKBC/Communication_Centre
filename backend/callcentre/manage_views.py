@@ -54,6 +54,7 @@ def save_agent(agent, data):
     for field in AGENT_FIELDS:
         if field in data:
             setattr(agent, field, data[field])
+    check_line(agent)
     try:
         agent.full_clean()
     except ValidationError as exc:
@@ -63,6 +64,24 @@ def save_agent(agent, data):
         # Switched off: the cases they were working on go back to the list now, not after the 30-minute claim.
         expire_claims(timezone.now(), agent)
     return agent
+
+
+def check_line(agent):
+    """One listed number per specialist: a number from the Phone numbers list, held by no other active specialist,
+    whose Zoom account the specialist then takes, so a call on it can only be theirs."""
+    number = normalize_phone(agent.zoom_phone_number) if agent.zoom_phone_number else ''
+    agent.zoom_phone_number = number
+    if not number:
+        return
+    lines = {line['number']: line for line in zoom_lines.stored()}
+    if lines and number not in lines:
+        raise ValueError('Choose the phone number from the Phone numbers list (add it there first).')
+    if lines.get(number, {}).get('account'):
+        agent.zoom_account = lines[number]['account']
+    if agent.active:
+        other = Agent.objects.filter(active=True, zoom_phone_number=number).exclude(pk=agent.pk).first()
+        if other:
+            raise ValueError(f'{other.display_name} already has {number}: one number per specialist. Give them another number first.')
 
 
 @authenticated
@@ -306,7 +325,11 @@ def phone_lines(request):
         data = body(request)
         action = data.get('action')
         if action == 'add':
-            zoom_lines.add(data.get('number'), data.get('label'), actor)
+            zoom_lines.add(data, actor)
+        elif action == 'update':
+            zoom_lines.update(data.get('number'), data, actor)
+        elif action == 'discover':
+            return JsonResponse({'ok': True, 'found': zoom_lines.discover(data.get('number'))})
         elif action == 'remove':
             zoom_lines.remove(data.get('number'), actor)
         elif action == 'test':

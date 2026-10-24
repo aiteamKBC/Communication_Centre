@@ -1,19 +1,25 @@
-"""The Zoom phone numbers (lines) the director adds on the Zoom Phone page, each with a Test and its status.
+"""The Zoom phone numbers (lines) the director adds on the Zoom Phone page: one line per specialist.
 
-Since 20 Oct 2026 Zoom reports calls on shared lines without the caller's email, so a call is matched to the specialist
-whose assigned number is the line it went out on (``services.line_agents``). The director keeps the list of numbers
-here, gives each specialist one of them (``Agent.zoom_phone_number``), and the Test shows whether the line's calls
-are being matched. The list lives in ``callcenter_setting`` (key ``zoom_lines``); a missing table means it is empty.
+Since 20 Oct 2026 Zoom reports calls on shared lines without the caller's email, and the emails on the specialists'
+profiles are their sign-in emails, not what Zoom reports. So the line is the identity: each line holds everything Zoom
+uses to recognise it (the number, its Zoom account, and the Zoom user email / ID Zoom attaches to its calls), and a
+call on a line belongs to the one specialist who has that number (``Agent.zoom_phone_number``), whatever email Zoom
+shows (``services.line_agents``). Saving a specialist only accepts a number from this list, never one another active
+specialist has, and takes the Zoom account from the line, so the two cannot disagree (``manage_views.save_agent``).
+The Test checks the line against the calls Zoom actually sent. The list lives in ``callcenter_setting`` (key
+``zoom_lines``); a missing table means it is empty.
 """
+from collections import Counter
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import IntegrityError, ProgrammingError, transaction
 from django.utils import timezone
 
 from .db import DB
 from .models import Agent, CallMatch, Setting, ZoomPhoneCall, ZoomPhoneRecording
-from .rules import normalize_phone
-from .services import Conflict
+from .rules import email_key, normalize_phone
 from .zoom_phone import ACCOUNT_LABELS, ZoomClient, ZoomError, missing_credentials, validate_config
 
 KEY = 'zoom_lines'
@@ -21,13 +27,14 @@ NOT_SET_UP = 'Settings are not set up yet. Run docs/callcentre-port/settings.sql
 # The Zoom app needs this scope to look a number up; without it the Test still checks the call records.
 NUMBERS_SCOPE = 'phone:read:list_numbers:admin'
 STATUS_LABELS = {
-    'working': 'Working', 'ready': 'Ready: no calls yet', 'unmatched': 'Calls not matched',
+    'working': 'Working', 'ready': 'Ready: no calls yet', 'unmatched': 'Calls not matched', 'check_setup': 'Setup does not match Zoom',
     'no_agent': 'No specialist assigned', 'not_found': 'Not found in Zoom', 'untested': 'Not tested',
 }
+LINE_FIELDS = ('number', 'label', 'account', 'zoom_email', 'zoom_user_id')
 
 
 def stored():
-    """The numbers, as saved. A missing table means none."""
+    """The lines, as saved. A missing table means none."""
     try:
         with transaction.atomic(using=DB):
             row = Setting.objects.filter(key=KEY).first()
@@ -39,6 +46,7 @@ def stored():
 
 def _save(change, actor):
     """Apply ``change`` to the saved list under a lock; returns the new list."""
+    from .services import Conflict   # services matches calls by these lines
     try:
         with transaction.atomic(using=DB):
             row = Setting.objects.select_for_update().filter(key=KEY).first()
@@ -63,23 +71,89 @@ def clean_number(value):
     return number
 
 
-def add(number, label, actor):
-    number = clean_number(number)
-    label = str(label or '').strip()[:80]
+def clean_line(data):
+    """A line's fields, checked: the number and its Zoom account are required, the Zoom identity is optional."""
+    if not isinstance(data, dict):
+        raise ValueError('Send the number and its Zoom details.')
+    account = str(data.get('account') or '')
+    if account not in ACCOUNT_LABELS:
+        raise ValueError('Choose the Zoom account the number is on (Student or Office).')
+    zoom_email = email_key(data.get('zoom_email'))
+    if zoom_email:
+        try:
+            validate_email(zoom_email)
+        except ValidationError:
+            raise ValueError('The Zoom user email is not a valid email.') from None
+    return {'number': clean_number(data.get('number')), 'label': str(data.get('label') or '').strip()[:80], 'account': account,
+            'zoom_email': zoom_email, 'zoom_user_id': str(data.get('zoom_user_id') or '').strip()[:128]}
+
+
+def _check_unique(lines, line):
+    """No two lines may share a number, nor a Zoom identity on the same account: a call must point to one line."""
+    for other in lines:
+        if other['number'] == line['number']:
+            raise ValueError('This number is already in the list.')
+        same_account = other.get('account') == line['account']
+        if same_account and line['zoom_email'] and other.get('zoom_email') == line['zoom_email']:
+            raise ValueError(f'{other["number"]} already has the Zoom user email {line["zoom_email"]}.')
+        if same_account and line['zoom_user_id'] and other.get('zoom_user_id') == line['zoom_user_id']:
+            raise ValueError(f'{other["number"]} already has the Zoom user ID {line["zoom_user_id"]}.')
+
+
+def add(data, actor):
+    line = clean_line(data)
 
     def change(lines):
-        if any(line['number'] == number for line in lines):
-            raise ValueError('This number is already in the list.')
-        return [*lines, {'number': number, 'label': label, 'added_by': actor, 'added_at': timezone.now().isoformat(), 'test': None}]
+        _check_unique(lines, line)
+        return [*lines, {**line, 'added_by': actor, 'added_at': timezone.now().isoformat(), 'test': None}]
     return _save(change, actor)
+
+
+def update(number, data, actor):
+    """Change a line's Zoom details (not its number); its specialist's Zoom account follows the line."""
+    number = clean_number(number)
+    line = clean_line({**data, 'number': number})
+
+    def change(lines):
+        if not any(item['number'] == number for item in lines):
+            raise ValueError('This number is not in the list.')
+        _check_unique([item for item in lines if item['number'] != number], line)
+        return [{**item, **line, 'test': None} if item['number'] == number else item for item in lines]
+    with transaction.atomic(using=DB):
+        lines = _save(change, actor)
+        holders = [agent for agent in Agent.objects.exclude(zoom_account=line['account'])
+                   if normalize_phone(agent.zoom_phone_number) == number]
+        try:
+            with transaction.atomic(using=DB):
+                for agent in holders:
+                    agent.zoom_account = line['account']
+                    agent.save(update_fields=['zoom_account'])
+        except IntegrityError:
+            raise ValueError('A specialist with the same Zoom email is already on that account.') from None
+    return lines
 
 
 def remove(number, actor):
     number = clean_number(number)
     using = [agent.display_name for agent in Agent.objects.all() if normalize_phone(agent.zoom_phone_number) == number]
     if using:
-        raise ValueError(f'{", ".join(using)} {"uses" if len(using) == 1 else "use"} this number. Give them another number first.')
+        raise ValueError(f'{", ".join(using)} {"has" if len(using) == 1 else "have"} this number. Give them another number first.')
     return _save(lambda lines: [line for line in lines if line['number'] != number], actor)
+
+
+def line_for(call, lines=None):
+    """The listed line a Zoom call was made on: by its number, else by the Zoom user Zoom attached to it."""
+    lines = stored() if lines is None else lines
+    on_account = [line for line in lines if line.get('account', call.source_account) == call.source_account]
+    number = normalize_phone(call.caller_number)
+    for line in on_account:
+        if number and line['number'] == number:
+            return line
+    for line in on_account:
+        if (line.get('zoom_user_id') and line['zoom_user_id'] == call.caller_user_id) or (
+                line.get('zoom_email') and line['zoom_email'] == email_key(call.caller_email)):
+            return line
+    return None
 
 
 def agents_by_number():
@@ -87,7 +161,8 @@ def agents_by_number():
     for agent in Agent.objects.order_by('display_name'):
         number = normalize_phone(agent.zoom_phone_number)
         if number:
-            found.setdefault(number, []).append({'id': agent.pk, 'name': agent.display_name, 'active': agent.active})
+            found.setdefault(number, []).append({'id': agent.pk, 'name': agent.display_name, 'active': agent.active,
+                                                 'account': agent.zoom_account})
     return found
 
 
@@ -119,7 +194,7 @@ def zoom_lookup(number):
                 for row in payload.get('phone_numbers') or []:
                     if normalize_phone(row.get('number')) == number:
                         assignee = row.get('assignee') or {}
-                        return {'checked': True, 'found': True, 'account': label, 'status': str(row.get('status') or ''),
+                        return {'checked': True, 'found': True, 'account': key, 'status': str(row.get('status') or ''),
                                 'assignee': str(assignee.get('name') or ''), 'problem': ''}
                 token = payload.get('next_page_token') or ''
                 if not token:
@@ -133,10 +208,57 @@ def zoom_lookup(number):
             'problem': '; '.join(sorted(set(problems)))}
 
 
-def test(number, actor, now=None):
-    """Check a number end to end and keep the result: Zoom, its calls in the last 7 days, and who has it."""
+def seen_on(number, since):
+    """What Zoom has reported for calls on this number: their accounts, and the Zoom users it attached to them."""
+    rows = list(ZoomPhoneCall.objects.filter(direction='outbound', caller_number=number, started_at__gte=since)
+                .values('source_account', 'caller_email', 'caller_user_id'))
+    return {'calls': len(rows), 'accounts': Counter(row['source_account'] for row in rows),
+            'emails': Counter(email_key(row['caller_email']) for row in rows if row['caller_email']),
+            'user_ids': Counter(row['caller_user_id'] for row in rows if row['caller_user_id'])}
+
+
+def discover(number, now=None):
+    """Fill from Zoom: the account and Zoom identity of a number, from Zoom itself and from the calls it has sent."""
     number = clean_number(number)
-    if not any(line['number'] == number for line in stored()):
+    seen = seen_on(number, (now or timezone.now()) - timedelta(days=90))
+    zoom = zoom_lookup(number)
+    account = zoom['account'] or (seen['accounts'].most_common(1)[0][0] if seen['accounts'] else '')
+    return {'number': number, 'account': account, 'zoom_email': seen['emails'].most_common(1)[0][0] if seen['emails'] else '',
+            'zoom_user_id': seen['user_ids'].most_common(1)[0][0] if seen['user_ids'] else '', 'calls_90_days': seen['calls'],
+            'zoom': zoom}
+
+
+def setup_warnings(line, holders, seen):
+    """Where a line's setup disagrees with what Zoom reports, or where it could match the wrong specialist."""
+    warnings = []
+    active = [holder for holder in holders if holder['active']]
+    if len(active) > 1:
+        warnings.append(f'Given to {len(active)} specialists ({", ".join(h["name"] for h in active)}): one number per specialist.')
+    account = line.get('account')
+    if not account:
+        warnings.append('Choose the Zoom account this number is on (Edit).')
+    for holder in active:
+        if account and holder['account'] != account:
+            warnings.append(f'{holder["name"]} is on the {ACCOUNT_LABELS[holder["account"]]} account, the number on {ACCOUNT_LABELS[account]}.')
+    other_accounts = [key for key in seen['accounts'] if account and key != account]
+    if other_accounts:
+        warnings.append(f'Zoom sent calls on this number from the {", ".join(ACCOUNT_LABELS.get(k, k) for k in other_accounts)} account.')
+    for email in seen['emails']:
+        if email != line.get('zoom_email'):
+            warnings.append(f'Zoom attaches the user {email} to calls on this number, but the number has '
+                            f'{line.get("zoom_email") or "no Zoom user email"} (Fill from Zoom, then save).')
+    for user_id in seen['user_ids']:
+        if user_id != line.get('zoom_user_id'):
+            warnings.append(f'Zoom attaches the user ID {user_id} to calls on this number, but the number has '
+                            f'{line.get("zoom_user_id") or "no Zoom user ID"} (Fill from Zoom, then save).')
+    return warnings
+
+
+def test(number, actor, now=None):
+    """Check a line end to end and keep the result: Zoom, its setup, its calls in the last 7 days, and who has it."""
+    number = clean_number(number)
+    line = next((item for item in stored() if item['number'] == number), None)
+    if not line:
         raise ValueError('Add the number to the list before testing it.')
     now = now or timezone.now()
     zoom = zoom_lookup(number)
@@ -146,13 +268,18 @@ def test(number, actor, now=None):
     matched = recent.filter(pk__in=CallMatch.objects.values('call_id')).count()
     last_call = calls.order_by('-started_at').values_list('started_at', flat=True).first()
     recordings = ZoomPhoneRecording.objects.filter(caller_number=number, started_at__gte=week)
-    agents = agents_by_number().get(number, [])
-    active = [agent['name'] for agent in agents if agent['active']]
+    holders = agents_by_number().get(number, [])
+    warnings = setup_warnings(line, holders, seen_on(number, now - timedelta(days=30)))
+    if zoom['found'] and line.get('account') and zoom['account'] != line['account']:
+        warnings.append(f'Zoom has this number on the {ACCOUNT_LABELS[zoom["account"]]} account.')
+    active = [holder['name'] for holder in holders if holder['active']]
     total = recent.count()
     if zoom['found'] is False and not calls.exists():
         status = 'not_found'
     elif not active:
         status = 'no_agent'
+    elif warnings:
+        status = 'check_setup'
     elif total - matched:
         status = 'unmatched'
     elif not total:
@@ -161,7 +288,8 @@ def test(number, actor, now=None):
         status = 'working'
     result = {
         'status': status, 'label': STATUS_LABELS[status], 'tested_at': now.isoformat(), 'tested_by': actor,
-        'zoom': zoom, 'calls_7_days': total, 'matched_7_days': matched, 'unmatched_7_days': total - matched,
+        'zoom': {**zoom, 'account': ACCOUNT_LABELS.get(zoom['account'], '')}, 'warnings': warnings,
+        'calls_7_days': total, 'matched_7_days': matched, 'unmatched_7_days': total - matched,
         'last_call_at': last_call.isoformat() if last_call else None,
         'transcripts_ready_7_days': recordings.filter(transcript_status='ready').count(),
         'transcripts_waiting_7_days': recordings.exclude(transcript_status='ready').count(),
@@ -169,6 +297,6 @@ def test(number, actor, now=None):
     }
 
     def change(lines):
-        return [{**line, 'test': result} if line['number'] == number else line for line in lines]
+        return [{**item, 'test': result} if item['number'] == number else item for item in lines]
     _save(change, actor)
     return result
