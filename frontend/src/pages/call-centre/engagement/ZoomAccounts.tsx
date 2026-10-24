@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { post } from '../api';
 import ErrorNotice, { Field } from './ErrorNotice';
@@ -14,6 +14,13 @@ export type ZoomAccount = {
 };
 export type ZoomAccounts = { accounts: ZoomAccount[]; secrets_problem: string; secret_setting: string };
 type AccountFields = { label: string; account_id: string; client_id: string; client_secret: string };
+type ZoomNumber = {
+  number: string; display_name: string; status: string; assignee: string; assignee_type: string; extension: string; site: string;
+  capability: string[]; listed: boolean; listed_account: string; specialists: string[];
+  recording: { state: 'on' | 'off' | 'unknown' | 'not_user'; calls: string; transcription: boolean | null; reason: string };
+};
+const OWNER_TYPES: Record<string, string> = { user: 'User', callQueue: 'Call queue', autoReceptionist: 'Auto receptionist', commonArea: 'Common area',
+  sharedLineGroup: 'Shared line group' };
 
 const empty: AccountFields = { label: '', account_id: '', client_id: '', client_secret: '' };
 const TEST_TAG = { working: ['green', 'Working'], partial: ['amber', 'Partly working'], failed: ['red', 'Cannot sign in'] } as const;
@@ -52,6 +59,100 @@ function TestResult({ test }: { test: AccountTest }) {
   );
 }
 
+/** A number's automatic call recording, from its owner's Zoom phone policy. Off means no transcript and no AI review. */
+function Recording({ item }: { item: ZoomNumber }) {
+  const { recording } = item;
+  if (recording.state === 'on') {
+    return <><span className="ec-tag green">On · {recording.calls || 'calls'}</span>
+      {recording.transcription !== null && <small>{recording.transcription ? 'Zoom transcribes them' : 'Zoom does not transcribe them'}</small>}</>;
+  }
+  if (recording.state === 'off') {
+    return <><span className="ec-tag red">Off</span>
+      <small className="danger">{item.specialists.length ? `No transcripts or AI reviews for ${item.specialists.join(', ')}’s calls. `
+        : 'Calls on it get no transcript or AI review. '}Turn it on in Zoom: the owner’s Policy → Automatic Call Recording.</small></>;
+  }
+  if (recording.state === 'unknown') return <><span className="ec-tag amber">Unknown</span><small>{recording.reason}</small></>;
+  return <small className="ec-muted">{recording.reason}</small>;
+}
+
+/** Every number on one Zoom account, as Zoom lists it: who has it in Zoom, and whether it is in our list (Add puts it
+ * there with this account). Read-only towards Zoom. */
+function AccountNumbers({ csrf, account, accounts, onChanged, onClose }: {
+  csrf: string; account: ZoomAccount; accounts: ZoomAccount[]; onChanged: () => void; onClose: () => void;
+}) {
+  const [numbers, setNumbers] = useState<ZoomNumber[] | null>(null);
+  const [problem, setProblem] = useState<Problem>(null);
+  const [busy, setBusy] = useState('');
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    post<{ numbers: ZoomNumber[] }>('zoom-accounts/', csrf, { action: 'numbers', key: account.key })
+      .then(data => setNumbers(data.numbers))
+      .catch(error => setProblem({ action: `Listing the numbers on ${account.label}`, error }));
+  }, [csrf, account.key, account.label]);
+
+  async function add(items: ZoomNumber[]) {
+    setProblem(null);
+    for (const item of items) {
+      setBusy(item.number);
+      try {
+        await post('phone-lines/', csrf, { action: 'add', number: item.number, account: account.key, label: item.display_name || item.assignee });
+        setNumbers(current => (current || []).map(row => (row.number === item.number ? { ...row, listed: true, listed_account: account.key } : row)));
+      } catch (error) {
+        setProblem({ action: `Adding ${item.number}`, error });
+        break;
+      }
+    }
+    setBusy('');
+    onChanged();
+  }
+
+  const name = (key: string) => accounts.find(item => item.key === key)?.label || key;
+  const shown = (numbers || []).filter(item => !search || `${item.number} ${item.display_name} ${item.assignee} ${item.site}`.toLowerCase().includes(search.toLowerCase()));
+  const notListed = shown.filter(item => !item.listed);
+  return (
+    <section className="ed-zoom-numbers" aria-label={`Numbers on ${account.label}`}>
+      <div className="ec-head">
+        <div>
+          <h4>Numbers on {account.label}{numbers ? ` (${numbers.length})` : ''}</h4>
+          <p className="ec-muted">As Zoom lists them. Add puts a number in Phone numbers (below) on this account; then give it to a specialist.</p>
+        </div>
+        <div className="ec-buttons">
+          {numbers && numbers.length > 8 && <input type="search" aria-label="Search numbers" placeholder="Search number, name or owner" value={search} onChange={event => setSearch(event.target.value)} />}
+          {notListed.length > 1 && <button type="button" disabled={!!busy} onClick={() => void add(notListed)}>Add all {notListed.length} not listed</button>}
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+      <ErrorNotice problem={problem} />
+      {!numbers && !problem && <p role="status">Asking Zoom for the numbers…</p>}
+      {numbers && (
+        <div className="ec-table-wrap">
+          <table>
+            <thead><tr><th>Number</th><th>Owner in Zoom</th><th>Status</th><th>Auto-recording</th><th>In our list</th><th /></tr></thead>
+            <tbody>
+              {shown.map(item => (
+                <tr key={item.number}>
+                  <td><strong>{item.number}</strong>{item.display_name && <small>{item.display_name}</small>}{item.site && <small>Site {item.site}</small>}</td>
+                  <td>{item.assignee || <span className="ec-muted">Not assigned</span>}
+                    {item.assignee && <small>{OWNER_TYPES[item.assignee_type] || item.assignee_type}{item.extension ? ` · ext. ${item.extension}` : ''}</small>}</td>
+                  <td>{item.status || '—'}{!!item.capability.length && <small>{item.capability.join(', ')}</small>}</td>
+                  <td><Recording item={item} /></td>
+                  <td>{!item.listed ? <span className="ec-tag amber">Not listed</span>
+                    : item.listed_account !== account.key
+                      ? <span className="ec-tag red">Listed on {name(item.listed_account) || 'no account'}: Edit it below</span>
+                      : <><span className="ec-tag green">Listed</span><small>{item.specialists.length ? item.specialists.join(', ') : 'No specialist yet'}</small></>}</td>
+                  <td>{!item.listed && <button type="button" disabled={!!busy} onClick={() => void add([item])}>{busy === item.number ? 'Adding…' : 'Add'}</button>}</td>
+                </tr>
+              ))}
+              {!shown.length && <tr><td colSpan={6}>{numbers.length ? 'No number matches the search.' : 'Zoom lists no numbers on this account.'}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** The Zoom accounts calls are read from: add each one's app credentials, then Test it. The secret is stored encrypted
  * on the server and never shown again. */
 export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: string; data: ZoomAccounts | null; onChanged: () => void }) {
@@ -61,6 +162,7 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
   const [problem, setProblem] = useState<Problem>(null);
   const [fieldError, setFieldError] = useState<FieldProblem>(null);
   const [notice, setNotice] = useState('');
+  const [listing, setListing] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
   const set = (key: keyof AccountFields, value: string) => {
     setForm(current => ({ ...current, [key]: value }));
@@ -168,6 +270,7 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
                 <td>
                   <div className="ec-buttons">
                     <button type="button" disabled={!!busy} onClick={() => void test(account)}>{busy === account.key ? 'Testing…' : 'Test'}</button>
+                    <button type="button" aria-expanded={listing === account.key} onClick={() => setListing(current => (current === account.key ? '' : account.key))}>Numbers</button>
                     <button type="button" disabled={!!busy} onClick={() => edit(account)}>Edit</button>
                     <button type="button" disabled={!!busy}
                       onClick={() => void act({ action: 'remove', key: account.key }, 'remove', `Removing ${account.label}`)}>Remove</button>
@@ -179,6 +282,9 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
           </tbody>
         </table>
       </div>
+      {(data?.accounts || []).filter(account => account.key === listing).map(account => (
+        <AccountNumbers key={account.key} csrf={csrf} account={account} accounts={data?.accounts || []} onChanged={onChanged} onClose={() => setListing('')} />
+      ))}
       <form ref={formRef} className="ec-form ed-zoom-form" noValidate onSubmit={event => void save(event)}>
         <h4 className="wide">{editing ? `Edit ${editing.label}` : 'Add a Zoom account'}</h4>
         <WhereToFind />

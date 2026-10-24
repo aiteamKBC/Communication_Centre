@@ -194,3 +194,6 @@
 .ec .ed-zoom-help{grid-column:1/-1;margin:0}
 .ec .ed-zoom-help ol{margin:.5rem 0 0;padding-left:1.3rem;font-size:.9rem}
 .ec .ed-zoom-help li{margin-bottom:.35rem}
+.ec .ed-zoom-numbers{margin:1rem 0;padding:1rem;border:1px solid #cdb9e8;border-radius:10px;background:#faf7fe}
+.ec .ed-zoom-numbers h4{margin:0 0 .2rem;font-size:1rem}
+.ec .ed-zoom-numbers input[type=search]{width:16rem}

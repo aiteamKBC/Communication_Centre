@@ -29,7 +29,10 @@ CHECKS = (
     ('call_history', 'Call history', '/phone/call_history', 'calls and their results'),
     ('recordings', 'Recordings', '/phone/recordings', 'recordings and transcripts'),
     ('numbers', 'Phone numbers', '/phone/numbers', 'the phone number Test and Fill from Zoom'),
+    ('users', 'Phone users', '/phone/users', 'auto-recording status of each number’s owner'),
 )
+# Zoom's Automatic Call Recording policy, in words.
+RECORDED_CALLS = {'inbound': 'incoming calls', 'outbound': 'outgoing calls', 'both': 'all calls'}
 
 
 def _cipher():
@@ -268,7 +271,7 @@ def test(key, actor, now=None):
         try:
             for name, label, path, used_for in CHECKS:
                 try:
-                    response = client.api_get(path, params=params if name != 'numbers' else {'page_size': 1})
+                    response = client.api_get(path, params=params if name in ('call_history', 'recordings') else {'page_size': 1})
                 except Exception:   # noqa: BLE001 - one failed read must not hide the others
                     checks.append({'name': name, 'label': label, 'ok': False, 'used_for': used_for,
                                    'message': 'Zoom did not answer. Try again in a minute.'})
@@ -291,3 +294,100 @@ def test(key, actor, now=None):
         return [{**item, 'test': result} if item['key'] == key else item for item in accounts]
     _save(change, actor)
     return result
+
+
+def numbers(key):
+    """Every phone number on the account as Zoom lists it, with who has it in Zoom and whether it is in our list.
+    Read-only: needs the app's phone numbers scope (zoom_lines.NUMBERS_SCOPE)."""
+    from . import zoom_lines
+    from .rules import normalize_phone
+    from .zoom_phone import ZoomClient, ZoomError, validate_config
+    if not find(key):
+        raise ValueError('This Zoom account is not in the list any more. Reload the page.')
+    listed = {line['number']: line for line in zoom_lines.stored()}
+    holders = zoom_lines.agents_by_number()
+    found = []
+    client = ZoomClient(validate_config(key))
+    try:
+        token = ''
+        while True:
+            response = client.api_get('/phone/numbers', params={'page_size': 100, 'type': 'all', 'next_page_token': token})
+            if not response.ok:
+                code, scopes, _ = _zoom_reason(response)
+                response.close()
+                if scopes or response.status_code in (401, 403):
+                    raise ZoomError(f'The Zoom app needs the scope {", ".join(scopes) or zoom_lines.NUMBERS_SCOPE} to list its numbers: '
+                                    'add it in the app’s Scopes, then try again.')
+                raise ZoomError(f'Zoom refused to list the numbers (HTTP {response.status_code}{f", code {code}" if code else ""}).')
+            payload = client._json(response)
+            for row in payload.get('phone_numbers') or []:
+                number = normalize_phone(row.get('number'))
+                if not number:
+                    continue
+                assignee = row.get('assignee') if isinstance(row.get('assignee'), dict) else {}
+                site = row.get('site') if isinstance(row.get('site'), dict) else {}
+                line = listed.get(number)
+                found.append({
+                    '_owner_id': str(assignee.get('id') or '') if assignee.get('type') == 'user' else '',
+                    'number': number, 'display_name': str(row.get('display_name') or ''), 'status': str(row.get('status') or ''),
+                    'assignee': str(assignee.get('name') or ''), 'assignee_type': str(assignee.get('type') or ''),
+                    'extension': str(assignee.get('extension_number') or ''), 'site': str(site.get('name') or ''),
+                    'capability': [str(item) for item in row.get('capability') or []],
+                    # In our list, and on which account: a number listed on another account is a setup mistake.
+                    'listed': bool(line), 'listed_account': line.get('account', '') if line else '',
+                    'specialists': [holder['name'] for holder in holders.get(number, []) if holder['active']],
+                })
+            token = payload.get('next_page_token') or ''
+            if not token:
+                break
+        recording_status(client, found)
+    finally:
+        client.close()
+    return sorted(found, key=lambda item: (item['listed'], item['number']))
+
+
+def recording(policy):
+    """A Zoom phone user's Automatic Call Recording policy: on or off, which calls, and whether Zoom transcribes them."""
+    auto = policy.get('auto_call_recording') if isinstance(policy, dict) else None
+    if not isinstance(auto, dict) or 'enable' not in auto:
+        return {'state': 'unknown', 'calls': '', 'transcription': None, 'reason': 'Zoom did not report the recording setting.'}
+    if not auto.get('enable'):
+        return {'state': 'off', 'calls': '', 'transcription': None, 'reason': ''}
+    calls = str(auto.get('recording_calls') or '')
+    transcription = auto.get('recording_transcription')
+    return {'state': 'on', 'calls': RECORDED_CALLS.get(calls, calls), 'reason': '',
+            'transcription': transcription if isinstance(transcription, bool) else None}
+
+
+def recording_status(client, found):
+    """Add each number's auto-recording, from its owner's Zoom phone policy. Only a number owned by a user has one; the
+    rest are marked as such. Needs the app's phone users (read) scope; without it each number says so."""
+    from .zoom_phone import ZoomError
+    cache, refused = {}, ''
+    for item in found:
+        owner = item.pop('_owner_id')
+        if not owner:
+            item['recording'] = {'state': 'not_user', 'calls': '', 'transcription': None,
+                                 'reason': 'Set on the owner in Zoom (not a user).' if item['assignee'] else 'Nobody has this number in Zoom.'}
+            continue
+        if refused:
+            item['recording'] = {'state': 'unknown', 'calls': '', 'transcription': None, 'reason': refused}
+            continue
+        if owner not in cache:
+            try:
+                response = client.api_get(f'/phone/users/{owner}')
+            except ZoomError:
+                cache[owner] = {'state': 'unknown', 'calls': '', 'transcription': None, 'reason': 'Zoom did not answer. Try again.'}
+            else:
+                if response.ok:
+                    payload = client._json(response)
+                    cache[owner] = recording(payload.get('policy'))
+                else:
+                    code, scopes, _ = _zoom_reason(response)
+                    response.close()
+                    reason = (f'The Zoom app needs the scope {", ".join(scopes)} to read it.' if scopes
+                              else f'Zoom refused (HTTP {response.status_code}{f", code {code}" if code else ""}).')
+                    if scopes or response.status_code in (401, 403):
+                        refused = reason   # the same for every user: stop asking
+                    cache[owner] = {'state': 'unknown', 'calls': '', 'transcription': None, 'reason': reason}
+        item['recording'] = cache[owner]

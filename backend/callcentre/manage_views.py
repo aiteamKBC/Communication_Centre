@@ -372,6 +372,8 @@ def zoom_account_list(request):
             zoom_accounts.remove(str(data.get('key') or ''), actor)
         elif action == 'test':
             return JsonResponse({'ok': True, 'test': zoom_accounts.test(str(data.get('key') or ''), actor)})
+        elif action == 'numbers':
+            return JsonResponse({'ok': True, 'numbers': zoom_accounts.numbers(str(data.get('key') or ''))})
         else:
             raise ValueError('Unknown action.')
         return JsonResponse({'ok': True})

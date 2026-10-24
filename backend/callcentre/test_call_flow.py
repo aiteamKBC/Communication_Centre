@@ -838,7 +838,7 @@ class ZoomAccountTests(TestCase):
         self.assertEqual((result['status'], result['problem']['field']), ('failed', 'client_id'))
         client = mock.Mock()
         client.api_get.side_effect = [Response(200, {}), Response(200, {}), Response(400, {
-            'code': 4711, 'message': 'Invalid access token, does not contain scopes:[phone:read:list_numbers:admin].'})]
+            'code': 4711, 'message': 'Invalid access token, does not contain scopes:[phone:read:list_numbers:admin].'}), Response(200, {})]
         with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
             result = test('student', 'director')
         self.assertEqual(result['status'], 'partial')
@@ -863,3 +863,59 @@ class ZoomAccountTests(TestCase):
         self.assertIn(data['reference'], logged.output[0])
         self.assertIn('RuntimeError: boom', data['debug']['error'])
         self.assertIn('in broken', data['debug']['where'])
+
+    def test_the_accounts_numbers_are_listed_with_their_zoom_owner_and_whether_they_are_in_our_list(self):
+        from .zoom_accounts import add, numbers
+        from .zoom_lines import add as add_line
+
+        class Response:
+            ok, status_code = True, 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+            def close(self):
+                pass
+
+        add(self.APP, 'director')
+        add_line({'number': '+441622958989', 'account': 'student'}, 'director')
+        pages = [Response({'next_page_token': 'next', 'phone_numbers': [
+                     {'number': '+44 1622 958989', 'display_name': 'Student line', 'status': 'normal',
+                      'assignee': {'id': 'u1', 'name': 'Team', 'type': 'user', 'extension_number': 801}}]}),
+                 Response({'next_page_token': '', 'phone_numbers': [{'number': '+441622958955', 'status': 'normal'}]}),
+                 Response({'policy': {'auto_call_recording': {'enable': True, 'recording_calls': 'both', 'recording_transcription': True}}})]
+        with mock.patch('callcentre.zoom_phone.ZoomClient.api_get', side_effect=pages) as api_get:
+            found = numbers('student')
+        self.assertEqual(api_get.call_args_list[1].kwargs['params']['next_page_token'], 'next')   # every page is read
+        self.assertEqual([(item['number'], item['listed'], item['assignee'], item['extension']) for item in found],
+                         [('+441622958955', False, '', ''), ('+441622958989', True, 'Team', '801')])
+        self.assertEqual(api_get.call_args_list[2].args[0], '/phone/users/u1')
+        self.assertEqual((found[1]['recording']['state'], found[1]['recording']['calls'], found[1]['recording']['transcription']),
+                         ('on', 'all calls', True))
+        self.assertEqual(found[0]['recording']['state'], 'not_user')   # nobody has it in Zoom
+
+    def test_a_missing_phone_users_scope_is_named_once_for_every_number(self):
+        from .zoom_accounts import add, numbers
+
+        class Response:
+            def __init__(self, status, payload):
+                self.status_code, self.ok, self.payload = status, status < 400, payload
+
+            def json(self):
+                return self.payload
+
+            def close(self):
+                pass
+
+        add(self.APP, 'director')
+        owned = [{'number': f'+44162295890{n}', 'assignee': {'id': f'u{n}', 'name': f'User {n}', 'type': 'user'}} for n in (1, 2)]
+        pages = [Response(200, {'phone_numbers': owned}),
+                 Response(400, {'code': 4711, 'message': 'Invalid access token, does not contain scopes:[phone:read:user:admin].'})]
+        with mock.patch('callcentre.zoom_phone.ZoomClient.api_get', side_effect=pages) as api_get:
+            found = numbers('student')
+        self.assertEqual(api_get.call_count, 2)   # asked once, not once per user
+        self.assertEqual({item['recording']['reason'] for item in found},
+                         {'The Zoom app needs the scope phone:read:user:admin to read it.'})

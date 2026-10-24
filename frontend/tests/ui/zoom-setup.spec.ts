@@ -117,3 +117,30 @@ test('the page says when the server cannot store secrets yet, and how to fix it'
   await alert.getByText('How to add ZOOM_SECRETS_KEY').click();
   await expect(alert).toContainText('Fernet.generate_key()');
 });
+
+test('an account’s numbers are listed from Zoom and added to our list with one click', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const account = { key: 'student', label: 'Student', account_id: 'AbC123', client_id: 'client_1', secret_saved: true, secret_end: '9f2a',
+    secret_readable: true, added_by: 'director', added_at: '2026-10-24T10:00:00Z', test: null };
+  const posts = await openZoomPhone(page, { accounts: [account], secrets_problem: '', secret_setting: 'ZOOM_SECRETS_KEY' }, {
+    '/api/callcentre/zoom-accounts/:numbers': () => ({ status: 200, json: { ok: true, numbers: [
+      { number: '+441622958955', display_name: 'Alice line', status: 'normal', assignee: 'Alice Smith', assignee_type: 'user', extension: '801',
+        site: 'Main', capability: ['incoming', 'outgoing'], listed: false, listed_account: '', specialists: [],
+        recording: { state: 'on', calls: 'all calls', transcription: true, reason: '' } },
+      { number: '+441622958989', display_name: '', status: 'normal', assignee: '', assignee_type: '', extension: '', site: '',
+        capability: [], listed: true, listed_account: 'student', specialists: ['Tina'],
+        recording: { state: 'off', calls: '', transcription: null, reason: '' } },
+    ] } }),
+  });
+  await page.getByRole('button', { name: 'Numbers', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Numbers on Student' });
+  await expect(panel).toContainText('Alice Smith');
+  await expect(panel).toContainText('User · ext. 801');
+  await expect(panel.getByRole('row').filter({ hasText: '+441622958989' })).toContainText('No transcripts or AI reviews for Tina’s calls');
+  await expect(panel.getByRole('row').filter({ hasText: '+441622958955' })).toContainText('On · all calls');
+  await panel.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(panel.getByRole('row').filter({ hasText: '+441622958955' })).toContainText('Listed');
+  expect(posts.find(post => post.path === '/api/callcentre/phone-lines/')).toMatchObject(
+    { action: 'add', number: '+441622958955', account: 'student', label: 'Alice line' });
+  await panel.screenshot({ path: test.info().outputPath('account-numbers.png') });
+});
