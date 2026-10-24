@@ -33,7 +33,9 @@ class IdentityTests(SimpleTestCase):
         rows = [{'id': n, 'event_key': f'event-{n}', 'learner_id': 1, 'learner_email': 'learner@example.org',
                  'event_type': kind, 'status': 'scheduled', 'scheduled_date': tomorrow, 'scheduled_time': time(10+n)}
                 for n,kind in enumerate(['first-session', 'lms-introduction'])]
-        with patch.object(sources, 'rows', side_effect=[[], rows]):
+        def read(alias, sql, params=()):
+            return rows if 'coach_calendar_event' in sql else []
+        with patch.object(sources, 'rows', side_effect=read):
             self.assertEqual(len(sources.load_bookings(p)), 2)
     def build(self, **kwargs):
         return identity.build([lms()], [aptem(OwnerEmail='coach@example.org')], **kwargs)
@@ -107,25 +109,62 @@ class IdentityTests(SimpleTestCase):
         self.assertIsNone(p.calendar_person({'learner_id': 800, 'learner_email': ''}))
         self.assertIsNone(p.resolve('profile', 0, 'learner@example.org'))
 
-    def test_calendar_reminder_supersedes_legacy_copy_without_duplication(self):
-        from .rules import LONDON
+    def test_new_era_meetings_add_the_reviews_the_bookings_lack_and_a_review_in_both_is_reminded_once(self):
+        from .rules import LONDON, next_workday
         p = self.build()
-        tomorrow = timezone.now().astimezone(LONDON).date() + timedelta(days=1)
+        tomorrow = next_workday(timezone.now().astimezone(LONDON).date())
         from datetime import time, datetime
         start = datetime.combine(tomorrow, time(10), LONDON)
-        legacy = {'pr': {'students': [{'customerEmail': 'learner@example.org', 'startDateTime': start.isoformat(),
-                                      'appointmentId': 'legacy-id'}]}}
+        legacy = {'pr': {'students': [{'customerEmail': 'learner@example.org', 'startDateTime': start.isoformat(), 'appointmentId': 'legacy-id'}]}}
         calendar = {'id': 5, 'event_key': 'calendar-key', 'learner_id': 1, 'learner_email': 'learner@example.org',
-                    'event_type': 'progress-review', 'status': 'scheduled', 'scheduled_date': tomorrow,
-                    'scheduled_time': time(10)}
+                    'event_type': 'progress-review', 'status': 'scheduled', 'scheduled_date': tomorrow, 'scheduled_time': time(10)}
+        later = start + timedelta(hours=4)
+        meetings = [{'id': 'm1', 'subject': 'Progress Review meeting with Learner Example - Coach', 'coach': 'coach@example.org', 'start_at': start},
+                    {'id': 'm2', 'subject': 'Monthly coaching with Nobody Known', 'coach': 'coach@example.org', 'start_at': start},
+                    {'id': 'm3', 'subject': 'Monthly Coaching Review with Learner Example', 'coach': 'coach@example.org', 'start_at': later}]
+        new_era = {'public.meetings': meetings, 'public.learners': [{'learner_name': 'Learner Example', 'learner_email': 'learner@example.org'}],
+                   'all_sessions_cache_v2': []}
+
         def read(alias, sql, params=()):
+            if alias == 'callcentre_newera':
+                return next(value for table, value in new_era.items() if table in sql)
             return [calendar] if 'coach_calendar_event' in sql else [legacy]
         with patch.object(sources, 'rows', side_effect=read):
             bookings = sources.load_bookings(p)
-            self.assertEqual(len(bookings), 1)
-            self.assertEqual(bookings[0]['id'], 'calendar-key')
-            calendar['status'] = 'cancelled'
-            self.assertEqual(sources.load_bookings(p), [])
+        # The review is booked (the calendar copy supersedes the legacy one) and in New Era: reminded once, as booked. New Era
+        # adds the MCM no booking has; the meeting naming nobody is left out.
+        self.assertEqual(sorted((b['id'], b['type'], b['source']) for b in bookings),
+                         [('calendar-key', 'pr', 'Learner.coach_calendar_event'), ('m3', 'mcm', 'newera.meetings')])
+
+    def test_a_new_era_meeting_naming_two_learners_of_the_same_name_goes_to_the_coachs_one(self):
+        from datetime import datetime, time
+        from .rules import LONDON
+        day = timezone.now().astimezone(LONDON).date()
+        start = datetime.combine(day, time(9), LONDON)
+        tables = {'public.meetings': [{'id': 'm', 'subject': 'Monthly Coaching Review with Sam Lee', 'coach': 'b@kbc.test', 'start_at': start}],
+                  'public.learners': [{'learner_name': 'Sam Lee', 'learner_email': 'sam1@x.test'}, {'learner_name': 'Sam Lee', 'learner_email': 'sam2@x.test'}],
+                  'all_sessions_cache_v2': [{'email': 'sam1@x.test', 'coach': 'a@kbc.test'}, {'email': 'sam2@x.test', 'coach': 'b@kbc.test'}]}
+        with patch.object(sources, 'rows', side_effect=lambda alias, sql, params=(): next(v for t, v in tables.items() if t in sql)):
+            found, skipped = sources.newera_reviews(day)
+        self.assertEqual(([(f['email'], f['type']) for f in found], skipped), ([('sam2@x.test', 'mcm')], 0))
+
+    def test_a_new_era_meeting_with_its_attendees_is_matched_by_the_learners_email_before_the_name(self):
+        from datetime import datetime, time
+        from .rules import LONDON
+        day = timezone.now().astimezone(LONDON).date()
+        start = datetime.combine(day, time(9), LONDON)
+        invited = {'attendees': [{'emailAddress': {'address': 'coach@kentbusinesscollege.com'}}, {'emailAddress': {'address': 'Jo.Ray@Mail.test'}}]}
+        tables = {'public.meetings': [
+                      # The subject names someone else; the invited learner wins.
+                      {'id': 'a', 'subject': 'Progress review with Sam Lee', 'coach': 'b@kbc.test', 'start_at': start, 'raw_event': invited},
+                      # No learner invited by email: the name decides.
+                      {'id': 'b', 'subject': 'Monthly coaching with Sam Lee', 'coach': 'b@kbc.test', 'start_at': start,
+                       'raw_event': {'attendees': [{'emailAddress': {'address': 'coach@kentbusinesscollege.com'}}]}}],
+                  'public.learners': [{'learner_name': 'Sam Lee', 'learner_email': 'sam@x.test'}, {'learner_name': 'Jo Ray', 'learner_email': 'jo.ray@mail.test'}],
+                  'all_sessions_cache_v2': []}
+        with patch.object(sources, 'rows', side_effect=lambda alias, sql, params=(): next(v for t, v in tables.items() if t in sql)):
+            found, _ = sources.newera_reviews(day, is_learner={'jo.ray@mail.test', 'sam@x.test'}.__contains__)
+        self.assertEqual([(f['id'], f['email'], f['matched_by']) for f in found], [('a', 'jo.ray@mail.test', 'email'), ('b', 'sam@x.test', 'name')])
 
     def test_native_reviews_are_not_hidden_by_unrelated_imported_history(self):
         from . import lms_reviews

@@ -39,8 +39,8 @@ from .call_scope import system_case_calls
 from .history import monthly_history
 from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, email_key, holidays_from, missed_call, next_workday,
-                    normalize_phone, parse_moment, priority, promise_missed, same_contact)
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, days_late, email_key, holidays_from,
+                    is_late, late_cutoff, missed_call, next_workday, normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import NOT_DISCUSSED, Conflict, agent_for, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
 logger = logging.getLogger(__name__)
@@ -223,8 +223,8 @@ def ticket_json(ticket):
         'status': ticket.status, 'risk': ticket.risk, 'claimed_by': ticket.claimed_by.display_name if active_claim else None,
         'claimed_agent_id': ticket.claimed_by_id if active_claim else None, 'last_actor': ticket.last_actor,
         'last_action_at': ticket.last_action_at, 'attempts': ticket.attempts, 'next_followup_at': ticket.next_followup_at,
-        'due_at': ticket.due_at, 'sla_breached': ticket.status != 'resolved' and ticket.due_at < now,
-        'sla_days_overdue': max(0, (now.astimezone(LONDON).date() - ticket.due_at.astimezone(LONDON).date()).days),
+        'due_at': ticket.due_at, 'sla_breached': ticket.status != 'resolved' and is_late(ticket.due_at, now),
+        'sla_days_overdue': days_late(ticket.due_at, now),
         'learner_days_overdue': score[3], 'misses': ticket.misses, 'booking_at': ticket.booking_at,
         'ai_summary': ticket.ai_summary, 'ai_confidence': ticket.ai_confidence, 'resolution_option': ticket.resolution_option,
         'resolved_at': ticket.resolved_at, 'resolved_by': ticket.resolved_by, 'archived': ticket.archived,
@@ -397,7 +397,7 @@ def queue(request):
     else:
         qs = qs.open()
         if view == 'due':
-            qs = qs.filter(due_at__lt=timezone.now())
+            qs = qs.filter(due_at__lt=late_cutoff(timezone.now()))
         if view == 'ai':
             qs = qs.filter(status='ai_suggested_close')
         if view == 'tomorrow':
@@ -410,9 +410,9 @@ def queue(request):
         if value:
             qs = qs.filter(**{name: value})
     if request.GET.get('due') == 'overdue':
-        qs = qs.filter(due_at__lt=timezone.now())
+        qs = qs.filter(due_at__lt=late_cutoff(timezone.now()))
     elif request.GET.get('due') == 'within':
-        qs = qs.filter(due_at__gte=timezone.now())
+        qs = qs.filter(due_at__gte=late_cutoff(timezone.now()))
     text = request.GET.get('q', '').strip()[:200]
     if text:
         qs = qs.filter(Q(learner_email__icontains=text) | Q(learner_name__icontains=text) | Q(learner_phone__icontains=text))

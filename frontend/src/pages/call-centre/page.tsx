@@ -10,7 +10,7 @@ import CoachPages from './engagement/CoachPages';
 import CaseWorkspace from './engagement/CaseWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
-import { CallsPage, CasesPage, QualityPage, ScorecardsPage } from './engagement/Director';
+import { CallsPage, ScorecardsPage } from './engagement/Director';
 import DirectorHome from './engagement/DirectorHome';
 import EmployerSpecialists from './engagement/EmployerSpecialists';
 import Imports from './engagement/Imports';
@@ -20,6 +20,7 @@ import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
 import type { NavGroup } from './engagement/Shell';
+import { MissingRecordings } from './engagement/Scorecard';
 import { SpecialistIndex, SpecialistPage } from './engagement/Specialists';
 import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
@@ -28,18 +29,17 @@ import './styles/director.css';
 // The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
   ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart']]],
-  ['Calls and cases', [['calls', 'Calls', 'clock'], ['quality', 'Call quality', 'shield'], ['cases', 'Calling register', 'file'],
-    ['operator', 'Calling desk', 'phone']]],
+  ['Calls', [['calls', 'Calls', 'clock'], ['operator', 'Calling desk', 'phone']]],
   ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
     ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
   director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
-  quality: 'Call quality', cases: 'Calling register', bookings: 'Coach booking links', allocations: 'Learner allocation',
+  bookings: 'Coach booking links', allocations: 'Learner allocation',
   phone: 'Zoom Phone', settings: 'Settings',
 };
-// Pages folded into another: Import & export and Connections & rules now sit in Settings.
-const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings' };
+// Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
+const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
 const LIVE_VIEWS = new Set(['director', 'specialists', 'specialist']);
 
 function signOut(navigate: ReturnType<typeof useNavigate>) {
@@ -196,7 +196,7 @@ export default function CallCentrePage() {
             <div className="ec-muted">{longDate(overview.today)} · {overview.access.display_name}</div>
           </div>
           <div className="ec-buttons">
-            {caseId && <button type="button" onClick={() => setParam({ case: null })}>← Calling register</button>}
+            {caseId && <button type="button" onClick={() => setParam({ case: null })}>← Back</button>}
             {!director && <button type="button" onClick={() => setParam({ view: null })}>← Calling workspace</button>}
             {director && <button type="button" className="primary" onClick={() => setRequesting(true)}>+ Request a call</button>}
             <button type="button" onClick={refresh}>Refresh</button>
@@ -211,7 +211,12 @@ export default function CallCentrePage() {
               <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />
               <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             </>
-          ) : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
+          ) : view === 'phone' ? (
+            <>
+              <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
+              {director && <MissingRecordings revision={overview.generated_at} />}
+            </>
+          )
             : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
               : view === 'settings' ? (
                 <>
@@ -224,10 +229,8 @@ export default function CallCentrePage() {
                   <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go} session={session}
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
                 ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
-                  : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} />
-                    : view === 'quality' ? <QualityPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
-                      : view === 'cases' ? <CasesPage overview={overview} onOpenCase={openCase} />
-                        : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}
+                  : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
+                    : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}
         </div>
         {director && (
           <RequestCall

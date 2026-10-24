@@ -109,12 +109,11 @@ test('the overview shows the board live, what needs the director, the month in g
   await expect(page.locator('.dd-figure').filter({ has: page.getByText('Calls made', { exact: true }) }).locator('strong')).toHaveText('860');
   await expect(page.getByRole('img', { name: /Talk time per working day/ }).locator('.recharts-bar-rectangle').first()).toBeVisible();
   await expect(page.getByRole('img', { name: /Calls made per working day/ })).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Open cases by reason' })).toContainText('Missed lecture');
   await page.screenshot({ path: test.info().outputPath('overview.png'), fullPage: true });
 
   // The sidebar: Monitor, Calls and cases, Setup; Zoom Phone stays.
   const nav = page.getByRole('navigation').first();
-  for (const name of ['Overview', 'Specialists', 'Scorecards', 'Calls', 'Call quality', 'Calling register', 'Calling desk', 'Zoom Phone', 'Learner allocation', 'Settings']) {
+  for (const name of ['Overview', 'Specialists', 'Scorecards', 'Calls', 'Calling desk', 'Zoom Phone', 'Learner allocation', 'Settings']) {
     await expect(nav.getByRole('button', { name, exact: true })).toBeVisible();
   }
   await needs.getByRole('button', { name: /learners waiting for a call back/ }).click();

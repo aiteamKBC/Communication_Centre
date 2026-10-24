@@ -23,19 +23,22 @@ const ROLES: Record<string, string> = { learner: 'Learner', line_manager: 'Line 
 
 const waited = (minutes: number) => (minutes < 60 ? `${minutes} min` : minutes < 1440 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} days`);
 
-/** Learners and line managers we know who rang and were missed: their specialist calls them back, and the learner's
- * cases go to the top of the list. Each closes by itself when someone calls the number back or the caller gets through;
- * otherwise mark it done with a note. */
+type Kind = 'callback' | 'enquiry';
+
+/** Missed calls, with any voicemail. Call-backs: learners and line managers we know, called back from their case (which
+ * goes to the top of the list). Enquiries: numbers we do not know, listed to read (who rang, when, what they said). Each
+ * closes by itself when someone calls the number back or the caller gets through; otherwise mark it done with a note. */
 export default function MissedCalls({ session, revision, onOpenCase, agentId }: {
   session: Session; revision: string; onOpenCase: (id: number) => void; agentId?: number;
 }) {
+  const [kind, setKind] = useState<Kind>('callback');
   const [status, setStatus] = useState<'open' | 'done'>('open');
   const [days, setDays] = useState(7);
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<number | null>(null);
   const [problem, setProblem] = useState<Problem>(null);
   const [playing, setPlaying] = useState<number | null>(null);
-  const { data, error, loading, refresh } = useCallCentre<Listing>(`inbound/?kind=callback&status=${status}&days=${days}${agentId ? `&agent_id=${agentId}` : ''}`);
+  const { data, error, loading, refresh } = useCallCentre<Listing>(`inbound/?kind=${kind}&status=${status}&days=${days}${agentId ? `&agent_id=${agentId}` : ''}`);
   useEffect(() => { refresh(); }, [revision, refresh]);
 
   async function act(item: Item, action: string) {
@@ -58,10 +61,17 @@ export default function MissedCalls({ session, revision, onOpenCase, agentId }: 
       <div className="ec-head">
         <div>
           <h2>Missed calls to call back</h2>
-          <p className="ec-muted">Learners and line managers who rang and nobody answered. Call them back from their case (the Call button), so the call
-            counts: it closes here by itself, and their cases sit at the top of the list until then.</p>
+          <p className="ec-muted">{kind === 'callback'
+            ? 'Learners and line managers who rang and nobody answered, with any voicemail they left. Call them back from their case (the Call button), so the call counts: it closes here by itself, and their cases sit at the top of the list until then.'
+            : 'Numbers we do not know that rang and nobody answered: usually people asking about apprenticeships. Who rang, when, and what their voicemail said.'}</p>
         </div>
         <div className="ec-buttons">
+          <div className="ec-buttons" role="tablist" aria-label="Which missed calls">
+            {(['callback', 'enquiry'] as Kind[]).map(value => (
+              <button key={value} type="button" role="tab" aria-selected={kind === value} className={kind === value ? 'primary' : ''}
+                onClick={() => setKind(value)}>{value === 'callback' ? 'Call-backs' : 'Enquiries'}</button>
+            ))}
+          </div>
           <label>Show
             <select value={status} onChange={event => setStatus(event.target.value as 'open' | 'done')}>
               <option value="open">Still to call back</option><option value="done">Done</option>

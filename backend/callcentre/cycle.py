@@ -15,6 +15,7 @@ from .evidence import EvidenceSnapshot, check_evidence
 from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
+from .rules import LATE_FROM, is_late, late_cutoff
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
 from .zoom_phone import account_labels, sync_account
 from .zoom_views import current_account_filter
@@ -24,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 def maintenance(now):
     expire_claims(now)
-    pending = Q(due_at__lt=now, sla_breached=False) | Q(next_followup_at__lte=now, status__in=['pending_learner', 'pending_verification'])
+    if now < LATE_FROM:
+        # The fresh start: until it is over nothing is late, so cases marked late before it are cleared.
+        CaseTicket.objects.open().filter(sla_breached=True).update(sla_breached=False)
+    pending = (Q(due_at__lt=late_cutoff(now), sla_breached=False)
+               | Q(next_followup_at__lte=now, status__in=['pending_learner', 'pending_verification']))
     for pk in CaseTicket.objects.open().filter(pending).values_list('pk', flat=True).iterator():
         with transaction.atomic(using=DB):
             ticket = CaseTicket.objects.select_for_update().get(pk=pk)
-            if ticket.due_at < now and not ticket.sla_breached:
+            if is_late(ticket.due_at, now) and not ticket.sla_breached:
                 agents = list(ticket.events.exclude(agent=None).values_list('agent_id', flat=True).distinct())
                 ticket.sla_breached = True
                 event(ticket, 'sla_breached', {'agent_ids': sorted(agents), 'unclaimed': not agents, 'due_at': ticket.due_at.isoformat()})

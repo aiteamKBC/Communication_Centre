@@ -1,7 +1,7 @@
 import { useCallCentre } from '../api';
 import type { Overview } from '../api';
-import { Bars, CallsByDay, QualityStrip, TalkByDay } from './charts';
-import { byReason, caseload, monthTotals, ranked, rate } from './dashboard';
+import { CallsByDay, QualityStrip, TalkByDay } from './charts';
+import { caseload, monthTotals, ranked, rate } from './dashboard';
 import type { Live } from './live';
 import { liveSeconds } from './live';
 import { duration, failingSources } from './model';
@@ -29,13 +29,13 @@ function NeedsYou({ overview, go }: { overview: Overview; go: Go }) {
   const recordings = useCallCentre<{ calls: unknown[] }>('missing-recordings/?days=7');
   const load = caseload(overview.cases);
   const items: [number, string, string, Record<string, string>?][] = [
-    [load.ai, 'AI suggestions to approve or reject', 'quality'],
+    [load.ai, 'AI suggestions to approve or reject', 'calls'],
     [callbacks.data?.summary.open || 0, 'learners waiting for a call back', 'calls'],
-    [load.late, 'cases past their call date', 'cases'],
-    [(overview.call_reviews?.flags || []).length, 'calls rated bad this month', 'quality'],
+    [load.late, 'cases past their call date', 'specialists'],
+    [(overview.call_reviews?.flags || []).length, 'calls rated bad this month', 'calls'],
     [load.unallocated, 'learners in the shared queue', 'allocations'],
     [(changes.data?.changes || []).filter(change => change.serious).length, 'Zoom changes that stop matching or recording', 'phone'],
-    [recordings.data?.calls.length || 0, 'answered calls Zoom did not record (7 days)', 'quality'],
+    [recordings.data?.calls.length || 0, 'answered calls Zoom did not record (7 days)', 'phone'],
     [failingSources(overview).length, 'data sources not reading', 'settings'],
   ];
   const shown = items.filter(([count]) => count > 0);
@@ -59,10 +59,7 @@ export default function DirectorHome({ overview, live, now, go, onMonth }: {
 }) {
   const agents = overview.agents;
   const totals = monthTotals(agents);
-  const load = caseload(overview.cases);
   const reviews = overview.call_reviews?.agents || {};
-  const team = { excellent: 0, good: 0, bad: 0 };
-  Object.values(reviews).forEach(counts => { team.excellent += counts.excellent; team.good += counts.good; team.bad += counts.bad; });
   const openSpecialist = (id: number) => go('specialist', { agent: String(id) });
   const current = overview.month === overview.today.slice(0, 7);
 
@@ -99,37 +96,6 @@ export default function DirectorHome({ overview, live, now, go, onMonth }: {
             <h3>Calls per day</h3>
             <p className="dd-muted">Answered, and not answered (voicemail, no answer, busy).</p>
             <CallsByDay agents={agents} />
-          </article>
-        </div>
-      </section>
-
-      <section className="dd-section" aria-labelledby="dd-cases">
-        <header className="dd-section-head">
-          <div><p className="dd-eyebrow">Right now</p><h2 id="dd-cases">The calling list</h2></div>
-          <button type="button" onClick={() => go('cases')}>Open the calling register</button>
-        </header>
-        <div className="dd-trio">
-          <article className="dd-panel">
-            <h3>Why learners are on the list</h3>
-            <Bars label="Open cases by reason" rows={byReason(overview.cases).slice(0, 8)} onPick={() => go('cases')} />
-          </article>
-          <article className="dd-panel">
-            <h3>Where the cases stand</h3>
-            <Bars label="Open cases by stage" tone="teal" rows={[
-              { key: 'due', label: 'Due to call now', value: load.due },
-              { key: 'late', label: 'Past their call date', value: load.late },
-              { key: 'waiting', label: 'Waiting for the learner', value: load.waiting, hint: 'Call-back booked or a promise' },
-              { key: 'missed', label: 'Last call not answered', value: load.missed },
-              { key: 'promises', label: 'Promise broken', value: load.promises },
-              { key: 'ai', label: 'AI suggests closing', value: load.ai },
-            ]} />
-            <p className="dd-total"><b>{load.open}</b> open cases{overview.cases_truncated ? ' (list truncated)' : ''}</p>
-          </article>
-          <article className="dd-panel">
-            <h3>Call quality this month</h3>
-            <p className="dd-muted">The AI rates each recorded call.</p>
-            <div className="dd-team-quality"><QualityStrip counts={team} /></div>
-            <button type="button" onClick={() => go('quality')}>Review call quality</button>
           </article>
         </div>
       </section>

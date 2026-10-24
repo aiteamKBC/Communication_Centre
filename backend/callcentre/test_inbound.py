@@ -115,7 +115,9 @@ class InboundTests(InboundBase):
         # Ann is Bob's learner, though she rang Alice's number.
         self.assertEqual(len(listing(self.bob.user, self.bob, 'callback', 'open', 7)['items']), 1)
         self.assertEqual(listing(self.alice.user, self.alice, 'callback', 'open', 7)['items'], [])
-        self.assertEqual(listing(self.alice.user, self.alice, 'enquiry', 'open', 7)['items'], [])
+        # The unknown caller rang Alice's number: she sees it among her enquiries; Bob does not.
+        self.assertEqual(len(listing(self.alice.user, self.alice, 'enquiry', 'open', 7)['items']), 1)
+        self.assertEqual(listing(self.bob.user, self.bob, 'enquiry', 'open', 7)['items'], [])
         # A director looking at one specialist sees what is on that specialist's desk.
         self.assertEqual(len(listing(self.director, None, 'callback', 'open', 7, of_agent=self.bob)['items']), 1)
         self.assertEqual(listing(self.director, None, 'callback', 'open', 7, of_agent=self.alice)['items'], [])
@@ -358,3 +360,25 @@ class PresenceTests(InboundBase):
         state = current()
         self.assertEqual(state['agents'][str(self.alice.pk)]['label'], 'Available')
         self.assertIn('Zoom has no user for Bob', state['error'])
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class FreshStartTests(InboundBase):
+
+    def test_nothing_is_late_until_the_day_after_the_fresh_start_and_old_late_flags_are_cleared(self):
+        from datetime import datetime
+        from .cycle import maintenance
+        from .rules import LONDON, days_late, is_late
+        sunday = datetime(2026, 10, 25, 12, tzinfo=LONDON)
+        monday = datetime(2026, 10, 26, 16, tzinfo=LONDON)
+        tuesday = datetime(2026, 10, 27, 9, tzinfo=LONDON)
+        old = datetime(2026, 10, 10, 10, tzinfo=LONDON)
+        CaseTicket.objects.filter(pk=self.ann.pk).update(due_at=old, sla_breached=True)
+        self.assertFalse(is_late(old, monday))
+        self.assertEqual((is_late(old, tuesday), days_late(old, tuesday)), (True, 1))   # late from the fresh start, not from 10 Oct
+        maintenance(sunday)
+        self.assertFalse(CaseTicket.objects.get(pk=self.ann.pk).sla_breached)          # cleared, and not marked again
+        self.assertFalse(TicketEvent.objects.filter(ticket=self.ann, kind='sla_breached').exists())
+        maintenance(tuesday)
+        self.assertTrue(CaseTicket.objects.get(pk=self.ann.pk).sla_breached)
+        self.assertTrue(TicketEvent.objects.filter(ticket=self.ann, kind='sla_breached').exists())

@@ -7,6 +7,8 @@ Aptem directory in ``learners.py``.
 """
 import hashlib
 import json
+import logging
+import re
 import time
 from contextlib import contextmanager
 from datetime import timedelta
@@ -21,11 +23,13 @@ from . import aptem_summaries as summaries
 from . import learners
 from . import identity
 from . import lms_reviews
-from .db import APTEM, DB, LMS
+from .db import APTEM, DB, LMS, NEW_ERA
 from .models import CaseTicket, CycleState, TicketEvent
 from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, REVIEW_CATEGORIES, due_at, email_key, missed_lectures_ready_until, next_workday,
                     normalize_phone, parse_moment)
 from .services import event
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -581,6 +585,63 @@ def decode_json(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+# The next day's MCMs and progress reviews come from the bookings (coaches_data, the LMS calendar) and also from New Era's
+# meetings (newera_reviews), which has some the bookings do not; one found in both is reminded once.
+NEW_ERA_SUBJECTS = (('pr', 'progress review'), ('mcm', 'monthly coaching'))
+
+
+def _plain_name(value):
+    return ' '.join(re.sub(r'[^a-z ]', ' ', str(value or '').lower()).split())
+
+
+def _attendees(raw_event):
+    """The meeting's attendee emails from its Outlook event (absent until New Era has the full event)."""
+    event = decode_json(raw_event) if raw_event else {}
+    people = event.get('attendees') if isinstance(event, dict) else None
+    return {email_key((item.get('emailAddress') or {}).get('address')) for item in people or [] if isinstance(item, dict)} - {''}
+
+
+def newera_reviews(day, is_learner=None):
+    """The MCMs and progress reviews on ``day`` in New Era's meetings (the coaches' Outlook calendars), not cancelled.
+    The learner is the attendee whose email is a learner's (``is_learner``, else New Era's learners). Without the attendee
+    list (New Era fills it in later for most meetings), or with no learner invited by email, the learner is the one the
+    subject names in full ("Progress review meeting with Jane Doe - ..."), and when two share the name, the one this coach
+    has. A meeting finding nobody, or more than one learner, is left out. Returns (bookings, how many were left out)."""
+    from datetime import datetime, time as day_time
+    start = datetime.combine(day, day_time.min, LONDON)
+    meetings = rows(NEW_ERA, '''SELECT id, subject, lower(coach_email) AS coach, start_at, raw_event FROM public.meetings
+        WHERE NOT is_cancelled AND start_at >= %s AND start_at < %s
+          AND (subject ILIKE '%%progress review%%' OR subject ILIKE '%%monthly coaching%%')''', [start, start + timedelta(days=1)])
+    if not meetings:
+        return [], 0
+    names, known = {}, set()
+    for learner in rows(NEW_ERA, 'SELECT learner_name, learner_email FROM public.learners'):
+        name, email = _plain_name(learner['learner_name']), email_key(learner['learner_email'])
+        if email:
+            known.add(email)
+        if len(name.split()) >= 2 and email:
+            names.setdefault(name, set()).add(email)
+    is_learner = is_learner or known.__contains__
+    coaches = {}
+    for pair in rows(NEW_ERA, 'SELECT DISTINCT lower(learner_email) AS email, lower(coach_email) AS coach FROM public.all_sessions_cache_v2'):
+        coaches.setdefault(email_key(pair['email']), set()).add(pair['coach'])
+    found, skipped = [], 0
+    for meeting in meetings:
+        subject = f' {_plain_name(meeting["subject"])} '
+        emails, matched_by = {email for email in _attendees(meeting.get('raw_event')) if is_learner(email)}, 'email'
+        if not emails:
+            emails, matched_by = {email for name, people in names.items() if f' {name} ' in subject for email in people}, 'name'
+            if len(emails) > 1 and meeting['coach']:
+                emails = {email for email in emails if meeting['coach'] in coaches.get(email, set())} or emails
+        if len(emails) != 1:
+            skipped += 1
+            continue
+        kind = next(kind for kind, words in NEW_ERA_SUBJECTS if words in subject)
+        found.append({'email': emails.pop(), 'start': meeting['start_at'], 'type': kind, 'id': str(meeting['id']),
+                      'source': 'newera.meetings', 'matched_by': matched_by})
+    return found, skipped
+
+
 def load_bookings(people):
     tomorrow = next_workday(timezone.now().astimezone(LONDON).date())
     result = {}
@@ -632,6 +693,19 @@ def load_bookings(people):
                 continue
             result[key] = {'email': email, 'start': start, 'type': category,
                            'id': str(item['event_key']), 'source': 'Learner.coach_calendar_event'}
+    reviews, skipped = newera_reviews(tomorrow, lambda email: email in people)
+    if skipped:
+        logger.info('New Era: %s of %s MCMs and reviews on %s name no single learner', skipped, len(reviews) + skipped, tomorrow)
+    booked = {(item['email'], item['type'], item['start'].astimezone(LONDON).date()) for item in result.values()}
+    for item in reviews:
+        person = people.resolve(email=item['email']) if hasattr(people, 'resolve') else None
+        if item['email'] not in people or (person and program_is_paused(person)):
+            continue
+        email = people[item['email']]['learner_email']
+        start = item['start'].astimezone(LONDON)
+        if (email, item['type'], start.date()) in booked:   # already booked: the booking's reminder stands
+            continue
+        result[f'{email}:{item["type"]}:{start.isoformat()}'] = {**item, 'email': email, 'start': start}
     return list(result.values())
 
 
@@ -646,7 +720,7 @@ def generate_reminders(people, bookings):
     expected = {(b['email'], b['type'], b['start']) for b in bookings}
     for ticket in CaseTicket.objects.filter(source_type='reminder', archived=False,
             booking_at__gte=start, booking_at__lt=start+timedelta(days=1)).exclude(status='resolved'):
-        if ticket.source_data.get('booking_source') not in ('coaches_data', 'Learner.coach_calendar_event'):
+        if ticket.source_data.get('booking_source') not in ('coaches_data', 'Learner.coach_calendar_event', 'newera.meetings'):
             continue
         person = people.get(ticket.learner_email)
         email = person['learner_email'] if person else ticket.learner_email

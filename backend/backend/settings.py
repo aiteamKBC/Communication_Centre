@@ -176,6 +176,11 @@ callcentre_lms_database_url = os.getenv('CALLCENTRE_LMS_DATABASE_URL')
 if callcentre_lms_database_url:
     DATABASES['callcentre_lms'] = parse_database_url(callcentre_lms_database_url)
 
+# Read-only New Era database: the coaches' meetings (MCM and progress reviews) behind the call centre's Next Day list.
+callcentre_newera_database_url = os.getenv('NewEra_DB_URL')
+if callcentre_newera_database_url:
+    DATABASES['callcentre_newera'] = parse_database_url(callcentre_newera_database_url)
+
 
 DATABASE_ROUTERS = [
     'backend.db_routers.CallCentreRouter',

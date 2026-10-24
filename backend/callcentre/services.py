@@ -133,7 +133,8 @@ def expire_claims(now, agent=None):
         Q(last_activity_at__lte=now - timedelta(minutes=30)) | gone, claimed_by__isnull=False)
     for pk in claims.values_list('pk', flat=True):
         with transaction.atomic(using=DB):
-            ticket = CaseTicket.objects.select_for_update().select_related('claimed_by__user').get(pk=pk)
+            # Lock the case only: Postgres cannot lock the nullable side of the claimed-by join.
+            ticket = CaseTicket.objects.select_for_update(of=('self',)).select_related('claimed_by__user').get(pk=pk)
             switched_off = ticket.claimed_by and not (ticket.claimed_by.active and ticket.claimed_by.user.is_active)
             if switched_off or (ticket.last_activity_at and ticket.last_activity_at <= now - timedelta(minutes=30)):
                 agent = ticket.claimed_by

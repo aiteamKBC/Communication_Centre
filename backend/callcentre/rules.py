@@ -192,12 +192,34 @@ def promise_deadline(category, option, now):
     return datetime.combine(day, time(17), tzinfo=LONDON)
 
 
+# A fresh start: every case due before this day counts as due on it, so nothing is late until the day after. Call dates
+# themselves are left as they are; moving or removing this date undoes it.
+FRESH_START = date(2026, 10, 26)
+LATE_FROM = datetime.combine(FRESH_START + timedelta(days=1), time.min, tzinfo=LONDON)
+
+
+def late_cutoff(now):
+    """A case is late when its call date is before this: ``now``, or (before the fresh start is over) nothing at all."""
+    return now if now >= LATE_FROM else datetime(1970, 1, 1, tzinfo=LONDON)
+
+
+def is_late(due_at, now):
+    return due_at < late_cutoff(now)
+
+
+def days_late(due_at, now):
+    """Whole days the call is late, counted from the fresh start for a case due before it."""
+    if not is_late(due_at, now):
+        return 0
+    return max(0, (now.astimezone(LONDON).date() - max(due_at.astimezone(LONDON).date(), FRESH_START)).days)
+
+
 def priority(ticket, now):
     today = now.astimezone(LONDON).date()
     overdue = max(0, (today - ticket.overdue_since).days) if ticket.overdue_since else 0
     tomorrow = bool(ticket.booking_at and ticket.booking_at.astimezone(LONDON).date() == next_workday(today))
     # A missed call drops to the bottom; a broken promise ranks with red risk at the top.
-    return (not missed_call(ticket), promise_missed(ticket, now) or ticket.risk == 'red', ticket.due_at < now,
+    return (not missed_call(ticket), promise_missed(ticket, now) or ticket.risk == 'red', is_late(ticket.due_at, now),
             overdue, ticket.misses, tomorrow, -ticket.attempts)
 
 

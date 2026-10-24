@@ -10,3 +10,5 @@ read-only master learner list.
 DB = 'login_db'
 APTEM = 'callcentre_aptem'
 LMS = 'callcentre_lms'
+# New Era (read-only): the coaches' Outlook meetings, where the next day's MCMs and progress reviews come from.
+NEW_ERA = 'callcentre_newera'

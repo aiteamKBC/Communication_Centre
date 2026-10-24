@@ -58,9 +58,9 @@ async function open(page: Page, manager: boolean, section = '') {
     }
     if (url.pathname === '/api/callcentre/inbound/') {
       asked.push(url);
-      const kind = url.searchParams.get('kind') as 'callback' | 'enquiry';
-      return json({ items: ITEMS[kind], agents: manager ? [{ id: 1, display_name: 'Operator' }, { id: 2, display_name: 'Sales Sam' }] : undefined,
-        summary: { open: ITEMS[kind].length, received: 5, done: 4, median_minutes: 35, within_hour: 3, days: 7 } });
+      const items = ITEMS[url.searchParams.get('kind') as 'callback' | 'enquiry'];
+      return json({ items, agents: manager ? [{ id: 1, display_name: 'Operator' }, { id: 2, display_name: 'Sales Sam' }] : undefined,
+        summary: { open: items.length, received: 5, done: 4, median_minutes: 35, within_hour: 3, days: 7 } });
     }
     if (url.pathname === '/api/callcentre/scorecard/') {
       asked.push(url);
@@ -112,12 +112,17 @@ test('a specialist sees who rang and was missed, opens the case to call back, or
   await expect(missed).toContainText('Learner');
   await expect(missed).toContainText('2 h');   // 95 minutes waiting
   await expect(missed.getByRole('button', { name: 'Open case to call back' })).toBeVisible();
-  await expect(missed.getByRole('tab')).toHaveCount(0);            // call-backs only: no Enquiries tab
   await expect(missed).not.toContainText('+447911000111');
-  await expect(missed.getByRole('button', { name: 'Mark done' })).toBeDisabled();   // needs what happened
-  await missed.getByLabel('What happened with Ann Smith').fill('Called her mobile instead');
-  await missed.getByRole('button', { name: 'Mark done' }).click();
+  const ann = missed.getByRole('row').filter({ hasText: 'Ann Smith' });   // call-backs first
+  await expect(ann.getByRole('button', { name: 'Mark done' })).toBeDisabled();   // needs what happened
+  await ann.getByLabel('What happened with Ann Smith').fill('Called her mobile instead');
+  await ann.getByRole('button', { name: 'Mark done' }).click();
   await expect.poll(() => posts.at(-1)).toMatchObject({ path: '/api/callcentre/inbound/', id: 1, action: 'done', note: 'Called her mobile instead' });
+  // Enquiries: unknown numbers to read (who rang, when, the voicemail), with no call button.
+  await missed.getByRole('tab', { name: 'Enquiries' }).click();
+  await expect(missed).toContainText('Not a number we know');
+  await expect(missed.getByRole('link', { name: /^Call / })).toHaveCount(0);
+  await expect(missed.getByRole('button', { name: 'Open case to call back' })).toHaveCount(0);
   await missed.screenshot({ path: test.info().outputPath('missed-calls.png') });
 });
 
@@ -143,7 +148,7 @@ test('a director sees the call-backs, with no enquiries, and every scorecard', a
   await open(page, true, 'calls');
   const missed = page.getByRole('region', { name: 'Missed calls' });
   await expect(missed).toContainText('Ann Smith');
-  await expect(missed.getByRole('tab')).toHaveCount(0);
+  await expect(missed.getByRole('tab', { name: 'Enquiries' })).toBeVisible();
   await page.getByRole('navigation').first().getByRole('button', { name: 'Scorecards', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Weekly scorecard' })).toContainText('Operator');
 });
