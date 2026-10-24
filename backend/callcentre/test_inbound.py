@@ -326,7 +326,7 @@ class VoicemailTests(InboundBase):
 
 
 @unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
-class PresenceAndRenameTests(InboundBase):
+class PresenceTests(InboundBase):
 
     def test_zooms_presence_event_sets_the_status_of_the_specialist_with_that_zoom_user(self):
         from .presence import current, record_event
@@ -335,10 +335,8 @@ class PresenceAndRenameTests(InboundBase):
         self.assertEqual(current()['agents'][str(self.alice.pk)]['label'], 'Do not disturb')
         self.assertEqual(record_event('student', {'object': {'id': 'someone-else', 'presence_status': 'Away'}}), 0)
 
-    def test_a_number_is_renamed_in_zoom_by_its_id_and_a_missing_scope_is_named(self):
-        from .errors import FieldError
-        from .zoom_accounts import rename_number
-        from .zoom_phone import ZoomError
+    def test_presence_is_read_by_zoom_email_when_the_numbers_owner_is_not_a_zoom_user(self):
+        from .presence import current, poll
 
         class Response:
             def __init__(self, status, payload=None):
@@ -349,17 +347,14 @@ class PresenceAndRenameTests(InboundBase):
 
             def close(self):
                 pass
-        listed = Response(200, {'phone_numbers': [{'id': 'pn1', 'number': LINE}]})
+        # Alice's number belongs to a shared setup in Zoom: its owner ID is no user, her Zoom email is. Bob has no Zoom user.
+        Agent.objects.filter(pk=self.alice.pk).update(zoom_user_id='common-area', zoom_email='alice@kbc.test')
+        Agent.objects.filter(pk=self.bob.pk).update(zoom_user_id='', zoom_email='bob@kbc.test')
+        answers = {'common-area': Response(404, {'code': 1001}), 'alice@kbc.test': Response(200, {'status': 'Available'}),
+                   'bob@kbc.test': Response(404, {'code': 1001})}
         with mock.patch('callcentre.zoom_phone.validate_config', return_value={'account_id': 'a'}), \
-                mock.patch('callcentre.zoom_phone.ZoomClient.api_get', return_value=listed), \
-                mock.patch('callcentre.zoom_phone.ZoomClient.api', return_value=Response(204)) as sent:
-            self.assertEqual(rename_number('student', LINE, '  KBC   Engagement '), 'KBC Engagement')
-        self.assertEqual((sent.call_args.args, sent.call_args.kwargs['json']), (('PATCH', '/phone/numbers/pn1'), {'display_name': 'KBC Engagement'}))
-        refused = Response(400, {'message': 'Invalid access token, does not contain scopes:[phone:update:number:admin].'})
-        with mock.patch('callcentre.zoom_phone.validate_config', return_value={'account_id': 'a'}), \
-                mock.patch('callcentre.zoom_phone.ZoomClient.api_get', return_value=listed), \
-                mock.patch('callcentre.zoom_phone.ZoomClient.api', return_value=refused), \
-                self.assertRaisesMessage(ZoomError, 'phone:update:number:admin'):
-            rename_number('student', LINE, 'KBC')
-        with self.assertRaises(FieldError):
-            rename_number('student', LINE, '')
+                mock.patch('callcentre.zoom_phone.ZoomClient.api_get', side_effect=lambda path: answers[path.split('/')[2]]):
+            self.assertEqual(poll(), 1)
+        state = current()
+        self.assertEqual(state['agents'][str(self.alice.pk)]['label'], 'Available')
+        self.assertIn('Zoom has no user for Bob', state['error'])

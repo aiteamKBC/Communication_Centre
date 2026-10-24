@@ -33,10 +33,9 @@ CHECKS = (
     ('voicemails', 'Voicemails', '/phone/voice_mails', 'voicemails and their transcripts on Missed calls'),
 )
 # What the Test finds among the scopes Zoom granted the token (granular scope first, then the classic one that also
-# covers it). An optional one (renaming) is reported but does not make the account partial.
+# covers it).
 SCOPE_CHECKS = (
-    ('presence', 'Zoom status', ('user:read:presence_status:admin', 'user:read:admin'), 'each specialist’s Zoom status on Live now', False),
-    ('rename', 'Rename numbers', ('phone:update:number:admin', 'phone:write:admin'), 'Rename in Zoom (optional)', True),
+    ('presence', 'Zoom status', ('user:read:presence_status:admin', 'user:read:admin'), 'each specialist’s Zoom status on the board'),
 )
 # Zoom's Automatic Call Recording policy, in words.
 RECORDED_CALLS = {'inbound': 'incoming calls', 'outbound': 'outgoing calls', 'both': 'all calls'}
@@ -329,12 +328,12 @@ def test(key, actor, now=None):
             client.close()
         granted = getattr(client, 'scopes', None)
         if isinstance(granted, frozenset) and granted:   # Zoom lists the scopes it granted on the token
-            for name, label, scopes, used_for, optional in SCOPE_CHECKS:
+            for name, label, scopes, used_for in SCOPE_CHECKS:
                 ok = bool(granted & set(scopes))
-                checks.append({'name': name, 'label': label, 'ok': ok, 'used_for': used_for, 'optional': optional,
+                checks.append({'name': name, 'label': label, 'ok': ok, 'used_for': used_for,
                                'message': '' if ok else f'The Zoom app needs the scope {scopes[0]}: add it in the app’s Scopes, then test again.',
                                **({} if ok else {'scopes': [scopes[0]]})})
-    status = 'failed' if problem else 'working' if all(check['ok'] or check.get('optional') for check in checks) else 'partial'
+    status = 'failed' if problem else 'working' if all(check['ok'] for check in checks) else 'partial'
     result = {'status': status, 'tested_at': now.isoformat(), 'problem': problem, 'checks': checks}
 
     def change(accounts):
@@ -373,7 +372,6 @@ def zoom_numbers(key, client=None):
                 assignee = row.get('assignee') if isinstance(row.get('assignee'), dict) else {}
                 site = row.get('site') if isinstance(row.get('site'), dict) else {}
                 found.append({
-                    'zoom_id': str(row.get('id') or ''),
                     'owner_id': str(assignee.get('id') or '') if assignee.get('type') == 'user' else '',
                     'number': number, 'display_name': str(row.get('display_name') or ''), 'status': str(row.get('status') or ''),
                     'assignee': str(assignee.get('name') or ''), 'assignee_type': str(assignee.get('type') or ''),
@@ -386,34 +384,6 @@ def zoom_numbers(key, client=None):
     finally:
         if own:
             client.close()
-
-
-def rename_number(key, number, name):
-    """Change a number's display name in Zoom (the app needs write access to phone numbers). Zoom shows it in its own
-    apps and lists; whether a learner's phone shows a name is up to their network (most UK mobiles show only the number)."""
-    from .rules import normalize_phone
-    from .zoom_phone import ZoomClient, ZoomError, validate_config
-    name = ' '.join(str(name or '').split())
-    if not name or len(name) > 64:
-        raise FieldError('display_name', 'Enter a name of up to 64 characters.')
-    number = normalize_phone(number)
-    client = ZoomClient(validate_config(key))
-    try:
-        row = next((item for item in zoom_numbers(key, client) if item['number'] == number), None)
-        if not row or not row['zoom_id']:
-            raise ValueError('Zoom does not list this number on the account any more. Press Refresh from Zoom.')
-        response = client.api('PATCH', f'/phone/numbers/{row["zoom_id"]}', json={'display_name': name})
-        if not response.ok:
-            code, scopes, _ = _zoom_reason(response)
-            response.close()
-            if scopes or response.status_code in (401, 403):
-                raise ZoomError(f'The Zoom app needs the scope {", ".join(scopes) or "phone:update:number:admin"} to rename numbers: '
-                                'add it in the app’s Scopes, then try again.')
-            raise ZoomError(f'Zoom refused the new name (HTTP {response.status_code}{f", code {code}" if code else ""}).')
-        response.close()
-    finally:
-        client.close()
-    return name
 
 
 def numbers(key):
@@ -429,7 +399,6 @@ def numbers(key):
     try:
         found = zoom_numbers(key, client)
         for item in found:
-            item.pop('zoom_id')
             line = listed.get(item['number'])
             # In our list, and on which account: a number listed on another account is a setup mistake.
             item.update(listed=bool(line), listed_account=line.get('account', '') if line else '',

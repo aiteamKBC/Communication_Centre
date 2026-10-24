@@ -889,19 +889,18 @@ class ZoomAccountTests(TestCase):
         self.assertEqual(result['status'], 'partial')
         self.assertEqual(result['checks'][2]['scopes'], ['phone:read:list_numbers:admin'])
         self.assertIn('phone:read:list_numbers:admin', result['checks'][2]['message'])
-        # Zoom's token lists the granted scopes: the Zoom status needs one; renaming is optional and never makes it partial.
+        # Zoom's token lists the granted scopes: the Zoom status needs one of them.
         client = mock.Mock(scopes=frozenset({'phone:read:list_call_logs:admin', 'user:read:presence_status:admin'}))
         client.api_get.return_value = Response(200, {})
         with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
             result = test('student', 'director')
         found = {check['name']: check for check in result['checks']}
-        self.assertEqual((result['status'], found['presence']['ok'], found['rename']['ok']), ('working', True, False))
-        self.assertIn('phone:update:number:admin', found['rename']['message'])
-        client.scopes = frozenset({'phone:write:admin'})
+        self.assertEqual((result['status'], found['presence']['ok']), ('working', True))
+        client.scopes = frozenset({'phone:read:list_call_logs:admin'})
         with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
             result = test('student', 'director')
         found = {check['name']: check for check in result['checks']}
-        self.assertEqual((result['status'], found['presence']['scopes'], found['rename']['ok']), ('partial', ['user:read:presence_status:admin'], True))
+        self.assertEqual((result['status'], found['presence']['scopes']), ('partial', ['user:read:presence_status:admin']))
 
     def test_an_unexpected_server_error_reaches_the_page_with_a_reference(self):
         import json

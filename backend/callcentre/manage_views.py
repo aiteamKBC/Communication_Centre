@@ -376,9 +376,6 @@ def zoom_account_list(request):
             return JsonResponse({'ok': True, 'test': zoom_accounts.test(str(data.get('key') or ''), actor)})
         elif action == 'numbers':
             return JsonResponse({'ok': True, 'numbers': zoom_accounts.numbers(str(data.get('key') or ''))})
-        elif action == 'rename':
-            name = zoom_accounts.rename_number(str(data.get('key') or ''), str(data.get('number') or ''), data.get('display_name'))
-            return JsonResponse({'ok': True, 'display_name': name})
         else:
             raise ValueError('Unknown action.')
         return JsonResponse({'ok': True})

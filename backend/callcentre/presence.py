@@ -70,9 +70,11 @@ def poll():
     found, problems = {}, []
     by_account = {}
     for agent in Agent.objects.filter(active=True, user__is_active=True):
-        user_id = zoom_user(agent, lines)[0]
-        if user_id:
-            by_account.setdefault(agent.zoom_account, []).append((agent, user_id))
+        # Zoom knows a user by ID or email. The ID from the number's owner is not a person when the number belongs to a
+        # shared setup (e.g. a common area), so the email is tried after it.
+        tries = [value for value in dict.fromkeys(zoom_user(agent, lines)) if value]
+        if tries:
+            by_account.setdefault(agent.zoom_account, []).append((agent, tries))
     for key, people in by_account.items():
         try:
             client = ZoomClient(validate_config(key))
@@ -80,19 +82,26 @@ def poll():
             problems.append(str(exc))
             continue
         try:
-            for agent, user_id in people:
-                response = client.api_get(f'/users/{user_id}/presence_status')
+            for agent, tries in people:
+                for index, who in enumerate(tries):
+                    if index:
+                        response.close()
+                    response = client.api_get(f'/users/{who}/presence_status')
+                    if response.ok or response.status_code != 404:
+                        break
                 if response.ok:
                     status = str(client._json(response).get('status') or '')
                     found[str(agent.pk)] = {'status': status, 'at': timezone.now().isoformat(), 'source': 'zoom'}
-                else:
-                    from .zoom_accounts import _zoom_reason
-                    _, scopes, _ = _zoom_reason(response)
-                    response.close()
-                    problems.append(f'The Zoom app needs the scope {", ".join(scopes)} to read presence.' if scopes
-                                    else f'Zoom refused the presence of {agent.display_name} (HTTP {response.status_code}).')
-                    if scopes:
-                        break
+                    continue
+                from .zoom_accounts import _zoom_reason
+                _, scopes, _ = _zoom_reason(response)
+                response.close()
+                problems.append(f'The Zoom app needs the scope {", ".join(scopes)} to read presence.' if scopes
+                                else f'Zoom has no user for {agent.display_name}: set their Zoom email on Specialist profiles.'
+                                if response.status_code == 404
+                                else f'Zoom refused the presence of {agent.display_name} (HTTP {response.status_code}).')
+                if scopes:
+                    break
         except ZoomError as exc:
             problems.append(str(exc))
         finally:
