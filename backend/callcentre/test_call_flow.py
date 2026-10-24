@@ -726,6 +726,8 @@ class PhoneLineTests(TestCase):
         self.assertEqual(result['status'], 'check_setup')
         self.assertIn('student@kbc.test', result['warnings'][0])
         update(self.LINE, {'account': 'student', 'zoom_email': 'student@kbc.test'}, 'director')
+        self.assertEqual(test(self.LINE, 'director')['status'], 'ready')   # no call since the change yet
+        self.call(matched=True, caller_email='student@kbc.test', started_at=timezone.now())
         self.assertEqual(test(self.LINE, 'director')['status'], 'working')
 
     def test_changing_a_numbers_account_moves_its_specialist_too(self):
@@ -765,6 +767,19 @@ class PhoneLineTests(TestCase):
         self.assertIn('old@kbc.test', test(self.LINE, 'director')['warnings'][0])
         update(self.LINE, {'account': 'student', 'zoom_email': 'new@kbc.test'}, 'director')
         self.assertEqual(test(self.LINE, 'director')['warnings'], [])   # the old call was made before the change
+
+    def test_calls_not_matched_before_a_change_are_shown_but_no_longer_count(self):
+        from .zoom_lines import test, update
+        self.line()
+        self.give(self.tina, self.LINE)
+        self.call(matched=False, started_at=timezone.now() - timedelta(hours=2))   # from the Zoom app, under the old setup
+        self.assertEqual(test(self.LINE, 'director')['status'], 'unmatched')
+        update(self.LINE, {'account': 'student', 'zoom_email': 'tina@kbc.test'}, 'director')
+        result = test(self.LINE, 'director')
+        self.assertEqual((result['status'], result['unmatched_7_days'], result['unmatched_since_change']), ('ready', 1, 0))
+        self.assertTrue(result['changed_at'])
+        self.call(matched=False, started_at=timezone.now())   # a new one does count
+        self.assertEqual(test(self.LINE, 'director')['status'], 'unmatched')
 
     def test_a_number_in_use_cannot_be_removed(self):
         from .zoom_lines import remove, stored
@@ -949,3 +964,67 @@ class ZoomAccountTests(TestCase):
         self.assertEqual(api_get.call_count, 2)   # asked once, not once per user
         self.assertEqual({item['recording']['reason'] for item in found},
                          {'The Zoom app needs the scope phone:read:user:admin to read it.'})
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class ZoomWebhookTests(TestCase):
+    """Zoom's webhooks: only a request signed with the account's Secret Token is answered, and a phone event asks the
+    worker for a quick call sync."""
+    databases = {'default', 'login_db'}
+    TOKEN = 'webhook_token_1234'
+
+    def setUp(self):
+        from cryptography.fernet import Fernet
+        from .zoom_accounts import add
+        patch = mock.patch.dict('os.environ', {'ZOOM_SECRETS_KEY': Fernet.generate_key().decode()})
+        patch.start()
+        self.addCleanup(patch.stop)
+        add({**ZoomAccountTests.APP, 'webhook_secret': self.TOKEN}, 'director')
+
+    def send(self, payload, token=TOKEN, stamp=None, key='student'):
+        import hashlib
+        import hmac
+        import json
+        import time as clock
+        body = json.dumps(payload)
+        stamp = str(int(clock.time()) if stamp is None else stamp)
+        signature = 'v0=' + hmac.new(token.encode(), f'v0:{stamp}:{body}'.encode(), hashlib.sha256).hexdigest()
+        return self.client.post(f'/api/zoom-webhook/{key}/', body, content_type='application/json',
+                                headers={'x-zm-request-timestamp': stamp, 'x-zm-signature': signature})
+
+    def test_zoom_validates_the_url_with_the_secret_token(self):
+        import hashlib
+        import hmac
+        from .zoom_accounts import public, stored
+        response = self.send({'event': 'endpoint.url_validation', 'payload': {'plainToken': 'abc'}})
+        self.assertEqual(response.status_code, 200)   # no session needed
+        self.assertEqual(response.json(), {'plainToken': 'abc',
+                                           'encryptedToken': hmac.new(self.TOKEN.encode(), b'abc', hashlib.sha256).hexdigest()})
+        account = public(stored()[0])
+        self.assertNotIn(self.TOKEN, str(stored()))
+        self.assertEqual((account['webhook_end'], bool(account['webhook']['validated_at'])), ('1234', True))
+
+    def test_a_phone_event_asks_for_a_quick_call_sync(self):
+        from .cycle_requests import call_sync_requested
+        before = timezone.now() - timedelta(seconds=1)
+        response = self.send({'event': 'phone.caller_call_log_completed', 'payload': {}})
+        self.assertEqual((response.status_code, response.json()['queued']), (200, True))
+        self.assertTrue(call_sync_requested(before))
+
+    def test_a_request_not_signed_with_the_token_is_refused_and_the_reason_kept(self):
+        from .cycle_requests import call_sync_requested
+        from .zoom_accounts import public, stored
+        before = timezone.now() - timedelta(seconds=1)
+        self.assertEqual(self.send({'event': 'phone.caller_ended'}, token='wrong').status_code, 401)
+        self.assertEqual(self.send({'event': 'phone.caller_ended'}, stamp=1).status_code, 401)   # an old request replayed
+        self.assertEqual(self.send({'event': 'phone.caller_ended'}, key='nobody').status_code, 404)
+        self.assertFalse(call_sync_requested(before))
+        self.assertIn('too old', public(stored()[0])['webhook']['rejected'])
+
+    def test_the_token_is_kept_when_left_empty_and_can_be_turned_off(self):
+        from .zoom_accounts import stored, update
+        update('student', {'label': 'Student', 'client_id': 'client_1'}, 'director')
+        self.assertEqual(stored()[0]['webhook_end'], '1234')
+        update('student', {'label': 'Student', 'client_id': 'client_1', 'remove_webhook': 'true'}, 'director')
+        self.assertNotIn('webhook_secret', stored()[0])
+        self.assertEqual(self.send({'event': 'phone.caller_ended'}).status_code, 401)

@@ -11,9 +11,11 @@ type AccountTest = { status: 'working' | 'partial' | 'failed'; tested_at: string
 export type ZoomAccount = {
   key: string; label: string; account_id: string; client_id: string; secret_saved: boolean; secret_end: string; secret_readable: boolean;
   added_by: string; added_at: string | null; test: AccountTest | null;
+  webhook_saved: boolean; webhook_end: string; webhook_readable: boolean; webhook: WebhookState;
 };
+type WebhookState = { event?: string; at?: string; validated_at?: string; rejected?: string; rejected_at?: string | null };
 export type ZoomAccounts = { accounts: ZoomAccount[]; secrets_problem: string; secret_setting: string };
-type AccountFields = { label: string; account_id: string; client_id: string; client_secret: string };
+type AccountFields = { label: string; account_id: string; client_id: string; client_secret: string; webhook_secret: string };
 type ZoomNumber = {
   number: string; display_name: string; status: string; assignee: string; assignee_type: string; extension: string; site: string;
   capability: string[]; listed: boolean; listed_account: string; specialists: string[];
@@ -22,9 +24,45 @@ type ZoomNumber = {
 const OWNER_TYPES: Record<string, string> = { user: 'User', callQueue: 'Call queue', autoReceptionist: 'Auto receptionist', commonArea: 'Common area',
   sharedLineGroup: 'Shared line group' };
 
-const empty: AccountFields = { label: '', account_id: '', client_id: '', client_secret: '' };
+const empty: AccountFields = { label: '', account_id: '', client_id: '', client_secret: '', webhook_secret: '' };
 const TEST_TAG = { working: ['green', 'Working'], partial: ['amber', 'Partly working'], failed: ['red', 'Cannot sign in'] } as const;
 const CREDENTIALS_HINT = 'Zoom App Marketplace (marketplace.zoom.us) → Manage → your Server-to-Server OAuth app → App Credentials.';
+const webhookUrl = (key: string) => `${window.location.origin}/api/zoom-webhook/${key}/`;
+
+/** Zoom's webhooks for one account: the URL to give Zoom, and what the last request did. */
+function Webhook({ account }: { account: ZoomAccount }) {
+  if (!account.webhook_saved) return <small className="ec-muted">Webhooks off: calls arrive at the next cycle (Edit to add the Secret Token).</small>;
+  const webhook = account.webhook || {};
+  const lastRejected = webhook.rejected && webhook.rejected_at && (!webhook.at || webhook.rejected_at > webhook.at);
+  return (
+    <>
+      <small>Webhook URL <code>{webhookUrl(account.key)}</code></small>
+      {!account.webhook_readable && <small className="danger">The server cannot read the Secret Token: Edit and enter it again.</small>}
+      {lastRejected && <small className="danger">Last request refused {when(webhook.rejected_at!)}: {webhook.rejected}</small>}
+      {webhook.at ? <small>Last event {when(webhook.at)} ({webhook.event})</small>
+        : webhook.validated_at ? <small>URL validated by Zoom {when(webhook.validated_at)}; no event yet.</small>
+          : <small className="ec-muted">Waiting for Zoom: paste the URL in the app’s Event Subscriptions and press Validate.</small>}
+    </>
+  );
+}
+
+/** How to turn Zoom's webhooks on for an account. */
+function WebhookHelp({ accountKey }: { accountKey: string }) {
+  return (
+    <details className="ed-zoom-help wide">
+      <summary>Webhooks (optional): calls reach the cases within a minute</summary>
+      <ol>
+        <li>In the same app on marketplace.zoom.us, open <strong>Features</strong> (Access). Copy the <strong>Secret Token</strong> into
+          the field below and save.</li>
+        <li>Turn on <strong>Event Subscriptions</strong> → <strong>Add Event Subscription</strong>. Give it a name, and paste the
+          endpoint URL <code>{webhookUrl(accountKey || '<account key>')}</code>{!accountKey && ' (the key shows on the account once it is added)'}.</li>
+        <li>Press <strong>Validate</strong>: Zoom checks the URL against the Secret Token. The account’s row then says it was validated.</li>
+        <li>Under <strong>Add Events</strong> → <strong>Phone</strong>, tick the events for a call that ended or whose call log is completed
+          (caller side), then <strong>Save</strong>. Without webhooks nothing breaks: calls arrive at the next cycle.</li>
+      </ol>
+    </details>
+  );
+}
 
 /** Where each value comes from in Zoom, step by step. */
 function WhereToFind() {
@@ -216,11 +254,21 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
 
   function edit(account: ZoomAccount, field: FieldProblem = null) {
     setEditing(account);
-    setForm({ label: account.label, account_id: account.account_id, client_id: account.client_id, client_secret: '' });
+    setForm({ label: account.label, account_id: account.account_id, client_id: account.client_id, client_secret: '', webhook_secret: '' });
     setProblem(null);
     setNotice('');
     showField(field);
     if (!field) window.setTimeout(() => formRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 0);
+  }
+
+  async function removeWebhook(account: ZoomAccount) {
+    const done = await act({ action: 'update', key: account.key, label: account.label, client_id: account.client_id, remove_webhook: 'true' },
+      'save', `Turning webhooks off for ${account.label}`);
+    if (done) {
+      setNotice(`Webhooks are off for ${account.label}: delete the Event Subscription in the Zoom app too.`);
+      setEditing(null);
+      setForm(empty);
+    }
   }
 
   async function test(account: ZoomAccount) {
@@ -265,7 +313,8 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
                 <td>Account ID {account.account_id}<small>Client ID {account.client_id}</small>
                   <small className={account.secret_readable ? '' : 'danger'}>
                     {!account.secret_saved ? 'No Client Secret' : account.secret_readable ? `Secret saved · ends …${account.secret_end}`
-                      : 'The server cannot read the secret: Edit and enter it again'}</small></td>
+                      : 'The server cannot read the secret: Edit and enter it again'}</small>
+                  <Webhook account={account} /></td>
                 <td>{account.test ? <TestResult test={account.test} /> : <span className="ec-tag amber">Not tested</span>}</td>
                 <td>
                   <div className="ec-buttons">
@@ -304,8 +353,15 @@ export default function ZoomAccountsSection({ csrf, data, onChanged }: { csrf: s
           <input name="client_secret" type="password" autoComplete="new-password" value={form.client_secret} aria-invalid={!!errorFor('client_secret')}
             placeholder={editing?.secret_saved ? `Saved · ends …${editing.secret_end}` : ''} onChange={event => set('client_secret', event.target.value.trim())} />
         </Field>
+        <WebhookHelp accountKey={editing?.key || ''} />
+        <Field label="Secret Token (webhooks, optional)" error={errorFor('webhook_secret')}
+          hint={editing?.webhook_saved ? 'Leave empty to keep the saved token.' : 'The app’s Features page → Secret Token. Stored encrypted; never shown again.'}>
+          <input name="webhook_secret" type="password" autoComplete="new-password" value={form.webhook_secret} aria-invalid={!!errorFor('webhook_secret')}
+            placeholder={editing?.webhook_saved ? `Saved · ends …${editing.webhook_end}` : ''} onChange={event => set('webhook_secret', event.target.value.trim())} />
+        </Field>
         <div className="ec-buttons wide">
           <button type="submit" className="primary" disabled={!!busy}>{busy === 'save' ? 'Saving…' : editing ? 'Save account' : 'Add account'}</button>
+          {editing?.webhook_saved && <button type="button" disabled={!!busy} onClick={() => void removeWebhook(editing)}>Turn webhooks off</button>}
           {editing && <button type="button" disabled={!!busy} onClick={() => { setEditing(null); setForm(empty); setFieldError(null); setProblem(null); }}>Cancel</button>}
         </div>
       </form>

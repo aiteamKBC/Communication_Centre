@@ -288,7 +288,12 @@ def test(number, actor, now=None, zoom=None):
     last_call = calls.order_by('-started_at').values_list('started_at', flat=True).first()
     recordings = ZoomPhoneRecording.objects.filter(caller_number=number, started_at__gte=week)
     holders = agents_by_number().get(number, [])
-    warnings = setup_warnings(line, holders, seen_on(number, since_change(line, now)))
+    since = since_change(line, now)
+    warnings = setup_warnings(line, holders, seen_on(number, since))
+    # Calls from before the setup last changed say nothing about it now: they are shown, not held against it.
+    current = recent.filter(started_at__gte=since)
+    calls_now = current.count()
+    unmatched_now = calls_now - current.filter(pk__in=CallMatch.objects.values('call_id')).count()
     if zoom['found'] and line.get('account') and zoom['account'] != line['account']:
         warnings.append(f'Zoom has this number on the {account_labels().get(zoom["account"], zoom["account"])} account.')
     active = [holder['name'] for holder in holders if holder['active']]
@@ -299,9 +304,9 @@ def test(number, actor, now=None, zoom=None):
         status = 'no_agent'
     elif warnings:
         status = 'check_setup'
-    elif total - matched:
+    elif unmatched_now:
         status = 'unmatched'
-    elif not total:
+    elif not calls_now:
         status = 'ready'
     else:
         status = 'working'
@@ -309,6 +314,7 @@ def test(number, actor, now=None, zoom=None):
         'status': status, 'label': STATUS_LABELS[status], 'tested_at': now.isoformat(), 'tested_by': actor,
         'zoom': {**zoom, 'account': account_labels().get(zoom['account'], '')}, 'warnings': warnings,
         'calls_7_days': total, 'matched_7_days': matched, 'unmatched_7_days': total - matched,
+        'unmatched_since_change': unmatched_now, 'changed_at': line.get('changed_at') if since > week else None,
         'last_call_at': last_call.isoformat() if last_call else None,
         'transcripts_ready_7_days': recordings.filter(transcript_status='ready').count(),
         'transcripts_waiting_7_days': recordings.exclude(transcript_status='ready').count(),

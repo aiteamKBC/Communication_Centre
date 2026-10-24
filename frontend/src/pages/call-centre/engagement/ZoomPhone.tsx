@@ -25,6 +25,7 @@ type ActivityLog = { month: string; months: string[]; daily: { date: string; cal
 
 type LineTest = {
   status: string; label: string; tested_at: string; calls_7_days: number; matched_7_days: number; unmatched_7_days: number;
+  unmatched_since_change?: number; changed_at?: string | null;
   last_call_at: string | null; transcripts_ready_7_days: number; transcripts_waiting_7_days: number; agents: string[];
   zoom: { checked: boolean; found: boolean | null; account: string; status: string; assignee: string; problem: string };
   warnings: string[];
@@ -58,8 +59,11 @@ function testDetail(test: LineTest) {
   const calls = test.calls_7_days
     ? `${test.calls_7_days} ${test.calls_7_days === 1 ? 'call' : 'calls'} in the last 7 days, ${test.matched_7_days} matched to a specialist.`
     : `No calls in the last 7 days${test.last_call_at ? ` (last call ${when(test.last_call_at)})` : ''}.`;
+  // Calls from before the number's setup last changed are counted, but only the ones since say how it works now.
+  const before = test.changed_at ? test.unmatched_7_days - (test.unmatched_since_change ?? test.unmatched_7_days) : 0;
   const unmatched = test.unmatched_7_days
-    ? ` ${test.unmatched_7_days} not matched: made from the Zoom app directly, or by someone who does not have this number.` : '';
+    ? ` ${test.unmatched_7_days} not matched: made from the Zoom app directly, or by someone who does not have this number.${
+      before ? ` ${before} of them were before the setup changed (${when(test.changed_at!)}) and no longer count.` : ''}` : '';
   const transcripts = test.transcripts_ready_7_days || test.transcripts_waiting_7_days
     ? ` Transcripts: ${test.transcripts_ready_7_days} ready, ${test.transcripts_waiting_7_days} waiting.` : '';
   return `${zoom} ${calls}${unmatched}${transcripts}`;

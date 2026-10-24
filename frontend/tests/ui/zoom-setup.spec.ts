@@ -161,3 +161,24 @@ test('Refresh from Zoom re-reads every number and says what changed', async ({ p
   await expect(result).toContainText('Not in Zoom any more: +441622958775');
   expect(posts.some(post => post.action === 'refresh')).toBe(true);
 });
+
+test('webhooks: the Secret Token is saved from the form, and the account shows its URL and the last event', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const account = { key: 'office', label: 'Accountant', account_id: 'AbC123', client_id: 'client_1', secret_saved: true, secret_end: '9f2a',
+    secret_readable: true, added_by: 'director', added_at: '2026-10-24T10:00:00Z', test: null, webhook_saved: true, webhook_end: 'x1y2',
+    webhook_readable: true, webhook: { event: 'phone.caller_call_log_completed', at: '2026-10-24T14:30:00Z', validated_at: '2026-10-24T14:00:00Z',
+      rejected: 'Zoom’s signature does not match the saved Secret Token', rejected_at: '2026-10-24T14:40:00Z' } };
+  const posts = await openZoomPhone(page, { accounts: [account], secrets_problem: '', secret_setting: 'ZOOM_SECRETS_KEY' }, {});
+  const row = page.getByRole('row').filter({ hasText: 'Accountant' });
+  await expect(row).toContainText('/api/zoom-webhook/office/');
+  await expect(row).toContainText('Last event');
+  await expect(row).toContainText('Last request refused');   // refused after the last event: it shows
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const form = page.locator('form.ed-zoom-form');
+  await expect(form.getByText('Leave empty to keep the saved token.')).toBeVisible();
+  await form.locator('input[name="webhook_secret"]').fill('new_token_9');
+  await form.getByRole('button', { name: 'Save account' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Accountant saved' })).toBeVisible();
+  expect(posts.find(post => post.action === 'update')).toMatchObject({ key: 'office', webhook_secret: 'new_token_9' });
+  await row.screenshot({ path: test.info().outputPath('webhook-row.png') });
+});

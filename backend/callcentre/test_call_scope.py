@@ -117,7 +117,7 @@ class SystemCallScopeTests(TestCase):
         self.assertEqual(intent.matched_call_id, call.pk)
         self.assertEqual(system_calls().count(), 1)
 
-    def test_expired_future_wrong_number_and_ambiguous_intents_do_not_match(self):
+    def test_expired_future_and_wrong_number_intents_do_not_match(self):
         call = self.call()
         intent = self.intent()
         for moment in (call.started_at - timedelta(minutes=10, seconds=1), call.started_at + timedelta(seconds=1)):
@@ -125,9 +125,22 @@ class SystemCallScopeTests(TestCase):
             self.assertIsNone(match_call(call.pk))
         CallIntent.objects.filter(pk=intent.pk).update(created_at=call.started_at, number='+447700999999')
         self.assertIsNone(match_call(call.pk))
-        CallIntent.objects.filter(pk=intent.pk).update(number=call.callee_number)
-        self.intent()
-        self.assertIsNone(match_call(call.pk))
+
+    def test_each_redial_is_matched_to_its_own_call_press_in_any_order(self):
+        presses = [self.intent(), self.intent()]
+        CallIntent.objects.filter(pk=presses[0].pk).update(created_at=self.now - timedelta(minutes=9))
+        first = self.call(started_at=self.now - timedelta(minutes=8, seconds=40))
+        second = self.call()   # the redial, after the second press
+        # Zoom's history can bring the redial in first: it still takes its own press, and the first call the earlier one.
+        self.assertEqual((match_call(second.pk).call_id, match_call(first.pk).call_id), (second.pk, first.pk))
+        self.assertEqual([intent.matched_call_id for intent in CallIntent.objects.filter(pk__in=[p.pk for p in presses]).order_by('created_at')],
+                         [first.pk, second.pk])
+
+    def test_a_second_press_within_seconds_is_the_same_call_a_later_one_a_redial(self):
+        first = create_intent(self.ticket.pk, self.agent)
+        self.assertEqual(create_intent(self.ticket.pk, self.agent).pk, first.pk)   # a double click
+        CallIntent.objects.filter(pk=first.pk).update(created_at=self.now - timedelta(seconds=31))
+        self.assertNotEqual(create_intent(self.ticket.pk, self.agent).pk, first.pk)
 
     def test_shared_line_call_is_matched_to_the_specialist_who_pressed_call(self):
         Agent.objects.filter(pk=self.agent.pk).update(zoom_phone_number='+441622958989')

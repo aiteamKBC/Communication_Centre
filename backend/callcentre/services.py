@@ -144,6 +144,9 @@ def expire_claims(now, agent=None):
                 event(ticket, 'claim_expired', {'previous_agent': agent.pk if agent else None})
 
 
+REDIAL_AFTER = timedelta(seconds=30)
+
+
 @transaction.atomic(using=DB)
 def create_intent(ticket_id, agent, actor=None):
     now = timezone.now()
@@ -183,8 +186,9 @@ def create_intent(ticket_id, agent, actor=None):
         raise Conflict('This contact is no longer eligible for a call. Refresh the directory.')
     for item in tickets:
         claim(item.pk, agent, now, actor=actor)
+    # A second press within seconds is the same call (a double click); a later one is a redial, a call of its own.
     prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=ticket.learner_email, number=number,
-                                      matched_call__isnull=True, created_at__gte=now - timedelta(minutes=10)).first()
+                                      matched_call__isnull=True, created_at__gte=now - REDIAL_AFTER).first()
     if prior:
         return prior
     intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email, number=number)
@@ -307,8 +311,10 @@ def match_call(call_id):
     intents = list(CallIntent.objects.select_for_update().filter(
         agent__in=agents, number=number, matched_call__isnull=True,
         created_at__lte=call.started_at, created_at__gte=call.started_at - timedelta(minutes=10),
-    )[:2])
-    if len(intents) != 1:
+    ).order_by('-created_at'))
+    # Presses by two specialists on a shared line cannot tell whose call it is. One specialist's redials each have their
+    # own press: the call belongs to the last press before it.
+    if not intents or len({item.agent_id for item in intents}) > 1:
         return None
     intent = intents[0]
     agent = intent.agent

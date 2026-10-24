@@ -77,6 +77,17 @@ def secret(account):
         return ''
 
 
+def webhook_secret(account):
+    """The account's webhook Secret Token, decrypted; '' when none is saved or it cannot be read."""
+    from cryptography.fernet import InvalidToken
+    if not account.get('webhook_secret'):
+        return ''
+    try:
+        return _cipher().decrypt(account['webhook_secret'].encode()).decode()
+    except (FieldError, InvalidToken):
+        return ''
+
+
 def config(key):
     account = find(key)
     if not account:
@@ -98,11 +109,14 @@ def missing(key):
 
 
 def public(account):
-    """An account as the page sees it: never the secret."""
+    """An account as the page sees it: never the secrets."""
+    from .zoom_webhook import last_received
     return {'key': account['key'], 'label': account['label'], 'account_id': account['account_id'], 'client_id': account['client_id'],
             'secret_saved': bool(account.get('secret')), 'secret_end': account.get('secret_end', ''),
             'secret_readable': bool(secret(account)), 'added_by': account.get('added_by', ''), 'added_at': account.get('added_at'),
-            'test': account.get('test')}
+            'test': account.get('test'), 'webhook_saved': bool(account.get('webhook_secret')),
+            'webhook_end': account.get('webhook_end', ''), 'webhook_readable': bool(webhook_secret(account)),
+            'webhook': last_received(account['key'])}
 
 
 def _save(change, actor):
@@ -137,6 +151,16 @@ def _encrypt(value):
     return _cipher().encrypt(value.encode()).decode()
 
 
+def _webhook(data):
+    """The Secret Token typed in the form, encrypted with its last four characters; None when left empty."""
+    token = str(data.get('webhook_secret') or '').strip()
+    if not token:
+        return None
+    if len(token) > 128 or not re.fullmatch(r'[A-Za-z0-9_-]+', token):
+        raise FieldError('webhook_secret', 'This does not look like a Zoom Secret Token: copy it again from the app’s Features page.')
+    return {'webhook_secret': _encrypt(token), 'webhook_end': token[-4:]}
+
+
 def _new_key(label, account_id, accounts):
     """The account's key: the one its calls were synced under before (same Zoom Account ID), else one made from its name."""
     taken = {account['key'] for account in accounts}
@@ -159,6 +183,7 @@ def add(data, actor):
     client_id = _text(data, 'client_id', 'Client ID', 64, r'[A-Za-z0-9_-]+')
     client_secret = _text(data, 'client_secret', 'Client Secret', 128, r'\S+')
     encrypted = _encrypt(client_secret)
+    webhook = _webhook(data) or {}
 
     def change(accounts):
         for other in accounts:
@@ -168,19 +193,22 @@ def add(data, actor):
                 raise FieldError('account_id', f'{other["label"]} already uses this Account ID.')
         key = _new_key(label, account_id, accounts)
         return [*accounts, {'key': key, 'label': label, 'account_id': account_id, 'client_id': client_id, 'secret': encrypted,
-                            'secret_end': client_secret[-4:], 'added_by': actor, 'added_at': timezone.now().isoformat(), 'test': None}]
+                            'secret_end': client_secret[-4:], **webhook, 'added_by': actor, 'added_at': timezone.now().isoformat(),
+                            'test': None}]
     return _save(change, actor)
 
 
 def update(key, data, actor):
-    """Change an account's name, Client ID or Client Secret (left empty, the secret is kept). The Account ID is fixed:
-    another Zoom account is added as a new account."""
+    """Change an account's name, Client ID, Client Secret or webhook Secret Token (a secret left empty is kept;
+    ``remove_webhook`` drops the token). The Account ID is fixed: another Zoom account is added as a new account."""
     label = _text(data, 'label', 'name', 60)
     client_id = _text(data, 'client_id', 'Client ID', 64, r'[A-Za-z0-9_-]+')
     new_secret = str(data.get('client_secret') or '').strip()
     if new_secret and (len(new_secret) > 128 or not re.fullmatch(r'\S+', new_secret)):
         raise FieldError('client_secret', 'This does not look like a Zoom Client Secret: copy it again from the app’s App Credentials page.')
     encrypted = _encrypt(new_secret) if new_secret else None
+    webhook = _webhook(data)
+    drop_webhook = str(data.get('remove_webhook') or '').lower() == 'true'
 
     def change(accounts):
         if not any(account['key'] == key for account in accounts):
@@ -194,6 +222,10 @@ def update(key, data, actor):
                 account = {**account, 'label': label, 'client_id': client_id, 'test': None}
                 if encrypted:
                     account.update(secret=encrypted, secret_end=new_secret[-4:])
+                if webhook:
+                    account.update(webhook)
+                elif drop_webhook:
+                    account = {name: value for name, value in account.items() if name not in ('webhook_secret', 'webhook_end')}
             changed.append(account)
         return changed
     return _save(change, actor)

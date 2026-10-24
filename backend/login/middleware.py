@@ -1,9 +1,9 @@
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 
-# /api/ paths that answer without a session: sign-in itself (each view checks what it needs), the health check
-# and the employer survey link (a signed token in the URL).
-PUBLIC_API_PREFIXES = ('/api/auth/', '/api/health/', '/api/callcentre/survey/')
+# /api/ paths that answer without a session: sign-in itself (each view checks what it needs), the health check,
+# the employer survey link (a signed token in the URL) and Zoom's webhooks (signed with the account's Secret Token).
+PUBLIC_API_PREFIXES = ('/api/auth/', '/api/health/', '/api/callcentre/survey/', '/api/zoom-webhook/')
 
 
 class ApiLoginRequiredMiddleware:
