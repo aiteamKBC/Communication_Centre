@@ -25,7 +25,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, email_settings, employer_desk, mailer
+from . import booking_links, email_settings, employer_desk, mailer, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
@@ -292,6 +292,36 @@ def employer_specialists(request):
                    for agent in agents],
         'open_employer_cases': CaseTicket.objects.open().filter(source_type=employer_desk.EMPLOYER).count(),
         'history': employer_desk.history(),
+    })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def phone_lines(request):
+    """Zoom Phone page: the director's list of Zoom numbers, who has each, and the Test that checks a number works."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request)
+        action = data.get('action')
+        if action == 'add':
+            zoom_lines.add(data.get('number'), data.get('label'), actor)
+        elif action == 'remove':
+            zoom_lines.remove(data.get('number'), actor)
+        elif action == 'test':
+            return JsonResponse({'ok': True, 'test': zoom_lines.test(data.get('number'), actor)})
+        else:
+            raise ValueError('Unknown action.')
+        return JsonResponse({'ok': True})
+    using = zoom_lines.agents_by_number()
+    lines = zoom_lines.stored()
+    listed = {line['number'] for line in lines}
+    return JsonResponse({
+        'lines': [{**line, 'agents': using.get(line['number'], [])} for line in lines],
+        # Numbers on a specialist's profile that are not in the list yet (added before the list existed).
+        'unlisted': [{'number': number, 'agents': agents} for number, agents in using.items() if number not in listed],
+        'scope': zoom_lines.NUMBERS_SCOPE,
     })
 
 

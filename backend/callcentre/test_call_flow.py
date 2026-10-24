@@ -546,3 +546,55 @@ class EmployerSpecialistTests(TestCase):
         self.assertIn('answered', held_feedback(review)['reason'])
         with self.assertRaisesMessage(ValueError, 'not answered'):
             complete(review.pk, self.bob.user, score=4, problem='None', action='No action needed', note='Happy with the coaching.')
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class PhoneLineTests(TestCase):
+    """The director's Zoom numbers: add them, test them, and see whether each line's calls reach a specialist."""
+    databases = {'default', 'login_db'}
+    LINE = '+441622958989'
+
+    def setUp(self):
+        patch = mock.patch('callcentre.zoom_lines.zoom_lookup', return_value={
+            'checked': False, 'found': None, 'account': '', 'status': '', 'assignee': '', 'problem': 'no scope'})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.tina = Agent.objects.create(user=get_user_model().objects.create_user('tina'), display_name='Tina',
+                                         zoom_email='tina@kbc.test', zoom_account='student')
+
+    def call(self, matched):
+        call = ZoomPhoneCall.objects.create(source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()),
+                                            direction='outbound', caller_number=self.LINE, started_at=timezone.now() - timedelta(hours=1),
+                                            ended_at=timezone.now(), result='answered')
+        if matched:
+            CallMatch.objects.create(call=call, agent=self.tina, learner_email='ann@x.test')
+
+    def test_a_number_is_added_once_in_international_format(self):
+        from .zoom_lines import add, stored
+        with self.assertRaisesMessage(ValueError, 'international format'):
+            add('hello', '', 'director')
+        add(self.LINE, 'Student line', 'director')
+        with self.assertRaisesMessage(ValueError, 'already in the list'):
+            add(self.LINE, '', 'director')
+        self.assertEqual([(line['number'], line['label']) for line in stored()], [(self.LINE, 'Student line')])
+
+    def test_the_status_follows_the_lines_calls_and_who_has_it(self):
+        from .zoom_lines import add, test
+        add(self.LINE, '', 'director')
+        self.call(matched=False)
+        self.assertEqual(test(self.LINE, 'director')['status'], 'no_agent')   # nobody has the number
+        Agent.objects.filter(pk=self.tina.pk).update(zoom_phone_number=self.LINE)
+        result = test(self.LINE, 'director')
+        self.assertEqual((result['status'], result['unmatched_7_days'], result['agents']), ('unmatched', 1, ['Tina']))
+        CallMatch.objects.create(call=ZoomPhoneCall.objects.get(), agent=self.tina, learner_email='ann@x.test')
+        self.assertEqual(test(self.LINE, 'director')['status'], 'working')
+
+    def test_a_number_in_use_cannot_be_removed(self):
+        from .zoom_lines import add, remove, stored
+        add(self.LINE, '', 'director')
+        Agent.objects.filter(pk=self.tina.pk).update(zoom_phone_number=self.LINE)
+        with self.assertRaisesMessage(ValueError, 'Tina uses this number'):
+            remove(self.LINE, 'director')
+        Agent.objects.filter(pk=self.tina.pk).update(zoom_phone_number='')
+        remove(self.LINE, 'director')
+        self.assertEqual(stored(), [])

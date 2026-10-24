@@ -30,4 +30,5 @@ urlpatterns = [
     path('coach-pages/', manage_views.coach_pages),
     path('settings/', manage_views.settings_view),
     path('employer-specialists/', manage_views.employer_specialists),
+    path('phone-lines/', manage_views.phone_lines),
 ]

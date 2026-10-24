@@ -18,6 +18,14 @@ type AgentProfile = { id: number; user_id: number; user_email: string; display_n
 type Form = Omit<AgentProfile, 'id' | 'user_email'>;
 type ActivityLog = { month: string; months: string[]; daily: { date: string; calls: number; answered: number; not_answered: number }[]; total_calls: number; recent_calls: { id: number; date: string; phone: string; answered: boolean; learner_name: string; learner_email: string; coach: string }[] };
 
+type LineTest = {
+  status: string; label: string; tested_at: string; calls_7_days: number; matched_7_days: number; unmatched_7_days: number;
+  last_call_at: string | null; transcripts_ready_7_days: number; transcripts_waiting_7_days: number; agents: string[];
+  zoom: { checked: boolean; found: boolean | null; account: string; status: string; assignee: string; problem: string };
+};
+type Line = { number: string; label: string; test: LineTest | null; agents: { id: number; name: string; active: boolean }[] };
+type Lines = { lines: Line[]; unlisted: { number: string; agents: { id: number; name: string; active: boolean }[] }[]; scope: string };
+
 const emptyForm: Form = { user_id: 0, display_name: '', zoom_email: '', zoom_user_id: '', zoom_phone_number: '', zoom_account: 'student', daily_talk_target_minutes: 180, active: true };
 const roles: Record<string, string> = { learner: 'Learner', line_manager: 'Line manager' };
 const seconds = (value: number | null) => (value === null ? 'Duration not supplied' : `${Math.floor(value / 60)}m ${value % 60}s`);
@@ -29,7 +37,126 @@ function contact(call: Call) {
   return { name, role: roles[call.contact_role] || 'Unmatched number', number: outbound ? call.callee_number : call.caller_number };
 }
 
-function Agents({ csrf }: { csrf: string }) {
+const STATUS_TONE: Record<string, string> = { working: 'green', ready: 'green', unmatched: 'amber', no_agent: 'amber', not_found: 'red' };
+
+/** What a number's last Test found, in words. */
+function testDetail(test: LineTest) {
+  const zoom = test.zoom.found ? `In Zoom (${test.zoom.account}${test.zoom.assignee ? `, assigned to ${test.zoom.assignee}` : ''}).`
+    : test.zoom.found === false ? 'Not in either Zoom account.' : `Not checked in Zoom: ${test.zoom.problem || 'no Zoom account is set up'}.`;
+  const calls = test.calls_7_days
+    ? `${test.calls_7_days} ${test.calls_7_days === 1 ? 'call' : 'calls'} in the last 7 days, ${test.matched_7_days} matched to a specialist.`
+    : `No calls in the last 7 days${test.last_call_at ? ` (last call ${when(test.last_call_at)})` : ''}.`;
+  const unmatched = test.unmatched_7_days
+    ? ` ${test.unmatched_7_days} not matched: made from the Zoom app directly, or by someone who does not have this number.` : '';
+  const transcripts = test.transcripts_ready_7_days || test.transcripts_waiting_7_days
+    ? ` Transcripts: ${test.transcripts_ready_7_days} ready, ${test.transcripts_waiting_7_days} waiting.` : '';
+  return `${zoom} ${calls}${unmatched}${transcripts}`;
+}
+
+/** The Zoom numbers the team calls from: add each one, Test it, and give each specialist one (in their profile). */
+function PhoneLines({ csrf, data, onChanged }: { csrf: string; data: Lines | null; onChanged: () => void }) {
+  const [number, setNumber] = useState('');
+  const [label, setLabel] = useState('');
+  const [testing, setTesting] = useState('');
+  const [error, setError] = useState('');
+
+  async function act(payload: Record<string, string>) {
+    setError('');
+    try {
+      await post('phone-lines/', csrf, payload);
+      onChanged();
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The number could not be saved.');
+      return false;
+    }
+  }
+
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    if (await act({ action: 'add', number, label })) {
+      setNumber('');
+      setLabel('');
+    }
+  }
+
+  async function test(value: string) {
+    setTesting(value);
+    await act({ action: 'test', number: value });
+    setTesting('');
+  }
+
+  const scopeMissing = data?.lines.some(line => line.test && !line.test.zoom.checked && line.test.zoom.problem.includes('scope'));
+  return (
+    <>
+      <div className="ec-head" style={{ marginTop: '1rem' }}>
+        <div>
+          <h3>Phone numbers</h3>
+          <p className="ec-muted">Add every Zoom number the team calls from, test it, then give each specialist one number (Edit on their profile below).
+            A call on a number counts for the specialist who has it and pressed Call; a call made from the Zoom app directly is not counted.</p>
+        </div>
+      </div>
+      <form className="ec-tools" onSubmit={event => void add(event)}>
+        <input aria-label="Phone number" required placeholder="+441622958989" value={number} onChange={event => setNumber(event.target.value)} />
+        <input aria-label="Label" placeholder="Label, e.g. Student line" maxLength={80} value={label} onChange={event => setLabel(event.target.value)} />
+        <button type="submit" className="primary">Add number</button>
+      </form>
+      {error && <p className="ec-status danger" role="alert">{error}</p>}
+      {scopeMissing && (
+        <p className="ec-alert">Zoom did not let us look numbers up: the Zoom app needs the <code>{data?.scope}</code> scope (Zoom Marketplace, the app’s Scopes).
+          Until then the Test checks the calls Zoom has already sent.</p>
+      )}
+      <div className="ec-table-wrap">
+        <table>
+          <thead><tr><th>Number</th><th>Status</th><th>Specialists</th><th /></tr></thead>
+          <tbody>
+            {(data?.lines || []).map(line => (
+              <tr key={line.number}>
+                <td><strong>{line.number}</strong><small>{line.label}</small></td>
+                <td>
+                  <span className={`ec-tag ${line.test ? STATUS_TONE[line.test.status] || '' : 'amber'}`}>{line.test ? line.test.label : 'Not tested'}</span>
+                  {line.test && <small>{testDetail(line.test)} Tested {when(line.test.tested_at)}.</small>}
+                </td>
+                <td>{line.agents.length ? line.agents.map(agent => `${agent.name}${agent.active ? '' : ' (switched off)'}`).join(', ') : 'Nobody yet'}</td>
+                <td>
+                  <div className="ec-buttons">
+                    <button type="button" disabled={!!testing} onClick={() => void test(line.number)}>{testing === line.number ? 'Testing…' : 'Test'}</button>
+                    <button type="button" disabled={!!testing} onClick={() => void act({ action: 'remove', number: line.number })}>Remove</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {data && !data.lines.length && <tr><td colSpan={4}>No numbers yet. Add the first one above.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {!!data?.unlisted.length && (
+        <p className="ec-alert">On a specialist’s profile but not in the list yet:{' '}
+          {data.unlisted.map(item => (
+            <span key={item.number}>{item.number} ({item.agents.map(agent => agent.name).join(', ')}){' '}
+              <button type="button" onClick={() => void act({ action: 'add', number: item.number, label: '' })}>Add</button>{' '}</span>
+          ))}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** The phone numbers and the specialists who use them, kept in step: an edit to either reloads both. */
+function NumbersAndAgents({ csrf }: { csrf: string }) {
+  const [lines, setLines] = useState<Lines | null>(null);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    api<Lines>('phone-lines/').then(setLines).catch(() => setLines({ lines: [], unlisted: [], scope: '' }));
+  }, [revision]);
+  const changed = () => setRevision(value => value + 1);
+  return <>
+    <PhoneLines csrf={csrf} data={lines} onChanged={changed} />
+    <Agents csrf={csrf} lines={lines?.lines || []} revision={revision} onChanged={changed} />
+  </>;
+}
+
+function Agents({ csrf, lines, revision: linesRevision, onChanged }: { csrf: string; lines: Line[]; revision: number; onChanged: () => void }) {
   const [agents, setAgents] = useState<AgentProfile[]>([]);
   const [accounts, setAccounts] = useState<{ id: number; email: string; name: string }[]>([]);
   const [editing, setEditing] = useState<AgentProfile | null>(null);
@@ -42,7 +169,7 @@ function Agents({ csrf }: { csrf: string }) {
     api<{ agents: AgentProfile[]; accounts: { id: number; email: string; name: string }[] }>('agents/')
       .then(data => { setAgents(data.agents); setAccounts(data.accounts); })
       .catch(reason => setError(reason.message));
-  }, [revision]);
+  }, [revision, linesRevision]);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm(current => ({ ...current, [key]: value }));
   async function save(event: FormEvent) {
@@ -53,6 +180,7 @@ function Agents({ csrf }: { csrf: string }) {
       else await post('agents/', csrf, form);
       setOpen(false);
       setRevision(value => value + 1);
+      onChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The agent could not be saved.');
     }
@@ -67,7 +195,7 @@ function Agents({ csrf }: { csrf: string }) {
       {error && !open && <p className="ec-status danger" role="alert">{error}</p>}
       <div className="ec-table-wrap">
         <table>
-          <thead><tr><th>Specialist</th><th>Zoom account</th><th>Engagement number</th><th>Daily target</th><th /></tr></thead>
+          <thead><tr><th>Specialist</th><th>Zoom account</th><th>Phone number</th><th>Daily target</th><th /></tr></thead>
           <tbody>
             {agents.map(agent => (
               <tr key={agent.id}>
@@ -101,7 +229,15 @@ function Agents({ csrf }: { csrf: string }) {
             </select>
           </label>
           <label>Zoom email<input type="email" required value={form.zoom_email} onChange={event => set('zoom_email', event.target.value)} /></label>
-          <label>Engagement number (+44…)<input value={form.zoom_phone_number} onChange={event => set('zoom_phone_number', event.target.value)} /></label>
+          <label>Phone number
+            <select value={form.zoom_phone_number} onChange={event => set('zoom_phone_number', event.target.value)}>
+              <option value="">No number</option>
+              {lines.map(line => <option key={line.number} value={line.number}>{line.number}{line.label ? ` · ${line.label}` : ''}</option>)}
+              {form.zoom_phone_number && !lines.some(line => line.number === form.zoom_phone_number) && (
+                <option value={form.zoom_phone_number}>{form.zoom_phone_number} (not in the list)</option>
+              )}
+            </select>
+          </label>
           <label>Daily talk target (minutes)<input type="number" min={0} value={form.daily_talk_target_minutes} onChange={event => set('daily_talk_target_minutes', Number(event.target.value))} /></label>
           <label className="wide ec-checks"><input type="checkbox" checked={form.active} onChange={event => set('active', event.target.checked)} /> Active specialist</label>
           <button type="submit" className="primary">Save specialist</button>
@@ -230,7 +366,7 @@ export default function ZoomPhone({ overview, csrf, isManager }: { overview: Ove
         <p className="ec-muted">Last Zoom import: {when(lastSync)} · Last recordings import: {when(lastRecordings)}</p>
         <div className="ec-table-wrap">
           <table>
-            <thead><tr><th>Specialist</th><th>Zoom account</th><th>Engagement number</th><th>Identity</th></tr></thead>
+            <thead><tr><th>Specialist</th><th>Zoom account</th><th>Phone number</th><th>Identity</th></tr></thead>
             <tbody>
               {overview.agents.map(agent => (
                 <tr key={agent.id}>
@@ -244,7 +380,7 @@ export default function ZoomPhone({ overview, csrf, isManager }: { overview: Ove
             </tbody>
           </table>
         </div>
-        {isManager && <Agents csrf={csrf} />}
+        {isManager && <NumbersAndAgents csrf={csrf} />}
       </section>
 
       <section className="ec-card" style={{ marginTop: '1rem' }}>
