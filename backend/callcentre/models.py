@@ -122,7 +122,8 @@ class Agent(Retained):
     zoom_phone_number = models.CharField(max_length=16, blank=True, validators=[
         RegexValidator(r'^\+[1-9][0-9]{6,14}$', 'Use the assigned Zoom number in E.164 format.'),
     ])
-    zoom_account = models.CharField(max_length=16, choices=[('student', 'Student'), ('office', 'Accountant')])
+    # One of the Zoom accounts added on the Zoom Phone page (zoom_accounts); checked when it is changed (save_agent).
+    zoom_account = models.CharField(max_length=16)
     daily_talk_target_minutes = models.PositiveIntegerField(default=180)
     active = models.BooleanField(default=True)
 

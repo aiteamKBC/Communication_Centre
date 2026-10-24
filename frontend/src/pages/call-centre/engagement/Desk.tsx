@@ -4,6 +4,7 @@ import type { AgentStats, Overview } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
 import CallLearner from './CallLearner';
+import CallLog from './CallLog';
 import { MyCallReviews } from './CallReview';
 import CallSheet from './CallSheet';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
@@ -122,6 +123,8 @@ export default function Desk({ overview, agent, session, section, name, status, 
     body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
   } else if (section === 'learners') {
     body = <CallLearner overview={overview} session={session} notify={notify} onRefresh={onRefresh} />;
+  } else if (section === 'calls') {
+    body = <CallLog agentId={session.agentId} revision={overview.generated_at} onOpen={setDetailId} />;
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'history') {

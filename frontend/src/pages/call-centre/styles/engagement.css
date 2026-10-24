@@ -179,3 +179,18 @@
 .ed .ed-date-filter select{flex:0 1 auto;min-width:10rem;max-width:15rem}
 .ed .ed-date-filter input{min-width:9rem;max-width:12rem}
 .ed .ed-date-filter button{font-size:.85rem;padding:.5rem .7rem}
+
+/* Errors that say what failed and where; form fields with a hint and their own error. */
+.ec .ed-problem{border-left:4px solid #963e48;background:#fbeef0;padding:.8rem 1rem;margin:1rem 0;border-radius:6px;font-size:.9rem}
+.ec .ed-problem p{margin:.3rem 0}
+.ec .ed-problem details{margin-top:.4rem}
+.ec .ed-problem code{overflow-wrap:anywhere}
+.ec .ed-field small{display:block;font-weight:400;font-size:.8rem;margin-top:.3rem}
+.ec .ed-field-hint{color:var(--muted)}
+.ec .ed-field-error{color:#963e48;font-weight:600}
+.ec .ed-field.has-error input,.ec .ed-field.has-error select{border-color:#963e48;box-shadow:0 0 0 2px #f3d3d8}
+.ec .ed-line-form,.ec .ed-zoom-form{margin:1rem 0;padding:1rem;border:1px solid var(--line);border-radius:10px;background:#fbfafd}
+.ec .ed-line-form h4,.ec .ed-zoom-form h4{margin:0;font-size:1rem}
+.ec .ed-zoom-help{grid-column:1/-1;margin:0}
+.ec .ed-zoom-help ol{margin:.5rem 0 0;padding-left:1.3rem;font-size:.9rem}
+.ec .ed-zoom-help li{margin-bottom:.35rem}

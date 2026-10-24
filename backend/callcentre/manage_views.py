@@ -25,11 +25,12 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, email_settings, employer_desk, mailer, zoom_lines
+from . import booking_links, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
 from .db import DB
+from .errors import FieldError
 from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
 from .services import Conflict, event, expire_claims
@@ -51,6 +52,9 @@ def agent_json(agent):
 
 
 def save_agent(agent, data):
+    account = str(data.get('zoom_account') or '') if 'zoom_account' in data else agent.zoom_account
+    if account != agent.zoom_account and account not in zoom_accounts.labels():
+        raise FieldError('zoom_account', 'Choose one of the Zoom accounts on this page.')
     for field in AGENT_FIELDS:
         if field in data:
             setattr(agent, field, data[field])
@@ -58,7 +62,8 @@ def save_agent(agent, data):
     try:
         agent.full_clean()
     except ValidationError as exc:
-        raise ValueError('; '.join(f'{field}: {" ".join(errors)}' for field, errors in exc.message_dict.items())) from None
+        field, errors = next(iter(exc.message_dict.items()))
+        raise FieldError(field, ' '.join(errors)) from None
     agent.save()
     if not agent.active:
         # Switched off: the cases they were working on go back to the list now, not after the 30-minute claim.
@@ -75,13 +80,14 @@ def check_line(agent):
         return
     lines = {line['number']: line for line in zoom_lines.stored()}
     if lines and number not in lines:
-        raise ValueError('Choose the phone number from the Phone numbers list (add it there first).')
+        raise FieldError('zoom_phone_number', 'Choose the phone number from the Phone numbers list (add it there first).')
     if lines.get(number, {}).get('account'):
         agent.zoom_account = lines[number]['account']
     if agent.active:
         other = Agent.objects.filter(active=True, zoom_phone_number=number).exclude(pk=agent.pk).first()
         if other:
-            raise ValueError(f'{other.display_name} already has {number}: one number per specialist. Give them another number first.')
+            raise FieldError('zoom_phone_number', f'{other.display_name} already has {number}: one number per specialist. '
+                             'Give them another number first.')
 
 
 @authenticated
@@ -346,6 +352,36 @@ def phone_lines(request):
         'unlisted': [{'number': number, 'agents': agents} for number, agents in using.items() if number not in listed],
         'scope': zoom_lines.NUMBERS_SCOPE,
     })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def zoom_account_list(request):
+    """Zoom Phone page: the Zoom accounts (Server-to-Server OAuth apps) calls are read from. Secrets go in, never out."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request)
+        action = data.get('action')
+        if action == 'add':
+            zoom_accounts.add(data, actor)
+        elif action == 'update':
+            zoom_accounts.update(str(data.get('key') or ''), data, actor)
+        elif action == 'remove':
+            zoom_accounts.remove(str(data.get('key') or ''), actor)
+        elif action == 'test':
+            return JsonResponse({'ok': True, 'test': zoom_accounts.test(str(data.get('key') or ''), actor)})
+        else:
+            raise ValueError('Unknown action.')
+        return JsonResponse({'ok': True})
+    try:
+        zoom_accounts._cipher()
+        secrets = ''
+    except FieldError as exc:
+        secrets = str(exc)
+    return JsonResponse({'accounts': [zoom_accounts.public(account) for account in zoom_accounts.stored()],
+                         'secrets_problem': secrets, 'secret_setting': zoom_accounts.SECRET_SETTING})
 
 
 COACH_PAGES_NOT_SET_UP = ('Linking coach booking pages is not set up yet. Run docs/callcentre-port/coach_booking_pages.sql '

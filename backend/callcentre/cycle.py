@@ -16,7 +16,7 @@ from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
 from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
-from .zoom_phone import ACCOUNT_LABELS, sync_account
+from .zoom_phone import account_labels, sync_account
 from .zoom_views import current_account_filter
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def run_call_sync():
         if not token:
             return {'skipped': 'Another cycle is running.'}
         result = {}
-        for account in ACCOUNT_LABELS:
+        for account in account_labels():
             step(result, 'zoom_' + account, lambda account=account: sync_account(account))
         step(result, 'matched', match_calls)
         return result
@@ -159,7 +159,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             return {'skipped': 'Another cycle is running.'}
         result = {}
         if not skip_zoom:
-            for account in ACCOUNT_LABELS:
+            for account in account_labels():
                 try:
                     result['zoom_' + account] = sync_account(account, include_recordings=True)
                 except Exception as exc:

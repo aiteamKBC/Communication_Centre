@@ -16,7 +16,7 @@ from .access import is_director, refused
 from .db import APTEM
 from .call_scope import system_calls, system_recordings
 from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
-from .zoom_phone import ACCOUNT_LABELS, ZoomError, account_config, missing_credentials, validate_config
+from .zoom_phone import ZoomError, account_config, account_labels, missing_credentials, validate_config
 from .rules import normalize_phone
 
 
@@ -115,22 +115,19 @@ def zoom_call_report(request):
         return JsonResponse({'detail': 'Use a valid date range of at most 366 days and a positive page.'}, status=400)
     source = request.GET.get('account', 'all')
     direction = request.GET.get('direction', 'outbound')
-    if source not in ('all', *ACCOUNT_LABELS) or direction not in ('all', 'inbound', 'outbound'):
+    labels = account_labels()
+    if source not in ('all', *labels) or direction not in ('all', 'inbound', 'outbound'):
         return JsonResponse({'detail': 'Invalid account or call direction.'}, status=400)
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
     end_time = datetime.combine(end + timedelta(days=1), time.min, tzinfo=report_zone)
-    configured_ids = Q(pk__in=[])
-    for key in ACCOUNT_LABELS:
-        account_id = account_config(key)['account_id']
-        if account_id:
-            configured_ids |= Q(source_account=key, zoom_account_id=account_id)
+    configured_ids = current_account_filter()
     try:
         base = system_calls().filter(configured_ids, started_at__gte=start_time, started_at__lt=end_time)
         if direction != 'all':
             base = base.filter(direction=direction)
         states = {state.source_account: state for state in ZoomSyncState.objects.all()}
         accounts = []
-        for key, label in ACCOUNT_LABELS.items():
+        for key, label in labels.items():
             state = states.get(key)
             if state and state.zoom_account_id != account_config(key)['account_id']:
                 state = None
@@ -140,7 +137,7 @@ def zoom_call_report(request):
                 configuration_error = ''
             except ZoomError:
                 configured = False
-                configuration_error = 'Zoom account setup is incomplete.'
+                configuration_error = 'Zoom account setup is incomplete: ' + ', '.join(missing_credentials(key)) + '.'
             accounts.append({
                 'key': key, 'label': label, 'configured': configured,
                 'missing_settings': missing_credentials(key),
@@ -205,7 +202,7 @@ def recording_calls(recording):
 
 def current_account_filter():
     query = Q(pk__in=[])
-    for key in ACCOUNT_LABELS:
+    for key in account_labels():
         account_id = account_config(key)['account_id']
         if account_id:
             query |= Q(source_account=key, zoom_account_id=account_id)
@@ -239,7 +236,8 @@ def zoom_transcript_report(request):
     status = request.GET.get('status', 'all')
     rating = request.GET.get('rating', 'all')
     statuses = ('ready', 'pending', 'disabled', 'unavailable', 'error')
-    if (source not in ('all', *ACCOUNT_LABELS) or status not in ('all', *statuses)
+    labels = account_labels()
+    if (source not in ('all', *labels) or status not in ('all', *statuses)
             or rating not in ('all', 'excellent', 'good', 'bad', 'not_rated')):
         return JsonResponse({'detail': 'Invalid transcript filter.'}, status=400)
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
@@ -255,7 +253,7 @@ def zoom_transcript_report(request):
             **{item: base.filter(transcript_status=item).count() for item in statuses},
         }
         accounts = []
-        for key, label in ACCOUNT_LABELS.items():
+        for key, label in labels.items():
             rows = base.filter(source_account=key)
             accounts.append({
                 'key': key,

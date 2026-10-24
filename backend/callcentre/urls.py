@@ -17,6 +17,7 @@ urlpatterns = [
     path('tickets/<int:pk>/<str:command>/', views.action),
     path('performance/', views.agent_report),
     path('my-history/', views.my_history),
+    path('call-log/', views.call_log_view),
     path('call-reviews/', views.my_call_reviews),
     path('satisfaction/', views.satisfaction_report),
     path('survey/<str:token>/', views.survey),
@@ -31,4 +32,5 @@ urlpatterns = [
     path('settings/', manage_views.settings_view),
     path('employer-specialists/', manage_views.employer_specialists),
     path('phone-lines/', manage_views.phone_lines),
+    path('zoom-accounts/', manage_views.zoom_account_list),
 ]

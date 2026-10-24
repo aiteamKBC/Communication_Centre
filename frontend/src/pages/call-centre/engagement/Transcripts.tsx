@@ -48,7 +48,7 @@ export default function TranscriptsDialog({ open, onClose, from, to }: { open: b
   return (
     <Dialog open={open} onClose={onClose}>
       <h2>All transcripts</h2>
-      <p className="ec-muted">{from} to {to} · both Zoom accounts · {report?.summary.total ?? 0} recordings, {report?.summary.ready ?? 0} transcripts ready</p>
+      <p className="ec-muted">{from} to {to} · all Zoom accounts · {report?.summary.total ?? 0} recordings, {report?.summary.ready ?? 0} transcripts ready</p>
       <div className="ec-tools">
         <select aria-label="Transcript status" value={status} onChange={event => setStatus(event.target.value)}>
           <option value="all">All statuses</option>
@@ -68,7 +68,7 @@ export default function TranscriptsDialog({ open, onClose, from, to }: { open: b
           <tbody>
             {report?.records.map(row => (
               <tr key={row.id}>
-                <td>{when(row.started_at)}<small>{accountLabel(row.source_account)}</small></td>
+                <td>{when(row.started_at)}<small>{accountLabel(row.source_account, report?.accounts)}</small></td>
                 <td>{row.owner_name || 'Zoom recording'}{row.preview && <small>{row.preview}</small>}</td>
                 <td>{transcriptStatusLabels[row.transcript_status] || row.transcript_status}{row.transcript_error && <small>{row.transcript_error}</small>}</td>
                 <td>{row.transcript_status === 'ready' ? <RatingTag rating={row.rating} /> : '—'}</td>

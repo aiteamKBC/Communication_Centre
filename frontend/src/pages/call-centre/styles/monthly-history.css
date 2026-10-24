@@ -37,3 +37,30 @@
   .ed-history-call-main { align-items: flex-start; flex-direction: column; gap: 1rem; }
   .ed-history-call-result { justify-items: start; }
 }
+
+/* Last calls / Call monitor: what each call did to its cases. */
+.ed-log-totals { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .75rem; }
+.ed-log-totals article { padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: #faf8fd; }
+.ed-log-totals span, .ed-log-totals strong, .ed-log-totals small { display: block; }
+.ed-log-totals span, .ed-log-totals small { font-size: .8rem; color: var(--muted); }
+.ed-log-totals strong { font-size: 1.5rem; margin: .2rem 0; font-variant-numeric: tabular-nums; }
+.ed-history-result.ed-log-bad { color: #963e48; background: #f9e7e8; }
+.ed-log-cases { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: .75rem; margin-top: 1rem; }
+.ed-log-case { min-width: 0; padding: .8rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; overflow-wrap: anywhere; }
+.ed-log-case > p { margin: .5rem 0; font-size: .9rem; }
+.ed-log-case > p .ec-tag { margin-left: .4rem; }
+.ed-log-case small { display: block; color: var(--muted); font-size: .8rem; margin-top: .15rem; }
+.ed-log-case .ed-log-note { color: var(--ink); white-space: pre-wrap; }
+.ed-log-case-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.ec button.ed-log-link, .kbc-portals .workspace-app .ec button.ed-log-link { padding: 0; min-height: 0; border: 0; background: transparent; color: var(--purple); font-weight: 700; text-align: left;
+  text-decoration: underline; text-underline-offset: 3px; }
+.ed-log-closed { color: #28614b; font-weight: 600; }
+.ed-log-box { margin-top: .6rem; padding: .65rem .8rem; border-radius: 8px; background: #f6f3fb; border-left: 3px solid var(--purple); font-size: .85rem; }
+.ed-log-box.good { background: #eaf4ee; border-left-color: #4c8e6c; }
+.ed-log-box.bad { background: #f9e7e8; border-left-color: #963e48; }
+.ed-log-box > span, .ed-log-box > strong { display: block; }
+.ed-log-box > strong { font-size: 1rem; margin: .15rem 0 .3rem; }
+.ed-log-box dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .2rem .75rem; margin: 0; }
+.ed-log-box dt { color: var(--muted); }
+.ed-log-box dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 900px) { .ed-log-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

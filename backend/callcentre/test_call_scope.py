@@ -1,6 +1,5 @@
 """Run with check_isolated_tests.py: in-memory databases and no external network."""
 import json
-import os
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
@@ -38,7 +37,9 @@ class SystemCallScopeTests(TestCase):
             patch('callcentre.services.allocated_owner', return_value=None),
             patch('callcentre.sources.on_break_emails', return_value=frozenset()),
             patch('callcentre.sources.active_case_contacts', return_value=Q()),
-            patch.dict(os.environ, {'ZOOM_STUDENT_ACCOUNT_ID': 'account', 'ZOOM_OFFICE_ACCOUNT_ID': 'office-account'}),
+            patch('callcentre.zoom_accounts.stored', return_value=[
+                {'key': 'student', 'label': 'Student', 'account_id': 'account', 'client_id': '', 'secret': ''},
+                {'key': 'office', 'label': 'Office', 'account_id': 'office-account', 'client_id': '', 'secret': ''}]),
         ):
             mocked.start()
             self.addCleanup(mocked.stop)

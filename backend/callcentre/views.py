@@ -5,11 +5,12 @@ from datetime import date, datetime, time, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
+from django.conf import settings
 from django.core import signing
-from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
+from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, SuspiciousOperation
 from django.db import DatabaseError, transaction
 from django.db.models import Avg, Count, F, Max, OuterRef, Q, Subquery
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.middleware.csrf import get_token
 from django.shortcuts import render
 from django.utils import timezone
@@ -28,7 +29,9 @@ from .employer_desk import optional, specialists
 from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
                             send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
+from .call_log import call_log
 from .db import DB
+from .zoom_phone import ZoomError
 from .evidence import satisfaction_evidence
 from .models import Agent, CaseCall, CaseTicket, CycleState, EmployerSatisfaction, TicketEvent
 from .reports import performance
@@ -129,10 +132,34 @@ def authenticated(fn):
         except Conflict as exc:
             return JsonResponse({'detail': str(exc)}, status=409)
         except (ValueError, TypeError, KeyError) as exc:
-            return JsonResponse({'detail': str(exc) or 'Invalid request.'}, status=400)
+            # A FieldError names the form field to fix; the page shows the message next to it.
+            field = getattr(exc, 'field', '')
+            return JsonResponse({'detail': str(exc) or 'Invalid request.', **({'field': field} if field else {})}, status=400)
+        except ZoomError as exc:
+            return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
         except DatabaseError:
             return JsonResponse({'detail': 'Call Centre is temporarily unavailable. Check database connectivity.'}, status=503)
+        except (Http404, SuspiciousOperation):
+            raise   # Django answers these itself
+        except Exception as exc:  # noqa: BLE001 - always answer the page in JSON, with a reference to find it in the log
+            return server_error(request, exc)
     return never_cache(wrapper)
+
+
+def server_error(request, exc):
+    """An unexpected error: logged in full with a reference the page shows, so it can be found in the server log. While
+    DEBUG is on (a developer's machine) the page is also told what failed and where."""
+    reference = uuid.uuid4().hex[:8].upper()
+    logger.exception('Call Centre error %s on %s %s', reference, request.method, request.path)
+    payload = {'detail': f'Something went wrong on the server (reference {reference}). Nothing was changed if the action '
+                         'was not completed; tell the developer this reference.', 'reference': reference}
+    if settings.DEBUG:
+        import traceback
+        frames = [frame for frame in traceback.extract_tb(exc.__traceback__) if 'site-packages' not in frame.filename]
+        where = frames[-1] if frames else None
+        payload['debug'] = {'error': f'{type(exc).__name__}: {exc}'[:500],
+                            'where': f'{where.filename.rsplit("backend", 1)[-1]}:{where.lineno} in {where.name}' if where else ''}
+    return JsonResponse(payload, status=500)
 
 
 def body(request, limit=16000):
@@ -727,6 +754,36 @@ def my_history(request):
         'agent': {'id': agent.pk, 'name': agent.display_name, 'email': agent.user.email},
         **monthly_history(agent, lower, upper, now, page),
     })
+
+
+CALL_LOG_DAYS = {1, 7, 30, 90}
+
+
+@authenticated
+@require_GET
+def call_log_view(request):
+    """Calls started from the system and what each did to its cases: a specialist's own, or for a manager everyone's
+    (or one specialist's)."""
+    now = timezone.now()
+    days = int(request.GET.get('days', '7'))
+    page = int(request.GET.get('page', '1'))
+    if days not in CALL_LOG_DAYS or not 1 <= page <= 100000:
+        raise ValueError('Invalid period or page.')
+    agent_id = request.GET.get('agent_id')
+    manager = is_director(request.user)
+    if manager:
+        agents = [Agent.objects.get(pk=int(agent_id))] if agent_id else None
+    else:
+        agent = agent_for(request.user)
+        if agent is None or (agent_id and int(agent_id) != agent.pk):
+            raise PermissionDenied('You can only see your own calls.')
+        agents = [agent]
+    # Today means since midnight in London; longer periods are rolling.
+    lower = (datetime.combine(now.astimezone(LONDON).date(), time.min, tzinfo=LONDON) if days == 1 else now - timedelta(days=days))
+    payload = call_log(lower, now + timedelta(seconds=1), agents, page, now=now)
+    if manager:
+        payload['agents'] = list(Agent.objects.filter(active=True).order_by('display_name').values('id', 'display_name'))
+    return JsonResponse(payload)
 
 
 @authenticated

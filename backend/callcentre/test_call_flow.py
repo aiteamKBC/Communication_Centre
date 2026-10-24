@@ -17,7 +17,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from .allocation import owners
-from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, ZoomPhoneCall
+from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, Setting, ZoomPhoneCall, ZoomSyncState
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
                        event, open_call, plan_outcome, record_outcome, save_call)
@@ -547,6 +547,93 @@ class EmployerSpecialistTests(TestCase):
         with self.assertRaisesMessage(ValueError, 'not answered'):
             complete(review.pk, self.bob.user, score=4, problem='None', action='No action needed', note='Happy with the coaching.')
 
+    # The call log: every call and what it did to each case on it
+
+    def logged(self, agents=None):
+        from .call_log import call_log
+        return call_log(timezone.now() - timedelta(days=1), timezone.now() + timedelta(seconds=1), agents)
+
+    def test_the_call_log_shows_the_feedback_and_the_closing_an_optional_call_brought(self):
+        from .learner_satisfaction import complete
+        self.make_specialists(self.bob)
+        case, review, intent = self.optional_call(self.bob)
+        complete(review.pk, self.bob.user, score=5, problem='None', action='No action needed', note='Very happy with the course so far.')
+        save_call(case.pk, self.bob.user, [{'id': case.pk, 'outcome': 'reached'}])
+        row, = self.logged()['calls']
+        cases = {item['id']: item for item in row['cases']}
+        self.assertEqual((row['agent']['name'], row['zoom']['state'], row['saved']), ('Bob', 'waiting', True))
+        self.assertEqual(cases[review.pk]['feedback']['state'], 'waiting')   # held until Zoom reports the call
+        self.assertIsNotNone(cases[case.pk]['closed'])
+        self.zoom_reports(intent, 'answered')
+        row, = self.logged()['calls']
+        review_row = next(item for item in row['cases'] if item['id'] == review.pk)
+        self.assertEqual((row['zoom']['state'], review_row['feedback']['state'], review_row['feedback']['score']), ('answered', 'completed', 5))
+        self.assertEqual((review_row['status'], self.logged()['summary']['feedback']), ('resolved', 1))
+
+    def test_the_call_log_shows_the_outcome_once_zoom_reports_it_and_the_booking_made_on_the_call(self):
+        intent = create_intent(self.learner.pk, self.bob)
+        event(self.learner, 'session_booked', {'session_type': 'pr', 'start': '2026-11-02T10:00:00+00:00', 'coach': 'Coach Carter',
+                                               'join_url': 'https://zoom.test/j/1', 'link_warning': ''}, self.bob)
+        save_call(self.learner.pk, self.bob.user, [{'id': self.learner.pk, 'outcome': 'reached', 'option': 'epa_step'}])
+        case, = self.logged()['calls'][0]['cases']
+        self.assertEqual((case['outcome']['state'], case['outcome']['outcome']), ('waiting', 'reached'))
+        self.assertEqual(case['bookings'][0]['coach'], 'Coach Carter')
+        self.zoom_reports(intent, 'answered')
+        case, = self.logged()['calls'][0]['cases']
+        self.assertEqual((case['outcome']['state'], case['outcome']['option']), ('applied', 'epa_step'))
+        self.assertEqual(self.logged()['summary'], {'calls': 1, 'answered': 1, 'not_matched': 0, 'closed': 0, 'booked': 1, 'feedback': 0})
+
+    def test_what_happens_after_the_next_call_belongs_to_the_next_call(self):
+        first = create_intent(self.learner.pk, self.bob)
+        save_call(self.learner.pk, self.bob.user, [{'id': self.learner.pk, 'outcome': 'not_discussed'}])
+        CallIntent.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(minutes=15))   # a new call, not a redial
+        CaseTicket.objects.filter(pk=self.learner.pk).update(next_followup_at=None)   # due again
+        create_intent(self.learner.pk, self.bob)
+        event(self.learner, 'session_booked', {'session_type': 'pr', 'start': '2026-11-02T10:00:00+00:00', 'coach': 'Coach Carter'}, self.bob)
+        newer, older = self.logged()['calls']
+        self.assertEqual((len(newer['cases'][0]['bookings']), len(older['cases'][0]['bookings'])), (1, 0))
+        self.assertEqual(older['cases'][0]['outcome']['state'], 'not_discussed')
+        self.assertFalse(newer['saved'])
+
+    def test_an_outcome_zoom_never_reported_a_call_for_is_shown_as_not_applied(self):
+        intent = create_intent(self.learner.pk, self.bob)
+        save_call(self.learner.pk, self.bob.user, [{'id': self.learner.pk, 'outcome': 'no_answer'}])
+        CallIntent.objects.filter(pk=intent.pk).update(created_at=timezone.now() - timedelta(minutes=40))
+        row, = self.logged()['calls']
+        self.assertEqual(row['zoom']['state'], 'not_matched')
+        self.assertEqual((row['cases'][0]['outcome']['state'], row['cases'][0]['outcome']['reason']),
+                         ('dropped', 'Zoom has no call for this Call press.'))
+
+    def test_a_specialist_sees_only_their_own_calls_and_a_manager_sees_everyones(self):
+        import json
+        from django.test import RequestFactory
+        from .views import call_log_view
+        create_intent(self.learner.pk, self.bob)
+        create_intent(self.employer.pk, self.alice)
+
+        def get(user, **query):
+            request = RequestFactory().get('/', query)
+            request.user = user
+            with mock.patch('callcentre.views.refused', return_value=None):
+                response = call_log_view(request)
+            return response.status_code, json.loads(response.content)
+
+        status, data = get(self.bob.user)
+        self.assertEqual((status, [row['agent']['name'] for row in data['calls']], 'agents' in data), (200, ['Bob'], False))
+        self.assertEqual(get(self.bob.user, agent_id=self.alice.pk)[0], 403)
+        director = get_user_model().objects.create_superuser('director', 'director@kbc.test', 'x')
+        status, data = get(director)
+        self.assertEqual(sorted(row['agent']['name'] for row in data['calls']), ['Alice', 'Bob'])
+        self.assertEqual([row['agent']['name'] for row in get(director, agent_id=self.alice.pk)[1]['calls']], ['Alice'])
+        self.assertEqual(get(director, days=5)[0], 400)
+
+
+def zoom_accounts(*accounts):
+    """Zoom accounts as the Zoom Phone page saves them: (key, name, Zoom Account ID), no secret."""
+    Setting.objects.update_or_create(key='zoom_accounts', defaults={'updated_by': 'director', 'value': {'accounts': [
+        {'key': key, 'label': label, 'account_id': account_id, 'client_id': 'client', 'secret': '', 'secret_end': ''}
+        for key, label, account_id in accounts]}})
+
 
 @unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
 class PhoneLineTests(TestCase):
@@ -565,6 +652,7 @@ class PhoneLineTests(TestCase):
             self.addCleanup(patch.stop)
         self.tina = Agent.objects.create(user=get_user_model().objects.create_user('tina'), display_name='Tina',
                                          zoom_email='tina@kbc.test', zoom_account='student')
+        zoom_accounts(('student', 'Student', 'account'), ('office', 'Office', 'office-account'))
 
     def call(self, matched, **fields):
         call = ZoomPhoneCall.objects.create(**{
@@ -610,7 +698,6 @@ class PhoneLineTests(TestCase):
         with self.assertRaisesMessage(ValueError, 'Tina already has +441622958989: one number per specialist'):
             self.give(safiyah, self.LINE)
 
-    @mock.patch.dict('os.environ', {'ZOOM_STUDENT_ACCOUNT_ID': 'account', 'ZOOM_OFFICE_ACCOUNT_ID': 'office-account'})
     def test_a_call_on_a_listed_line_is_its_specialists_whatever_email_zoom_shows(self):
         from .services import match_call
         self.line()
@@ -658,3 +745,121 @@ class PhoneLineTests(TestCase):
         self.give(self.tina, '')
         remove(self.LINE, 'director')
         self.assertEqual(stored(), [])
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class ZoomAccountTests(TestCase):
+    """The director adds the Zoom accounts on the Zoom Phone page: the secret is kept encrypted and never sent back."""
+    databases = {'default', 'login_db'}
+    APP = {'label': 'Student', 'account_id': 'AbC123', 'client_id': 'client_1', 'client_secret': 'top-secret-9f2a'}
+
+    def setUp(self):
+        from cryptography.fernet import Fernet
+        patch = mock.patch.dict('os.environ', {'ZOOM_SECRETS_KEY': Fernet.generate_key().decode()})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_an_account_is_saved_with_its_secret_encrypted_and_never_shown(self):
+        from .zoom_accounts import add, public, stored
+        from .zoom_phone import account_config, account_labels, validate_config
+        add(self.APP, 'director')
+        account, = stored()
+        self.assertNotIn('top-secret', str(account))
+        self.assertEqual((public(account)['secret_end'], 'secret' in public(account)), ('9f2a', False))
+        self.assertEqual(account_labels(), {'student': 'Student'})
+        self.assertEqual(account_config('student')['client_secret'], 'top-secret-9f2a')
+        self.assertEqual(validate_config('student')['account_id'], 'AbC123')
+
+    def test_without_the_servers_key_nothing_is_saved_and_the_page_is_told_why(self):
+        from .errors import FieldError
+        from .zoom_accounts import add, stored
+        with mock.patch.dict('os.environ', {'ZOOM_SECRETS_KEY': ''}):
+            with self.assertRaisesMessage(FieldError, 'ZOOM_SECRETS_KEY is missing') as raised:
+                add(self.APP, 'director')
+        self.assertEqual((raised.exception.field, stored()), ('client_secret', []))
+
+    def test_each_mistake_names_its_field(self):
+        from .errors import FieldError
+        from .zoom_accounts import add
+        for field, value, message in (('label', '', 'Enter the name'), ('account_id', 'has spaces', 'does not look like'),
+                                      ('client_secret', '', 'Enter the Client Secret')):
+            with self.assertRaisesMessage(FieldError, message) as raised:
+                add({**self.APP, field: value}, 'director')
+            self.assertEqual(raised.exception.field, field)
+        add(self.APP, 'director')
+        with self.assertRaisesMessage(FieldError, 'already uses this Account ID') as raised:
+            add({**self.APP, 'label': 'Again'}, 'director')
+        self.assertEqual(raised.exception.field, 'account_id')
+
+    def test_an_account_synced_before_gets_its_call_history_back(self):
+        from .zoom_accounts import add, stored
+        ZoomSyncState.objects.create(source_account='office', zoom_account_id='Off1ce')
+        ZoomSyncState.objects.create(source_account='finance', zoom_account_id='0ther')
+        add({**self.APP, 'label': 'Accounts team', 'account_id': 'Off1ce'}, 'director')
+        add({**self.APP, 'label': 'Finance', 'account_id': 'New1'}, 'director')
+        # Finance is new: it never takes the key another Zoom account's calls were synced under.
+        self.assertEqual([account['key'] for account in stored()], ['office', 'finance_2'])
+
+    def test_an_edit_keeps_the_secret_unless_a_new_one_is_given(self):
+        from .zoom_accounts import add, update
+        from .zoom_phone import account_config
+        add(self.APP, 'director')
+        update('student', {'label': 'Students', 'client_id': 'client_2', 'client_secret': ''}, 'director')
+        self.assertEqual(account_config('student'), {'account_id': 'AbC123', 'client_id': 'client_2', 'client_secret': 'top-secret-9f2a'})
+        update('student', {'label': 'Students', 'client_id': 'client_2', 'client_secret': 'new-secret'}, 'director')
+        self.assertEqual(account_config('student')['client_secret'], 'new-secret')
+
+    def test_an_account_with_numbers_on_it_cannot_be_removed(self):
+        from .zoom_accounts import add, remove, stored
+        from .zoom_lines import add as add_line
+        add(self.APP, 'director')
+        add_line({'number': '+441622958989', 'account': 'student'}, 'director')
+        with self.assertRaisesMessage(ValueError, '+441622958989'):
+            remove('student', 'director')
+        self.assertEqual(len(stored()), 1)
+
+    def test_the_test_names_the_field_or_the_missing_zoom_scope(self):
+        from .zoom_accounts import add, test
+
+        class Response:
+            def __init__(self, status, payload):
+                self.status_code, self.ok, self.payload = status, status < 400, payload
+
+            def json(self):
+                return self.payload
+
+            def close(self):
+                pass
+
+        add(self.APP, 'director')
+        refused = {'field': 'client_id', 'message': 'Zoom does not accept the Client ID and Client Secret together.'}
+        with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(None, refused)):
+            result = test('student', 'director')
+        self.assertEqual((result['status'], result['problem']['field']), ('failed', 'client_id'))
+        client = mock.Mock()
+        client.api_get.side_effect = [Response(200, {}), Response(200, {}), Response(400, {
+            'code': 4711, 'message': 'Invalid access token, does not contain scopes:[phone:read:list_numbers:admin].'})]
+        with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
+            result = test('student', 'director')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['checks'][2]['scopes'], ['phone:read:list_numbers:admin'])
+        self.assertIn('phone:read:list_numbers:admin', result['checks'][2]['message'])
+
+    def test_an_unexpected_server_error_reaches_the_page_with_a_reference(self):
+        import json
+        from django.test import RequestFactory
+        from .views import authenticated
+
+        @authenticated
+        def broken(request):
+            raise RuntimeError('boom')
+        request = RequestFactory().get('/api/callcentre/broken/')
+        request.user = get_user_model().objects.create_user('someone')
+        with mock.patch('callcentre.views.refused', return_value=None), self.assertLogs('callcentre.views', 'ERROR') as logged, \
+                self.settings(DEBUG=True):
+            response = broken(request)
+        data = json.loads(response.content)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn(data['reference'], logged.output[0])
+        self.assertIn('RuntimeError: boom', data['debug']['error'])
+        self.assertIn('in broken', data['debug']['where'])

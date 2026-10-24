@@ -24,7 +24,7 @@ function callTime(seconds: number) {
   return [hours && `${hours} hr`, minutes && `${minutes} min`, (remainder || !seconds) && `${remainder} sec`].filter(Boolean).join(' ');
 }
 
-function PageNumbers({ page, total, disabled, onPage }: {
+export function PageNumbers({ page, total, disabled, onPage }: {
   page: number; total: number; disabled: boolean; onPage: (page: number) => void;
 }) {
   const pages = Array.from({ length: total }, (_, i) => i + 1)

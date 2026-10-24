@@ -114,19 +114,40 @@ export type Config = {
 
 type RequestOptions = Parameters<typeof fetch>[1];
 
+/** A failed request, with what the server said about it: the form field to fix, the reference to find it in the server
+ * log, and (on a developer's machine) what failed and where. */
 export class ApiError extends Error {
   status: number;
+  field: string;
+  reference: string;
+  debug: { error: string; where: string } | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details: { field?: string; reference?: string; debug?: { error: string; where: string } } = {}) {
     super(message);
     this.status = status;
+    this.field = details.field || '';
+    this.reference = details.reference || '';
+    this.debug = details.debug || null;
   }
 }
 
 export async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(url, { credentials: 'include', cache: 'no-store', ...options });
-  const payload = await response.json().catch(() => ({ detail: 'The server returned an invalid response.' }));
-  if (!response.ok) throw new ApiError(payload.detail || 'Request failed.', response.status);
+  let response: Response;
+  try {
+    response = await fetch(url, { credentials: 'include', cache: 'no-store', ...options });
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') throw reason;
+    throw new ApiError('Could not reach the server. Check the backend is running and your internet connection, then try again.', 0);
+  }
+  const payload = await response.json().catch(() => null);
+  if (payload === null) {
+    throw new ApiError(response.ok ? 'The server answered with something that is not data. Reload the page and try again.'
+      : `The server failed (HTTP ${response.status}) and sent no details. The backend log has the cause.`, response.status);
+  }
+  if (!response.ok) {
+    throw new ApiError(payload.detail || `The request failed (HTTP ${response.status}).`, response.status,
+      { field: payload.field, reference: payload.reference, debug: payload.debug });
+  }
   return payload as T;
 }
 
@@ -193,7 +214,9 @@ export const londonDay = () => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
 }).format(new Date());
 
-export const accountLabel = (key: string) => (key === 'office' ? 'Office (Accountant)' : 'Student');
+/** A Zoom account's name, from the accounts a report lists; the key when it is not among them. */
+export const accountLabel = (key: string, accounts: { key: string; label: string }[] = []) =>
+  accounts.find(account => account.key === key)?.label || key || 'No account';
 
 export const transcriptStatusLabels: Record<string, string> = {
   ready: 'Ready', pending: 'Processing', disabled: 'Transcription disabled',

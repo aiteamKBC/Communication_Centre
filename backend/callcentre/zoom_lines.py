@@ -20,7 +20,8 @@ from django.utils import timezone
 from .db import DB
 from .models import Agent, CallMatch, Setting, ZoomPhoneCall, ZoomPhoneRecording
 from .rules import email_key, normalize_phone
-from .zoom_phone import ACCOUNT_LABELS, ZoomClient, ZoomError, missing_credentials, validate_config
+from .errors import FieldError
+from .zoom_phone import ZoomClient, ZoomError, account_labels, missing_credentials, validate_config
 
 KEY = 'zoom_lines'
 NOT_SET_UP = 'Settings are not set up yet. Run docs/callcentre-port/settings.sql on the call-centre database.'
@@ -67,7 +68,7 @@ def _save(change, actor):
 def clean_number(value):
     number = normalize_phone(value)
     if not number or not number.startswith('+'):
-        raise ValueError('Enter the number in international format, for example +441622958989.')
+        raise FieldError('number', 'Enter the number in international format, for example +441622958989.')
     return number
 
 
@@ -76,14 +77,15 @@ def clean_line(data):
     if not isinstance(data, dict):
         raise ValueError('Send the number and its Zoom details.')
     account = str(data.get('account') or '')
-    if account not in ACCOUNT_LABELS:
-        raise ValueError('Choose the Zoom account the number is on (Student or Office).')
+    if account not in account_labels():
+        raise FieldError('account', 'Choose the Zoom account the number is on.' if account_labels()
+                         else 'Add the Zoom account first (Zoom accounts, above), then choose it here.')
     zoom_email = email_key(data.get('zoom_email'))
     if zoom_email:
         try:
             validate_email(zoom_email)
         except ValidationError:
-            raise ValueError('The Zoom user email is not a valid email.') from None
+            raise FieldError('zoom_email', 'This is not a valid email.') from None
     return {'number': clean_number(data.get('number')), 'label': str(data.get('label') or '').strip()[:80], 'account': account,
             'zoom_email': zoom_email, 'zoom_user_id': str(data.get('zoom_user_id') or '').strip()[:128]}
 
@@ -92,12 +94,12 @@ def _check_unique(lines, line):
     """No two lines may share a number, nor a Zoom identity on the same account: a call must point to one line."""
     for other in lines:
         if other['number'] == line['number']:
-            raise ValueError('This number is already in the list.')
+            raise FieldError('number', 'This number is already in the list.')
         same_account = other.get('account') == line['account']
         if same_account and line['zoom_email'] and other.get('zoom_email') == line['zoom_email']:
-            raise ValueError(f'{other["number"]} already has the Zoom user email {line["zoom_email"]}.')
+            raise FieldError('zoom_email', f'{other["number"]} already has the Zoom user email {line["zoom_email"]}.')
         if same_account and line['zoom_user_id'] and other.get('zoom_user_id') == line['zoom_user_id']:
-            raise ValueError(f'{other["number"]} already has the Zoom user ID {line["zoom_user_id"]}.')
+            raise FieldError('zoom_user_id', f'{other["number"]} already has the Zoom user ID {line["zoom_user_id"]}.')
 
 
 def add(data, actor):
@@ -170,7 +172,7 @@ def zoom_lookup(number):
     """Where Zoom has the number: {'found', 'account', 'assignee', 'status'}, or why it could not be checked."""
     checked = False
     problems = []
-    for key, label in ACCOUNT_LABELS.items():
+    for key in account_labels():
         if missing_credentials(key):
             continue
         client = None
@@ -231,6 +233,7 @@ def discover(number, now=None):
 def setup_warnings(line, holders, seen):
     """Where a line's setup disagrees with what Zoom reports, or where it could match the wrong specialist."""
     warnings = []
+    labels = account_labels()
     active = [holder for holder in holders if holder['active']]
     if len(active) > 1:
         warnings.append(f'Given to {len(active)} specialists ({", ".join(h["name"] for h in active)}): one number per specialist.')
@@ -239,10 +242,10 @@ def setup_warnings(line, holders, seen):
         warnings.append('Choose the Zoom account this number is on (Edit).')
     for holder in active:
         if account and holder['account'] != account:
-            warnings.append(f'{holder["name"]} is on the {ACCOUNT_LABELS[holder["account"]]} account, the number on {ACCOUNT_LABELS[account]}.')
+            warnings.append(f'{holder["name"]} is on the {labels.get(holder["account"], holder["account"])} account, the number on {labels.get(account, account)}.')
     other_accounts = [key for key in seen['accounts'] if account and key != account]
     if other_accounts:
-        warnings.append(f'Zoom sent calls on this number from the {", ".join(ACCOUNT_LABELS.get(k, k) for k in other_accounts)} account.')
+        warnings.append(f'Zoom sent calls on this number from the {", ".join(labels.get(k, k) for k in other_accounts)} account.')
     for email in seen['emails']:
         if email != line.get('zoom_email'):
             warnings.append(f'Zoom attaches the user {email} to calls on this number, but the number has '
@@ -271,7 +274,7 @@ def test(number, actor, now=None):
     holders = agents_by_number().get(number, [])
     warnings = setup_warnings(line, holders, seen_on(number, now - timedelta(days=30)))
     if zoom['found'] and line.get('account') and zoom['account'] != line['account']:
-        warnings.append(f'Zoom has this number on the {ACCOUNT_LABELS[zoom["account"]]} account.')
+        warnings.append(f'Zoom has this number on the {account_labels().get(zoom["account"], zoom["account"])} account.')
     active = [holder['name'] for holder in holders if holder['active']]
     total = recent.count()
     if zoom['found'] is False and not calls.exists():
@@ -288,7 +291,7 @@ def test(number, actor, now=None):
         status = 'working'
     result = {
         'status': status, 'label': STATUS_LABELS[status], 'tested_at': now.isoformat(), 'tested_by': actor,
-        'zoom': {**zoom, 'account': ACCOUNT_LABELS.get(zoom['account'], '')}, 'warnings': warnings,
+        'zoom': {**zoom, 'account': account_labels().get(zoom['account'], '')}, 'warnings': warnings,
         'calls_7_days': total, 'matched_7_days': matched, 'unmatched_7_days': total - matched,
         'last_call_at': last_call.isoformat() if last_call else None,
         'transcripts_ready_7_days': recordings.filter(transcript_status='ready').count(),

@@ -3,18 +3,17 @@ import type { AgentStats, CallFlag, Overview, OverviewCase } from '../api';
 import { caseAction } from './actions';
 import type { Session } from './actions';
 import { CallReviewDialog, RatingRules } from './CallReview';
+import CallLog from './CallLog';
 import Dialog from './Dialog';
 import EmployerSpecialists from './EmployerSpecialists';
 import Register from './Register';
-import { ISSUE_LABELS, badges, dueForCall, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
+import { badges, dueForCall, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
 
 type Props = {
   overview: Overview; month: string; session: Session;
   onMonth: (month: string) => void; onChanged: () => void; notify: (message: string, error?: boolean) => void; onPreview: (agentId: number) => void; onOpenCase: (id: number) => void;
 };
 
-// Case types switched off on the server (rules.PAUSED_CATEGORIES): no cases to count.
-const PAUSED = new Set(['otj']);
 const colours = ['#60359a', '#268a8b', '#c0632b', '#2f6db5', '#a3326e', '#5b8a2a'];
 
 function Chart({ overview }: { overview: Overview }) {
@@ -221,32 +220,7 @@ export default function Director({ overview, month, session, onMonth, onChanged,
       </section>
 
       <div style={{ height: '1.2rem' }} />
-      <div className="ec-split">
-        <section className="ec-card">
-          <h2>Contact and support patterns</h2>
-          <div className="ec-table-wrap">
-            <table>
-              <thead><tr><th>Issue</th><th>Open</th><th>Awaiting reply</th></tr></thead>
-              <tbody>
-                {Object.entries(ISSUE_LABELS).filter(([key]) => !PAUSED.has(key)).map(([key, label]) => (
-                  <tr key={key}><td>{label}</td><td>{open.filter(c => c.source_type === key).length}</td><td>{open.filter(c => c.source_type === key && c.status === 'pending_learner').length}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="ec-muted">Repeated unanswered calls flag a contact review. They do not establish that a learner has disengaged.</p>
-        </section>
-        <div className="ec-stack">
-          <section className="ec-card">
-            <h2>Red flags & development</h2>
-            {overview.agents.filter(agent => agent.month.sla_breaches > 0).map(agent => (
-              <p key={agent.id}>{agent.display_name}: {agent.month.sla_breaches} SLA breaches this month. Review the cases and agree support.</p>
-            ))}
-            {!overview.agents.some(agent => agent.month.sla_breaches > 0) && <p className="ec-muted">No SLA breach flags for worked cases this month.</p>}
-            {overview.unclaimed_breaches > 0 && <p>{overview.unclaimed_breaches} cases breached their due date before anyone claimed them.</p>}
-          </section>
-        </div>
-      </div>
+      <CallLog agentId={null} manager revision={overview.generated_at} onOpen={onOpenCase} />
       <div style={{ height: '1.2rem' }} />
       <Register overview={overview} onOpenCase={onOpenCase} />
 

@@ -1,7 +1,6 @@
 """Zoom Phone ingestion. Credentials stay on the server; reports read stored calls."""
 
 import logging
-import os
 import time
 import uuid
 from datetime import timedelta
@@ -18,36 +17,32 @@ from .models import ZoomPhoneCall, ZoomSyncState
 logger = logging.getLogger(__name__)
 
 
-ACCOUNT_LABELS = {'student': 'Student', 'office': 'Office (Accountant)'}
-CREDENTIAL_FIELDS = ('ACCOUNT_ID', 'CLIENT_ID', 'CLIENT_SECRET')
-
-
 class ZoomError(Exception):
     """Public error text must never contain Zoom responses or credentials."""
 
 
+# The Zoom accounts are the ones a director added on the Zoom Phone page (zoom_accounts).
+def account_labels():
+    from .zoom_accounts import labels
+    return labels()
+
+
 def account_config(key):
-    if key not in ACCOUNT_LABELS:
-        raise ZoomError('Unknown Zoom account.')
-    return {field.lower(): os.getenv(f'ZOOM_{key.upper()}_{field}', '').strip()
-            for field in CREDENTIAL_FIELDS}
+    """The account's credentials; empty values for an account that is not in the list."""
+    from .zoom_accounts import config
+    return config(key)
 
 
 def missing_credentials(key):
-    config = account_config(key)
-    return [f'ZOOM_{key.upper()}_{field}' for field in CREDENTIAL_FIELDS
-            if not config[field.lower()]]
+    from .zoom_accounts import missing
+    return missing(key)
 
 
 def validate_config(key):
     missing = missing_credentials(key)
     if missing:
-        raise ZoomError('Missing settings: ' + ', '.join(missing))
-    config = account_config(key)
-    other = 'office' if key == 'student' else 'student'
-    if config['account_id'] == account_config(other)['account_id']:
-        raise ZoomError('Student and Office (Accountant) must use different Zoom account IDs.')
-    return config
+        raise ZoomError('Zoom account setup is incomplete: ' + ', '.join(missing) + '.')
+    return account_config(key)
 
 
 class ZoomClient:
