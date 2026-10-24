@@ -115,14 +115,17 @@ class ZoomClient:
         self.expires_at = time.monotonic() + lifetime
 
     def api_get(self, path, **kwargs):
+        return self.api('GET', path, **kwargs)
+
+    def api(self, method, path, **kwargs):
         if time.monotonic() >= self.expires_at:
             self._authorize()
-        response = self._request('GET', 'https://api.zoom.us/v2' + path,
+        response = self._request(method, 'https://api.zoom.us/v2' + path,
                                  headers={'Authorization': f'Bearer {self.token}'}, **kwargs)
         if response.status_code == 401:
             response.close()
             self._authorize()
-            response = self._request('GET', 'https://api.zoom.us/v2' + path,
+            response = self._request(method, 'https://api.zoom.us/v2' + path,
                                      headers={'Authorization': f'Bearer {self.token}'}, **kwargs)
         return response
 

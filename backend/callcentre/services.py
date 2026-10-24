@@ -161,21 +161,7 @@ def create_intent(ticket_id, agent, actor=None):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
-    person_id = ticket.source_data.get('person_id')
-    if person_id and ticket.source_type != 'employer_feedback':
-        same_person = Q(source_data__person_id=person_id)
-        if ticket.learner_email:
-            same_person |= same_contact(ticket)
-        candidates = candidates.exclude(source_type='employer_feedback').filter(same_person)
-    else:
-        candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
-    # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
-    # keeps its waiting state.
-    candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
-    # A technical issue still with support is not part of another call: the call would send it back to the list.
-    candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
-    tickets = list(candidates.order_by('pk'))
+    tickets = call_cases(ticket, now)
     # An optional call is about that call alone; it is linked to the learner's open satisfaction review (not claimed,
     # so it stays on the other agents' lists) so feedback given on it can complete the review.
     linked = []
@@ -196,6 +182,25 @@ def create_intent(ticket_id, agent, actor=None):
     for item in tickets:
         event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number}, agent=agent, actor=actor)
     return intent
+
+
+def call_cases(ticket, now):
+    """The cases one call to this contact covers: this one, and the person's other open cases that are due now."""
+    candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
+    person_id = ticket.source_data.get('person_id')
+    if person_id and ticket.source_type != 'employer_feedback':
+        same_person = Q(source_data__person_id=person_id)
+        if ticket.learner_email:
+            same_person |= same_contact(ticket)
+        candidates = candidates.exclude(source_type='employer_feedback').filter(same_person)
+    else:
+        candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
+    # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
+    # keeps its waiting state.
+    candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
+    # A technical issue still with support is not part of another call: the call would send it back to the list.
+    candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
+    return list(candidates.order_by('pk'))
 
 
 @transaction.atomic(using=DB)

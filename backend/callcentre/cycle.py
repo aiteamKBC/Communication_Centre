@@ -89,6 +89,13 @@ def update_phone_directory(people):
         directory = {phone: [entry['email']] for phone, entry in people.phone_contacts().items()
                      if entry['role'] == 'learner' and entry['email']}
     CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
+    from .inbound import save_caller_directory
+    save_caller_directory(people)
+
+
+def inbound_sync():
+    from .inbound import sync
+    return sync()
 
 
 def match_calls():
@@ -150,7 +157,40 @@ def run_call_sync():
         for account in account_labels():
             step(result, 'zoom_' + account, lambda account=account: sync_account(account))
         step(result, 'matched', match_calls)
+        step(result, 'inbound', inbound_sync)
         return result
+
+
+def voicemail_sync(account):
+    """Voicemails of one account. Zoom refusing (e.g. the voicemail scope not added yet) is reported, not raised."""
+    from .voicemails import sync
+    from .zoom_phone import ZoomError
+    try:
+        return sync(account)
+    except ZoomError as exc:
+        return f'Unavailable: {exc}'
+
+
+def run_recording_sync():
+    """Zoom says a recording or transcript is ready (webhook): fetch recordings now and review them, instead of waiting
+    for the next full cycle."""
+    with cycle_lock(timedelta(minutes=20)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
+        for account in account_labels():
+            step(result, 'zoom_' + account, lambda account=account: sync_account(account, include_recordings=True))
+            step(result, 'voicemails_' + account, lambda account=account: voicemail_sync(account))
+        step(result, 'matched', match_calls)
+        step(result, 'inbound', inbound_sync)
+        step(result, 'analyses', process_ai)
+        return result
+
+
+def run_zoom_check():
+    """A Zoom webhook says something other than a call changed: compare the numbers with Zoom now."""
+    from .zoom_watch import check
+    return check(force=True)
 
 
 def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
@@ -188,6 +228,14 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         from .helpdesk import sync as sync_helpdesk
         step(result, 'technical_issues', sync_helpdesk)
         step(result, 'matched', match_calls)
+        step(result, 'inbound', inbound_sync)
+        if not skip_zoom:
+            from .zoom_watch import check
+            for account in account_labels():
+                step(result, 'voicemails_' + account, lambda account=account: voicemail_sync(account))
+            step(result, 'zoom_changes', check)
+            from .presence import poll
+            step(result, 'presence', poll)
         if not skip_ai:
             step(result, 'analyses', process_ai)
         if not skip_emails and people is not None and people.sources_complete:

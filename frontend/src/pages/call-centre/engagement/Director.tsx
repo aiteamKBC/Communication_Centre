@@ -1,75 +1,33 @@
 import { useState } from 'react';
-import type { AgentStats, CallFlag, Overview, OverviewCase } from '../api';
+import type { CallFlag, Overview, OverviewCase } from '../api';
 import { caseAction } from './actions';
 import type { Session } from './actions';
 import { CallReviewDialog, RatingRules } from './CallReview';
 import CallLog from './CallLog';
+import { caseload, monthTotals } from './dashboard';
 import Dialog from './Dialog';
-import EmployerSpecialists from './EmployerSpecialists';
+import { Figure } from './DirectorHome';
+import MissedCalls from './MissedCalls';
 import Register from './Register';
-import { badges, dueForCall, ratedCalls, downloadBlob, duration, issueLabel, longDate, points, when } from './model';
+import { MissingRecordings, Scorecard, TranscriptSearch } from './Scorecard';
+import { downloadBlob, duration, issueLabel, longDate, when } from './model';
 
-type Props = {
-  overview: Overview; month: string; session: Session;
-  onMonth: (month: string) => void; onChanged: () => void; notify: (message: string, error?: boolean) => void; onPreview: (agentId: number) => void; onOpenCase: (id: number) => void;
-};
-
-const colours = ['#60359a', '#268a8b', '#c0632b', '#2f6db5', '#a3326e', '#5b8a2a'];
-
-function Chart({ overview }: { overview: Overview }) {
-  const rows = overview.agents[0]?.month.daily || [];
-  if (!rows.some(day => overview.agents.some(agent => agent.month.daily.find(d => d.day === day.day)?.seconds))) {
-    return <div className="ec-empty">The daily call-time curve will appear when verified call records arrive.</div>;
-  }
-  const target = Math.max(0, ...overview.agents.map(agent => agent.target_seconds));
-  const max = Math.max(target, 1, ...overview.agents.flatMap(agent => agent.month.daily.map(day => day.seconds)));
-  const y = (seconds: number) => 160 - (seconds / max) * 135;
-  const x = (index: number) => 40 + (index / Math.max(1, rows.length - 1)) * 645;
-  return (
-    <>
-      <svg className="ec-chart" viewBox="0 0 720 190" role="img" aria-label="Verified connected call time by day">
-        <line x1="35" y1="160" x2="695" y2="160" stroke="#d9d6e1" />
-        {target > 0 && (
-          <>
-            <line x1="35" y1={y(target)} x2="695" y2={y(target)} stroke="#bbb" strokeDasharray="5 5" />
-            <text x="40" y={y(target) - 6}>{duration(target)} target</text>
-          </>
-        )}
-        {overview.agents.map((agent, index) => (
-          <polyline key={agent.id} fill="none" stroke={colours[index % colours.length]} strokeWidth="3"
-            points={rows.map((row, j) => `${x(j)},${y(agent.month.daily.find(d => d.day === row.day)?.seconds || 0)}`).join(' ')} />
-        ))}
-        <text x="35" y="183">{rows[0].day}</text>
-        <text x="610" y="183">{rows[rows.length - 1].day}</text>
-      </svg>
-      <div className="ec-legend">
-        {overview.agents.map((agent, index) => <span key={agent.id} style={{ '--colour': colours[index % colours.length] } as React.CSSProperties}>{agent.display_name}</span>)}
-      </div>
-    </>
-  );
-}
+type Notify = (message: string, error?: boolean) => void;
 
 function reportHTML(overview: Overview) {
   const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
   const best = [...overview.agents].sort((a, b) => b.month.seconds - a.month.seconds)[0];
   return `<h2>Engagement performance · ${esc(overview.month)}</h2><p>Prepared ${esc(longDate(overview.generated_at))}</p>`
-    + '<table><thead><tr><th>Operator</th><th>Attempts</th><th>Answered</th><th>Connected time</th><th>Resolved</th><th>SLA breaches</th></tr></thead><tbody>'
+    + '<table><thead><tr><th>Specialist</th><th>Calls</th><th>Answered</th><th>Talk time</th><th>Resolved</th><th>Cases gone late</th></tr></thead><tbody>'
     + overview.agents.map(a => `<tr><td>${esc(a.display_name)}</td><td>${a.month.attempts}</td><td>${a.month.connected}</td><td>${duration(a.month.seconds)}</td><td>${a.month.resolved}</td><td>${a.month.sla_breaches}</td></tr>`).join('')
-    + `</tbody></table><p>Most connected time: ${esc(best?.display_name || 'No verified calls')}</p>`
+    + `</tbody></table><p>Most talk time: ${esc(best?.display_name || 'No verified calls')}</p>`
     + `<section><h3>Resolutions</h3><p>By specialists ${overview.resolutions.agent} · by AI review ${overview.resolutions.ai} · by source evidence ${overview.resolutions.system}. Unclaimed SLA breaches: ${overview.unclaimed_breaches}.</p></section>`
     + '<p>Call figures come from Zoom Phone records. Missing telephone coverage is not evidence of inactivity.</p>';
 }
 
-function quality(overview: Overview, agent: AgentStats) {
-  const counts = overview.call_reviews?.agents[agent.id];
-  const rated = ratedCalls(counts);
-  if (!counts || !rated) return <>Unscored<small>No rated calls this month</small></>;
-  return <>{counts.excellent} excellent · {counts.good} good<small className={counts.bad ? 'danger' : undefined}>{counts.bad} bad · {rated} rated this month</small></>;
-}
-
 /** AI close suggestions: the AI read a call and thinks the case is done; a manager approves or rejects it. */
 function WaitingForManager({ cases, session, onOpenCase, onChanged, notify }: {
-  cases: OverviewCase[]; session: Session; onOpenCase: (id: number) => void; onChanged: () => void; notify: (message: string, error?: boolean) => void;
+  cases: OverviewCase[]; session: Session; onOpenCase: (id: number) => void; onChanged: () => void; notify: Notify;
 }) {
   const [notes, setNotes] = useState<Map<number, string>>(new Map());
   const [busy, setBusy] = useState<number | null>(null);
@@ -123,30 +81,31 @@ function WaitingForManager({ cases, session, onOpenCase, onChanged, notify }: {
   );
 }
 
-/** Director overview: call review, operator desks, KPIs, performance and the calling register. */
-export default function Director({ overview, month, session, onMonth, onChanged, notify, onPreview, onOpenCase }: Props) {
-  const [report, setReport] = useState(false);
+/** Calls: the learners waiting for a call back, and every call made with what it did. */
+export function CallsPage({ overview, session, onOpenCase }: { overview: Overview; session: Session; onOpenCase: (id: number) => void }) {
+  return (
+    <div className="dd">
+      <MissedCalls session={session} revision={overview.generated_at} onOpenCase={onOpenCase} />
+      <CallLog agentId={null} manager revision={overview.generated_at} onOpen={onOpenCase} />
+    </div>
+  );
+}
+
+/** Call quality: AI suggestions to decide, calls rated bad, calls Zoom did not record, and transcript search. */
+export function QualityPage({ overview, session, onOpenCase, onChanged, notify }: {
+  overview: Overview; session: Session; onOpenCase: (id: number) => void; onChanged: () => void; notify: Notify;
+}) {
   const [flag, setFlag] = useState<CallFlag | null>(null);
   const flags = overview.call_reviews?.flags || [];
-  const open = overview.cases;
-  const waiting = open.filter(c => c.status === 'ai_suggested_close');
-  const mine = (agent: AgentStats) => open.filter(c => c.allocated_agent_id === agent.id);
-  const stats: [string, number, string][] = [
-    ['Open support cases', open.length, 'Across the calling register'],
-    ['Due to call now', open.filter(c => dueForCall(c)).length, 'Not waiting on a callback, a promise or evidence'],
-    ['Past their call date', open.filter(c => c.sla_breached).length, 'The call was due before today'],
-    ['In the shared queue', open.filter(c => !c.allocated_agent_id).length, 'Learners not allocated to a specialist'],
-    ['Waiting for the learner', open.filter(c => ['pending_learner', 'pending_verification'].includes(c.status)).length, 'Callback booked, or a promise waiting for its deadline'],
-    ['Missed calls', open.filter(c => c.missed_call).length, 'Last call unanswered; at the bottom of their list'],
-  ];
-
+  const waiting = overview.cases.filter(c => c.status === 'ai_suggested_close');
   return (
-    <>
-      <EmployerSpecialists session={session} onChanged={onChanged} notify={notify} />
-
-      <section className="ec-card ed-lower">
+    <div className="dd">
+      {(overview.connections.ai || waiting.length > 0) && (
+        <WaitingForManager cases={waiting} session={session} onOpenCase={onOpenCase} onChanged={onChanged} notify={notify} />
+      )}
+      <section className="ec-card">
         <div className="ec-head">
-          <div><h2>Call red flags</h2><p className="ec-muted">The AI rates each call transcript excellent, good or bad as it arrives. Calls rated bad are listed here with what went wrong and what to change. AI findings require a human review.</p></div>
+          <div><h2>Calls rated bad</h2><p className="ec-muted">The AI rates each call transcript excellent, good or bad as it arrives. Calls rated bad are listed here with what went wrong and what to change. AI findings require a human review.</p></div>
         </div>
         {!overview.connections.ai ? <p className="ec-alert">AI call review is switched off, so transcripts are not being rated.</p> : (
           <div className="ec-table-wrap">
@@ -167,64 +126,46 @@ export default function Director({ overview, month, session, onMonth, onChanged,
           </div>
         )}
         <RatingRules />
-        {!overview.connections.ai && <p className="ec-muted">AI case review is switched off.</p>}
       </section>
-
-      {(overview.connections.ai || waiting.length > 0) && (
-        <WaitingForManager cases={waiting} session={session} onOpenCase={onOpenCase} onChanged={onChanged} notify={notify} />
-      )}
-
-      <section className="ec-card ec-preview-options">
-        <div><h2>See the operator’s call desk</h2><p>Your director access includes every specialist. Preview their individual queues and daily progress here.</p></div>
-        <div className="ec-buttons">
-          {overview.agents.map(agent => (
-            <button key={agent.id} type="button" className="primary" onClick={() => onPreview(agent.id)}>View {agent.display_name.split(' ')[0]}’s screen</button>
-          ))}
-          {!overview.agents.length && <span className="ec-muted">No active agent profiles. Add one under Zoom Phone.</span>}
-        </div>
-      </section>
-
-      <div className="ec-grid">
-        {stats.map(([label, value, hint]) => <div key={label} className="ec-card ec-stat"><span>{label}</span><strong>{value}</strong><span>{hint}</span></div>)}
-      </div>
-
-      <section className="ec-card">
-        <div className="ec-head">
-          <h2>Operator performance</h2>
-          <div className="ec-buttons">
-            <label>Report month <input type="month" value={month} max={overview.today.slice(0, 7)} onChange={event => event.target.value && onMonth(event.target.value)} /></label>
-            <button type="button" onClick={() => setReport(true)}>Monthly report</button>
-          </div>
-        </div>
-        <div className="ec-table-wrap">
-          <table>
-            <thead><tr><th>Specialist</th><th>Calls today</th><th>Connected time</th><th>Call quality</th><th>Missed calls</th><th>Broken promises</th><th>Points today</th><th>Achievements</th></tr></thead>
-            <tbody>
-              {overview.agents.map(agent => (
-                <tr key={agent.id}>
-                  <td><strong>{agent.display_name}</strong><small>{agent.sync.last_success_at ? `Zoom synced ${when(agent.sync.last_success_at)}` : 'Zoom sync pending'}</small></td>
-                  <td>{agent.today.attempts}<small>{agent.today.connected} connected</small></td>
-                  <td>{duration(agent.today.seconds)}<small>Target {duration(agent.target_seconds)}</small></td>
-                  <td>{quality(overview, agent)}</td>
-                  <td>{mine(agent).filter(c => c.missed_call).length}<small>open cases, last call unanswered</small></td>
-                  <td>{mine(agent).filter(c => c.promise_missed).length}<small>deadline passed, nothing done</small></td>
-                  <td>{points(agent.today, agent.target_seconds)}</td>
-                  <td>{badges(agent.today, agent.target_seconds).map(name => <span key={name} className="ec-tag">★ {name}</span>)}{!badges(agent.today, agent.target_seconds).length && '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <Chart overview={overview} />
-        <p className="ec-muted">Missed calls and broken promises count the open cases of each specialist’s allocated learners (the shared queue is not included). Time is taken from Zoom Phone. Duration points stop at the daily target; unscored calls are not scored as zero.</p>
-      </section>
-
-      <div style={{ height: '1.2rem' }} />
-      <CallLog agentId={null} manager revision={overview.generated_at} onOpen={onOpenCase} />
-      <div style={{ height: '1.2rem' }} />
-      <Register overview={overview} onOpenCase={onOpenCase} />
-
+      <MissingRecordings revision={overview.generated_at} />
+      <TranscriptSearch manager />
       <CallReviewDialog call={flag} onClose={() => setFlag(null)} />
+    </div>
+  );
+}
+
+/** The calling register: where every open case stands, then the full list to filter and open. */
+export function CasesPage({ overview, onOpenCase }: { overview: Overview; onOpenCase: (id: number) => void }) {
+  const load = caseload(overview.cases);
+  return (
+    <div className="dd">
+      <div className="dd-figures">
+        <Figure label="Open cases" value={load.open} hint={overview.cases_truncated ? 'List truncated' : 'Across the calling register'} />
+        <Figure label="Due to call now" value={load.due} hint="Not waiting on a call-back, promise or evidence" />
+        <Figure label="Past their call date" value={load.late} tone={load.late ? 'bad' : undefined} hint="The call was due before today" />
+        <Figure label="In the shared queue" value={load.unallocated} hint="Not allocated to a specialist" />
+        <Figure label="Waiting for the learner" value={load.waiting} hint="Call-back booked or a promise running" />
+        <Figure label="Last call not answered" value={load.missed} hint="At the bottom of their list" />
+      </div>
+      <Register overview={overview} onOpenCase={onOpenCase} />
+    </div>
+  );
+}
+
+/** Weekly scorecards for every specialist, and the monthly report to download. */
+export function ScorecardsPage({ overview }: { overview: Overview }) {
+  const [report, setReport] = useState(false);
+  const totals = monthTotals(overview.agents);
+  return (
+    <div className="dd">
+      <section className="ec-card dd-report">
+        <div>
+          <h2>Monthly report · {overview.month}</h2>
+          <p className="ec-muted">{totals.attempts} calls, {duration(totals.seconds)} of talk time and {totals.resolved} cases resolved, per specialist. Change the month on the Overview.</p>
+        </div>
+        <button type="button" className="primary" onClick={() => setReport(true)}>Open the monthly report</button>
+      </section>
+      <Scorecard manager revision={overview.generated_at} />
       <Dialog open={report} onClose={() => setReport(false)}>
         <h2>Monthly engagement report · {overview.month}</h2>
         <div className="ec-report" dangerouslySetInnerHTML={{ __html: reportHTML(overview) }} />
@@ -235,6 +176,6 @@ export default function Director({ overview, month, session, onMonth, onChanged,
           Download report
         </button>
       </Dialog>
-    </>
+    </div>
   );
 }

@@ -8,8 +8,8 @@ from django.db import close_old_connections
 
 from django.utils import timezone
 
-from callcentre.cycle import run_call_sync, run_cycle
-from callcentre.cycle_requests import call_sync_requested
+from callcentre.cycle import run_call_sync, run_cycle, run_recording_sync, run_zoom_check
+from callcentre.cycle_requests import RECORDING_SYNC_REQUEST, ZOOM_CHECK_REQUEST, call_sync_requested, requested
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,21 @@ class Command(BaseCommand):
             self.stdout.write('Call Centre cycle stopped.')
 
     def wait(self, interval):
-        """Sleep until the next cycle. A finished in-page call (Smart Embed) brings a quick call sync forward."""
+        """Sleep until the next cycle. A finished call (in the page, or Zoom's webhook) brings a quick call sync forward;
+        a recording Zoom says is ready brings the recordings forward; another Zoom change, the check of the numbers."""
         deadline = time.monotonic() + interval
-        since = timezone.now()
+        since = {'call': timezone.now(), 'recording': timezone.now(), 'check': timezone.now()}
+        jobs = (('call', call_sync_requested, 'call_sync', run_call_sync),
+                ('recording', lambda moment: requested(RECORDING_SYNC_REQUEST, moment), 'recording_sync', run_recording_sync),
+                ('check', lambda moment: requested(ZOOM_CHECK_REQUEST, moment), 'zoom_check', run_zoom_check))
         while time.monotonic() < deadline:
             time.sleep(min(5, max(0, deadline - time.monotonic())))
-            try:
-                if call_sync_requested(since):
-                    since = timezone.now()
-                    self.stdout.write(json.dumps({'call_sync': run_call_sync()}, default=str))
-            except Exception:
-                logger.exception('Quick call sync failed')
-            finally:
-                close_old_connections()
+            for name, asked, label, job in jobs:
+                try:
+                    if asked(since[name]):
+                        since[name] = timezone.now()
+                        self.stdout.write(json.dumps({label: job()}, default=str))
+                except Exception:
+                    logger.exception('Early %s failed', label)
+                finally:
+                    close_old_connections()

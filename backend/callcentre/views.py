@@ -39,7 +39,7 @@ from .call_scope import system_case_calls
 from .history import monthly_history
 from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
-from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, holidays_from, missed_call, next_workday,
+from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, email_key, holidays_from, missed_call, next_workday,
                     normalize_phone, parse_moment, priority, promise_missed, same_contact)
 from .services import NOT_DISCUSSED, Conflict, agent_for, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
@@ -187,8 +187,17 @@ def with_followup_agent(cases):
 
 
 def rank(ticket, now):
-    """List order: the case priority."""
-    return priority(ticket, now)
+    """List order: a learner who called and was missed first, then the case priority."""
+    return (bool(getattr(ticket, 'called_back_at', None)), *priority(ticket, now))
+
+
+def with_callbacks(tickets):
+    """Mark each case whose learner called and is still waiting for a call back (inbound.open_callbacks)."""
+    from .inbound import open_callbacks
+    waiting = open_callbacks()
+    for ticket in tickets:
+        ticket.called_back_at = waiting.get(email_key(ticket.learner_email))
+    return tickets
 
 
 def ticket_json(ticket):
@@ -223,6 +232,7 @@ def ticket_json(ticket):
         'booking_links': booking_links(ticket.coach), 'bookable': lms_booking.session_types(ticket),
         'booking_email': ticket.source_type not in NO_BOOKING_EMAIL,
         'promised_at': ticket.promised_at, 'promise_missed': promise_missed(ticket, now), 'missed_call': missed_call(ticket),
+        'called_back_at': getattr(ticket, 'called_back_at', None),
         # What the learner can agree to (option -> days to do it); without options the specialist closes the case.
         'promises': PROMISES.get(ticket.source_type, {}), 'specialist_closes': ticket.source_type in SPECIALIST_CLOSES,
         'purpose': str(ticket.source_data.get('purpose') or '') if isinstance(ticket.source_data, dict) else '',
@@ -307,7 +317,7 @@ def overview(request):
     agent = agent_for(request.user)
     is_manager = is_director(request.user)
 
-    tickets = list(with_followup_agent(with_last_call(CaseTicket.objects.open().select_related('claimed_by'))))
+    tickets = with_callbacks(list(with_followup_agent(with_last_call(CaseTicket.objects.open().select_related('claimed_by')))))
     tickets.sort(key=lambda ticket: rank(ticket, now), reverse=True)
     allocated = owners()
     employers = manager_owners(allocated)
@@ -420,7 +430,7 @@ def queue(request):
         qs = qs.filter(learner_email__in=emails)
     groups = {}
     now = timezone.now()
-    for ticket in with_last_call(qs):
+    for ticket in with_callbacks(list(with_last_call(qs))):
         group = groups.setdefault(ticket.learner_email, {'learner_email': ticket.learner_email,
             'learner_name': ticket.learner_name, 'coach': ticket.coach, 'learner_phone': ticket.learner_phone,
             'tickets': [], '_priority': rank(ticket, now)})
@@ -829,3 +839,132 @@ def survey(request, token):
             return render(request, 'callcenter/survey.html', {'scores': range(1, 6), 'selected': score})
     except (signing.BadSignature, ObjectDoesNotExist, ValueError, KeyError, TypeError):
         return render(request, 'callcenter/survey.html', {'message': 'This survey link or response is invalid.'}, status=400)
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def inbound_view(request):
+    """Missed calls to follow up: learners' call-backs (their specialist) and enquiries from unknown numbers (directors,
+    and the specialist an enquiry was given to)."""
+    from . import inbound
+    agent = agent_for(request.user)
+    if not agent and not is_director(request.user):
+        raise PermissionDenied('An agent profile or director access is required.')
+    if request.method == 'POST':
+        data = body(request)
+        assign_to = data.get('agent_id')
+        inbound.change(int(data.get('id') or 0), request.user, agent, str(data.get('action') or ''), data.get('note', ''),
+                       int(assign_to) if assign_to else None)
+        return JsonResponse({'ok': True})
+    kind = request.GET.get('kind', 'callback')
+    status = request.GET.get('status', 'open')
+    days = int(request.GET.get('days', '7'))
+    if kind not in (inbound.Inbound.CALLBACK, inbound.Inbound.ENQUIRY) or status not in ('open', 'done') or days not in CALL_LOG_DAYS:
+        raise ValueError('Invalid list, status or period.')
+    of_agent = None
+    if request.GET.get('agent_id') and is_director(request.user):
+        of_agent = Agent.objects.filter(pk=int(request.GET['agent_id']) if request.GET['agent_id'].isdigit() else 0).select_related('user').first()
+        if not of_agent:
+            raise ValueError('That specialist is not in the list.')
+    payload = inbound.listing(request.user, agent, kind, status, days, of_agent=of_agent)
+    if is_director(request.user):
+        payload['agents'] = list(Agent.objects.filter(active=True).order_by('display_name').values('id', 'display_name'))
+    return JsonResponse(payload)
+
+
+@authenticated
+@require_GET
+def scorecard_view(request):
+    """One week's scorecards (any past week, Monday to Sunday): a director sees every specialist, a specialist their own."""
+    from .scorecard import scorecards, week_of
+    today = timezone.now().astimezone(LONDON).date()
+    monday = week_of(date.fromisoformat(request.GET.get('week') or today.isoformat()))
+    if monday > today:
+        raise ValueError('Choose this week or an earlier one.')
+    if is_director(request.user):
+        return JsonResponse(scorecards(monday))
+    agent = agent_for(request.user)
+    if not agent:
+        raise PermissionDenied('An agent profile is required.')
+    return JsonResponse(scorecards(monday, [agent]))
+
+
+@authenticated
+@require_GET
+def missing_recordings_view(request):
+    """Answered calls Zoom kept no recording of (no transcript, no AI review): everyone's for a director, else one's own."""
+    from .scorecard import missing_recordings
+    days = int(request.GET.get('days', '7'))
+    if days not in CALL_LOG_DAYS:
+        raise ValueError('Invalid period.')
+    now = timezone.now()
+    agents = None
+    if not is_director(request.user):
+        agent = agent_for(request.user)
+        if not agent:
+            raise PermissionDenied('An agent profile is required.')
+        agents = [agent]
+    return JsonResponse({'calls': missing_recordings(now - timedelta(days=days), now, agents, now)})
+
+
+@authenticated
+@require_GET
+def transcript_search_view(request):
+    """Which calls mentioned a phrase: every specialist's for a director, else one's own."""
+    from .transcript_search import search
+    days = int(request.GET.get('days', '30'))
+    if days not in CALL_LOG_DAYS:
+        raise ValueError('Invalid period.')
+    agent = None
+    if not is_director(request.user):
+        agent = agent_for(request.user)
+        if not agent:
+            raise PermissionDenied('An agent profile is required.')
+    return JsonResponse(search(request.GET.get('q', ''), days, agent))
+
+
+@authenticated
+@require_GET
+def live_view(request):
+    """Calls ringing or in progress now (Zoom's webhooks): everyone's for a director, one's own for a specialist, with
+    whether webhooks are on at all (without them nothing is live)."""
+    from . import live_calls, presence, zoom_accounts
+    enabled = any(account.get('webhook_secret') for account in zoom_accounts.stored())
+    if is_director(request.user):
+        return JsonResponse({'enabled': enabled, 'calls': live_calls.current(), 'presence': presence.current()})
+    agent = agent_for(request.user)
+    if not agent:
+        raise PermissionDenied('An agent profile is required.')
+    return JsonResponse({'enabled': enabled, 'calls': live_calls.current(agent)})
+
+
+@authenticated
+@require_GET
+def zoom_changes_view(request):
+    """What changed in Zoom on the team's numbers (directors)."""
+    from .zoom_watch import recent
+    if not is_director(request.user):
+        raise PermissionDenied('Only a director sees the changes in Zoom.')
+    days = int(request.GET.get('days', '30'))
+    if days not in CALL_LOG_DAYS:
+        raise ValueError('Invalid period.')
+    return JsonResponse(recent(days))
+
+
+@authenticated
+@require_GET
+def voicemail_audio(request, pk):
+    """Play a voicemail: streamed from Zoom, to a director or the specialist who sees its missed call."""
+    from django.http import FileResponse
+    from . import inbound
+    from .models import Inbound
+    from .voicemails import audio
+    agent = agent_for(request.user)
+    item = Inbound.objects.filter(voicemail_id=pk).select_related('voicemail').first()
+    if not item or not inbound.visible(Inbound.objects.filter(pk=item.pk), request.user, agent).exists():
+        raise PermissionDenied('This voicemail is not one of yours.')
+    file, content_type = audio(item.voicemail)
+    response = FileResponse(file, content_type=content_type)
+    response['Cache-Control'] = 'no-store'
+    return response

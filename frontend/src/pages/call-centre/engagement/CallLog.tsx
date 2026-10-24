@@ -19,8 +19,12 @@ type LoggedCase = {
 };
 type LoggedCall = {
   id: number; pressed_at: string; agent: { id: number; name: string }; learner_name: string; learner_email: string; number: string;
-  zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string };
+  zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string; short?: boolean };
   saved: boolean; cases: LoggedCase[];
+  /** The learner rang the specialist's number (no Call press); the after-call form works the same. */
+  incoming?: boolean;
+  /** From the end of the call to the after-call form being saved. */
+  wrap_up_seconds?: number | null;
 };
 export type CallLogData = {
   calls: LoggedCall[]; total: number; page: number; page_size: number; has_next: boolean;
@@ -122,7 +126,8 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
   const [who, setWho] = useState('');
   const [recording, setRecording] = useState<number | null>(null);
   const params = new URLSearchParams({ days: String(days), page: String(page) });
-  const chosen = manager ? who : agentId === null ? '' : String(agentId);
+  // A manager picks a specialist, unless the page is about one already.
+  const chosen = manager && agentId === null ? who : agentId === null ? '' : String(agentId);
   if (chosen) params.set('agent_id', chosen);
   const { data, error, loading, refresh } = useCallCentre<CallLogData>(`call-log/?${params}`);
   useEffect(() => { refresh(); }, [revision, refresh]);
@@ -137,7 +142,7 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
               satisfaction feedback. A call made from the Zoom app directly is not here.</p>
           </div>
           <div className="ec-buttons">
-            {manager && (
+            {manager && agentId === null && (
               <label>Specialist
                 <select value={who} onChange={event => { setWho(event.target.value); setPage(1); }}>
                   <option value="">Everyone</option>
@@ -173,12 +178,15 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
                 <div className="ed-history-call-main">
                   <div className="ed-history-contact">
                     <time dateTime={call.pressed_at}>{when(call.pressed_at)}{manager ? ` · ${call.agent.name}` : ''}</time>
+                    {call.incoming && <span className="ec-tag">The learner rang</span>}
                     <h3>{call.learner_name || call.number}</h3>
                     <div><span>{call.learner_email}</span><span>{call.number}</span></div>
                   </div>
                   <div className="ed-history-call-result">
                     <ZoomResult zoom={call.zoom} />
+                    {call.zoom.short && <small className="danger" title="Zoom reports it answered, but for only a few seconds: usually the learner’s voicemail.">Answered under 10 s: voicemail?</small>}
                     {!call.saved && <small className="danger">After-call form not saved</small>}
+                    {call.wrap_up_seconds != null && <small>Form saved {minutes(call.wrap_up_seconds)} after the call</small>}
                     {call.zoom.id !== null && call.zoom.transcript !== 'none' && (
                       <button type="button" onClick={() => setRecording(call.zoom.id)}>
                         {call.zoom.transcript === 'ready' ? 'Recording & transcript' : 'Recording (transcript pending)'}</button>

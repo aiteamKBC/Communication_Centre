@@ -339,12 +339,13 @@ export const DESK_MENUS: [string, string, string][] = [
   ['next', 'Next call', 'phone'], ['learners', 'Call a learner', 'phone'],
   ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
   ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'], ['calls', 'My last calls', 'phone'],
+  ['rang', 'Missed calls', 'phone'], ['week', 'My week', 'chart'],
   ['history', 'Monthly achievements', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
   ['reports', 'Reports', 'file'],
 ];
 
 /** An employer specialist's desk: the employer calls and their own records, no learner lists. */
-const EMPLOYER_DESK = new Set(['next', 'learners', 'employer_satisfaction', 'followups', 'calls', 'history', 'progress', 'reviews', 'reports']);
+const EMPLOYER_DESK = new Set(['next', 'learners', 'employer_satisfaction', 'followups', 'calls', 'rang', 'week', 'history', 'progress', 'reviews', 'reports']);
 
 /** The desk's menu: with employer specialists chosen, only theirs for them (with Call a learner, for any learner) and
  * no employer calls for the rest; otherwise everything but Call a learner. */

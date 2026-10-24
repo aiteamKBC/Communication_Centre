@@ -144,6 +144,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
       </Dialog>
       <h2 className="ed-next-name">{current.learner_name}</h2>
       <p className="ec-muted">{current.programme || 'Programme not recorded'} · Coach: {current.coach || 'not recorded'} · {current.learner_phone}</p>
+      {current.called_back_at && <p className="ec-tag red">Rang us {when(current.called_back_at)} and nobody answered: call back now</p>}
       {current.missed_call && <p className="ec-tag">Missed call · {current.attempts} unanswered</p>}
       {current.promise_missed && <p className="ec-tag">Promise missed: call again</p>}
       <button type="button" className="ed-sheet-link" onClick={() => onOpen(current.id)}>All cases ({allCases}{overview.cases_truncated ? '+' : ''})</button>

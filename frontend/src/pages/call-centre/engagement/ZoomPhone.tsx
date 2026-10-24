@@ -6,6 +6,7 @@ import Dialog from './Dialog';
 import ErrorNotice, { Field } from './ErrorNotice';
 import { fieldProblem, focusField } from './formErrors';
 import type { FieldProblem, Problem } from './formErrors';
+import { ZoomChanges } from './LiveCalls';
 import ZoomAccountsSection from './ZoomAccounts';
 import type { ZoomAccount, ZoomAccounts } from './ZoomAccounts';
 import { human, when } from './model';
@@ -295,6 +296,8 @@ function NumbersAndAgents({ csrf }: { csrf: string }) {
   return <>
     <ErrorNotice problem={problem} />
     <ZoomAccountsSection csrf={csrf} data={accounts} onChanged={changed} />
+    <div style={{ height: '1.2rem' }} />
+    <ZoomChanges />
     <PhoneLines csrf={csrf} data={lines} accounts={accounts?.accounts || []} onChanged={changed} />
     <Agents csrf={csrf} lines={lines?.lines || []} accounts={accounts?.accounts || []} revision={revision} onChanged={changed} />
   </>;

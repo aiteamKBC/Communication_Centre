@@ -10,26 +10,37 @@ import CoachPages from './engagement/CoachPages';
 import CaseWorkspace from './engagement/CaseWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
-import Director from './engagement/Director';
+import { CallsPage, CasesPage, QualityPage, ScorecardsPage } from './engagement/Director';
+import DirectorHome from './engagement/DirectorHome';
+import EmployerSpecialists from './engagement/EmployerSpecialists';
 import Imports from './engagement/Imports';
+import { useLive } from './engagement/live';
 import { DESK_MENUS, deskLabel, deskMenus, failingSources, human, longDate, setHolidays, when } from './engagement/model';
 import RequestCall from './engagement/RequestCall';
 import Settings from './engagement/Settings';
 import Shell from './engagement/Shell';
 import type { NavGroup } from './engagement/Shell';
+import { SpecialistIndex, SpecialistPage } from './engagement/Specialists';
 import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
+import './styles/director.css';
 
-const DIRECTOR_NAV: [string, string, string][] = [
-  ['director', 'Director overview', 'chart'], ['operator', 'Calling workspace', 'phone'], ['bookings', 'Coach booking links', 'calendar'],
-  ['allocations', 'Learner allocation', 'people'], ['imports', 'Import & export', 'upload'], ['phone', 'Zoom Phone', 'settings'],
-  ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
+// The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
+const DIRECTOR_NAV: [string, [string, string, string][]][] = [
+  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart']]],
+  ['Calls and cases', [['calls', 'Calls', 'clock'], ['quality', 'Call quality', 'shield'], ['cases', 'Calling register', 'file'],
+    ['operator', 'Calling desk', 'phone']]],
+  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
+    ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Director overview', bookings: 'Coach booking links', allocations: 'Learner allocation',
-  imports: 'Import & export', phone: 'Zoom Phone', connections: 'Make every conversation count',
-  settings: 'Settings',
+  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
+  quality: 'Call quality', cases: 'Calling register', bookings: 'Coach booking links', allocations: 'Learner allocation',
+  phone: 'Zoom Phone', settings: 'Settings',
 };
+// Pages folded into another: Import & export and Connections & rules now sit in Settings.
+const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings' };
+const LIVE_VIEWS = new Set(['director', 'specialists', 'specialist']);
 
 function signOut(navigate: ReturnType<typeof useNavigate>) {
   const user = readStoredAuthUser();
@@ -76,9 +87,13 @@ export default function CallCentrePage() {
 
   const role = overview?.access.role;
   const director = role === 'director';
-  const view = director ? params.get('view') || 'director' : params.get('view') === 'phone' ? 'phone' : 'operator';
+  const asked = params.get('view') || 'director';
+  const view = director ? MOVED[asked] || asked : params.get('view') === 'phone' ? 'phone' : 'operator';
   const inDesk = view === 'operator';
   const caseId = director && params.get('case') ? Number(params.get('case')) : null;
+  const specialistId = Number(params.get('agent')) || null;
+  // The board's live state (who is on a call, ringing, free), asked only while a page that shows it is open.
+  const { live, now } = useLive(5000, director && !caseId && LIVE_VIEWS.has(view));
 
   const ownAgent = overview?.access.agent_id ?? null;
   const deskAgentId = director ? Number(params.get('operator')) || ownAgent || overview?.agents[0]?.id || null : ownAgent;
@@ -113,18 +128,25 @@ export default function CallCentrePage() {
       ...(director ? [{ title: 'Director', items: [{ key: 'exit', label: 'Return to director', icon: 'back' }] }]
         : [{ title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] }]),
     ]
-    : director ? [{ title: 'Director', items: DIRECTOR_NAV.map(([key, label, icon]) => ({ key: `view:${key}`, label, icon })) }]
+    : director ? DIRECTOR_NAV.map(([title, items]) => ({ title, items: items.map(([key, label, icon]) => ({ key: `view:${key}`, label, icon })) }))
       : [
         { title: 'My calling day', items: menus.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
         { title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] },
       ];
-  const activeKey = inDesk ? `desk:${section}` : `view:${view}`;
+  const activeKey = inDesk ? `desk:${section}` : `view:${view === 'specialist' ? 'specialists' : view}`;
 
   function navigateTo(key: string) {
     if (key === 'exit') setParam({ view: null, operator: null, section: null, case: null });
     else if (key.startsWith('desk:')) setParam(director ? { section: key.slice(5) } : { view: null, section: key.slice(5) });
-    else if (key.startsWith('view:')) setParam({ view: key.slice(5) === 'director' ? null : key.slice(5), case: null, section: null });
+    else if (key.startsWith('view:')) go(key.slice(5));
   }
+
+  function go(next: string, extra: Record<string, string> = {}) {
+    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null });
+    window.scrollTo({ top: 0 });
+  }
+
+  const openCase = (id: number) => setParam({ case: String(id) });
 
   const status = <div className="ec-status" role="status" aria-live="polite" style={message?.error ? { color: '#963e48' } : undefined}>{message?.text || ''}</div>;
 
@@ -169,7 +191,7 @@ export default function CallCentrePage() {
       <div id="engagement-centre" className="ec">
         <div className="ec-head">
           <div>
-            <div className="ec-eyebrow">Kent Business College · Engagement</div>
+            <div className="ec-eyebrow">Kent Business College · Engagement{director ? ' · Director' : ''}</div>
             <h1>{caseId ? 'Learner call workspace' : TITLES[view] || 'Make every conversation count'}</h1>
             <div className="ec-muted">{longDate(overview.today)} · {overview.access.display_name}</div>
           </div>
@@ -184,19 +206,28 @@ export default function CallCentrePage() {
         <div id="ec-body">
           {caseId ? (
             <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
-          ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
-            : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
-              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
-                : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
-                  : view === 'connections' ? <Connections overview={overview} />
-                        : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
-                        : (
-                          <Director
-                            overview={overview} month={overview.month} session={session} onChanged={refresh} notify={notify}
-                            onMonth={value => setParam({ month: value })}
-                            onPreview={id => setParam({ view: 'operator', operator: String(id), section: null })} onOpenCase={id => setParam({ case: String(id) })}
-                          />
-                        )}
+          ) : view === 'allocations' ? (
+            <>
+              <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />
+              <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
+            </>
+          ) : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
+            : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
+              : view === 'settings' ? (
+                <>
+                  <Settings csrf={config.data?.csrf_token || ''} />
+                  <Connections overview={overview} />
+                  <Imports overview={overview} onAllocate={() => go('allocations')} />
+                </>
+              ) : view === 'specialists' ? <SpecialistIndex overview={overview} live={live} now={now} go={go} />
+                : view === 'specialist' && specialistId ? (
+                  <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go} session={session}
+                    onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
+                ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
+                  : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} />
+                    : view === 'quality' ? <QualityPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
+                      : view === 'cases' ? <CasesPage overview={overview} onOpenCase={openCase} />
+                        : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}
         </div>
         {director && (
           <RequestCall

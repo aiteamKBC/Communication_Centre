@@ -20,3 +20,21 @@ def request_call_sync(actor, gap=timedelta(seconds=30)):
 
 def call_sync_requested(since):
     return CycleState.objects.filter(name=CALL_SYNC_REQUEST, last_success_at__gt=since).exists()
+
+
+RECORDING_SYNC_REQUEST = 'recording_sync_request'
+ZOOM_CHECK_REQUEST = 'zoom_check_request'
+
+
+def request(name, actor, gap):
+    """Ask the worker for an early job (at most one per gap). Returns whether this asked."""
+    now = timezone.now()
+    state, _ = CycleState.objects.get_or_create(name=name)
+    if state.last_success_at and state.last_success_at > now - gap:
+        return False
+    CycleState.objects.filter(name=name).update(last_success_at=now, details={'by': actor})
+    return True
+
+
+def requested(name, since):
+    return CycleState.objects.filter(name=name, last_success_at__gt=since).exists()

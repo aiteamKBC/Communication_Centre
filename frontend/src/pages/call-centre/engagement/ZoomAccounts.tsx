@@ -6,7 +6,7 @@ import { fieldProblem, focusField } from './formErrors';
 import type { FieldProblem, Problem } from './formErrors';
 import { when } from './model';
 
-type Check = { name: string; label: string; ok: boolean; used_for: string; message: string; scopes?: string[] };
+type Check = { name: string; label: string; ok: boolean; used_for: string; message: string; scopes?: string[]; optional?: boolean };
 type AccountTest = { status: 'working' | 'partial' | 'failed'; tested_at: string; problem: { field: string; message: string } | null; checks: Check[] };
 export type ZoomAccount = {
   key: string; label: string; account_id: string; client_id: string; secret_saved: boolean; secret_end: string; secret_readable: boolean;
@@ -89,8 +89,8 @@ function TestResult({ test }: { test: AccountTest }) {
       <span className={`ec-tag ${tone}`}>{label}</span>
       {test.problem && <small className="danger">{test.problem.message}</small>}
       {test.checks.map(check => (
-        <small key={check.name} className={check.ok ? '' : 'danger'}>
-          {check.ok ? '✓' : '✗'} {check.label} ({check.used_for}){check.ok ? '' : `: ${check.message}`}</small>
+        <small key={check.name} className={check.ok || check.optional ? '' : 'danger'}>
+          {check.ok ? '✓' : check.optional ? '–' : '✗'} {check.label} ({check.used_for}){check.ok ? '' : `: ${check.message}`}</small>
       ))}
       <small>Tested {when(test.tested_at)}</small>
     </>
@@ -122,6 +122,23 @@ function AccountNumbers({ csrf, account, accounts, onChanged, onClose }: {
   const [problem, setProblem] = useState<Problem>(null);
   const [busy, setBusy] = useState('');
   const [search, setSearch] = useState('');
+  const [renaming, setRenaming] = useState<{ number: string; name: string } | null>(null);
+
+  async function rename() {
+    if (!renaming) return;
+    setProblem(null);
+    setBusy(renaming.number);
+    try {
+      const done = await post<{ display_name: string }>('zoom-accounts/', csrf, { action: 'rename', key: account.key, number: renaming.number, display_name: renaming.name });
+      setNumbers(current => (current || []).map(row => (row.number === renaming.number ? { ...row, display_name: done.display_name } : row)));
+      setRenaming(null);
+      onChanged();
+    } catch (error) {
+      setProblem({ action: `Renaming ${renaming.number} in Zoom`, error });
+    } finally {
+      setBusy('');
+    }
+  }
 
   useEffect(() => {
     post<{ numbers: ZoomNumber[] }>('zoom-accounts/', csrf, { action: 'numbers', key: account.key })
@@ -153,7 +170,8 @@ function AccountNumbers({ csrf, account, accounts, onChanged, onClose }: {
       <div className="ec-head">
         <div>
           <h4>Numbers on {account.label}{numbers ? ` (${numbers.length})` : ''}</h4>
-          <p className="ec-muted">As Zoom lists them. Add puts a number in Phone numbers (below) on this account; then give it to a specialist.</p>
+          <p className="ec-muted">As Zoom lists them. Add puts a number in Phone numbers (below) on this account; then give it to a specialist. Rename changes
+            the number’s name in Zoom (needs the app’s phone numbers write scope): Zoom shows it in its apps, but most UK mobiles show learners only the number.</p>
         </div>
         <div className="ec-buttons">
           {numbers && numbers.length > 8 && <input type="search" aria-label="Search numbers" placeholder="Search number, name or owner" value={search} onChange={event => setSearch(event.target.value)} />}
@@ -170,7 +188,16 @@ function AccountNumbers({ csrf, account, accounts, onChanged, onClose }: {
             <tbody>
               {shown.map(item => (
                 <tr key={item.number}>
-                  <td><strong>{item.number}</strong>{item.display_name && <small>{item.display_name}</small>}{item.site && <small>Site {item.site}</small>}</td>
+                  <td><strong>{item.number}</strong>
+                    {renaming?.number === item.number ? (
+                      <div className="ec-buttons">
+                        <input aria-label={`New name for ${item.number}`} maxLength={64} value={renaming.name} onChange={event => setRenaming({ ...renaming, name: event.target.value })} />
+                        <button type="button" className="primary" disabled={!!busy || !renaming.name.trim()} onClick={() => void rename()}>{busy === item.number ? 'Saving…' : 'Save in Zoom'}</button>
+                        <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+                      </div>
+                    ) : <>{item.display_name && <small>{item.display_name}</small>}
+                      <button type="button" className="ed-log-link" onClick={() => setRenaming({ number: item.number, name: item.display_name })}>Rename in Zoom</button></>}
+                    {item.site && <small>Site {item.site}</small>}</td>
                   <td>{item.assignee || <span className="ec-muted">Not assigned</span>}
                     {item.assignee && <small>{OWNER_TYPES[item.assignee_type] || item.assignee_type}{item.extension ? ` · ext. ${item.extension}` : ''}</small>}</td>
                   <td>{item.status || '—'}{!!item.capability.length && <small>{item.capability.join(', ')}</small>}</td>

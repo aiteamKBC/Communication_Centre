@@ -1,0 +1,177 @@
+/* The director's dashboard (.dd), in the Engagement Centre's own colours: KBC purple, the sidebar's aubergine and lilac,
+   teal for answered calls, gold for targets, DM Serif Display for the figures and DM Sans for everything else. */
+.kbc-portals .ec {
+  --dd-ink: #202139; --dd-muted: #66677b; --dd-line: #e4e3ec; --dd-soft: #f4f1f9;
+  --dd-purple: #60359a; --dd-deep: #4f2d7f; --dd-aubergine: #29163d; --dd-lilac: #ceb3eb;
+  --dd-teal: #268a8b; --dd-gold: #bb8a32; --dd-good: #28614b; --dd-bad: #963e48;
+  --dd-serif: 'DM Serif Display', Georgia, serif;
+}
+
+/* Page titles of the director's pages carry the serif, as the figures do. */
+.kbc-portals #engagement-centre:not(.ed) > .ec-head h1 { font-family: var(--dd-serif); font-weight: 400; font-size: 2.1rem; letter-spacing: -.01em; line-height: 1.15; }
+
+.kbc-portals .dd { display: grid; gap: 1.5rem; margin-top: .4rem; }
+.kbc-portals .dd > .ec-card, .kbc-portals .dd > .ed-history, .kbc-portals .dd > .dd-log > .ed-history > .ec-card:first-child { margin-top: 0; }
+.kbc-portals .dd-muted { color: var(--dd-muted); font-size: .9rem; margin: 0 0 .6rem; }
+.kbc-portals .dd-empty { color: var(--dd-muted); margin: .6rem 0; }
+.kbc-portals .dd-bad { color: var(--dd-bad); }
+.kbc-portals .dd-eyebrow { margin: 0 0 .15rem; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); }
+
+/* ---- The switchboard: one dark panel, one line per specialist ---- */
+.kbc-portals .dd-board {
+  background: radial-gradient(120% 140% at 100% 0%, #3b2058 0%, var(--dd-aubergine) 55%);
+  color: #efe9f7; border-radius: 16px; padding: 1.2rem 1.3rem .6rem; box-shadow: 0 10px 30px rgba(41, 22, 61, .18);
+}
+.kbc-portals .dd-board > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: .5rem; }
+.kbc-portals .dd-board h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 1.55rem; margin: 0; color: #fff; }
+.kbc-portals .dd-board header p { margin: .1rem 0 0; font-size: .85rem; color: var(--dd-lilac); }
+.kbc-portals .dd-board-key { display: flex; gap: .9rem; flex-wrap: wrap; list-style: none; margin: .35rem 0 0; padding: 0; font-size: .78rem; color: rgba(239, 233, 247, .75); }
+.kbc-portals .dd-board-key li { display: inline-flex; align-items: center; gap: .4rem; }
+.kbc-portals .dd-board-key .dd-lamp { width: 9px; height: 9px; }
+.kbc-portals .dd-lines { list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-line + .dd-line { border-top: 1px solid rgba(206, 179, 235, .13); }
+.kbc-portals .workspace-app .ec .dd-line > button, .kbc-portals .workspace-app .ec .dd-line > div {
+  display: grid; grid-template-columns: 14px minmax(150px, 1.3fr) 82px minmax(120px, 2fr) 104px; align-items: center; gap: 1rem;
+  width: 100%; padding: .8rem .5rem; margin: 0; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; font: inherit;
+}
+.kbc-portals .workspace-app .ec .dd-line > button { cursor: pointer; transition: background .15s; }
+.kbc-portals .workspace-app .ec .dd-line > button:hover { background: rgba(206, 179, 235, .08); border: 0; }
+.kbc-portals .dd-line-who { display: grid; min-width: 0; }
+.kbc-portals .dd-line-who strong { color: #fff; font-weight: 600; }
+.kbc-portals .dd-line-who span { font-size: .85rem; color: rgba(239, 233, 247, .72); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbc-portals .dd-line.talking .dd-line-who span { color: #8fe3bf; }
+.kbc-portals .dd-line.ringing .dd-line-who span { color: #f5c76b; }
+.kbc-portals .dd-line-calls, .kbc-portals .dd-line-time { display: grid; font-size: .8rem; color: rgba(239, 233, 247, .7); font-variant-numeric: tabular-nums; }
+.kbc-portals .dd-line-calls b, .kbc-portals .dd-line-time b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.25rem; color: #fff; line-height: 1.1; }
+.kbc-portals .dd-line-calls small, .kbc-portals .dd-line-time small { font-size: .75rem; }
+.kbc-portals .dd-line-time { text-align: right; }
+.kbc-portals .dd-line-empty { padding: 1rem .5rem; color: var(--dd-lilac); }
+.kbc-portals .dd-board-shared { font-size: .85rem; color: var(--dd-lilac); margin: .4rem .5rem .6rem; }
+
+.kbc-portals .dd-lamp { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex: none; background: rgba(255, 255, 255, .16); }
+.kbc-portals .dd-lamp.talking { background: #3fd69a; box-shadow: 0 0 0 3px rgba(63, 214, 154, .2), 0 0 12px rgba(63, 214, 154, .7); }
+.kbc-portals .dd-lamp.ringing { background: #f2b544; box-shadow: 0 0 10px rgba(242, 181, 68, .8); animation: dd-ring 1s ease-in-out infinite; }
+.kbc-portals .dd-lamp.free { background: transparent; box-shadow: inset 0 0 0 2px var(--dd-lilac); }
+@keyframes dd-ring { 50% { opacity: .35; } }
+
+/* Talk time against target: lilac filling up, gold once the target is met. */
+.kbc-portals .dd-meter { display: block; position: relative; height: 8px; border-radius: 99px; background: rgba(206, 179, 235, .16); overflow: hidden; }
+.kbc-portals .dd-meter-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #a77fd8, var(--dd-lilac)); transition: width .6s ease; }
+.kbc-portals .dd-meter-fill.met { background: linear-gradient(90deg, #c99a3f, #ecc777); }
+.kbc-portals .dd-meter.light { background: #eeeaf6; }
+.kbc-portals .dd-meter.light .dd-meter-fill:not(.met) { background: linear-gradient(90deg, var(--dd-deep), var(--dd-purple)); }
+
+/* ---- Needs you ---- */
+.kbc-portals .dd-needs { display: flex; align-items: center; gap: .8rem 1.2rem; flex-wrap: wrap; }
+.kbc-portals .dd-needs h2 { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); }
+.kbc-portals .dd-needs ul { display: flex; flex-wrap: wrap; gap: .5rem; list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-needs p { margin: 0; color: var(--dd-good); }
+.kbc-portals .workspace-app .ec .dd-needs button {
+  display: inline-flex; align-items: baseline; gap: .45rem; padding: .4rem .8rem; border: 1px solid var(--dd-line); border-radius: 99px; background: #fff; font-size: .9rem;
+}
+.kbc-portals .workspace-app .ec .dd-needs button:hover { border-color: var(--dd-purple); background: var(--dd-soft); }
+.kbc-portals .dd-needs b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.15rem; color: var(--dd-purple); line-height: 1; }
+.kbc-portals .dd-needs button span { color: var(--dd-purple); }
+
+/* ---- Sections, figures and panels ---- */
+.kbc-portals .dd-section { display: grid; gap: 1rem; }
+.kbc-portals .dd-section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-section-head h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 1.65rem; margin: 0; line-height: 1.15; }
+.kbc-portals .dd-month { display: grid; gap: .2rem; font-size: .8rem; color: var(--dd-muted); }
+
+.kbc-portals .dd-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+.kbc-portals .dd-figure { display: grid; align-content: start; padding: .9rem 1rem 1rem; background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; }
+.kbc-portals .dd-figure > span { font-size: .82rem; font-weight: 600; color: var(--dd-muted); }
+.kbc-portals .dd-figure strong { font-family: var(--dd-serif); font-weight: 400; font-size: 2.05rem; line-height: 1.1; margin: .25rem 0 .2rem; color: var(--dd-ink); font-variant-numeric: tabular-nums; }
+.kbc-portals .dd-figure small { font-size: .78rem; color: var(--dd-muted); line-height: 1.35; }
+.kbc-portals .dd-figure.bad strong { color: var(--dd-bad); }
+.kbc-portals .dd-figure.bad { border-color: #efd3d6; }
+
+.kbc-portals .dd-panel { background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; padding: 1.1rem 1.2rem; min-width: 0; }
+.kbc-portals .dd-panel h3 { margin: 0 0 .2rem; font-size: 1.02rem; font-weight: 600; }
+.kbc-portals .dd-panel.dd-flush { padding: .3rem .4rem; }
+.kbc-portals .dd-pair, .kbc-portals .dd-trio { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+@media (min-width: 1000px) { .kbc-portals .dd-pair { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 760px) { .kbc-portals .dd-trio { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1200px) { .kbc-portals .dd-trio { grid-template-columns: 1.15fr 1fr 1fr; } }
+.kbc-portals .dd-chart { margin-top: .4rem; }
+.kbc-portals .dd-chart .recharts-legend-item-text { color: var(--dd-ink) !important; }
+.kbc-portals .dd-total { margin: .8rem 0 0; font-size: .9rem; color: var(--dd-muted); }
+.kbc-portals .dd-total b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.3rem; color: var(--dd-ink); }
+.kbc-portals .dd-panel > button { margin-top: .8rem; }
+
+/* Horizontal bars: label, track, count. */
+.kbc-portals .dd-bars { list-style: none; margin: .7rem 0 0; padding: 0; display: grid; gap: .15rem; }
+.kbc-portals .workspace-app .ec .dd-bars li > button, .kbc-portals .workspace-app .ec .dd-bars li > div {
+  display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(60px, 1fr) 2.6rem; align-items: center; gap: .7rem;
+  width: 100%; padding: .35rem .4rem; margin: 0; border: 0; border-radius: 8px; background: transparent; text-align: left; font: inherit; color: inherit;
+}
+.kbc-portals .workspace-app .ec .dd-bars li > button:hover { background: var(--dd-soft); border: 0; }
+.kbc-portals .dd-bar-label { font-size: .88rem; line-height: 1.3; min-width: 0; }
+.kbc-portals .dd-bar-label small { display: block; color: var(--dd-muted); font-size: .76rem; }
+.kbc-portals .dd-bar-track { display: block; height: 10px; border-radius: 99px; background: #f0edf5; overflow: hidden; }
+.kbc-portals .dd-bar-track > span { display: block; height: 100%; border-radius: inherit; background: var(--dd-purple); }
+.kbc-portals .dd-bars.teal .dd-bar-track > span { background: var(--dd-teal); }
+.kbc-portals .dd-bars.red .dd-bar-track > span { background: var(--dd-bad); }
+.kbc-portals .dd-bars b { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Call quality: excellent / good / bad as one strip. */
+.kbc-portals .dd-quality { display: grid; gap: .3rem; min-width: 150px; }
+.kbc-portals .dd-quality-strip { display: flex; gap: 2px; height: 8px; border-radius: 99px; overflow: hidden; }
+.kbc-portals .dd-quality-strip i { display: block; flex-basis: 0; }
+.kbc-portals .dd-quality-strip i.excellent { background: var(--dd-teal); }
+.kbc-portals .dd-quality-strip i.good { background: #a98bd6; }
+.kbc-portals .dd-quality-strip i.bad { background: #c4505c; }
+.kbc-portals .dd-quality small { font-size: .8rem; color: var(--dd-muted); }
+.kbc-portals .dd-team-quality { margin: .9rem 0 .2rem; }
+.kbc-portals .dd-team-quality .dd-quality-strip { height: 14px; }
+.kbc-portals .dd-team-quality small { font-size: .9rem; }
+.kbc-portals .dd-muted.dd-quality, .kbc-portals span.dd-muted { font-size: .85rem; color: var(--dd-muted); }
+
+/* The team table. */
+.kbc-portals .dd-table td, .kbc-portals .dd-table th { vertical-align: middle; }
+.kbc-portals .workspace-app .ec .dd-name { display: inline-flex; align-items: center; gap: .6rem; padding: 0; border: 0; background: none; font-weight: 600; color: var(--dd-ink); text-align: left; }
+.kbc-portals .workspace-app .ec .dd-name:hover { color: var(--dd-purple); background: none; text-decoration: underline; text-underline-offset: 3px; }
+.kbc-portals .dd-name i { display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--dd-soft); color: var(--dd-purple); font: 400 .95rem var(--dd-serif); }
+
+/* ---- Specialists ---- */
+.kbc-portals .dd-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 1rem; }
+.kbc-portals .workspace-app .ec .dd-person {
+  display: grid; gap: .9rem; align-content: start; padding: 1.1rem 1.2rem 1.2rem; text-align: left; background: #fff;
+  border: 1px solid var(--dd-line); border-radius: 14px; color: var(--dd-ink); transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.kbc-portals .workspace-app .ec .dd-person:hover { border-color: var(--dd-purple); background: #fff; box-shadow: 0 8px 22px rgba(79, 45, 127, .1); transform: translateY(-1px); }
+.kbc-portals .dd-person-head { display: grid; }
+.kbc-portals .dd-person-head strong { font-family: var(--dd-serif); font-weight: 400; font-size: 1.45rem; line-height: 1.15; }
+.kbc-portals .dd-person-head span, .kbc-portals .dd-person-today small { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-today { display: grid; gap: .35rem; }
+.kbc-portals .dd-person-figures { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; font-size: .75rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-figures span { display: grid; }
+.kbc-portals .dd-person-figures b { font-size: 1rem; color: var(--dd-ink); font-variant-numeric: tabular-nums; }
+
+.kbc-portals .dd-crumbs { display: flex; align-items: center; gap: .4rem 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-crumbs-others { display: flex; gap: .3rem; flex-wrap: wrap; }
+.kbc-portals .workspace-app .ec .dd-crumbs-others button { padding: .15rem .6rem; border-radius: 99px; font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-person-title h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 2.4rem; line-height: 1.05; margin: 0 0 .3rem; }
+.kbc-portals .dd-person-title .dd-muted { margin: 0; }
+.kbc-portals .dd-flags { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .3rem; }
+.kbc-portals .workspace-app .ec .dd-flags button { display: grid; width: 100%; text-align: left; padding: .45rem .6rem; border-radius: 8px; border-color: #f0dadd; font-size: .85rem; line-height: 1.35; }
+.kbc-portals .dd-flags button span { font-size: .75rem; color: var(--dd-bad); }
+
+.kbc-portals .dd-report { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-report h2 { margin-bottom: .2rem; }
+
+@media (max-width: 760px) {
+  .kbc-portals .workspace-app .ec .dd-line > button, .kbc-portals .workspace-app .ec .dd-line > div { grid-template-columns: 14px 1fr auto; gap: .35rem .8rem; }
+  .kbc-portals .dd-line-calls { display: none; }
+  .kbc-portals .dd-meter { grid-column: 2 / -1; grid-row: 2; }
+  .kbc-portals .dd-line-time { grid-column: 3; grid-row: 1; }
+  .kbc-portals .dd-board { padding: 1rem .8rem .4rem; }
+  .kbc-portals #engagement-centre:not(.ed) > .ec-head h1 { font-size: 1.7rem; }
+  .kbc-portals .dd-person-title h2 { font-size: 1.9rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kbc-portals .dd-lamp.ringing { animation: none; }
+  .kbc-portals .dd-meter-fill, .kbc-portals .workspace-app .ec .dd-person { transition: none; }
+}

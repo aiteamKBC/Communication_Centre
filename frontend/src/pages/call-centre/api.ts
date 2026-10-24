@@ -38,6 +38,8 @@ export type Case = {
   promises: Record<string, number | null>; specialist_closes: boolean;
   /** The latest call went unanswered: the case sits at the bottom of its list. */
   missed_call: boolean;
+  /** The learner rang and nobody answered (inbound): their cases are at the top of the list until someone calls back. */
+  called_back_at: string | null;
   /** Session types the call centre can book straight into the coach's LMS calendar for this case. */
   bookable: ('catch-up' | 'student-support')[];
   /** The case has a booking email (the coach's booking link, or the review's rebooking link). */

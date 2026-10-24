@@ -18,6 +18,8 @@ IMPACT_KINDS = (
 IMPACT_WINDOW = timedelta(days=1)
 # A Call press Zoom has not reported after this long is not going to be matched.
 ZOOM_WAIT = timedelta(minutes=30)
+# An "answered" call this short is most likely the learner's voicemail picking up, not the learner.
+SHORT_ANSWER_SECONDS = 10
 FEEDBACK_FIELDS = ('score', 'problem', 'agreed_action', 'note')
 
 
@@ -25,9 +27,21 @@ def zoom_state(intent, now):
     call = intent.matched_call
     if call:
         return {'state': call.result, 'id': call.pk, 'started_at': call.started_at,
-                'duration_seconds': call.duration_seconds if call.result == 'answered' else 0}
+                'duration_seconds': call.duration_seconds if call.result == 'answered' else 0, 'short': short_answer(call)}
     return {'state': 'waiting' if intent.created_at > now - ZOOM_WAIT else 'not_matched', 'id': None,
-            'started_at': None, 'duration_seconds': None}
+            'started_at': None, 'duration_seconds': None, 'short': False}
+
+
+def short_answer(call):
+    """Zoom says answered, but for only a few seconds: probably voicemail, so "reached" is doubtful."""
+    return call.result == 'answered' and call.duration_seconds is not None and call.duration_seconds < SHORT_ANSWER_SECONDS
+
+
+def wrap_up_seconds(call, saved_at):
+    """From the end of the call to the after-call form being saved; None until both are known."""
+    if not call or not call.ended_at or not saved_at or saved_at < call.ended_at:
+        return None
+    return round((saved_at - call.ended_at).total_seconds())
 
 
 def transcripts(calls):
@@ -130,15 +144,15 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
     # A case's events belong to the call until the same specialist's next Call press on that case.
     later = defaultdict(list)
     events = defaultdict(list)
-    saved = set()
+    saved = {}
     if selected:
         first_press = min(intent.created_at for intent in selected)
         for agent_id, ticket_id, created_at in CallIntent.tickets.through.objects.filter(
                 caseticket_id__in=ticket_ids, callintent__created_at__gt=first_press).values_list(
                 'callintent__agent_id', 'caseticket_id', 'callintent__created_at'):
             later[(agent_id, ticket_id)].append(created_at)
-        saved = set(TicketEvent.objects.filter(kind='call_saved', data__intent_id__in=[intent.pk for intent in selected])
-                    .values_list('data__intent_id', flat=True))
+        saved = dict(TicketEvent.objects.filter(kind='call_saved', data__intent_id__in=[intent.pk for intent in selected])
+                     .values_list('data__intent_id', 'created_at'))
         for item in (TicketEvent.objects.filter(ticket_id__in=ticket_ids, kind__in=IMPACT_KINDS,
                                                 created_at__gte=first_press)
                      .order_by('created_at', 'id')):
@@ -159,8 +173,12 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
                           'status': ticket.status, 'resolution_option': ticket.resolution_option,
                           'next_followup_at': ticket.next_followup_at, **impact})
         first = min(intent.tickets.all(), key=lambda case: case.pk, default=None)
+        incoming = bool(intent.matched_call and intent.matched_call.direction == 'inbound')
         rows.append({
-            'id': intent.pk, 'pressed_at': intent.created_at, 'agent': {'id': intent.agent_id, 'name': intent.agent.display_name},
+            # An answered call from the learner (inbound.link_call) has no Call press: it starts when they rang.
+            'id': intent.pk, 'pressed_at': intent.matched_call.started_at if incoming else intent.created_at, 'incoming': incoming,
+            'wrap_up_seconds': wrap_up_seconds(intent.matched_call, saved.get(intent.pk)),
+            'agent': {'id': intent.agent_id, 'name': intent.agent.display_name},
             'learner_name': first.learner_name if first else '', 'learner_email': intent.learner_email, 'number': intent.number,
             'zoom': {**zoom_state(intent, now), 'transcript': found.get(intent.matched_call_id, 'none')},
             # Saved with the after-call form (calls before that form have outcomes but no saved mark).

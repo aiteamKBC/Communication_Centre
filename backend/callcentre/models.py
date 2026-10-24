@@ -421,3 +421,60 @@ class CoachBookingPage(models.Model):
     class Meta:
         db_table = 'callcenter_coach_booking_page'
         managed = False
+
+
+class ZoomVoicemail(models.Model):
+    """A voicemail left on one of the team's Zoom numbers, with Zoom's transcript. The audio stays in Zoom."""
+    source_account = models.CharField(max_length=16)
+    zoom_account_id = models.CharField(max_length=128)
+    voicemail_id = models.CharField(max_length=255)
+    call_history_id = models.CharField(max_length=255, blank=True)
+    call_id = models.CharField(max_length=255, blank=True)
+    caller_number = models.CharField(max_length=128, blank=True)
+    caller_name = models.CharField(max_length=255, blank=True)
+    callee_number = models.CharField(max_length=128, blank=True)
+    callee_name = models.CharField(max_length=255, blank=True)
+    owner_id = models.CharField(max_length=128, blank=True)
+    owner_name = models.CharField(max_length=255, blank=True)
+    received_at = models.DateTimeField()
+    duration_seconds = models.PositiveIntegerField(null=True)
+    zoom_status = models.CharField(max_length=16, blank=True)
+    transcript_status = models.CharField(max_length=16, default='pending')
+    transcript_text = models.TextField(blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_voicemail'
+        managed = False
+        constraints = [models.UniqueConstraint(fields=['zoom_account_id', 'voicemail_id'], name='callcenter_voicemail_unique')]
+        ordering = ['-received_at', '-id']
+
+
+class Inbound(Retained):
+    """A missed call or voicemail to follow up: a learner's (or line manager's) call-back, or an enquiry from a number
+    we do not know. Done when someone calls the number back, the caller gets through, or it is marked done."""
+    CALLBACK, ENQUIRY = 'callback', 'enquiry'
+    call = models.OneToOneField(ZoomPhoneCall, null=True, blank=True, on_delete=models.PROTECT, related_name='inbound')
+    voicemail = models.OneToOneField(ZoomVoicemail, null=True, blank=True, on_delete=models.PROTECT, related_name='inbound')
+    kind = models.CharField(max_length=12)
+    caller_number = models.CharField(max_length=32)
+    caller_name = models.CharField(max_length=255, blank=True)
+    caller_email = models.CharField(max_length=254, blank=True)
+    caller_role = models.CharField(max_length=20, blank=True)
+    line = models.CharField(max_length=32, blank=True)
+    received_at = models.DateTimeField()
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    assigned_agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    status = models.CharField(max_length=12, default='open')
+    done_how = models.CharField(max_length=20, blank=True)
+    done_by = models.CharField(max_length=255, blank=True)
+    done_at = models.DateTimeField(null=True, blank=True)
+    done_call = models.ForeignKey(ZoomPhoneCall, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_inbound'
+        managed = False
+        ordering = ['-received_at', '-id']

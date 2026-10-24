@@ -889,6 +889,19 @@ class ZoomAccountTests(TestCase):
         self.assertEqual(result['status'], 'partial')
         self.assertEqual(result['checks'][2]['scopes'], ['phone:read:list_numbers:admin'])
         self.assertIn('phone:read:list_numbers:admin', result['checks'][2]['message'])
+        # Zoom's token lists the granted scopes: the Zoom status needs one; renaming is optional and never makes it partial.
+        client = mock.Mock(scopes=frozenset({'phone:read:list_call_logs:admin', 'user:read:presence_status:admin'}))
+        client.api_get.return_value = Response(200, {})
+        with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
+            result = test('student', 'director')
+        found = {check['name']: check for check in result['checks']}
+        self.assertEqual((result['status'], found['presence']['ok'], found['rename']['ok']), ('working', True, False))
+        self.assertIn('phone:update:number:admin', found['rename']['message'])
+        client.scopes = frozenset({'phone:write:admin'})
+        with mock.patch('callcentre.zoom_accounts._sign_in', return_value=(client, None)):
+            result = test('student', 'director')
+        found = {check['name']: check for check in result['checks']}
+        self.assertEqual((result['status'], found['presence']['scopes'], found['rename']['ok']), ('partial', ['user:read:presence_status:admin'], True))
 
     def test_an_unexpected_server_error_reaches_the_page_with_a_reference(self):
         import json
@@ -1010,6 +1023,16 @@ class ZoomWebhookTests(TestCase):
         response = self.send({'event': 'phone.caller_call_log_completed', 'payload': {}})
         self.assertEqual((response.status_code, response.json()['queued']), (200, True))
         self.assertTrue(call_sync_requested(before))
+
+    def test_events_that_are_not_a_call_ending_do_not_read_the_call_history(self):
+        from .cycle_requests import ZOOM_CHECK_REQUEST, call_sync_requested, requested
+        before = timezone.now() - timedelta(seconds=1)
+        self.assertFalse(self.send({'event': 'phone.caller_ringing', 'payload': {}}).json()['queued'])   # live calls only
+        # Something else changed in Zoom: the numbers are checked, once within the hour.
+        self.assertEqual([self.send({'event': event, 'payload': {}}).json()['queued'] for event in ('phone.sms_sent', 'phone.fax_log_deleted')],
+                         [True, False])
+        self.assertFalse(call_sync_requested(before))
+        self.assertTrue(requested(ZOOM_CHECK_REQUEST, before))
 
     def test_a_request_not_signed_with_the_token_is_refused_and_the_reason_kept(self):
         from .cycle_requests import call_sync_requested

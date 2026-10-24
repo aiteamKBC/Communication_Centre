@@ -2,7 +2,9 @@
 
 Imported Zoom records and legacy manual matches are retained, but are not evidence
 of an in-system call. A matched dial request and the same attributed agent are
-required for progress, recordings and ticket actions.
+required for progress, recordings and ticket actions. An answered incoming call from
+a learner on their specialist's own number gets the same (inbound.link_call); counts
+of calls made filter on direction='outbound'.
 """
 from django.db.models import Exists, F, OuterRef, Q
 
@@ -12,7 +14,7 @@ from .models import CallMatch, CaseCall, ZoomPhoneCall, ZoomPhoneRecording
 def system_calls(queryset=None):
     calls = ZoomPhoneCall.objects.all() if queryset is None else queryset
     return calls.filter(
-        direction='outbound', callmatch__manual=False,
+        callmatch__manual=False,
         callintent__agent_id=F('callmatch__agent_id'),
     )
 

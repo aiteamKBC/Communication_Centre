@@ -12,7 +12,7 @@ def monthly_history(agent, lower, upper, now, page, page_size=30):
     # Retained in-system matches preserve attribution after identity or allocation changes.
     calls = list(system_calls().filter(
         Q(ended_at__isnull=True) | Q(ended_at__lte=now),
-        callmatch__agent=agent, started_at__gte=lower, started_at__lt=upper,
+        callmatch__agent=agent, direction='outbound', started_at__gte=lower, started_at__lt=upper,
         started_at__lte=now,
     ).select_related('callmatch').order_by('-started_at', '-id'))
 

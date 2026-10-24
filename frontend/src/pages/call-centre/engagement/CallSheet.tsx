@@ -272,7 +272,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       <CaseDates ticket={c} />
                       {c.helpdesk && <span>{c.helpdesk.ticket} · {helpdeskStatus(c.helpdesk)}</span>}
                       {c.helpdesk?.helpdesk_error && <small>Last status check failed: {c.helpdesk.helpdesk_error}</small>}
-                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.status === 'ai_suggested_close' ? 'AI suggests closing: waiting for a manager' : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} unanswered` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
+                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.status === 'ai_suggested_close' ? 'AI suggests closing: waiting for a manager' : c.called_back_at ? 'Rang us: call back now' : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} unanswered` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
                       <button type="button" className="ed-sheet-link" onClick={() => onOpen(c.id)}>Full case</button>
                       {(ticketsByContact.get(contactKey(c))?.length || 0) > 1 && (
                         <details>

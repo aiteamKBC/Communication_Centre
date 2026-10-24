@@ -172,7 +172,7 @@ def activity_log(request):
     month = request.GET.get('month') or today.strftime('%Y-%m')
     start = date.fromisoformat(month + '-01')
     end = date(start.year + start.month // 12, start.month % 12 + 1, 1)
-    outbound = system_calls()
+    outbound = system_calls().filter(direction='outbound')
     # order_by() clears the model's default ordering, which would otherwise defeat DISTINCT.
     months = sorted({value.astimezone(LONDON).strftime('%Y-%m') for value in outbound.order_by().annotate(
         month=TruncMonth('started_at', tzinfo=LONDON)).values_list('month', flat=True).distinct()} | {today.strftime('%Y-%m')},
@@ -376,6 +376,9 @@ def zoom_account_list(request):
             return JsonResponse({'ok': True, 'test': zoom_accounts.test(str(data.get('key') or ''), actor)})
         elif action == 'numbers':
             return JsonResponse({'ok': True, 'numbers': zoom_accounts.numbers(str(data.get('key') or ''))})
+        elif action == 'rename':
+            name = zoom_accounts.rename_number(str(data.get('key') or ''), str(data.get('number') or ''), data.get('display_name'))
+            return JsonResponse({'ok': True, 'display_name': name})
         else:
             raise ValueError('Unknown action.')
         return JsonResponse({'ok': True})

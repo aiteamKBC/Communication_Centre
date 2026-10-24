@@ -182,3 +182,24 @@ test('webhooks: the Secret Token is saved from the form, and the account shows i
   expect(posts.find(post => post.action === 'update')).toMatchObject({ key: 'office', webhook_secret: 'new_token_9' });
   await row.screenshot({ path: test.info().outputPath('webhook-row.png') });
 });
+
+test('a number is renamed in Zoom from the account’s numbers', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const account = { key: 'student', label: 'Student', account_id: 'AbC123', client_id: 'client_1', secret_saved: true, secret_end: '9f2a',
+    secret_readable: true, added_by: 'director', added_at: '2026-10-24T10:00:00Z', test: null };
+  const posts = await openZoomPhone(page, { accounts: [account], secrets_problem: '', secret_setting: 'ZOOM_SECRETS_KEY' }, {
+    '/api/callcentre/zoom-accounts/:numbers': () => ({ status: 200, json: { ok: true, numbers: [
+      { number: '+441622958955', display_name: 'Old name', status: 'normal', assignee: 'Alice Smith', assignee_type: 'user', extension: '801',
+        site: '', capability: [], listed: true, listed_account: 'student', specialists: ['Alice'],
+        recording: { state: 'on', calls: 'all calls', transcription: true, reason: '' } },
+    ] } }),
+    '/api/callcentre/zoom-accounts/:rename': body => ({ status: 200, json: { ok: true, display_name: body.display_name } }),
+  });
+  await page.getByRole('button', { name: 'Numbers', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Numbers on Student' });
+  await panel.getByRole('button', { name: 'Rename in Zoom' }).click();
+  await panel.getByLabel('New name for +441622958955').fill('KBC Engagement');
+  await panel.getByRole('button', { name: 'Save in Zoom' }).click();
+  await expect(panel).toContainText('KBC Engagement');
+  expect(posts.find(post => post.action === 'rename')).toMatchObject({ key: 'student', number: '+441622958955', display_name: 'KBC Engagement' });
+});

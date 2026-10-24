@@ -17,15 +17,26 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from . import zoom_accounts
-from .cycle_requests import request_call_sync
+from . import live_calls, zoom_accounts
+from .cycle_requests import RECORDING_SYNC_REQUEST, ZOOM_CHECK_REQUEST, request as ask_worker, request_call_sync
 from .models import CycleState
 
 logger = logging.getLogger(__name__)
 # Zoom's signature names the moment it was sent; an older request is a replay.
 MAX_AGE_SECONDS = 300
-# Webhooks come one per call: a quick sync at most every few seconds.
+# Webhooks come several per call: a quick sync at most every few seconds.
 SYNC_GAP = timedelta(seconds=5)
+# The events that mean a call is over and in Zoom's call history. The rest (ringing, hold, mute, SMS, fax...) are
+# acknowledged and ignored: each would otherwise read the call history again for nothing.
+CALL_ENDED = {'phone.caller_ended', 'phone.caller_call_log_completed', 'phone.callee_ended', 'phone.callee_call_log_completed',
+              'phone.callee_missed'}
+# A recording or its transcript is ready: fetch recordings now, so the transcript and AI review follow within minutes.
+RECORDING_READY = {'phone.recording_completed', 'phone.recording_transcript_completed', 'phone.recording_completed_for_access_member',
+                   'phone.recording_deleted', 'phone.recording_permanently_deleted',
+                   'phone.voicemail_received', 'phone.voicemail_transcript_completed'}
+RECORDING_GAP = timedelta(seconds=30)
+# Anything else from Zoom Phone (a number, user or setting changed): check the numbers against Zoom early, at most hourly.
+ZOOM_CHECK_GAP = timedelta(hours=1)
 
 
 def state_name(key):
@@ -92,7 +103,23 @@ def zoom_webhook(request, key):
             return _refuse(key, 'Zoom’s URL check came without its token.', 400)
         _remember(key, validated_at=now, rejected='', rejected_at=None)
         return JsonResponse({'plainToken': plain, 'encryptedToken': _sign(secret, plain)})
-    # Any Zoom Phone event can mean a call changed: read the call history now (at most every few seconds).
-    queued = event.startswith('phone.') and request_call_sync(f'zoom webhook {key}', gap=SYNC_GAP)
+    actor = f'zoom webhook {key}'
+    try:
+        if event == 'user.presence_status_updated':
+            from .presence import record_event
+            record_event(key, payload.get('payload'))
+        else:
+            live_calls.record(key, event, payload.get('payload'))
+    except Exception:   # noqa: BLE001 - the live view is a convenience; Zoom must still get its answer
+        logger.exception('Could not apply Zoom event %s for %s', event, key)
+    # A call ended: read the call history now (at most every few seconds).
+    if event in CALL_ENDED:
+        queued = request_call_sync(actor, gap=SYNC_GAP)
+    elif event in RECORDING_READY:
+        queued = ask_worker(RECORDING_SYNC_REQUEST, actor, RECORDING_GAP)
+    elif event.startswith('phone.') and event not in live_calls.EVENTS:
+        queued = ask_worker(ZOOM_CHECK_REQUEST, actor, ZOOM_CHECK_GAP)
+    else:
+        queued = False
     _remember(key, event=event, at=now, rejected='', rejected_at=None)
     return JsonResponse({'ok': True, 'queued': bool(queued)})

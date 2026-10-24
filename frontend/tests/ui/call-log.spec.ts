@@ -82,12 +82,17 @@ async function open(page: Page, manager: boolean) {
       return json({ values: { enabled: false, agent_ids: [] }, revision: 0, set_up: true, not_set_up: '', open_employer_cases: 0,
         agents: [], history: [] });
     }
+    if (url.pathname === '/api/callcentre/inbound/') {
+      return json({ items: [], summary: { open: 0, received: 0, done: 0, median_minutes: null, within_hour: 0, days: 7 } });
+    }
+    if (url.pathname === '/api/callcentre/scorecard/') return json({ week: '2026-10-19', cards: [] });
+    if (url.pathname === '/api/callcentre/missing-recordings/') return json({ calls: [] });
     if (url.pathname === '/api/auth/access/') return json({ id: 1, email: 'operator@example.org', access: {}, groups: [] });
     return json({});
   });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto(manager ? '/dashboard/call-centre' : '/dashboard/call-centre?view=operator&section=calls');
+  await page.goto(manager ? '/dashboard/call-centre?view=calls' : '/dashboard/call-centre?view=operator&section=calls');
   await expect(page.getByRole('heading', { name: manager ? 'Call monitor' : 'Calls and what they did', exact: true }),
     `Browser errors: ${errors.join('; ')}`).toBeVisible();
   return { requests, writes };
@@ -113,7 +118,7 @@ test('a specialist sees their last calls with every outcome, booking and satisfa
   expect(writes).toEqual([]);
 });
 
-test('the director monitors every specialist’s calls in place of the old pattern sections', async ({ page }) => {
+test('the director monitors every specialist’s calls on the Call monitor page', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   const { requests } = await open(page, true);
   await expect(page.getByRole('heading', { name: 'Contact and support patterns' })).toHaveCount(0);

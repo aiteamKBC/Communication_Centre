@@ -11,8 +11,12 @@ import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilte
 import Dialog from './Dialog';
 import LearnerPanel from './LearnerPanel';
 import LearnerWorkspace from './LearnerWorkspace';
+import { IncomingBanner } from './LiveCalls';
+import { liveSeconds, useLive } from './live';
 import NextCall from './NextCall';
+import MissedCalls from './MissedCalls';
 import MonthlyHistory from './MonthlyHistory';
+import { MissingRecordings, Scorecard, TranscriptSearch } from './Scorecard';
 import {
   CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
   duration, human, issueLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners,
@@ -24,8 +28,10 @@ type Props = {
   notify: (message: string, error?: boolean) => void;
 };
 
-function ProgressStrip({ agent, overview }: { agent: AgentStats | undefined; overview: Overview }) {
-  const today = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
+function ProgressStrip({ agent, overview, onCall = 0 }: { agent: AgentStats | undefined; overview: Overview; onCall?: number }) {
+  // Zoom-confirmed calls, plus the call in progress (Zoom's webhook) so the bar moves while the specialist talks.
+  const confirmed = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
+  const today = { ...confirmed, seconds: confirmed.seconds + onCall };
   const target = agent?.target_seconds || 0;
   const reviews = agent ? overview.call_reviews?.agents[agent.id] : undefined;
   return (
@@ -49,6 +55,7 @@ export default function Desk({ overview, agent, session, section, name, status, 
   const [tabs, setTabs] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const { live, now } = useLive();
   const [search, setSearch] = useState('');
   const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [issue, setIssue] = useState('all');
@@ -125,6 +132,18 @@ export default function Desk({ overview, agent, session, section, name, status, 
     body = <CallLearner overview={overview} session={session} notify={notify} onRefresh={onRefresh} />;
   } else if (section === 'calls') {
     body = <CallLog agentId={session.agentId} revision={overview.generated_at} onOpen={setDetailId} />;
+  } else if (section === 'rang') {
+    body = <MissedCalls session={session} revision={overview.generated_at} onOpenCase={setDetailId} />;
+  } else if (section === 'week') {
+    body = (
+      <>
+        <Scorecard manager={false} revision={overview.generated_at} />
+        <div style={{ height: '1.2rem' }} />
+        <TranscriptSearch manager={false} />
+        <div style={{ height: '1.2rem' }} />
+        <MissingRecordings revision={overview.generated_at} />
+      </>
+    );
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'history') {
@@ -265,8 +284,10 @@ export default function Desk({ overview, agent, session, section, name, status, 
           <button type="button" onClick={onRefresh}>Refresh</button>
         </div>
       </header>
-      {section !== 'history' && <ProgressStrip agent={agent} overview={overview} />}
+      {section !== 'history' && <ProgressStrip agent={agent} overview={overview} onCall={liveSeconds(live?.calls, session.agentId, now)} />}
       {status}
+      {/* Opens the case over the page (the list and any form underneath stay as they are); never while one is open. */}
+      <IncomingBanner live={live} now={now} agentId={session.agentId} busy={detailId !== null} onOpen={setDetailId} />
       {section === 'history' && <div>
         <MonthlyHistory key={session.agentId} agentId={session.agentId} today={overview.today}
           revision={overview.generated_at} onOpen={setDetailId} />

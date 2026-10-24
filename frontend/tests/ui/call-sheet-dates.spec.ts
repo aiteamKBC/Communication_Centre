@@ -832,7 +832,7 @@ test('an employer specialist calls employers only, and everyone else no employer
   await openSheet(page, cases, 'next', null, { employer_specialists: [1] });
   await expect(page.locator('.ed-next-name')).toHaveText('Max Manager');
   await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Missed/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Missed \(/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Due/ })).toHaveCount(0);
 });
 
@@ -846,7 +846,7 @@ test('with someone else as the employer specialist, the employer calls leave thi
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
   await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Call a learner', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Missed/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Missed \(/ })).toBeVisible();
 });
 
 test('an employer specialist calls any learner, saves the call and gives their satisfaction feedback', async ({ page }) => {
