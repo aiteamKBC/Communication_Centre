@@ -3,6 +3,11 @@ import type { ReactNode } from 'react';
 import type { AgentStats, Overview } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
+import { CallsByDay, TalkByDay } from './charts';
+import { monthTotals } from './dashboard';
+import { Figure } from './DirectorHome';
+import DeskToday from './DeskToday';
+import type { InboundListing } from './inbound';
 import CallLearner from './CallLearner';
 import CallLog from './CallLog';
 import { MyCallReviews } from './CallReview';
@@ -13,18 +18,17 @@ import LearnerPanel from './LearnerPanel';
 import LearnerWorkspace from './LearnerWorkspace';
 import { IncomingBanner } from './LiveCalls';
 import { liveSeconds, useLive } from './live';
-import NextCall from './NextCall';
 import MissedCalls from './MissedCalls';
 import MonthlyHistory from './MonthlyHistory';
 import { MissingRecordings, Scorecard, TranscriptSearch } from './Scorecard';
 import {
-  CALL_TABS, DESK_MENUS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
-  duration, human, issueLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners,
+  CALL_TABS, DESK_PAGES, DOING_TABS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
+  duration, human, issueLabel, listCount, listLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners, when,
 } from './model';
 
 type Props = {
-  overview: Overview; agent: AgentStats | undefined; session: Session; section: string; name: string; status: ReactNode;
-  onSection: (key: string) => void; onExit?: () => void; onRefresh: () => void; onMonth: (month: string) => void;
+  overview: Overview; agent: AgentStats | undefined; session: Session; section: string; page: string; lists: string[];
+  rang: InboundListing | null; name: string; status: ReactNode; onSection: (key: string) => void; onExit?: () => void; onRefresh: () => void; onMonth: (month: string) => void;
   notify: (message: string, error?: boolean) => void;
 };
 
@@ -50,8 +54,9 @@ function ProgressStrip({ agent, overview, onCall = 0 }: { agent: AgentStats | un
   );
 }
 
-/** The operator's calling day: category call sheets, learner workspaces, progress and reports. */
-export default function Desk({ overview, agent, session, section, name, status, onSection, onExit, onRefresh, onMonth, notify }: Props) {
+/** The specialist's desk: Today (their line, who rang, the next call, their lists), the call lists as tabs, missed calls,
+ * their calls, and How I'm doing (the week, the month, call reviews and achievements) as tabs. */
+export default function Desk({ overview, agent, session, section, page, lists, rang, name, status, onSection, onExit, onRefresh, onMonth, notify }: Props) {
   const [tabs, setTabs] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -124,37 +129,34 @@ export default function Desk({ overview, agent, session, section, name, status, 
   );
 
   let body: ReactNode;
-  if (section === 'next') {
-    body = <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={setDetailId} />;
+  if (section === 'today') {
+    body = <DeskToday overview={overview} agent={agent} session={session} live={live} now={now} rang={rang} lists={lists}
+      onSection={onSection} onOpen={setDetailId} onRefresh={onRefresh} notify={notify} />;
   } else if (tab) {
     body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
   } else if (section === 'learners') {
     body = <CallLearner overview={overview} session={session} notify={notify} onRefresh={onRefresh} />;
   } else if (section === 'calls') {
-    body = <CallLog agentId={session.agentId} revision={overview.generated_at} onOpen={setDetailId} />;
-  } else if (section === 'rang') {
-    body = <MissedCalls session={session} revision={overview.generated_at} onOpenCase={setDetailId} />;
-  } else if (section === 'week') {
     body = (
-      <>
-        <Scorecard manager={false} revision={overview.generated_at} />
-        <div style={{ height: '1.2rem' }} />
+      <div className="dk-stack">
+        <CallLog agentId={session.agentId} revision={overview.generated_at} onOpen={setDetailId} />
         <TranscriptSearch manager={false} />
-        <div style={{ height: '1.2rem' }} />
         <MissingRecordings revision={overview.generated_at} />
-      </>
+      </div>
     );
+  } else if (section === 'rang') {
+    body = <MissedCalls session={session} revision={overview.generated_at} onOpenCase={setDetailId} agentId={session.isManager ? agent?.id : undefined} />;
+  } else if (section === 'week') {
+    body = <Scorecard manager={false} revision={overview.generated_at} />;
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
-  } else if (section === 'history') {
-    body = null;
-  } else if (section === 'progress') {
+  } else if (section === 'achievements') {
     const today = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
     const earned = badges(today, agent?.target_seconds || 0);
     body = (
-      <>
+      <div className="dk-stack">
         <section className="ec-card">
-          <h2>Build a strong calling day</h2>
+          <h2>Today’s badges</h2>
           <div className="ed-badges">
             {[['Call-time target', `${duration(agent?.target_seconds)} of verified connected calls`], ['Ten connections', '10 answered calls']].map(([badge, text]) => (
               <article key={badge} className={earned.includes(badge) ? 'earned' : ''}>
@@ -168,43 +170,50 @@ export default function Desk({ overview, agent, session, section, name, status, 
           </details>
           <p className="ec-muted">{agent ? 'Figures include only Zoom-verified calls started from this system.' : 'No agent profile is linked, so no telephone activity is shown. Zero recorded activity is not evidence that no work took place.'}</p>
         </section>
-      </>
+        <MonthlyHistory key={session.agentId} agentId={session.agentId} today={overview.today} revision={overview.generated_at} onOpen={setDetailId} />
+      </div>
     );
   } else if (section === 'reviews') {
     body = <MyCallReviews agentId={agent?.id} month={overview.month} today={overview.today} onMonth={onMonth} />;
-  } else if (section === 'reports') {
+  } else if (section === 'month') {
     const month = agent?.month;
+    const totals = monthTotals(agent ? [agent] : []);
     const download = () => {
       const rows = (month?.daily || []).map(d => `<tr><td>${d.day}</td><td>${d.attempts}</td><td>${d.connected}</td><td>${duration(d.seconds)}</td></tr>`).join('') || '<tr><td colspan="4">No verified call records for this month.</td></tr>';
       downloadBlob(new Blob([`<!doctype html><html lang="en-GB"><meta charset="utf-8"><title>My engagement report</title><style>body{font:16px/1.6 Arial,sans-serif;color:#29233c;max-width:1000px;margin:40px auto;padding:20px}table{border-collapse:collapse;width:100%}td,th{text-align:left;border-bottom:1px solid #ddd;padding:10px}h1,h2{color:#563189}</style><h1>Kent Business College</h1><h2>${name.replace(/[<>&]/g, '')} · ${overview.month}</h2><p>Calls: ${month?.attempts || 0} · Answered: ${month?.connected || 0} · Connected time: ${duration(month?.seconds)}</p><table><thead><tr><th>Day</th><th>Calls</th><th>Answered</th><th>Time</th></tr></thead><tbody>${rows}</tbody></table><p>Only Zoom-verified calls are included. Incomplete telephone coverage is not evidence of inactivity.</p><p>Prepared ${overview.generated_at}</p></html>`], { type: 'text/html' }), `KBC-My-Call-Report-${overview.month}.html`);
     };
     body = (
-      <section className="ec-card">
-        <div className="ec-head">
-          <div><h2>My monthly activity</h2><p className="ec-muted">{name} · {overview.month}</p></div>
+      <div className="dd">
+        <header className="dd-section-head">
+          <div><p className="dd-eyebrow">{name} · {new Date(`${overview.month}-15T12:00:00`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</p><h2>Your month in calls</h2></div>
           <div className="ec-buttons">
             <label>Month<input type="month" value={overview.month} max={overview.today.slice(0, 7)} onChange={event => event.target.value && onMonth(event.target.value)} /></label>
             <button type="button" onClick={download}>Download my report</button>
           </div>
+        </header>
+        <div className="dd-figures">
+          <Figure label="Calls made" value={totals.attempts} hint={`${totals.connected} answered`} />
+          <Figure label="Answer rate" value={totals.answerRate === null ? '—' : `${totals.answerRate}%`} hint="Answered of calls made" />
+          <Figure label="Talk time" value={duration(totals.seconds)} hint={`Target ${duration(agent?.target_seconds)} a day`} />
+          <Figure label="Learners reached" value={totals.learners} />
+          <Figure label="Cases resolved" value={totals.resolved} hint={`${month?.pending || 0} worked, still open`} />
         </div>
-        <div className="ed-report-totals">
-          <span>Verified calls<strong>{month?.attempts || 0}</strong></span>
-          <span>Connected time<strong>{duration(month?.seconds)}</strong></span>
-          <span>Cases resolved<strong>{month?.resolved || 0}</strong></span>
-        </div>
-        <div className="ec-table-wrap">
-          <table>
-            <thead><tr><th>Day</th><th>Calls</th><th>Answered</th><th>Time</th><th>Points</th></tr></thead>
-            <tbody>
-              {(month?.daily || []).filter(d => d.attempts).map(d => (
-                <tr key={d.day}><td>{longDate(d.day)}</td><td>{d.attempts}</td><td>{d.connected}</td><td>{duration(d.seconds)}</td><td>{points(d, agent?.target_seconds || 0)}</td></tr>
-              ))}
-              {!month?.daily.some(d => d.attempts) && <tr><td colSpan={5}>No verified call activity in this month.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <p className="ec-muted">Covers your own Zoom-verified calls started from this system only. Missing telephone coverage must not be treated as poor performance.</p>
-      </section>
+        {agent && (
+          <div className="dd-pair">
+            <article className="dd-panel">
+              <h3>Talk time per day</h3>
+              <p className="dd-muted">The gold line is your daily target.</p>
+              <TalkByDay agents={[agent]} />
+            </article>
+            <article className="dd-panel">
+              <h3>Calls per day</h3>
+              <p className="dd-muted">Answered, and not answered.</p>
+              <CallsByDay agents={[agent]} />
+            </article>
+          </div>
+        )}
+        <p className="dd-muted">Covers your own Zoom-verified calls started from this system only. Missing telephone coverage must not be treated as poor performance.</p>
+      </div>
     );
   } else {
     body = (
@@ -267,6 +276,11 @@ export default function Desk({ overview, agent, session, section, name, status, 
     );
   }
 
+  // My lists: one tab per list with its people; How I'm doing: the week, the month, call reviews and achievements.
+  const pageTabs: [string, string][] | null = page === 'lists'
+    ? lists.map(key => [key, `${listLabel(key)} (${listCount(overview, key, session.agentId)})`])
+    : page === 'doing' ? DOING_TABS : null;
+
   return (
     <>
       {onExit && (
@@ -276,22 +290,26 @@ export default function Desk({ overview, agent, session, section, name, status, 
         </div>
       )}
       <header className="ed-head">
-        <div><p className="ec-eyebrow">{longDate(overview.today)} · {name}</p><h1>{DESK_MENUS.find(item => item[0] === section)?.[1] || 'Call next'}</h1></div>
+        <div><p className="ec-eyebrow">{longDate(overview.today)} · {name}</p><h1>{DESK_PAGES.find(item => item[0] === page)?.[1] || 'Today'}</h1></div>
         <div className="ec-buttons">
           {section === 'followups' && (focus
             ? <button type="button" onClick={() => { setFocus(false); setTouched(new Set()); }}>End focus session</button>
             : <button type="button" disabled={!queue.length} onClick={() => { setFocus(true); setTouched(new Set()); if (current === null) next(); }}>Start focus session</button>)}
+          <span className="ec-muted dk-synced">Lists last updated {overview.cycle?.last_success_at ? `${when(overview.cycle.last_success_at)} (London)` : 'not recorded yet'}</span>
           <button type="button" onClick={onRefresh}>Refresh</button>
         </div>
       </header>
-      {section !== 'history' && <ProgressStrip agent={agent} overview={overview} onCall={liveSeconds(live?.calls, session.agentId, now)} />}
+      {pageTabs && (
+        <div className="dk-tabs" role="tablist" aria-label={page === 'lists' ? 'Your call lists' : 'How you are doing'}>
+          {pageTabs.map(([key, label]) => (
+            <button key={key} type="button" role="tab" aria-selected={key === section} onClick={() => onSection(key)}>{label}</button>
+          ))}
+        </div>
+      )}
+      {(page === 'lists' || page === 'learners') && <ProgressStrip agent={agent} overview={overview} onCall={liveSeconds(live?.calls, session.agentId, now)} />}
       {status}
       {/* Opens the case over the page (the list and any form underneath stay as they are); never while one is open. */}
       <IncomingBanner live={live} now={now} agentId={session.agentId} busy={detailId !== null} onOpen={setDetailId} />
-      {section === 'history' && <div>
-        <MonthlyHistory key={session.agentId} agentId={session.agentId} today={overview.today}
-          revision={overview.generated_at} onOpen={setDetailId} />
-      </div>}
       {body}
       <Dialog open={detailId !== null} onClose={() => setDetailId(null)} title="Full case"
         className="ed-case-dialog" preservePosition>

@@ -6,6 +6,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { csrfToken as cookieCsrfToken } from '../../utils/apiSession';
 
 export type Case = {
+  /** Next-day reminders of a progress review or monthly coaching: the Outlook meeting. */
+  meeting?: ReviewMeetingSummary | null;
+  /** Next-day progress reviews: the employer (line manager) is confirmed too (employer_check.py). */
+  employer_check?: EmployerCheck | null;
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
   issue_name: string; issue_date: string | null;
   module?: string;
@@ -56,6 +60,17 @@ export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { bookin
   /** The specialist whose saved call set the case's current follow-up; null when no call has set one. */
   followup_agent_id: number | null; contact_sources?: Record<string, string> };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
+/** The employer step of a next-day progress review: the line manager, how to reach them, and what they said. */
+export type EmployerCheck = {
+  manager_name: string; manager_email: string; manager_phone: string;
+  result: '' | 'confirmed' | 'cannot_attend' | 'no_answer' | 'not_reachable' | 'no_manager'; label: string; done: boolean;
+  note: string; by: string; at: string | null; tries: number;
+};
+/** A next-day reminder's Outlook review meeting (review_meetings.py): cancelled or not, the learner's reply, confirmed on a call. */
+export type ReviewMeetingSummary = {
+  id: number; status: 'scheduled' | 'cancelled'; cancelled_how: '' | 'outlook' | 'removed' | 'engagement_centre';
+  learner_response: string; confirmed: boolean; organizer: string; cancellable: boolean;
+};
 
 export type DayStats = { day: string; attempts: number; connected: number; seconds: number };
 export type AgentStats = {

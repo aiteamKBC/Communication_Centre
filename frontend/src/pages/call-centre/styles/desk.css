@@ -1,0 +1,91 @@
+/* The specialist's desk (.ed): the director dashboard's colours and type (director.css tokens), shaped for one person's
+   calling day — their own line, who rang, the next call and their lists. */
+
+/* Page titles carry the serif, as on the director's pages. */
+.kbc-portals .workspace-app .ed .ed-head h1 { font-family: var(--dd-serif); font-weight: 400; font-size: 2.1rem; letter-spacing: -.01em; line-height: 1.15; }
+
+/* My lists and How I'm doing: one underlined tab per list or view. */
+.kbc-portals .dk-tabs { display: flex; gap: .2rem; overflow-x: auto; border-bottom: 1px solid var(--dd-line); margin: 0 0 1rem; scrollbar-width: thin; }
+.kbc-portals .workspace-app .ec .dk-tabs button {
+  flex: none; padding: .55rem .85rem .6rem; margin: 0 0 -1px; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+  background: transparent; color: var(--dd-muted); font-weight: 600; white-space: nowrap; min-height: 0;
+}
+.kbc-portals .workspace-app .ec .dk-tabs button:hover { background: var(--dd-soft); color: var(--dd-ink); border-color: transparent; border-bottom-color: var(--dd-lilac); }
+.kbc-portals .workspace-app .ec .dk-tabs button[aria-selected='true'] { color: var(--dd-purple); border-bottom-color: var(--dd-purple); background: transparent; }
+
+/* Today. */
+.kbc-portals .dk, .kbc-portals .dk-stack { display: grid; gap: 1.6rem; margin-top: .4rem; }
+.kbc-portals .dk-stack > .ec-card, .kbc-portals .dk-stack > section { margin-top: 0; }
+.kbc-portals .dk-section { display: grid; gap: .8rem; }
+.kbc-portals .dk-section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .workspace-app .ed .dk-section-head h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 1.55rem; margin: 0; line-height: 1.15; letter-spacing: 0; }
+.kbc-portals .dk .ed-next { margin: 0; max-width: none; }
+
+/* Your line: the switchboard's dark panel with one line, and the day's points and call quality beneath. */
+.kbc-portals .dk-line { padding-top: .5rem; }
+.kbc-portals .dk-line-foot { display: flex; flex-wrap: wrap; gap: .3rem 1.6rem; margin: .1rem .5rem .7rem; padding-top: .6rem; border-top: 1px solid rgba(206, 179, 235, .13); font-size: .85rem; color: var(--dd-lilac); }
+.kbc-portals .dk-line-foot b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.1rem; color: #fff; }
+
+/* Rang you: one card per caller waiting, oldest wait marked. */
+.kbc-portals .dk-rang { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: .8rem; }
+.kbc-portals .dk-rang-card {
+  display: grid; gap: .6rem; align-content: start; padding: 1rem 1.1rem; background: #fff; border: 1px solid var(--dd-line);
+  border-left: 4px solid var(--dd-gold); border-radius: 12px;
+}
+.kbc-portals .dk-rang-card.long { border-left-color: var(--dd-bad); }
+.kbc-portals .dk-rang-card header { display: grid; gap: .1rem; }
+.kbc-portals .dk-rang-card header strong { font-size: 1.05rem; }
+.kbc-portals .dk-rang-card header span { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dk-rang-voicemail { display: grid; gap: .45rem; }
+.kbc-portals .dk-rang-voicemail blockquote { margin: 0; background: var(--dd-soft); border-radius: 8px; padding: .5rem .65rem; }
+.kbc-portals .dk-rang-voicemail q {
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: .9rem; font-style: italic; color: var(--dd-ink);
+}
+.kbc-portals .dk-rang-voicemail p, .kbc-portals .dk-rang-none { margin: 0; font-size: .85rem; color: var(--dd-muted); }
+.kbc-portals .workspace-app .ec .dk-play { justify-self: start; padding: .3rem .7rem; min-height: 0; border-radius: 99px; font-size: .82rem; color: var(--dd-purple); }
+.kbc-portals .dk-rang-card > button { justify-self: start; }
+
+/* Your lists: one tile per list, the number large. Empty lists stay, quieter. */
+.kbc-portals .dk-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .7rem; }
+.kbc-portals .workspace-app .ec .dk-tile {
+  display: grid; gap: .1rem; align-content: start; justify-content: stretch; justify-items: start; padding: .8rem 1rem .9rem; min-height: 0; text-align: left;
+  background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; color: var(--dd-ink); font-weight: 400;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.kbc-portals .workspace-app .ec .dk-tile:hover { border-color: var(--dd-purple); background: #fff; box-shadow: 0 8px 20px rgba(79, 45, 127, .1); transform: translateY(-1px); }
+.kbc-portals .dk-tile b { font-family: var(--dd-serif); font-weight: 400; font-size: 2rem; line-height: 1.05; color: var(--dd-purple); font-variant-numeric: tabular-nums; }
+.kbc-portals .dk-tile span { font-size: .88rem; font-weight: 600; }
+.kbc-portals .dk-tile.empty b { color: #b9b4c7; }
+.kbc-portals .dk-tile.empty span { color: var(--dd-muted); font-weight: 400; }
+
+/* Call next: the order and filters wait behind one line above the person. */
+.kbc-portals .ed-next-filters { margin: 0 0 .9rem; }
+.kbc-portals .ec details.ed-next-filters { margin-top: 0; padding-top: 0; border-top: 0; }
+.kbc-portals .ed-next-filters > summary { font-size: .85rem; color: var(--dd-purple); }
+.kbc-portals .ec details.ed-next-filters[open] summary { margin-bottom: .5rem; }
+
+@media (max-width: 600px) {
+  .kbc-portals .workspace-app .ed .ed-head h1 { font-size: 1.65rem; }
+  .kbc-portals .dk-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kbc-portals .workspace-app .ec .dk-tile { transition: none; }
+}
+
+/* A reminder's Outlook meeting: its state, and Cancel meeting. */
+.kbc-portals .ed-meeting { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; margin: .2rem 0 .3rem; }
+.kbc-portals .ed-meeting-reasons { border: 0; padding: 0; margin: .4rem 0 .8rem; display: grid; gap: .35rem; }
+.kbc-portals .ed-meeting-reasons legend { font-weight: 600; margin-bottom: .3rem; }
+.kbc-portals .ec .ed-meeting-reasons label { display: flex; gap: .5rem; align-items: center; font-weight: 400; }
+.kbc-portals .ec .ed-meeting-reasons input { width: auto; margin: 0; }
+
+/* A next-day progress review: the employer's confirmation, beside the learner's. */
+.kbc-portals .ed-employer { display: grid; gap: .3rem; margin: .4rem 0; padding: .55rem .7rem; border: 1px solid var(--dd-line); border-left: 3px solid var(--dd-gold); border-radius: 8px; background: #fffdf8; }
+.kbc-portals .ed-employer header { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; }
+.kbc-portals .ed-employer p { margin: 0; font-size: .85rem; }
+.kbc-portals .ed-employer small { color: var(--dd-muted); font-size: .8rem; }
+.kbc-portals .ed-employer-record { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.kbc-portals .ec .ed-employer-record select, .kbc-portals .ec .ed-employer-record input { width: 100%; min-width: 0; flex: 1 1 11rem; font-size: .85rem; padding: .4rem .5rem; }
+.kbc-portals .ed-next-tools .ed-employer { flex: 1 1 100%; }
+.kbc-portals .workspace-app .ec .ed-employer-record button { padding: .4rem .7rem; font-size: .85rem; min-height: 0; }

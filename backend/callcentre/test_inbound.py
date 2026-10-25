@@ -317,6 +317,19 @@ class VoicemailTests(InboundBase):
         item = Inbound.objects.get()
         self.assertIsNotNone(item.call_id)
 
+    def test_the_voicemail_list_has_every_voicemail_open_or_done_and_only_voicemails(self):
+        from .inbound import listing, sync as inbound_sync
+        from .voicemails import sync
+        with self.zoom():
+            sync('student')
+        self.call('inbound', '+447911000111', 'no_answer')   # an enquiry without a voicemail
+        inbound_sync()
+        Inbound.objects.filter(voicemail__isnull=False).update(status='done', done_how='marked', done_at=timezone.now())
+        result = listing(self.director, None, 'voicemail', 'all', 7)
+        self.assertEqual([(item['caller_name'], item['status']) for item in result['items']], [('Ann Smith', 'done')])
+        self.assertIn('EPA', result['items'][0]['voicemail']['transcript'])
+        self.assertEqual(listing(self.director, None, 'voicemail', 'open', 7)['items'], [])
+
     def test_a_voicemail_read_after_its_missed_call_joins_that_follow_up(self):
         from .voicemails import sync
         self.call('inbound', ANN, 'voicemail', history_id='h-ann')

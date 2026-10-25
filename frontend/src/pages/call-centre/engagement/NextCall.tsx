@@ -7,12 +7,14 @@ import BookingEmail from './BookingEmail';
 import BookingPage from './BookingPage';
 import CallOutcome from './CallOutcome';
 import Dialog from './Dialog';
+import EmployerCheck from './EmployerCheck';
+import MeetingTools from './MeetingTools';
 import SatisfactionEmail from './SatisfactionEmail';
 import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
-import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, issueLabel, promiseLabel, shortDate, uniqueLearners } from './model';
+import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, issueLabel, promiseLabel, shortDate, uniqueLearners, when } from './model';
 
 type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
 
@@ -79,9 +81,11 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
     if (booked.has(c.id)) return <p className="ec-tag">Catch-up booked: case closed</p>;
     const bookable = c.bookable.length > 0;
     const techIssue = c.source_type !== 'employer_feedback' && c.source_type !== 'tech_support';
-    if (!bookable && !c.booking_email && c.source_type !== 'learner_satisfaction' && !techIssue) return null;
+    if (!bookable && !c.booking_email && c.source_type !== 'learner_satisfaction' && !techIssue && !c.meeting && !c.employer_check) return null;
     return (
       <div className="ec-buttons ed-next-tools">
+        <MeetingTools c={c} session={session} notify={notify} onChanged={onRefresh} />
+        <EmployerCheck c={c} session={session} notify={notify} onChanged={onRefresh} />
         {bookable && <BookSession caseId={c.id} session={session} notify={notify} onBooked={type => sessionBooked(c, type)} />}
         <BookingPage c={c} />
         {c.booking_email && <button type="button" disabled={session.preview} onClick={() => setEmailFor(c.id)}>Booking email</button>}
@@ -116,12 +120,20 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
       </select>
     </div>
   );
+  const filtered = Object.values(caseFilters).some(Boolean);
+  const choices = <>{toolbar}<CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} /></>;
+  // The person to call comes first; the order and filters wait behind one line until wanted.
+  const filters = (
+    <details className="ed-next-filters">
+      <summary>Filter and order{filtered ? ' · filters on' : ''}</summary>
+      {choices}
+    </details>
+  );
 
   if (!current) {
     return (
       <section className="ec-card ed-next">
-        {toolbar}
-        <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
+        {filtered ? <div className="ed-next-filters">{choices}</div> : filters}
         <div className="ec-empty">
           <h3>Nobody else to call right now</h3>
           <p>Learners come back here when their follow-up is due.</p>
@@ -133,8 +145,7 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const reason = callDisabledReason(current, session);
   return (
     <section className="ec-card ed-next">
-      {toolbar}
-      <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
+      {filters}
       <p className="ec-muted">{calling ? (calling.ended ? 'Call ended: record what happened' : 'On the call') : `Next call · learner ${at + 1} of ${queue.length} · ${TICKET_ORDERS[order]}`}</p>
       <Dialog open={emailFor !== null} onClose={() => setEmailFor(null)}>
         {emailFor !== null && <BookingEmail key={emailFor} caseId={emailFor} session={session} />}

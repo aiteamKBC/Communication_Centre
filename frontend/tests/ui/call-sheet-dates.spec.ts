@@ -75,7 +75,9 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`/dashboard/call-centre?view=operator&section=${section}`);
-  await expect(page.getByLabel('Ticket order', { exact: true }), `Browser errors: ${errors.join('; ')}`).toBeVisible();
+  // Today shows the next call; a list shows its sheet.
+  await expect(['next', 'today'].includes(section) ? page.locator('.ed-next') : page.getByLabel('Ticket order', { exact: true }),
+    `Browser errors: ${errors.join('; ')}`).toBeVisible();
   return writes;
 }
 
@@ -150,7 +152,8 @@ test('Next call and Follow-ups use the same filters and can recover from an empt
     ticket(2, { learner_phone: '+447700900002', followup_agent_id: 1,
       filter_contexts: [{ coach: 'Coach B', cohort: 'Cohort 2', module: 'Finance' }] }),
   ]);
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
+  await page.getByText('Filter and order', { exact: true }).click();
   await expect(page.locator('.ed-next-name')).toBeVisible();
   await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach B' });
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 2');
@@ -158,7 +161,7 @@ test('Next call and Follow-ups use the same filters and can recover from an empt
   await expect(page.getByRole('heading', { name: 'Nobody else to call right now', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Clear coach / cohort / module', exact: true }).click();
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
-  await page.getByRole('button', { name: 'Follow-ups', exact: true }).click();
+  await page.getByRole('button', { name: /^Follow-ups: / }).click();
   await expect(page.locator('.ed-person').first()).toBeVisible();
   await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 2' });
   await expect(page.locator('.ed-person')).toHaveCount(1);
@@ -171,7 +174,7 @@ test('Follow-ups lists only the follow-ups set by this specialist’s own calls'
     ticket(2, { followup_agent_id: 2, next_followup_at: '2026-10-21T08:00:00Z' }),
     ticket(3),
   ]);
-  await page.getByRole('button', { name: 'Follow-ups', exact: true }).click();
+  await page.getByRole('tab', { name: /^Follow-ups \(/ }).click();
   await expect(page.locator('.ed-person')).toHaveCount(1);
   await expect(page.locator('.ed-person')).toContainText('Learner 1');
   await expect(page.getByText('1 people with your follow-ups', { exact: true })).toBeVisible();
@@ -218,7 +221,7 @@ test('one learner opens lectures, MCM, PR and other cases across filters without
   expect(writes.filter(path => path.endsWith('/call/'))).toEqual(['/api/callcentre/tickets/1/call/']);
   await modal.getByRole('button', { name: 'Close full case', exact: true }).click();
   await expect(page.getByLabel('Ticket date', { exact: true })).toHaveValue('2026-09-15');
-  await page.getByRole('button', { name: 'Due (1)', exact: true }).click();
+  await page.getByRole('tab', { name: 'Due (1)', exact: true }).click();
   await expect(page.locator('[data-sheet-row]')).toHaveCount(1);
   await page.getByRole('button', { name: 'All cases (5)', exact: true }).click();
   await expect(page.locator('[data-contact-case]')).toHaveCount(5);
@@ -252,7 +255,7 @@ test.describe('London times on a Cairo computer', () => {
     test(`sync display follows London daylight saving for ${instant}`, async ({ page }) => {
       await openSheet(page, [ticket(1)], 'missed', instant);
       await expect(page.getByText('All times: London', { exact: true })).toBeVisible();
-      await expect(page.getByText(/Last successful cycle:/)).toContainText(`Last successful cycle: ${expected} (London)`);
+      await expect(page.getByText(/Lists last updated/)).toContainText(`Lists last updated ${expected} (London)`);
       const displayed = await page.evaluate(async () => {
         const path = '/src/pages/call-centre/engagement/model.ts';
         const { longDate, shortDate, when, londonInput } = await import(path);
@@ -446,7 +449,7 @@ test('Due shows review deadlines, EPA programme and gateway dates, and call date
 test('dashboard link stays available and the one-step back button is removed', async ({ page }) => {
   await openSheet(page, [ticket(1), ticket(2, { source_type: 'pr' })]);
   await expect(page.getByRole('button', { name: 'Go back one step', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Due (1)', exact: true }).click();
+  await page.getByRole('tab', { name: 'Due (1)', exact: true }).click();
   await expect(page).toHaveURL(/section=due/);
   await page.getByRole('link', { name: 'Back to dashboard', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
@@ -660,7 +663,8 @@ test('Next call starts with the newest ticket by default', async ({ page }) => {
     ticket(1, { learner_phone: '+447700900001', issue_date: '2026-09-01' }),
     ticket(2, { learner_phone: '+447700900002', issue_date: '2026-10-10' }),
   ]);
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
+  await page.getByText('Filter and order', { exact: true }).click();
   await expect(page.getByLabel('Ticket order', { exact: true })).toHaveValue('newest');
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 2');
   await page.getByLabel('Ticket order', { exact: true }).selectOption('oldest');
@@ -670,7 +674,7 @@ test('Next call starts with the newest ticket by default', async ({ page }) => {
 test('Next call: Call becomes End call, and only Save records the outcome', async ({ page }) => {
   await openSheet(page, [ticket(1, { learner_phone: '+447700900001' })]);
   const posts = capturePosts(page);
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
   await page.getByRole('button', { name: '📞 Call', exact: true }).click();
   await expect(page.getByRole('button', { name: 'End call', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'No answer', exact: true })).toBeHidden();
@@ -715,7 +719,7 @@ async function callAnn(page: Page) {
     saves.push({ ...data, items: [...data.items].sort((a: { id: number }, b: { id: number }) => a.id - b.id) });
     return route.fulfill({ json: { ok: true, applied: false } });
   });
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
   await expect(page.locator('.ed-next-name')).toHaveText('Ann');
   await page.getByRole('button', { name: '📞 Call', exact: true }).click();
   await page.getByRole('button', { name: 'End call', exact: true }).click();
@@ -767,7 +771,7 @@ test('an answered call groups the same kind of case into one row and saves every
 
 test('Back and Next move through the learners to call', async ({ page }) => {
   await openSheet(page, [ticket(1, { learner_phone: '+447700900001' }), ticket(2, { learner_phone: '+447700900002' })]);
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
   const back = page.getByRole('button', { name: 'Back', exact: true });
   const next = page.getByRole('button', { name: 'Next', exact: true });
   const first = await page.locator('.ed-next-name').textContent();
@@ -802,7 +806,7 @@ test('Full case calls the learner and records the call for every case at once, w
     open = true;
     return route.fulfill({ json: { intent_id: 1, ticket_ids: [1, 2] } });
   });
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
   await page.getByRole('button', { name: 'Full case', exact: true }).click();
   const modal = page.getByRole('dialog', { name: 'Full case', exact: true });
   // One call box for the learner; each case's own form is folded away under its other actions.
@@ -831,9 +835,9 @@ test('an employer specialist calls employers only, and everyone else no employer
   // The operator (agent 1) is the employer specialist: only the employer calls and their own records.
   await openSheet(page, cases, 'next', null, { employer_specialists: [1] });
   await expect(page.locator('.ed-next-name')).toHaveText('Max Manager');
-  await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Missed \(/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Due/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Employer Satisfaction: / })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Missed: / })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Due: / })).toHaveCount(0);
 });
 
 test('with someone else as the employer specialist, the employer calls leave this desk', async ({ page }) => {
@@ -844,9 +848,9 @@ test('with someone else as the employer specialist, the employer calls leave thi
   ];
   await openSheet(page, cases, 'next', null, { employer_specialists: [2] });
   await expect(page.locator('.ed-next-name')).toHaveText('Learner 1');
-  await expect(page.getByRole('button', { name: /^Employer Satisfaction/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Employer Satisfaction: / })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Call a learner', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Missed \(/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Missed: / })).toBeVisible();
 });
 
 test('an employer specialist calls any learner, saves the call and gives their satisfaction feedback', async ({ page }) => {
@@ -924,7 +928,7 @@ test('End call asks the worker to fetch the call from Zoom straight away', async
   expect(writes).not.toContain('/api/callcentre/call-sync/');
   await page.getByRole('button', { name: 'End call with Learner 1', exact: true }).click();
   await expect.poll(() => writes.filter(path => path === '/api/callcentre/call-sync/').length).toBe(1);
-  await page.getByRole('button', { name: 'Next call', exact: true }).click();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
   await page.getByRole('button', { name: '📞 Call', exact: true }).click();
   await page.getByRole('button', { name: 'End call', exact: true }).click();
   await expect.poll(() => writes.filter(path => path === '/api/callcentre/call-sync/').length).toBe(2);

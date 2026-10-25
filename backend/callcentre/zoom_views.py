@@ -322,6 +322,34 @@ def zoom_call_recordings(request, call_pk):
 
 @never_cache
 @require_GET
+def zoom_recording_audio(request, recording_pk):
+    """Play a call recording: streamed from Zoom, to a manager or the agent on the call (as its transcript)."""
+    from django.http import FileResponse
+    from .zoom_phone import ZoomError
+    from .zoom_recordings import recording_audio
+    if not request.user.is_authenticated or not request.user.is_active:
+        return JsonResponse({'detail': 'Sign in to play recordings.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
+    try:
+        recording = system_recordings().filter(current_account_filter(), pk=recording_pk).first()
+    except (OperationalError, ProgrammingError):
+        return JsonResponse({'detail': 'Recordings are temporarily unavailable.'}, status=503)
+    if recording is None:
+        return JsonResponse({'detail': 'Recording not found.'}, status=404)
+    if not is_director(request.user) and not any(can_view_call(request.user, call) for call in recording_calls(recording)):
+        return JsonResponse({'detail': 'Only managers or the agent on this call can play its recording.'}, status=403)
+    try:
+        file, content_type = recording_audio(recording)
+    except ZoomError as exc:
+        return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
+    response = FileResponse(file, content_type=content_type)
+    response['Cache-Control'] = 'no-store'
+    return response
+
+
+@never_cache
+@require_GET
 def zoom_recording_transcript(request, recording_pk):
     from .ai import latest_review
     if not request.user.is_authenticated or not request.user.is_active:

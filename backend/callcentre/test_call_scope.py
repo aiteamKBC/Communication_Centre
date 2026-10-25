@@ -21,7 +21,7 @@ from .reports import performance
 from .services import apply_call_result, create_intent, match_call, record_outcome
 from .views import with_last_call
 from .zoom_recordings import sync_recordings
-from .zoom_views import zoom_call_recordings, zoom_call_report, zoom_recording_transcript
+from .zoom_views import zoom_call_recordings, zoom_call_report, zoom_recording_audio, zoom_recording_transcript
 
 
 @unittest.skipUnless(connections['default'].vendor == 'sqlite', 'In-memory SQLite runner only.')
@@ -361,6 +361,31 @@ class SystemCallScopeTests(TestCase):
         request.user = self.user
         self.assertEqual(zoom_call_recordings(request, call.pk).status_code, 404)
         self.assertEqual(zoom_recording_transcript(request, recording.pk).status_code, 404)
+
+    def test_a_recording_plays_from_zoom_and_nothing_is_kept(self):
+        import io
+        from .zoom_recordings import PLAYBACK_MAX_BYTES
+        recording = self.recording(self.internal())
+        self.user.is_superuser = True
+        request = RequestFactory().get('/')
+        request.user = self.user
+        client = Mock()
+        client.recording_pages.return_value = iter([[{'id': 'another', 'download_url': 'https://zoom.us/v2/phone/recording/download/x'},
+                                                     {'id': recording.recording_id, 'download_url': 'https://zoom.us/v2/phone/recording/download/mine'}]])
+        with patch('callcentre.zoom_phone.ZoomClient', return_value=client), patch('callcentre.zoom_phone.validate_config'),                 patch('callcentre.zoom_recordings.download_audio', return_value=(io.BytesIO(b'ID3-audio'), 'zoom-call.mp3', 'audio/mpeg')) as download:
+            response = zoom_recording_audio(request, recording.pk)
+        self.assertEqual((response.status_code, response['Content-Type']), (200, 'audio/mpeg'))
+        self.assertIn('no-store', response['Cache-Control'])
+        self.assertEqual(b''.join(response.streaming_content), b'ID3-audio')
+        self.assertEqual(download.call_args.args[1], 'https://zoom.us/v2/phone/recording/download/mine')
+        self.assertEqual(download.call_args.kwargs['limit'], PLAYBACK_MAX_BYTES)
+        client.close.assert_called_once()
+        # Gone from Zoom: said so, not an error page.
+        client.recording_pages.return_value = iter([[]])
+        with patch('callcentre.zoom_phone.ZoomClient', return_value=client), patch('callcentre.zoom_phone.validate_config'):
+            gone = zoom_recording_audio(request, recording.pk)
+        self.assertEqual(gone.status_code, 502)
+        self.assertIn('no audio for this recording', json.loads(gone.content)['detail'])
 
     def test_audio_fallback_only_downloads_internal_recording(self):
         call = self.internal()

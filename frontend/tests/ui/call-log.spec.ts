@@ -87,6 +87,14 @@ async function open(page: Page, manager: boolean) {
     }
     if (url.pathname === '/api/callcentre/scorecard/') return json({ week: '2026-10-19', cards: [] });
     if (url.pathname === '/api/callcentre/missing-recordings/') return json({ calls: [] });
+    if (/^\/api\/zoom\/calls\/\d+\/recordings\/$/.test(url.pathname)) {
+      return json({ recordings: [{ id: 31, recording_type: 'Automatic', owner_name: 'Operator', duration_seconds: 245, transcript_status: 'ready', transcript_error: '' }] });
+    }
+    if (url.pathname === '/api/zoom/recordings/31/transcript/') return json({ status: 'ready', text: 'Hello Akmal, it is about your catch-up.', error: '', review: null });
+    if (url.pathname === '/api/zoom/recordings/31/audio/') {
+      requests.push(url);
+      return route.fulfill({ status: 502, json: { detail: 'Zoom has no audio for this recording any more.' } });
+    }
     if (url.pathname === '/api/auth/access/') return json({ id: 1, email: 'operator@example.org', access: {}, groups: [] });
     return json({});
   });
@@ -112,7 +120,7 @@ test('a specialist sees their last calls with every outcome, booking and satisfa
   await expect(call).toContainText('Coach to share recordings');
   await expect(call.getByRole('button', { name: 'Recording & transcript' })).toBeVisible();
   await expect(page.locator('.ed-log-totals')).toContainText('Sessions booked1');
-  await page.getByLabel('Period').selectOption('30');
+  await page.getByRole('region', { name: 'My last calls' }).getByLabel('Period').selectOption('30');
   await expect.poll(() => requests.at(-1)?.searchParams.get('days')).toBe('30');
   await page.screenshot({ path: test.info().outputPath('last-calls.png'), fullPage: true });
   expect(writes).toEqual([]);
@@ -132,4 +140,16 @@ test('the director monitors every specialist’s calls on the Call monitor page'
   await expect.poll(() => requests.at(-1)?.searchParams.get('agent_id')).toBe('2');
   await expect(monitor.getByRole('article', { name: /^Call to/ })).toHaveCount(1);
   await monitor.screenshot({ path: test.info().outputPath('call-monitor.png') });
+});
+
+test('a call recording plays from Zoom next to its transcript', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const { requests } = await open(page, false);
+  await page.getByRole('article', { name: 'Call to Akmal Learner' }).getByRole('button', { name: 'Recording & transcript' }).click();
+  const dialog = page.locator('dialog[open]');
+  await expect(dialog).toContainText('Hello Akmal, it is about your catch-up.');
+  await dialog.getByRole('button', { name: '▶ Play' }).click();
+  // Streamed from Zoom only when Play is pressed; a recording Zoom no longer has says so.
+  await expect.poll(() => requests.some(url => url.pathname === '/api/zoom/recordings/31/audio/')).toBe(true);
+  await expect(dialog.getByRole('alert')).toContainText('Zoom could not play this recording');
 });

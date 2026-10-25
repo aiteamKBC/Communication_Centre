@@ -478,3 +478,55 @@ class Inbound(Retained):
         db_table = 'callcenter_inbound'
         managed = False
         ordering = ['-received_at', '-id']
+
+
+class ReviewMeeting(Retained):
+    """A progress review or monthly coaching meeting in a coach's Outlook calendar, kept in step with Outlook by the
+    cycle (review_meetings.py). The next day's PR/MCM reminders come from these, and every change is kept in
+    ReviewMeetingEvent: found, moved, the learner's reply, confirmed on a call, cancelled (in Outlook or from here)."""
+    SCHEDULED, CANCELLED = 'scheduled', 'cancelled'
+    ical_uid = models.CharField(max_length=255, unique=True)
+    review_type = models.CharField(max_length=8)
+    subject = models.CharField(max_length=500, blank=True)
+    organizer_email = models.CharField(max_length=254, blank=True)
+    coach_email = models.CharField(max_length=254, blank=True)
+    # The copy of the meeting read last (the organiser's when their calendar can be read), to look it up and cancel it.
+    event_mailbox = models.CharField(max_length=254, blank=True)
+    event_id = models.CharField(max_length=512, blank=True)
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField(null=True, blank=True)
+    learner_email = models.CharField(max_length=254, blank=True)
+    learner_name = models.CharField(max_length=255, blank=True)
+    matched_by = models.CharField(max_length=12, blank=True)
+    learner_response = models.CharField(max_length=24, blank=True)
+    learner_response_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=12, default=SCHEDULED)
+    cancelled_how = models.CharField(max_length=20, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.CharField(max_length=255, blank=True)
+    cancel_reason = models.TextField(blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_by = models.CharField(max_length=255, blank=True)
+    first_seen_at = models.DateTimeField()
+    last_seen_at = models.DateTimeField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_review_meeting'
+        managed = False
+        ordering = ['start_at', 'id']
+
+
+class ReviewMeetingEvent(Retained):
+    """One change to a review meeting, never edited: the audit trail."""
+    meeting = models.ForeignKey(ReviewMeeting, on_delete=models.PROTECT, related_name='events')
+    at = models.DateTimeField(auto_now_add=True)
+    kind = models.CharField(max_length=32)
+    detail = models.JSONField(default=dict, blank=True)
+    actor = models.CharField(max_length=255, blank=True)
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+
+    class Meta:
+        db_table = 'callcenter_review_meeting_event'
+        managed = False
+        ordering = ['at', 'id']

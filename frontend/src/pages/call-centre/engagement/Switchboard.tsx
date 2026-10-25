@@ -4,7 +4,7 @@ import { clock, liveSeconds, since } from './live';
 import { duration } from './model';
 
 /** One line on the board: what the specialist is doing this minute, and today's talk time filling towards the target. */
-function Line({ agent, live, now, onOpen }: { agent: AgentStats; live: Live | null; now: number; onOpen?: (id: number) => void }) {
+export function Line({ agent, live, now, onOpen }: { agent: AgentStats; live: Live | null; now: number; onOpen?: (id: number) => void }) {
   const calls = (live?.calls || []).filter(call => call.agent_id === agent.id);
   const talking = calls.find(call => call.state === 'talking');
   const ringing = calls.find(call => call.state === 'ringing');

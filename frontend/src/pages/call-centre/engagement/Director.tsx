@@ -6,7 +6,6 @@ import { CallReviewDialog, RatingRules } from './CallReview';
 import CallLog from './CallLog';
 import { monthTotals } from './dashboard';
 import Dialog from './Dialog';
-import MissedCalls from './MissedCalls';
 import { Scorecard, TranscriptSearch } from './Scorecard';
 import { downloadBlob, duration, issueLabel, longDate, when } from './model';
 
@@ -121,7 +120,6 @@ export function CallsPage({ overview, session, onOpenCase, onChanged, notify }: 
   return (
     <div className="dd">
       {waiting.length > 0 && <WaitingForManager cases={waiting} session={session} onOpenCase={onOpenCase} onChanged={onChanged} notify={notify} />}
-      <MissedCalls session={session} revision={overview.generated_at} onOpenCase={onOpenCase} />
       <BadCalls overview={overview} />
       <CallLog agentId={null} manager revision={overview.generated_at} onOpen={onOpenCase} />
       <TranscriptSearch manager />

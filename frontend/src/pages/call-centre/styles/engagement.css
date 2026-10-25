@@ -197,3 +197,4 @@
 .ec .ed-zoom-numbers{margin:1rem 0;padding:1rem;border:1px solid #cdb9e8;border-radius:10px;background:#faf7fe}
 .ec .ed-zoom-numbers h4{margin:0 0 .2rem;font-size:1rem}
 .ec .ed-zoom-numbers input[type=search]{width:16rem}
+.ec audio.ed-recording-audio{display:block;width:100%;min-width:16rem;margin-top:.5rem}

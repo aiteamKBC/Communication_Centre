@@ -12,7 +12,10 @@ from Aptem first; line-manager details come from Aptem. The coach follows ``pick
 Only learners confirmed active are included in the calling directory. A non-active
 status in either source takes precedence over Active in the other source.
 """
+import re
 from functools import cached_property
+
+from django.conf import settings
 
 from .rules import email_key, normalize_phone
 
@@ -21,6 +24,29 @@ SKIPPED_LMS_STATUSES = {'duplicate - merged'}
 # The LMS's own grouping of programme statuses (coach_api.views.normalize_program_status).
 BREAK_STATUSES = {'break', 'onbreak', 'onabreak', 'onmaternitybreak', 'onillnessbreak', 'onotherbreak'}
 ACTIVE_STATUSES = {'active', 'delivery'}   # Delivery: active, still on the old LMS (not yet invited)
+
+
+# Test and QA accounts in the LMS: named with the word "Test" or "QA" (every such learner is one; no real name has the
+# word), or on a reserved test domain. Kept off every call list and given no reminders; their cases stay as they are.
+TEST_NAME = re.compile(r'\b(test|qa)\b', re.IGNORECASE)
+TEST_DOMAINS = {'example.test', 'example.invalid'}
+
+
+def is_test_learner(profile):
+    email = email_key(profile.get('learner_email'))
+    return bool(TEST_NAME.search(str(profile.get('learner_name') or '')) or email.rsplit('@', 1)[-1] in TEST_DOMAINS)
+
+
+def test_emails(people):
+    """Every email (main and other) of the directory's test learners and of the accounts confirmed as tests
+    (``CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS``)."""
+    found = {email_key(profile.get('learner_email')) for profile in people.values() if is_test_learner(profile)}
+    confirmed = set(getattr(settings, 'CALLCENTRE_CONFIRMED_TEST_IDENTIFIERS', []))
+    for person in getattr(people, 'satisfaction', None) or []:
+        if confirmed.intersection(person.get('identifiers', [])):
+            found |= {identifier[6:] for identifier in person['identifiers'] if identifier.startswith('email:')}
+    aliases = getattr(people, 'aliases', None) or {}
+    return frozenset((found | {alias for alias, main in aliases.items() if main in found}) - {''})
 
 
 def program_status(raw):

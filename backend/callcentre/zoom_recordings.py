@@ -137,7 +137,8 @@ def ai_transcription_enabled():
                 and settings.OPENAI_TRANSCRIPTION_MODEL)
 
 
-def download_audio(client, download_url):
+def download_audio(client, download_url, limit=MAX_AUDIO_BYTES):
+    """The audio at a Zoom download link, up to ``limit`` bytes (transcription's limit unless asked otherwise)."""
     url = safe_download_url(download_url)
     if time.monotonic() >= client.expires_at:
         client._authorize()
@@ -165,15 +166,15 @@ def download_audio(client, download_url):
                     declared_size = int(response.headers.get('Content-Length', '0'))
                 except (ValueError, TypeError):
                     declared_size = 0
-                if declared_size > MAX_AUDIO_BYTES:
-                    raise ZoomError('Zoom recording exceeds the 25 MB transcription limit.')
+                if declared_size > limit:
+                    raise ZoomError(f'Zoom recording exceeds the {limit // (1024 * 1024)} MB limit.')
                 audio = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode='w+b')
                 total = 0
                 for chunk in response.iter_content(chunk_size=65536):
                     total += len(chunk)
-                    if total > MAX_AUDIO_BYTES:
+                    if total > limit:
                         audio.close()
-                        raise ZoomError('Zoom recording exceeds the 25 MB transcription limit.')
+                        raise ZoomError(f'Zoom recording exceeds the {limit // (1024 * 1024)} MB limit.')
                     audio.write(chunk)
                 if total == 0:
                     audio.close()
@@ -184,6 +185,31 @@ def download_audio(client, download_url):
             response.close()
         # Signed Zoom redirects are fetched without forwarding the OAuth token.
         response = client._request('GET', url, stream=True, allow_redirects=False)
+
+
+# Playing a call is not transcribing it: a long call's recording may be larger than transcription allows.
+PLAYBACK_MAX_BYTES = 200 * 1024 * 1024
+
+
+def recording_audio(recording):
+    """A call recording's audio, for Play: (file, content type). Zoom's download link is looked up in that day's
+    recordings list (the link is not stored); the audio is streamed through and never kept."""
+    from .zoom_phone import ZoomClient, validate_config
+    client = ZoomClient(validate_config(recording.source_account))
+    try:
+        day = recording.started_at.date()
+        url = ''
+        for rows in client.recording_pages(day - timedelta(days=1), day + timedelta(days=1)):
+            url = next((row['download_url'] for row in rows if isinstance(row, dict) and row.get('id') == recording.recording_id
+                        and isinstance(row.get('download_url'), str) and row['download_url']), '')
+            if url:
+                break
+        if not url:
+            raise ZoomError('Zoom has no audio for this recording any more.')
+        file, _name, content_type = download_audio(client, url, limit=PLAYBACK_MAX_BYTES)
+        return file, content_type
+    finally:
+        client.close()
 
 
 def fetch_ai_transcript(client, download_url):

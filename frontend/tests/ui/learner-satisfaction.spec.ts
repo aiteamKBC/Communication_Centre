@@ -73,14 +73,14 @@ async function mockDesk(page: Page, agentId = 1, suppliedCases?: OverviewCase[])
     return json({}); // No request in these UI tests reaches a real backend or mail provider.
   });
   await page.goto('/dashboard/call-centre?view=operator&section=learner_satisfaction');
-  await expect(page.getByRole('heading', { name: 'Learner Satisfaction', exact: true }),
-    `Browser errors: ${pageErrors.join('; ')}`).toBeVisible();
+  await expect(page.getByRole('tab', { name: /^Learner Satisfaction \(/ }),
+    `Browser errors: ${pageErrors.join('; ')}`).toHaveAttribute('aria-selected', 'true');
   return posts;
 }
 
 test('counts only due open reviews and keeps contacts with no phone', async ({ page }) => {
   await mockDesk(page);
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Call Learner 1', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Email', exact: true })).toBeEnabled();
   await expect(page.locator('[data-sheet-row="2"]')).toHaveCount(0);
@@ -92,7 +92,7 @@ for (const agentId of [1, 2]) {
   test(`specialist ${agentId} sees only their allocated contacts and shared queue`, async ({ page }) => {
     await mockDesk(page, agentId, [sample(1, { allocated_agent_id: 1 }),
       sample(2, { allocated_agent_id: 2 }), sample(4)]);
-    await expect(page.getByRole('button', { name: 'Learner Satisfaction (2)', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Learner Satisfaction (2)', exact: true })).toBeVisible();
     await expect(page.locator(`[data-sheet-row="${agentId}"]`)).toBeVisible();
     await expect(page.locator('[data-sheet-row="4"]')).toBeVisible();
     await expect(page.locator(`[data-sheet-row="${agentId === 1 ? 2 : 1}"]`)).toHaveCount(0);
@@ -115,7 +115,7 @@ test('learner email drafts use the right contact and only send on explicit click
   expect(posts.at(-1)?.data.request_id).toBeTruthy();
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   // Employer feedback uses the manager email from the employer case.
-  await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
+  await page.getByRole('tab', { name: 'Employer Satisfaction (1)', exact: true }).click();
   const employerRow = page.locator('[data-sheet-row="3"]');
   await expect(employerRow).toBeVisible();
   await employerRow.getByRole('button', { name: 'Email', exact: true }).click();
@@ -145,7 +145,7 @@ test('a network retry reuses the same request ID and does not complete feedback'
   await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365');
   expect(requests).toHaveLength(2);
   expect(requests[0]).toEqual(requests[1]);
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
 });
 
 test('completion records rating, issue and agreed action then refreshes the count', async ({ page }) => {
@@ -157,7 +157,7 @@ test('completion records rating, issue and agreed action then refreshes the coun
   await dialog.getByLabel('Issue raised', { exact: false }).fill('None');
   await dialog.getByLabel('Agreed action', { exact: false }).fill('No action needed');
   await dialog.getByRole('button', { name: 'Complete review', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (0)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (0)', exact: true })).toBeVisible();
   expect(posts.find(post => post.path.endsWith('/complete_feedback/'))?.data).toMatchObject({
     score: 4, problem: 'None', agreed_action: 'No action needed', agent_id: 1,
   });
@@ -165,7 +165,7 @@ test('completion records rating, issue and agreed action then refreshes the coun
 
 test('employer row lists each learner and permits calling a recorded number', async ({ page }) => {
   const posts = await mockDesk(page);
-  await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
+  await page.getByRole('tab', { name: 'Employer Satisfaction (1)', exact: true }).click();
   const row = page.locator('[data-sheet-row="3"]');
   await row.getByText('2 learners · Company', { exact: true }).click();
   await expect(row.getByText('Student Alpha · Marketing', { exact: true })).toBeVisible();

@@ -14,11 +14,16 @@ export default function RecordingDialog({ callId, onClose }: { callId: number | 
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // The recording being played: streamed from Zoom only when Play is pressed (nothing is kept here).
+  const [playing, setPlaying] = useState<number | null>(null);
+  const [unplayable, setUnplayable] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     setRecordings([]);
     setSelected(null);
     setError('');
+    setPlaying(null);
+    setUnplayable(new Set());
     if (callId === null) return undefined;
     const controller = new AbortController();
     setLoading(true);
@@ -55,7 +60,16 @@ export default function RecordingDialog({ callId, onClose }: { callId: number | 
                 <tr key={row.id}>
                   <td>{row.owner_name || 'Recording'}<small>{row.recording_type || 'Call recording'} · {row.duration_seconds === null ? 'Duration not supplied' : `${row.duration_seconds} seconds`}</small></td>
                   <td>{transcriptStatusLabels[row.transcript_status] || row.transcript_status}{row.transcript_error && <small>{row.transcript_error}</small>}</td>
-                  <td><button type="button" disabled={row.transcript_status !== 'ready'} aria-pressed={selected === row.id} onClick={() => setSelected(row.id)}>Read transcript</button></td>
+                  <td>
+                    <div className="ec-buttons">
+                      <button type="button" aria-pressed={playing === row.id} onClick={() => setPlaying(row.id)}>▶ Play</button>
+                      <button type="button" disabled={row.transcript_status !== 'ready'} aria-pressed={selected === row.id} onClick={() => setSelected(row.id)}>Read transcript</button>
+                    </div>
+                    {playing === row.id && (unplayable.has(row.id)
+                      ? <small className="danger" role="alert">Zoom could not play this recording. It may have been deleted in Zoom.</small>
+                      : <audio className="ed-recording-audio" controls autoPlay preload="none" src={`/api/zoom/recordings/${row.id}/audio/`}
+                        aria-label={`Recording: ${row.owner_name || 'call'}`} onError={() => setUnplayable(current => new Set(current).add(row.id))} />)}
+                  </td>
                 </tr>
               ))}
             </tbody>

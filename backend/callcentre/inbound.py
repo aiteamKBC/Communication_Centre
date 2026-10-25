@@ -255,21 +255,27 @@ def row(item, now):
     }
 
 
+VOICEMAIL = 'voicemail'
+
+
 def listing(user, agent, kind, status, days, now=None, of_agent=None):
     """The follow-ups of one kind this person sees (a director may narrow them to one specialist's desk), newest first, with
     how quickly call-backs were made."""
     if not ready():
         raise ValueError(NOT_SET_UP)
     now = now or timezone.now()
-    items = Inbound.objects.filter(kind=kind).select_related('call', 'voicemail', 'agent', 'assigned_agent')
+    # 'voicemail': every missed call that left one, call-back or enquiry.
+    items = (Inbound.objects.filter(voicemail__isnull=False) if kind == VOICEMAIL else Inbound.objects.filter(kind=kind))         .select_related('call', 'voicemail', 'agent', 'assigned_agent')
     items = visible(items, user, agent)
     if of_agent:   # what that specialist sees on their own desk
         items = visible(items, of_agent.user, of_agent)
+    recent = items.filter(received_at__gte=now - timedelta(days=days))
     if status == 'open':
         shown = items.filter(status='open')
+    elif status == 'all':   # everything received in the period, open or done
+        shown = recent
     else:
         shown = items.filter(status='done', done_at__gte=now - timedelta(days=days))
-    recent = items.filter(received_at__gte=now - timedelta(days=days))
     done = [item for item in recent.filter(status='done', done_how__in=('called_back', 'got_through'))]
     waits = sorted((item.done_at - item.received_at).total_seconds() / 60 for item in done)
     return {

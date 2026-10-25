@@ -36,7 +36,7 @@ def missed_lectures_ready_until(today):
 
 def out_of_scope():
     """Open cases the call centre does not work on now. They stay in the database, untouched."""
-    from .sources import active_case_contacts, on_break_emails   # sources imports this module
+    from .sources import active_case_contacts, on_break_emails, test_learner_emails   # sources imports this module
     today = datetime.now(LONDON).date()
     ready = missed_lectures_ready_until(today)
     return (Q(source_type__in=PAUSED_CATEGORIES)
@@ -46,6 +46,7 @@ def out_of_scope():
             # A reminder is for the next working day's appointment; once that day is today or past, the call is moot.
             | Q(source_type='reminder', booking_at__lt=datetime.combine(next_workday(today), time.min, tzinfo=LONDON))
             | Q(learner_email__in=on_break_emails())
+            | Q(learner_email__in=test_learner_emails())
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
             | Q(source_type='attendance', overdue_since__gt=ready)
             | Q(source_type__in=REVIEW_CATEGORIES, overdue_since__lt=REVIEWS_SINCE)

@@ -1,7 +1,8 @@
+import logging
 from datetime import datetime, time, timedelta
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -14,6 +15,8 @@ from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEv
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
 from .zoom_views import current_account_filter
+
+logger = logging.getLogger(__name__)
 
 
 class Conflict(ValueError):
@@ -223,6 +226,10 @@ def resolve(ticket_id, user=None, evidence=None, note='', option='other', acting
             raise ValueError('New, unambiguous source evidence is required.')
     elif not note.strip():
         raise ValueError('A resolution reason is required.')
+    if user is not None:
+        from .employer_check import missing
+        if missing(ticket):
+            raise ValueError('Confirm the progress review with the employer too (Employer confirmation), then resolve it.')
     close(ticket, agent, 'agent' if user else 'system', option, {'note': note, 'evidence': evidence},
           None if agent or not user else user.get_username())
     return ticket
@@ -551,6 +558,17 @@ def apply_pending_outcome(ticket, link, match):
     apply_outcome(ticket, link, match.agent, None, data['outcome'], data.get('option', ''), data.get('note', ''), callback_at)
 
 
+def confirm_review_meeting(ticket, agent, actor):
+    """A reached next-day call confirms the learner's Outlook review meeting. Never stops the call being saved (for
+    example before the review meeting tables exist)."""
+    from .review_meetings import confirmed
+    try:
+        with transaction.atomic(using=DB):
+            confirmed(ticket, agent, actor)
+    except DatabaseError:
+        logger.exception('Review meeting of case %s not marked confirmed', ticket.pk)
+
+
 def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at):
     """Record a validated outcome on a locked case and move the case on."""
     if not system_case_calls().filter(pk=link.pk).exists():
@@ -583,5 +601,7 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
                              'callback_at': callback_at.isoformat() if callback_at else None,
                              'promised_at': ticket.promised_at.isoformat() if ticket.promised_at else None},
           agent, actor, call=link.match.call)
+    if outcome == 'reached' and ticket.source_type == 'reminder':
+        confirm_review_meeting(ticket, agent, actor)
     if closes_now:
         close(ticket, agent, 'agent', option, {'note': note, 'promise': option}, actor)

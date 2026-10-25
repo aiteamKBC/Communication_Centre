@@ -46,7 +46,7 @@ export const ISSUE_ACTIONS: Record<string, string> = {
   signature: 'The review is finished and waiting for the learner’s signature. Ask them to sign it in the LMS; there is nothing to book.',
   otj: 'Agree support to record and recover off-the-job hours.',
   epa: 'The learner is past their programme end date and still active. Check where they are with gateway and the end-point assessment and agree the next step; book a support session with their coach if they need help.',
-  reminder: 'Confirm the learner will attend tomorrow’s appointment. If they cannot, ask them to contact their coach to rearrange it, and say why in the note.',
+  reminder: 'Confirm the learner will attend tomorrow’s appointment; for a progress review, confirm it with their employer too. If they cannot come, cancel it or move it to a time the coach is free, and say why in the note.',
   tech_support: 'Confirm with the learner that the technical issue is fixed, then resolve the case.',
   employer_feedback: 'Record the employer’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
   learner_satisfaction: 'Record the learner’s satisfaction score, feedback, any issue and the agreed action. Complete feedback after an answered call.',
@@ -264,7 +264,8 @@ export function reviewBookingPage(c: { source_type: string; booking_links: Booki
 }
 
 /** What the booking tools do for this case, or why there is nothing to book. */
-export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links'>) {
+export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links' | 'meeting'>) {
+  if (c.meeting?.cancellable) return 'Already booked. If the learner cannot attend, cancel it or move it to a time the coach is free.';
   if (c.bookable.includes('catch-up')) return 'Book a catch-up or support session in the coach’s LMS calendar, or send the booking email.';
   if (c.bookable.length) return 'Book a support session in the coach’s LMS calendar, or send the booking email.';
   if (reviewBookingPage(c)) return 'Book it with the learner on the coach’s page (use the learner’s own name and email), or send the booking email. The coach links it to the LMS review.';
@@ -335,25 +336,53 @@ const csvCell = (value: unknown) => {
 export const csvText = (headers: string[], rows: Record<string, unknown>[]) =>
   [headers.join(','), ...rows.map(row => headers.map(h => csvCell(row[h])).join(','))].join('\r\n');
 
-export const DESK_MENUS: [string, string, string][] = [
-  ['next', 'Next call', 'phone'], ['learners', 'Call a learner', 'phone'],
-  ...CALL_TABS.map(tab => [tab.key, tab.label, tab.icon] as [string, string, string]),
-  ['bookings', 'Coach booking links', 'calendar'], ['followups', 'Follow-ups', 'calendar'], ['calls', 'My last calls', 'phone'],
-  ['rang', 'Missed calls', 'phone'], ['week', 'My week', 'chart'],
-  ['history', 'Monthly achievements', 'clock'], ['progress', 'My progress', 'chart'], ['reviews', 'My call reviews', 'chart'],
-  ['reports', 'Reports', 'file'],
+/** The desk's pages. My lists holds the call sheets and Follow-ups as tabs; How I'm doing holds the week, the month,
+ * call reviews and achievements as tabs. */
+export const DESK_PAGES: [string, string, string][] = [
+  ['today', 'Today', 'grid'], ['lists', 'My lists', 'file'], ['learners', 'Call a learner', 'phone'], ['rang', 'Missed calls', 'phone'],
+  ['calls', 'My calls', 'clock'], ['doing', 'How I’m doing', 'chart'], ['bookings', 'Booking links', 'calendar'],
 ];
+export const DOING_TABS: [string, string][] = [['week', 'This week'], ['month', 'This month'], ['reviews', 'Call reviews'], ['achievements', 'Achievements']];
+// Sections from before the desk was regrouped, so saved links still open the right place.
+const OLD_SECTIONS: Record<string, string> = { next: 'today', reports: 'month', history: 'achievements', progress: 'achievements' };
 
-/** An employer specialist's desk: the employer calls and their own records, no learner lists. */
-const EMPLOYER_DESK = new Set(['next', 'learners', 'employer_satisfaction', 'followups', 'calls', 'rang', 'week', 'history', 'progress', 'reviews', 'reports']);
+export type DeskLayout = { pages: [string, string, string][]; lists: string[] };
 
-/** The desk's menu: with employer specialists chosen, only theirs for them (with Call a learner, for any learner) and
- * no employer calls for the rest; otherwise everything but Call a learner. */
-export const deskMenus = (overview: Pick<Overview, 'employer_specialists'>, agentId: number | null) => {
+/** The desk for this specialist. With employer specialists chosen, theirs has the employer calls (and Call a learner, for
+ * any learner) and everyone else's no employer calls; nobody else has Call a learner. */
+export function deskLayout(overview: Pick<Overview, 'employer_specialists'>, agentId: number | null): DeskLayout {
   const team = overview.employer_specialists || [];
-  if (agentId !== null && team.includes(agentId)) return DESK_MENUS.filter(([key]) => EMPLOYER_DESK.has(key));
-  return DESK_MENUS.filter(([key]) => key !== 'learners' && (!team.length || key !== 'employer_satisfaction'));
-};
+  const employer = agentId !== null && team.includes(agentId);
+  const sheets = CALL_TABS.map(tab => tab.key).filter(key => (employer ? key === 'employer_satisfaction' : !team.length || key !== 'employer_satisfaction'));
+  return { pages: DESK_PAGES.filter(([key]) => (employer ? key !== 'bookings' : key !== 'learners')), lists: [...sheets, 'followups'] };
+}
+
+/** The section the address asks for (old addresses included) and the desk page it sits on. */
+export function deskSection(asked: string | null, layout: DeskLayout) {
+  const section = OLD_SECTIONS[asked || ''] || asked || 'today';
+  if (layout.lists.includes(section)) return { section, page: 'lists' };
+  if (DOING_TABS.some(([key]) => key === section)) return { section, page: 'doing' };
+  if (section === 'lists') return { section: layout.lists[0], page: 'lists' };
+  if (section === 'doing') return { section: DOING_TABS[0][0], page: 'doing' };
+  return layout.pages.some(([key]) => key === section) ? { section, page: section } : { section: 'today', page: 'today' };
+}
+
+export const listLabel = (key: string) => (key === 'followups' ? 'Follow-ups' : CALL_TABS.find(tab => tab.key === key)?.label || human(key));
+
+/** The cases a list counts: feedback lists only those due now, Follow-ups only those this specialist's own call set. */
+function listCases(overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, key: string, agentId: number | null) {
+  if (key === 'followups') return overview.cases.filter(c => activeCase(c) && agentId !== null && c.followup_agent_id === agentId);
+  const cases = categoryCases(overview.cases, key, overview.today, overview.next_workday);
+  return key === 'learner_satisfaction' || key === 'employer_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
+}
+
+/** People on one list (one per contact). */
+export const listCount = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, key: string, agentId: number | null) =>
+  uniqueLearners(listCases(overview, key, agentId)).length;
+
+/** People on any of the call sheets, each counted once. */
+export const listsTotal = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, layout: DeskLayout) =>
+  uniqueLearners(layout.lists.filter(key => key !== 'followups').flatMap(key => listCases(overview, key, null))).length;
 
 /** What saving the satisfaction feedback did: completed now, or held until Zoom reports the call answered. */
 export const feedbackMessage = (held?: boolean) => (held
@@ -362,14 +391,6 @@ export const feedbackMessage = (held?: boolean) => (held
 
 /** Calls the AI actually judged (excludes not rated). */
 export const ratedCalls = (counts: Record<CallRating, number> | undefined) => (counts ? counts.excellent + counts.good + counts.bad : 0);
-
-export const deskLabel = (overview: Overview, key: string) => {
-  const menu = DESK_MENUS.find(item => item[0] === key);
-  if (!menu) return 'Call next';
-  const cases = categoryCases(overview.cases, key, overview.today, overview.next_workday);
-  const counted = key === 'learner_satisfaction' || key === 'employer_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
-  return CALL_TABS.some(tab => tab.key === key) ? `${menu[1]} (${uniqueLearners(counted).length})` : menu[1];
-};
 
 export type AllocationChange = { email: string; agent_id: number | null; revision: number };
 /** Learners who must stay with one specialist: an employer's (line manager's) learners, or one learner on their own. */

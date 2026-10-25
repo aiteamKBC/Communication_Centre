@@ -85,6 +85,18 @@ def step(result, name, fn):
     return value
 
 
+def review_meetings_step(people):
+    """The coaches' Outlook calendars into the stored review meetings; how it went is kept as a source's health."""
+    from .review_meetings import sync
+    try:
+        summary = sync(people)
+    except Exception as exc:
+        source_health('outlook_reviews', error=f'Outlook calendars unavailable ({type(exc).__name__}); the last read meetings are kept.')
+        raise
+    source_health('outlook_reviews', count=summary['meetings'], error=summary.get('error', ''))
+    return summary
+
+
 def update_phone_directory(people):
     directory = {}
     for person in people.values():
@@ -216,6 +228,8 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'contacts_refreshed', lambda: refresh_contacts(people))
             step(result, 'phone_directory', lambda: update_phone_directory(people))
             step(result, 'source_created', lambda: generate_risks(people))
+            # Before the bookings: the next day's reviews and coaching meetings come from the stored Outlook meetings.
+            step(result, 'review_meetings', lambda: review_meetings_step(people))
             bookings = get_source('bookings', lambda: load_bookings(people))
             if bookings is not None:
                 step(result, 'reminders_created', lambda: generate_reminders(people, bookings))

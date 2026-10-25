@@ -30,7 +30,7 @@ function NeedsYou({ overview, go }: { overview: Overview; go: Go }) {
   const load = caseload(overview.cases);
   const items: [number, string, string, Record<string, string>?][] = [
     [load.ai, 'AI suggestions to approve or reject', 'calls'],
-    [callbacks.data?.summary.open || 0, 'learners waiting for a call back', 'calls'],
+    [callbacks.data?.summary.open || 0, 'learners waiting for a call back', 'missed'],
     [load.late, 'cases past their call date', 'specialists'],
     [(overview.call_reviews?.flags || []).length, 'calls rated bad this month', 'calls'],
     [load.unallocated, 'learners in the shared queue', 'allocations'],

@@ -175,3 +175,19 @@
   .kbc-portals .dd-lamp.ringing { animation: none; }
   .kbc-portals .dd-meter-fill, .kbc-portals .workspace-app .ec .dd-person { transition: none; }
 }
+
+/* ---- Review meetings (the Outlook audit) ---- */
+.kbc-portals .rm-filters { display: flex; flex-wrap: wrap; gap: .4rem; }
+.kbc-portals .workspace-app .ec .rm-filters button {
+  display: inline-flex; align-items: baseline; gap: .45rem; padding: .35rem .8rem; border: 1px solid var(--dd-line); border-radius: 99px; background: #fff; font-size: .88rem;
+}
+.kbc-portals .workspace-app .ec .rm-filters button[aria-selected='true'] { background: var(--dd-purple); border-color: var(--dd-purple); color: #fff; }
+.kbc-portals .rm-filters b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.05rem; }
+.kbc-portals .ec input.rm-search { max-width: 22rem; }
+.kbc-portals .rm-table td small { display: block; }
+.kbc-portals .rm-table small.rm-subject { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbc-portals .rm-table td.rm-when { white-space: nowrap; }
+.kbc-portals .rm-history { list-style: none; margin: 1rem 0 0; padding: 0 0 0 1rem; border-left: 2px solid var(--dd-lilac); display: grid; gap: .8rem; }
+.kbc-portals .rm-history li { display: grid; gap: .1rem; position: relative; }
+.kbc-portals .rm-history li::before { content: ''; position: absolute; left: -1.38rem; top: .45rem; width: 10px; height: 10px; border-radius: 50%; background: var(--dd-purple); }
+.kbc-portals .rm-history span, .kbc-portals .rm-history small { font-size: .82rem; color: var(--dd-muted); }

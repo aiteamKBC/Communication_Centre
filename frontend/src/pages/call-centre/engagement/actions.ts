@@ -17,7 +17,7 @@ type ActionResult = { zoom_url?: string; tel_url?: string; number?: string; call
 /** Runs a case command as the session's operating agent. A call hands the number to the Zoom desktop app. */
 export async function caseAction(session: Session, id: number, command: string, payload: Record<string, unknown> = {}) {
   const result = await post<ActionResult>(`tickets/${id}/${command}/`, session.csrf, { ...payload, agent_id: session.agentId });
-  if (command === 'call' && result.zoom_url) window.location.href = result.zoom_url;
+  if ((command === 'call' || command === 'employer_call') && result.zoom_url) window.location.href = result.zoom_url;
   return result;
 }
 

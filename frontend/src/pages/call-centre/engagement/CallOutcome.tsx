@@ -36,6 +36,9 @@ function choicesFor(c: OverviewCase): [string, string][] {
 }
 
 function helpFor(choice: string, c: OverviewCase) {
+  if (choice === RESOLVE && c.employer_check && !c.employer_check.done) {
+    return 'A progress review is confirmed with the employer too: save the employer step first, or choose another outcome.';
+  }
   if (choice === RESOLVE) return 'The case is resolved when you save.';
   if (choice === NOT_DISCUSSED) return 'Nothing is recorded; the case comes back on the follow-up date, or the next working morning.';
   return outcomeHelp(choice, c);

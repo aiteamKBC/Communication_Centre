@@ -4,26 +4,11 @@ import type { Session } from './actions';
 import ErrorNotice from './ErrorNotice';
 import type { Problem } from './formErrors';
 import { when } from './model';
+import { DONE, RESULTS, ROLES, waited } from './inbound';
+import type { InboundItem, InboundListing } from './inbound';
 
-type Item = {
-  id: number; caller_number: string; caller_name: string; caller_email: string; caller_role: string; line: string;
-  received_at: string; result: string; agent: string;
-  status: 'open' | 'done'; done_how: string; done_by: string; done_at: string | null; note: string; waited_minutes: number;
-  case_id: number | null; voicemail_id: number | null;
-  voicemail: { duration_seconds: number | null; transcript_status: string; transcript: string } | null;
-};
-type Listing = {
-  items: Item[];
-  summary: { open: number; received: number; done: number; median_minutes: number | null; within_hour: number; days: number };
-};
-
-const RESULTS: Record<string, string> = { no_answer: 'Missed', voicemail: 'Left a voicemail', other: 'Hung up while ringing' };
-const DONE: Record<string, string> = { called_back: 'Called back', got_through: 'Rang again and got through', marked: 'Marked done' };
-const ROLES: Record<string, string> = { learner: 'Learner', line_manager: 'Line manager' };
-
-const waited = (minutes: number) => (minutes < 60 ? `${minutes} min` : minutes < 1440 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} days`);
-
-type Kind = 'callback' | 'enquiry';
+type Kind = 'callback' | 'enquiry' | 'voicemail';
+const TABS: [Kind, string][] = [['callback', 'Call-backs'], ['enquiry', 'Enquiries'], ['voicemail', 'Voicemails']];
 
 /** Missed calls, with any voicemail. Call-backs: learners and line managers we know, called back from their case (which
  * goes to the top of the list). Enquiries: numbers we do not know, listed to read (who rang, when, what they said). Each
@@ -32,16 +17,16 @@ export default function MissedCalls({ session, revision, onOpenCase, agentId }: 
   session: Session; revision: string; onOpenCase: (id: number) => void; agentId?: number;
 }) {
   const [kind, setKind] = useState<Kind>('callback');
-  const [status, setStatus] = useState<'open' | 'done'>('open');
+  const [status, setStatus] = useState<'open' | 'done' | 'all'>('open');
   const [days, setDays] = useState(7);
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<number | null>(null);
   const [problem, setProblem] = useState<Problem>(null);
   const [playing, setPlaying] = useState<number | null>(null);
-  const { data, error, loading, refresh } = useCallCentre<Listing>(`inbound/?kind=${kind}&status=${status}&days=${days}${agentId ? `&agent_id=${agentId}` : ''}`);
+  const { data, error, loading, refresh } = useCallCentre<InboundListing>(`inbound/?kind=${kind}&status=${status}&days=${days}${agentId ? `&agent_id=${agentId}` : ''}`);
   useEffect(() => { refresh(); }, [revision, refresh]);
 
-  async function act(item: Item, action: string) {
+  async function act(item: InboundItem, action: string) {
     setProblem(null);
     setBusy(item.id);
     try {
@@ -60,20 +45,23 @@ export default function MissedCalls({ session, revision, onOpenCase, agentId }: 
     <section className="ec-card" aria-label="Missed calls">
       <div className="ec-head">
         <div>
-          <h2>Missed calls to call back</h2>
+          <h2>{kind === 'voicemail' ? 'Voicemails' : kind === 'enquiry' ? 'Enquiries' : 'Missed calls to call back'}</h2>
           <p className="ec-muted">{kind === 'callback'
             ? 'Learners and line managers who rang and nobody answered, with any voicemail they left. Call them back from their case (the Call button), so the call counts: it closes here by itself, and their cases sit at the top of the list until then.'
-            : 'Numbers we do not know that rang and nobody answered: usually people asking about apprenticeships. Who rang, when, and what their voicemail said.'}</p>
+            : kind === 'enquiry'
+              ? 'Numbers we do not know that rang and nobody answered: usually people asking about apprenticeships. Who rang, when, and what their voicemail said.'
+              : 'Every voicemail left on the team’s lines, from learners, line managers and numbers we do not know: who rang, when, the transcript, and a Play button.'}</p>
         </div>
         <div className="ec-buttons">
           <div className="ec-buttons" role="tablist" aria-label="Which missed calls">
-            {(['callback', 'enquiry'] as Kind[]).map(value => (
+            {TABS.map(([value, label]) => (
               <button key={value} type="button" role="tab" aria-selected={kind === value} className={kind === value ? 'primary' : ''}
-                onClick={() => setKind(value)}>{value === 'callback' ? 'Call-backs' : 'Enquiries'}</button>
+                onClick={() => { setKind(value); setStatus(value === 'voicemail' ? 'all' : 'open'); }}>{label}</button>
             ))}
           </div>
           <label>Show
-            <select value={status} onChange={event => setStatus(event.target.value as 'open' | 'done')}>
+            <select value={status} onChange={event => setStatus(event.target.value as 'open' | 'done' | 'all')}>
+              {kind === 'voicemail' && <option value="all">All in the period</option>}
               <option value="open">Still to call back</option><option value="done">Done</option>
             </select>
           </label>

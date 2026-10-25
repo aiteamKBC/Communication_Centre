@@ -18,7 +18,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, helpdesk, lms_booking, optional_calls, satisfaction_email
+from . import email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
 from .aptem_summaries import parse_date_safe
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback, held_feedback
 from .access import is_director, refused
@@ -235,6 +235,8 @@ def ticket_json(ticket):
         'called_back_at': getattr(ticket, 'called_back_at', None),
         # What the learner can agree to (option -> days to do it); without options the specialist closes the case.
         'promises': PROMISES.get(ticket.source_type, {}), 'specialist_closes': ticket.source_type in SPECIALIST_CLOSES,
+        # Next-day progress reviews: the employer (line manager) is confirmed too.
+        'employer_check': employer_check.state(ticket),
         'purpose': str(ticket.source_data.get('purpose') or '') if isinstance(ticket.source_data, dict) else '',
         'requested_by': str(ticket.source_data.get('requested_by') or '') if isinstance(ticket.source_data, dict) else '',
         'helpdesk': {key: ticket.source_data.get(key) for key in (
@@ -306,6 +308,16 @@ def report_month(request, today):
                                datetime.combine(end + timedelta(days=1), time.min, tzinfo=LONDON))
 
 
+def review_meeting_summaries(tickets):
+    """Each next-day reminder's Outlook meeting: its status, the learner's reply, whether it can be cancelled here."""
+    try:
+        with transaction.atomic(using=DB):
+            return {pk: review_meetings.summary_json(meeting) for pk, meeting in review_meetings.meetings_for(tickets).items()}
+    except DatabaseError:   # before review_meetings.sql has run
+        logger.warning('Review meetings unavailable; reminders are shown without their Outlook meeting.')
+        return {}
+
+
 @authenticated
 @require_GET
 def overview(request):
@@ -327,9 +339,11 @@ def overview(request):
     listed = tickets[:OVERVIEW_CASE_LIMIT]
     # One contact per person, also when only some of their cases carry the person ID.
     keys = contact_keys(listed)
+    meetings = review_meeting_summaries(listed)
     for ticket in listed:
         item = ticket_json(ticket)
         item['contact_key'] = keys[ticket.pk]
+        item['meeting'] = meetings.get(ticket.pk)
         # An optional call (optional_calls) belongs to the specialist who made it and is on nobody else's list.
         item['optional'] = optional(ticket.source_data)
         item.pop('source_data')
@@ -466,6 +480,7 @@ def detail(request, pk):
             same_person |= same_contact(ticket)
         issues = CaseTicket.objects.open().exclude(source_type='employer_feedback').filter(same_person)
     payload = ticket_json(ticket)
+    payload['meeting'] = review_meeting_summaries([ticket]).get(ticket.pk)
     add_lecture_times([payload])
     return JsonResponse({'ticket': payload,
         'issues': [{**issue_json(issue), 'created_at': issue.created_at, 'booking_at': issue.booking_at,
@@ -561,6 +576,11 @@ def action(request, pk, command):
         if not applied:
             request_call_sync(request.user.get_username())
         return JsonResponse({'ok': True, 'applied': applied})
+    elif command == 'employer_check':
+        return JsonResponse({'ok': True, 'employer_check': employer_check.record(
+            pk, request.user, str(data.get('result', '')), data.get('note', ''), acting_agent=agent)})
+    elif command == 'employer_call':
+        return JsonResponse(employer_check.dial(pk, request.user, acting_agent=agent))
     elif command == 'close_review':
         close_without_feedback(pk, request.user, data.get('reason', ''), data.get('note', ''), acting_agent=agent)
     elif command == 'reopen':
@@ -715,6 +735,79 @@ def tech_issue(request, pk):
 
 
 @authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def ticket_meeting(request, pk):
+    """The Outlook review meeting of a next-day reminder. GET: the times it can move to (the coach's free slots).
+    POST ``cancel``: cancel it at the learner's request; ``reschedule``: move it to one of those times. Outlook tells the
+    attendees, the LMS calendar entry follows, the coach gets a note, and the case and the meeting record it."""
+    data = body(request) if request.method == 'POST' else {}
+    agent_id = data.get('agent_id') if request.method == 'POST' else request.GET.get('agent_id')
+    agent = operating_agent(request.user, int(agent_id) if agent_id else None)
+    with transaction.atomic(using=DB):
+        ticket = CaseTicket.objects.select_for_update().get(pk=pk)
+        can_work(ticket, request.user, acting_agent=agent)
+        if ticket.status == 'resolved' or ticket.archived:
+            raise Conflict('This case is closed.')
+    meeting = review_meetings.meeting_for(ticket)
+    if meeting is None:
+        raise Conflict('No Outlook meeting is linked to this case.')
+    try:
+        if request.method == 'GET':
+            refused = review_meetings.cancellable(meeting)
+            if refused:
+                raise Conflict(refused)
+            return JsonResponse({'meeting': review_meetings.summary_json(meeting), 'start': meeting.start_at.isoformat(),
+                                 'coach': meeting.coach_email, 'timezone': 'Europe/London',
+                                 'times': [{'start': s.isoformat(), 'date': s.date().isoformat(), 'time': s.strftime('%H:%M')}
+                                           for s in review_meetings.free_times(meeting)]})
+        actor = request.user.get_full_name() or request.user.get_username()
+        action = data.get('action')
+        if action == 'cancel':
+            meeting = review_meetings.cancel(meeting.pk, str(data.get('reason', '')), data.get('note', ''), agent, actor, ticket=ticket)
+            event(ticket, 'meeting_cancelled', {'meeting_id': meeting.pk, 'start': meeting.start_at.isoformat(),
+                                                'reason': meeting.cancel_reason}, agent, None if agent else actor)
+        elif action == 'reschedule':
+            old = meeting.start_at
+            meeting = review_meetings.reschedule(meeting.pk, parse_moment(data['start']), str(data.get('reason', '')),
+                                                 data.get('note', ''), agent, actor, ticket=ticket)
+            event(ticket, 'meeting_rescheduled', {'meeting_id': meeting.pk, 'from': old.isoformat(), 'to': meeting.start_at.isoformat(),
+                                                  'reason': str(data.get('reason', ''))}, agent, None if agent else actor)
+        else:
+            raise ValueError('Choose to cancel or reschedule the meeting.')
+    except lms_booking.Unavailable as exc:
+        return JsonResponse({'detail': str(exc)}, status=503)
+    return JsonResponse({'ok': True, 'meeting': review_meetings.summary_json(meeting), 'start': meeting.start_at.isoformat()})
+
+
+@authenticated
+@require_GET
+def review_meetings_view(request):
+    """The audit of the coaches' review meetings for a director: each with its status, the learner's reply, who
+    confirmed or cancelled it and when; one meeting with its full history when ``id`` is given."""
+    if not is_director(request.user):
+        raise PermissionDenied('Only managers can see the review meeting audit.')
+    if request.GET.get('id'):
+        meeting = review_meetings.ReviewMeeting.objects.get(pk=int(request.GET['id']))
+        item = review_meetings.meeting_json(meeting, meeting.events.order_by('at', 'id'))
+        reminders = CaseTicket.objects.filter(source_type='reminder', learner_email=meeting.learner_email,
+                                              booking_at=meeting.start_at).values_list('pk', flat=True) if meeting.learner_email else []
+        return JsonResponse({'meeting': item, 'case_ids': list(reminders)})
+    today = timezone.now().astimezone(LONDON).date()
+    start = date.fromisoformat(request.GET.get('from') or today.isoformat())
+    end = date.fromisoformat(request.GET.get('to') or (today + timedelta(days=review_meetings.DAYS_AHEAD)).isoformat())
+    if start > end or (end - start).days > 120:
+        raise ValueError('Choose up to 120 days, with the start before the end.')
+    status = request.GET.get('status', 'all')
+    result = review_meetings.listing(start, end, status, request.GET.get('q', ''))
+    state = CycleState.objects.filter(name='source:outlook_reviews').first()
+    result['sync'] = {'last_success_at': state.last_success_at.isoformat() if state and state.last_success_at else None,
+                      'error': (state.details or {}).get('error', '') if state else ''}
+    result['from'], result['to'] = start.isoformat(), end.isoformat()
+    return JsonResponse(result)
+
+
+@authenticated
 @require_GET
 def my_call_reviews(request):
     """Every AI-rated call of one specialist in a month: their own, or any specialist's for a manager."""
@@ -860,7 +953,7 @@ def inbound_view(request):
     kind = request.GET.get('kind', 'callback')
     status = request.GET.get('status', 'open')
     days = int(request.GET.get('days', '7'))
-    if kind not in (inbound.Inbound.CALLBACK, inbound.Inbound.ENQUIRY) or status not in ('open', 'done') or days not in CALL_LOG_DAYS:
+    if kind not in (inbound.Inbound.CALLBACK, inbound.Inbound.ENQUIRY, inbound.VOICEMAIL) or status not in ('open', 'done', 'all')             or days not in CALL_LOG_DAYS:
         raise ValueError('Invalid list, status or period.')
     of_agent = None
     if request.GET.get('agent_id') and is_director(request.user):

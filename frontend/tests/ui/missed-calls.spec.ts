@@ -9,7 +9,8 @@ const ITEMS = {
   enquiry: [{
     id: 2, kind: 'enquiry', caller_number: '+447911000111', caller_name: '', caller_email: '', caller_role: '',
     line: '+441622958955', received_at: '2026-10-20T10:00:00Z', result: 'other', agent: 'Operator', assigned_agent_id: null, assigned_agent: '',
-    status: 'open', done_how: '', done_by: '', done_at: null, note: '', waited_minutes: 20, case_id: null, voicemail_id: null,
+    status: 'open', done_how: '', done_by: '', done_at: null, note: '', waited_minutes: 20, case_id: null, voicemail_id: 5,
+    voicemail: { duration_seconds: 18, transcript_status: 'ready', transcript: 'Hello, I would like to ask about the marketing apprenticeship.' },
   }],
 };
 const CARD = {
@@ -58,7 +59,8 @@ async function open(page: Page, manager: boolean, section = '') {
     }
     if (url.pathname === '/api/callcentre/inbound/') {
       asked.push(url);
-      const items = ITEMS[url.searchParams.get('kind') as 'callback' | 'enquiry'];
+      const kind = url.searchParams.get('kind');
+      const items = kind === 'voicemail' ? [...ITEMS.callback, ...ITEMS.enquiry].filter(item => item.voicemail) : ITEMS[kind as 'callback' | 'enquiry'];
       return json({ items, agents: manager ? [{ id: 1, display_name: 'Operator' }, { id: 2, display_name: 'Sales Sam' }] : undefined,
         summary: { open: items.length, received: 5, done: 4, median_minutes: 35, within_hour: 3, days: 7 } });
     }
@@ -98,7 +100,7 @@ async function open(page: Page, manager: boolean, section = '') {
   page.on('pageerror', error => errors.push(error.message));
   // A director opens a dashboard page (section: its view); a specialist a section of their desk.
   await page.goto(manager ? `/dashboard/call-centre${section ? `?view=${section}` : ''}` : `/dashboard/call-centre?view=operator&section=${section}`);
-  const heading = manager ? { calls: 'Missed calls to call back', scorecards: 'Weekly scorecards' }[section] || 'The board today'
+  const heading = manager ? { missed: 'Missed calls to call back', scorecards: 'Weekly scorecards' }[section] || 'The board today'
     : section === 'rang' ? 'Missed calls to call back' : 'My scorecard';
   await expect(page.getByRole('heading', { name: heading, exact: true }), `Browser errors: ${errors.join('; ')}`).toBeVisible();
   return { posts, asked };
@@ -126,7 +128,7 @@ test('a specialist sees who rang and was missed, opens the case to call back, or
   await missed.screenshot({ path: test.info().outputPath('missed-calls.png') });
 });
 
-test('a specialist’s week: scorecard, transcript search and calls without a recording', async ({ page }) => {
+test('a specialist’s week, then transcript search and calls without a recording under My calls', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   const { asked } = await open(page, false, 'week');
   const card = page.getByRole('region', { name: 'Weekly scorecard' });
@@ -135,20 +137,32 @@ test('a specialist’s week: scorecard, transcript search and calls without a re
   await expect(card).toContainText('1m 35s');
   await card.getByRole('button', { name: 'Previous week' }).click();
   await expect.poll(() => asked.filter(url => url.pathname.endsWith('/scorecard/')).length).toBeGreaterThan(1);
+  await page.screenshot({ path: test.info().outputPath('my-week.png'), fullPage: true });
+  // Transcript search and calls without a recording sit with the specialist's calls.
+  await page.getByRole('button', { name: 'My calls', exact: true }).click();
   const search = page.getByRole('region', { name: 'Search call transcripts' });
   await search.getByLabel('Phrase').fill('gateway');
   await search.getByRole('button', { name: 'Search' }).click();
   await expect(search.locator('mark')).toHaveText('gateway');
   await expect(page.getByRole('region', { name: 'Calls without a recording' })).toContainText('2m 5s');
-  await page.screenshot({ path: test.info().outputPath('my-week.png'), fullPage: true });
 });
 
-test('a director sees the call-backs, with no enquiries, and every scorecard', async ({ page }) => {
+test('a director has missed calls, enquiries and every voicemail on their own page, and every scorecard', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
-  await open(page, true, 'calls');
+  const { asked } = await open(page, true, 'missed');
+  await expect(page.getByRole('navigation').first().getByRole('button', { name: 'Missed calls & voicemails' })).toHaveAttribute('aria-current', 'page');
   const missed = page.getByRole('region', { name: 'Missed calls' });
   await expect(missed).toContainText('Ann Smith');
-  await expect(missed.getByRole('tab', { name: 'Enquiries' })).toBeVisible();
+  await missed.getByRole('tab', { name: 'Enquiries' }).click();
+  await expect(missed).toContainText('Not a number we know');
+  await missed.getByRole('tab', { name: 'Voicemails' }).click();
+  await expect.poll(() => { const last = asked.filter(url => url.pathname.endsWith('/inbound/')).at(-1); return last && `${last.searchParams.get('kind')}:${last.searchParams.get('status')}`; })
+    .toBe('voicemail:all');
+  await expect(missed.getByRole('heading', { name: 'Voicemails' })).toBeVisible();
+  await expect(missed.getByRole('button', { name: /^Play voicemail/ }).first()).toBeVisible();
+  // The Calls page no longer repeats them.
+  await page.getByRole('navigation').first().getByRole('button', { name: 'Calls', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Missed calls' })).toHaveCount(0);
   await page.getByRole('navigation').first().getByRole('button', { name: 'Scorecards', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Weekly scorecard' })).toContainText('Operator');
 });

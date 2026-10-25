@@ -7,6 +7,8 @@ import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
 import BookingPage from './BookingPage';
 import Dialog from './Dialog';
+import EmployerCheck from './EmployerCheck';
+import MeetingTools from './MeetingTools';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import TechIssue from './TechIssue';
@@ -310,6 +312,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <td className="ed-booking-cell">
                       {employer ? <small>No coach booking for employer calls</small> : <>
                         <strong>{c.coach || 'Coach not recorded'}</strong>
+                        <MeetingTools c={c} session={session} notify={notify} onChanged={onSaved} />
+                        <EmployerCheck c={c} session={session} notify={notify} onChanged={onSaved} />
                         {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />}
                         <BookingPage c={c} className="ed-sheet-link" />
                         {c.booking_email && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}

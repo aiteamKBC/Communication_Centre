@@ -66,7 +66,8 @@ async function openHistory(page: Page, failSeptember = false) {
     return json({});
   });
   await page.goto('/dashboard/call-centre?view=operator&section=history');
-  await expect(page.getByRole('heading', { name: 'Monthly achievements', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'How I’m doing', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Achievements', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('October learner 1')).toBeVisible();
   return { writes, requests };
 }
