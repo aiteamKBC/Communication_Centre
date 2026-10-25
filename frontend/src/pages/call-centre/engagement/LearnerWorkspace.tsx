@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
-import type { Issue, Overview } from '../api';
+import type { Overview, OverviewCase } from '../api';
 import { callDisabledReason, caseAction } from './actions';
 import type { Session } from './actions';
 import CallOutcome from './CallOutcome';
-import { activeCase, contactKey, dueForCall, issueLabel } from './model';
-import LearnerCases from './LearnerCases';
-import LearnerPanel from './LearnerPanel';
+import CaseCard from './CaseCard';
+import CaseHistory from './CaseHistory';
+import { STATUS_NAMES, caseWhen, dueText } from './caseWords';
+import { activeCase, contactKey, dueForCall, human, issueLabel, when } from './model';
 import { useCase } from './useCase';
 
-/** Full case: the learner once, one Call for all their cases with one form to record it, then every case one under
- * another on the same page. The list on the left scrolls to a case. */
+/** Full case: one person and everything about them, for Today, the lists and the director.
+ *
+ * At the top, who they are, their number and one Call for every open case, with the flags that change the conversation
+ * (they rang us, declined tomorrow's meeting, a call is late). After a call, its form is right there. Then, beside a rail
+ * of why we are calling and how to reach them, one card per open case with its steps and actions, and the history of
+ * everything done with them: calls to play and read, missed calls and voicemails, the timeline and emails. */
 export default function LearnerWorkspace({ id, overview, session, onSaved, notify, onRefresh }: {
   id: number; overview: Overview; session: Session; onSaved: (message: string) => void;
   notify: (message: string, error?: boolean) => void; onRefresh: () => void;
@@ -19,29 +24,19 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
   const [called, setCalled] = useState<number[] | null>(null);
   const [recorded, setRecorded] = useState('');
   const [busy, setBusy] = useState(false);
-  const { detail, error, refresh } = useCase(id, session.agentId);
+  const { detail, error, refresh } = useCase(id, session.agentId, true);
   useEffect(() => { refresh(); }, [overview.generated_at, refresh]);
-  const initial = detail?.ticket || overview.cases.find(c => c.id === id);
-  // The learner's open cases: one closed during the call (a booked catch-up, a resolved case) drops off the page.
-  const cases = new Map<number, Issue>();
-  if (initial) {
-    for (const c of overview.cases) {
-      if (activeCase(c) && contactKey(c) === contactKey(initial)) cases.set(c.id, c);
-    }
-    for (const c of detail?.issues || []) {
-      if (activeCase(c)) cases.set(c.id, c);
-    }
-  }
+  const person = detail?.ticket || overview.cases.find(c => c.id === id);
 
-  // The call: shown as soon as it is made, from here or from Next call before Full case was opened.
-  const callIds = called || detail?.open_call?.ticket_ids || null;
-  const callCases = callIds && callIds.join() !== recorded ? overview.cases.filter(c => callIds.includes(c.id)) : [];
-  const due = initial ? overview.cases.filter(c => contactKey(c) === contactKey(initial) && activeCase(c) && dueForCall(c)) : [];
+  // The person's open cases as the lists see them (with their meeting and employer steps), then any only the case knows.
+  const listed = person ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(person)) : [];
+  const caseIds = [...new Set([...listed.map(c => c.id), ...(detail?.issues || []).filter(activeCase).map(c => c.id)])];
+  const due = listed.filter(c => dueForCall(c));
   const callFrom = due.find(c => c.id === id) || due[0];
   const reason = callFrom ? callDisabledReason(callFrom, session) : '';
-  const labels = [...due.reduce((all, c) => all.set(issueLabel(c), (all.get(issueLabel(c)) || 0) + 1), new Map<string, number>())]
-    .map(([label, count]) => (count > 1 ? `${label} ×${count}` : label));
-  const employer = initial?.source_type === 'employer_feedback';
+  const callIds = called || detail?.open_call?.ticket_ids || null;
+  const callCases = callIds && callIds.join() !== recorded ? overview.cases.filter(c => callIds.includes(c.id)) : [];
+  const employer = person?.source_type === 'employer_feedback';
 
   async function call() {
     if (!callFrom) return;
@@ -50,7 +45,7 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
       const result = await caseAction(session, callFrom.id, 'call');
       setRecorded('');
       setCalled(result.ticket_ids || [callFrom.id]);
-      notify('Zoom Phone opened. When you hang up, record what happened for every case at the top of Full case.');
+      notify('Zoom Phone opened. When you hang up, record the call for every case just below.');
       refresh();
       onRefresh();
     } catch (failure) {
@@ -72,54 +67,106 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
     document.getElementById(`ed-case-${caseId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  return <div className="ed-contact-workspace">
-    <aside>
-      <LearnerCases cases={[...cases.values()]} selected={selected} onOpen={open} />
-      {error && <p role="alert">Could not load all cases. {error} <button type="button" onClick={refresh}>Retry</button></p>}
-      {!detail && !error && <p role="status">Loading all cases…</p>}
-      {overview.cases_truncated && !detail && <p>More cases may be available when loading completes.</p>}
-    </aside>
-    <div className="ed-contact-panel">
-      {initial && (
-        <section className="ec-card ed-call-record">
-          <h2>{initial.learner_name}</h2>
-          <p className="ec-muted">{employer
-            ? `Employer · ${initial.organisation || 'Organisation not recorded'}`
-            : `${initial.programme || 'Programme not recorded'} · ${initial.organisation || 'Employer not recorded'} · Coach: ${initial.coach || 'not recorded'}`}</p>
-          <p className="ed-call-phone"><strong>{initial.learner_phone || 'Phone number not recorded'}</strong></p>
-          {detail && (
-            <details className="ed-disclosure">
-              <summary>Learner context & contacts</summary>
-              <dl className="ec-dl">
-                {[['Email', detail.ticket.learner_email], ['Employer', detail.ticket.organisation], ['Line manager', detail.ticket.manager_name],
-                  ['Line manager email', detail.ticket.manager_email], ['Unanswered calls', String(detail.ticket.attempts)]]
-                  .map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
-              </dl>
-            </details>
-          )}
-          {callCases.length > 0 ? (
+  if (!person) return error ? <p role="alert">{error} <button type="button" onClick={refresh}>Try again</button></p> : <p role="status">Loading…</p>;
+  const flags = personFlags(listed, person.learner_name);
+  const phone = person.learner_phone;
+  const managerPhone = detail?.ticket.manager_phone || '';
+
+  return (
+    <div className="lf ed-contact-workspace">
+      <header className="lf-band">
+        <div className="lf-who">
+          <p className="lf-eyebrow">{employer ? 'Employer' : 'Learner'} · {caseIds.length} open {caseIds.length === 1 ? 'case' : 'cases'}</p>
+          <h2>{person.learner_name}</h2>
+          <p>{employer
+            ? person.organisation || 'Organisation not recorded'
+            : [person.programme || 'Programme not recorded', person.organisation, person.coach && `Coach ${person.coach}`].filter(Boolean).join(' · ')}</p>
+          {flags.length > 0 && <ul className="lf-flags">{flags.map(([text, tone]) => <li key={text} className={tone}>{text}</li>)}</ul>}
+        </div>
+        <div className="lf-call">
+          <strong className="lf-phone">{phone || 'No phone number'}</strong>
+          {callCases.length > 0 ? <p>On the call: record it below</p> : callFrom ? (
             <>
-              <h3>Record this call · {callCases.length} {callCases.length === 1 ? 'case' : 'cases'}</h3>
-              <CallOutcome key={callIds!.join()} callFrom={callCases[0].id} name={initial.learner_name} issues={callCases} session={session}
-                notify={notify} onSaved={callSaved} saveLabel="Save the call" />
-            </>
-          ) : callFrom ? (
-            <>
-              <h3>Call · {due.length} {due.length === 1 ? 'case' : 'cases'}</h3>
-              <p className="ec-muted">One call covers {labels.join(' · ')}. When you hang up, record what happened for all of them here, in one form.</p>
-              <button type="button" className="primary" disabled={busy || !!reason} title={reason || undefined} onClick={() => void call()}>
-                {busy ? 'Opening Zoom…' : '📞 Call'}
+              <button type="button" className="lf-call-button" disabled={busy || !!reason} title={reason || undefined} onClick={() => void call()}>
+                {busy ? 'Opening Zoom…' : `📞 Call · ${due.length} ${due.length === 1 ? 'case' : 'cases'}`}
               </button>
-              {reason && <p className="ec-muted">{reason}.</p>}
+              {reason && <p>{reason}</p>}
             </>
-          ) : <p className="ec-muted">No case is due for a call now: learners come back when their follow-up is due.</p>}
+          ) : <p>No case is due for a call now.</p>}
+        </div>
+      </header>
+
+      {callCases.length > 0 && (
+        <section className="lf-record" aria-labelledby="lf-record-title">
+          <h3 id="lf-record-title">Record this call · {callCases.length} {callCases.length === 1 ? 'case' : 'cases'}</h3>
+          <CallOutcome key={callIds!.join()} callFrom={callCases[0].id} name={person.learner_name} issues={callCases} session={session}
+            notify={notify} onSaved={callSaved} saveLabel="Save the call" />
         </section>
       )}
-      {initial && detail && !cases.size && <section className="ec-card"><p>All of {initial.learner_name}’s cases are closed.</p></section>}
-      {[...cases.keys()].map(caseId => <LearnerPanel key={caseId} id={caseId} overview={overview} session={session} inWorkspace
-        hidden={false} showRelated={false} onOpen={open} onNext={() => {}} hasNext={false}
-        onSaved={message => { refresh(); onSaved(message); }} notify={notify}
-        onRefresh={() => { refresh(); onRefresh(); }} />)}
+
+      <div className="lf-grid">
+        <aside className="lf-rail">
+          <nav aria-label="Why you are calling">
+            <h3>Why you’re calling</h3>
+            <ul className="lf-reasons">
+              {caseIds.map(caseId => {
+                const c = listed.find(item => item.id === caseId) || detail?.issues.find(item => item.id === caseId);
+                if (!c) return null;
+                const full = 'sla_breached' in c ? (c as OverviewCase) : null;
+                return (
+                  <li key={caseId}>
+                    <button type="button" aria-current={selected === caseId ? 'true' : undefined} data-contact-case={caseId} onClick={() => open(caseId)}>
+                      <strong>{issueLabel(c)}</strong>
+                      <span>{full ? caseWhen(full) : c.issue_name}</span>
+                      <small className={full?.sla_breached ? 'danger' : ''}>{full ? dueText(full) : STATUS_NAMES[c.status] || human(c.status)}</small>
+                    </button>
+                  </li>
+                );
+              })}
+              {!caseIds.length && <li className="ec-muted">All of {person.learner_name}’s cases are closed.</li>}
+            </ul>
+          </nav>
+          <section className="lf-contact" aria-label="How to reach them">
+            <h3>Contact</h3>
+            <dl>
+              <div><dt>Phone</dt><dd>{phone || 'Not recorded'}</dd></div>
+              <div><dt>Email</dt><dd>{person.learner_email ? <a href={`mailto:${person.learner_email}`}>{person.learner_email}</a> : 'Not recorded'}</dd></div>
+              {!employer && <>
+                <div><dt>Employer</dt><dd>{person.organisation || 'Not recorded'}</dd></div>
+                <div><dt>Line manager</dt><dd>{person.manager_name || 'Not recorded'}
+                  {person.manager_email && <small><a href={`mailto:${person.manager_email}`}>{person.manager_email}</a></small>}
+                  {managerPhone && <small>{managerPhone}</small>}</dd></div>
+                <div><dt>Coach</dt><dd>{person.coach || 'Not recorded'}</dd></div>
+              </>}
+              <div><dt>Unanswered calls</dt><dd>{person.attempts}</dd></div>
+              {person.claimed_by && <div><dt>Being called by</dt><dd>{person.claimed_by}</dd></div>}
+            </dl>
+          </section>
+          {error && <p role="alert">Could not load everything. {error} <button type="button" onClick={refresh}>Retry</button></p>}
+        </aside>
+
+        <div className="lf-main">
+          {caseIds.map(caseId => (
+            <CaseCard key={caseId} id={caseId} overview={overview} session={session} selected={selected === caseId}
+              onSaved={message => { refresh(); onSaved(message); }} notify={notify} onRefresh={() => { refresh(); onRefresh(); }} />
+          ))}
+          <CaseHistory detail={detail} onOpenCase={open} />
+        </div>
+      </div>
     </div>
-  </div>;
+  );
+}
+
+/** What changes the conversation before it starts. */
+function personFlags(cases: OverviewCase[], name: string): [string, string][] {
+  const flags: [string, string][] = [];
+  const rang = cases.map(c => c.called_back_at).filter(Boolean).sort().pop();
+  if (rang) flags.push([`${name.split(' ')[0]} rang ${when(rang)}: call back first`, 'red']);
+  if (cases.some(c => c.meeting?.learner_response === 'declined' && c.meeting.status === 'scheduled')) flags.push(['Declined tomorrow’s meeting in Outlook', 'red']);
+  if (cases.some(c => c.promise_missed)) flags.push(['A promise was missed', 'amber']);
+  const late = cases.filter(c => c.sla_breached).length;
+  if (late) flags.push([`${late} ${late === 1 ? 'call is' : 'calls are'} late`, 'amber']);
+  if (cases.some(c => c.employer_check && !c.employer_check.done)) flags.push(['Employer to confirm tomorrow’s review', 'gold']);
+  if (cases.some(c => c.missed_call)) flags.push(['Last call went unanswered', '']);
+  return flags;
 }

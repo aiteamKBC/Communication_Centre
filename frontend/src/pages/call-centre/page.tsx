@@ -7,7 +7,7 @@ import type { Session } from './engagement/actions';
 import Allocation from './engagement/Allocation';
 import BookingLinksView from './engagement/BookingLinksView';
 import CoachPages from './engagement/CoachPages';
-import CaseWorkspace from './engagement/CaseWorkspace';
+import LearnerWorkspace from './engagement/LearnerWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import { CallsPage, ScorecardsPage } from './engagement/Director';
@@ -29,6 +29,7 @@ import ZoomPhone from './engagement/ZoomPhone';
 import './styles/engagement.css';
 import './styles/director.css';
 import './styles/desk.css';
+import './styles/full-case.css';
 
 // The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
@@ -218,7 +219,8 @@ export default function CallCentrePage() {
         {status}
         <div id="ec-body">
           {caseId ? (
-            <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
+            <LearnerWorkspace key={caseId} id={caseId} overview={overview} session={session}
+              onSaved={text => { notify(text); refresh(); }} notify={notify} onRefresh={refresh} />
           ) : view === 'allocations' ? (
             <>
               <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />

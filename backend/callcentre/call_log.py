@@ -44,21 +44,34 @@ def wrap_up_seconds(call, saved_at):
     return round((saved_at - call.ended_at).total_seconds())
 
 
-def transcripts(calls):
-    """The best transcript state of each matched call: ready, else pending, else none."""
+def recordings_of(calls):
+    """Each matched call's recordings, oldest first, with the transcript's state and the AI's rating of the call."""
     if not calls:
         return {}
+    from .models import AIAnalysis
     query = Q()
     for call in calls:
         query |= Q(source_account=call.source_account, call_id=call.call_id) if call.call_id else Q(pk__in=[])
         query |= Q(source_account=call.source_account, call_log_id=call.history_id)
-    states = defaultdict(set)
-    for recording in ZoomPhoneRecording.objects.filter(query).values('source_account', 'call_id', 'call_log_id', 'transcript_status'):
+    rows = list(ZoomPhoneRecording.objects.filter(query).order_by('started_at', 'id').values(
+        'id', 'source_account', 'call_id', 'call_log_id', 'transcript_status', 'duration_seconds'))
+    ratings = {}
+    for analysis in AIAnalysis.objects.filter(recording_id__in=[row['id'] for row in rows], state='ready').order_by('created_at', 'pk'):
+        ratings[analysis.recording_id] = analysis.result.get('call_rating', 'not_rated')
+    found = defaultdict(list)
+    for row in rows:
         for call in calls:
-            if call.source_account == recording['source_account'] and (
-                    (call.call_id and call.call_id == recording['call_id']) or call.history_id == recording['call_log_id']):
-                states[call.pk].add(recording['transcript_status'])
-    return {pk: 'ready' if 'ready' in found else 'pending' if 'pending' in found else sorted(found)[0] for pk, found in states.items()}
+            if call.source_account == row['source_account'] and (
+                    (call.call_id and call.call_id == row['call_id']) or call.history_id == row['call_log_id']):
+                found[call.pk].append({'id': row['id'], 'transcript': row['transcript_status'],
+                                       'duration_seconds': row['duration_seconds'], 'rating': ratings.get(row['id'])})
+    return found
+
+
+def transcript_state(recordings):
+    """The best transcript state among a call's recordings: ready, else pending, else none."""
+    found = {item['transcript'] for item in recordings}
+    return 'ready' if 'ready' in found else 'pending' if 'pending' in found else min(found, default='none')
 
 
 def case_impact(events):
@@ -157,7 +170,7 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
                                                 created_at__gte=first_press)
                      .order_by('created_at', 'id')):
             events[item.ticket_id].append(item)
-    found = transcripts([intent.matched_call for intent in selected if intent.matched_call])
+    recorded = recordings_of([intent.matched_call for intent in selected if intent.matched_call])
     rows = []
     for intent in selected:
         cases = []
@@ -180,7 +193,9 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
             'wrap_up_seconds': wrap_up_seconds(intent.matched_call, saved.get(intent.pk)),
             'agent': {'id': intent.agent_id, 'name': intent.agent.display_name},
             'learner_name': first.learner_name if first else '', 'learner_email': intent.learner_email, 'number': intent.number,
-            'zoom': {**zoom_state(intent, now), 'transcript': found.get(intent.matched_call_id, 'none')},
+            'zoom': {**zoom_state(intent, now), 'transcript': transcript_state(recorded.get(intent.matched_call_id, []))},
+            # Played from the call log and read there: each recording, its transcript state and the AI's rating.
+            'recordings': recorded.get(intent.matched_call_id, []),
             # Saved with the after-call form (calls before that form have outcomes but no saved mark).
             'saved': intent.pk in saved or any(case['outcome'] for case in cases),
             'cases': cases,

@@ -19,6 +19,8 @@ const openCases = (row: Row) => row.learners.reduce((sum, l) => sum + l.active_c
 // Balancing by open cases evens out the cases first, then the number of learners (so learners without cases still spread).
 const caseWeight = (row: Row) => openCases(row) * 1000 + row.emails.length;
 
+// "Hand over all learners of" the shared queue rather than one specialist.
+const SHARED = 'shared';
 // The server takes at most this many changes per request.
 const SAVE_BATCH = 1000;
 
@@ -93,6 +95,7 @@ export default function Allocation({ csrf, employerSpecialists = [], onWorkspace
   }, [rows, show, search, splitKeys, ownerOf]);
 
   const inactive = data?.inactive || [];
+  const sharedCount = learners.filter(l => inSharedQueue(ownerOf(l.email))).length;
   const ownerName = (id: number | null) => (id === null ? 'Shared queue' : operators.find(p => p.id === id)?.display_name
     || `${inactive.find(p => p.id === id)?.display_name || 'Former specialist'} (switched off)`);
   const note = (reason: string) => setReasons(current => (current.includes(reason) ? current : [...current, reason]));
@@ -118,16 +121,20 @@ export default function Allocation({ csrf, employerSpecialists = [], onWorkspace
     setMessage({ text: `Balanced by ${byCases ? 'open cases' : 'number of learners'}, keeping each employer with one specialist. Check the changes, then save.`, error: false });
   }
 
-  /** Every learner now with `from` (as planned so far) goes to `to`. */
+  /** Every learner now with `from` (as planned so far) goes to `to`. From the shared queue: every learner any specialist
+   * can call now, including the employer specialists' own learners. */
   function handOver() {
-    const source = Number(from);
-    const emails = learners.filter(l => (picks.has(l.email) ? picks.get(l.email) ?? null : l.allocated_to) === source).map(l => l.email);
+    const shared = from === SHARED;
+    const source = shared ? null : Number(from);
+    const planned = (l: Learner) => (picks.has(l.email) ? picks.get(l.email) ?? null : l.allocated_to);
+    const emails = learners.filter(l => (shared ? inSharedQueue(ownerOf(l.email)) : planned(l) === source)).map(l => l.email);
+    const fromName = shared ? 'the shared queue' : ownerName(source);
     if (!emails.length) {
-      setMessage({ text: `${ownerName(source)} has no learners to hand over.`, error: true });
+      setMessage({ text: `${shared ? 'The shared queue' : fromName} has no learners to hand over.`, error: true });
       return;
     }
     give(emails, to);
-    note(`Handover from ${ownerName(source)} to ${ownerName(to === 'none' ? null : Number(to))}`);
+    note(`Handover from ${fromName} to ${ownerName(to === 'none' ? null : Number(to))}`);
     setMessage({ text: `${emails.length} ${emails.length === 1 ? 'learner' : 'learners'} handed over in the plan. Check, then save.`, error: false });
   }
 
@@ -191,8 +198,9 @@ export default function Allocation({ csrf, employerSpecialists = [], onWorkspace
               </div>
             );
           })}
-          <div className="ec-stat"><span>Shared queue</span><strong>{learners.filter(l => inSharedQueue(ownerOf(l.email))).length}</strong>
-            <span>learners any specialist can call{employerSpecialists.length ? `, including the employer specialists’ ${learners.filter(l => employerSpecialists.includes(ownerOf(l.email) ?? -1)).length}` : ''}</span></div>
+          <div className="ec-stat"><span>Shared queue</span><strong>{sharedCount}</strong>
+            <span>learners any specialist can call{employerSpecialists.length ? `, including the employer specialists’ ${learners.filter(l => employerSpecialists.includes(ownerOf(l.email) ?? -1)).length}` : ''}</span>
+            <button type="button" disabled={busy || !sharedCount} onClick={() => { setFrom(SHARED); setTo(''); }}>Transfer to a specialist…</button></div>
         </div>
         {inactive.map(p => (
           <p key={p.id} className="ec-alert" role="alert">
@@ -204,6 +212,7 @@ export default function Allocation({ csrf, employerSpecialists = [], onWorkspace
           <label>Hand over all learners of
             <select value={from} onChange={event => setFrom(event.target.value)}>
               <option value="">Choose a specialist…</option>
+              <option value={SHARED}>Shared queue ({sharedCount} {sharedCount === 1 ? 'learner' : 'learners'})</option>
               {operators.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
               {inactive.map(p => <option key={p.id} value={p.id}>{p.display_name} (switched off)</option>)}
             </select>
@@ -212,7 +221,7 @@ export default function Allocation({ csrf, employerSpecialists = [], onWorkspace
             <select value={to} onChange={event => setTo(event.target.value)}>
               <option value="">Choose…</option>
               {operators.filter(p => String(p.id) !== from).map(p => <option key={p.id} value={p.id}>{p.display_name}</option>)}
-              <option value="none">Shared queue</option>
+              {from !== SHARED && <option value="none">Shared queue</option>}
             </select>
           </label>
           <button type="button" disabled={busy || !from || !to} onClick={handOver}>Hand over</button>

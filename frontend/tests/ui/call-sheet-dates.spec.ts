@@ -198,24 +198,23 @@ test('one learner opens lectures, MCM, PR and other cases across filters without
   const row = page.locator('[data-sheet-row="1"]');
   await row.getByRole('button', { name: 'All cases (5)', exact: true }).click();
   const modal = page.getByRole('dialog', { name: 'Full case', exact: true });
-  const list = modal.getByRole('region', { name: 'All cases for this contact' });
-  await expect(list.getByRole('heading', { name: 'All cases (5)', exact: true })).toBeVisible();
+  const list = modal.getByRole('navigation', { name: 'Why you are calling' });
   await expect(list.locator('[data-contact-case]')).toHaveCount(5);
-  await expect(list).toContainText('Lectures · Risk management');
-  await expect(list).toContainText('Monthly coaching (MCM)');
-  await expect(list).toContainText('Progress reviews (PR)');
-  await expect(list.locator('[data-contact-case="2"]')).toContainText('1 Sept 2026');
+  await expect(list).toContainText('Missed lecture');
+  await expect(list).toContainText('Monthly coaching');
+  await expect(list).toContainText('Progress review');
+  await expect(list.locator('[data-contact-case="2"]')).toContainText('1 Sept');
   await expect(list.locator('[data-contact-case="6"]')).toHaveCount(0);
   await expect(list.locator('[data-contact-case="7"]')).toHaveCount(0);
-  // Every case is on the same page, one under another, with no form of its own: the call is recorded once, at the top.
-  await expect(modal.locator('.ed-case-section')).toHaveCount(5);
+  // Every case is on the same page, one under another; recording by hand is folded away: the call is recorded once, at the top.
+  await expect(modal.locator('.lf-case')).toHaveCount(5);
   await expect(modal.getByRole('button', { name: 'Save next step', exact: true })).toHaveCount(0);
   await list.locator('[data-contact-case="4"]').click();
   await expect(modal.getByText('Review due: 5 Oct 2026', { exact: true })).toBeInViewport();
-  await expect(list.locator('[data-contact-case="4"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(list.locator('[data-contact-case="4"]')).toHaveAttribute('aria-current', 'true');
   await page.screenshot({ path: test.info().outputPath('all-learner-cases.png') });
   // One dial request covers the learner; switching cases must not place another call.
-  await modal.getByRole('button', { name: '📞 Call', exact: true }).click();
+  await modal.getByRole('button', { name: /^📞 Call · \d cases$/ }).click();
   await expect(modal.getByRole('heading', { name: /^Record this call/ })).toBeVisible();
   await list.locator('[data-contact-case="4"]').click();
   expect(writes.filter(path => path.endsWith('/call/'))).toEqual(['/api/callcentre/tickets/1/call/']);
@@ -311,8 +310,8 @@ test('every missed-ticket type and other tickets display source and opened dates
   await expect(page.locator('[data-related-ticket="5"]')).toContainText('Missed lecture date: 2 Sept 2026');
   await page.screenshot({ path: test.info().outputPath('ticket-dates.png'), fullPage: true });
   await page.locator('[data-sheet-row="2"]').getByRole('button', { name: 'Full case', exact: true }).click();
-  await expect(page.locator('.ed-learner').getByText('Issue date: 12 Sept 2026', { exact: true })).toBeVisible();
-  await expect(page.locator('.ed-learner').getByText('Ticket opened: 1 Oct 2026', { exact: true })).toBeVisible();
+  await expect(page.locator('.lf-case').getByText('Issue date: 12 Sept 2026', { exact: true })).toBeVisible();
+  await expect(page.locator('.lf-case').getByText('Ticket opened: 1 Oct 2026', { exact: true })).toBeVisible();
 });
 
 test('missed lecture shows London schedule separately from ticket dates, including missing and ambiguous times', async ({ page }) => {
@@ -334,7 +333,7 @@ test('missed lecture shows London schedule separately from ticket dates, includi
   await expect(page.locator('[data-sheet-row="2"]')).toContainText('Lecture time: Not recorded in source');
   await expect(page.locator('[data-sheet-row="3"]')).toContainText('Multiple sessions — confirm in timetable');
   await first.getByRole('button', { name: 'Full case', exact: true }).click();
-  await expect(page.locator('.ed-learner')).toContainText('Lecture time: 12:00–14:00 (London)');
+  await expect(page.locator('.lf-case')).toContainText('Lecture time: 12:00–14:00 (London)');
 });
 
 test('changing order retains unsaved notes on their original ticket', async ({ page }) => {
@@ -809,12 +808,12 @@ test('Full case calls the learner and records the call for every case at once, w
   await page.getByRole('button', { name: 'Today', exact: true }).click();
   await page.getByRole('button', { name: 'Full case', exact: true }).click();
   const modal = page.getByRole('dialog', { name: 'Full case', exact: true });
-  // One call box for the learner; each case's own form is folded away under its other actions.
-  await expect(modal.getByRole('heading', { name: 'Call · 2 cases', exact: true })).toBeVisible();
+  // One Call for the learner; each case's own form is folded away under its other actions.
+  await expect(modal.getByRole('button', { name: '📞 Call · 2 cases', exact: true })).toBeVisible();
   await expect(modal.getByRole('heading', { name: 'Agree the next step', exact: true })).toHaveCount(0);
   await expect(modal.getByRole('button', { name: 'Save next step', exact: true })).toHaveCount(0);
   await expect(modal.getByRole('button', { name: 'Call learner', exact: true })).toHaveCount(0);
-  await modal.getByRole('button', { name: '📞 Call', exact: true }).click();
+  await modal.getByRole('button', { name: '📞 Call · 2 cases', exact: true }).click();
   await expect(modal.getByRole('heading', { name: 'Record this call · 2 cases', exact: true })).toBeVisible();
   await modal.getByRole('button', { name: 'Answered', exact: true }).click();
   await modal.getByRole('combobox', { name: /^Outcome for Missed lecture/ }).selectOption({ label: 'Agreed: Book a catch-up session (within 7 days)' });
@@ -909,7 +908,6 @@ test('Full case shows satisfaction feedback already saved and waiting for Zoom, 
   await openSheet(page, [review(1, 'held'), review(2, 'dropped')], 'learner_satisfaction');
   await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'All cases (1)', exact: true }).click();
   let modal = page.getByRole('dialog', { name: 'Full case', exact: true });
-  await modal.getByText('Complete the satisfaction feedback', { exact: true }).click();
   await expect(modal.getByRole('heading', { name: 'Learner feedback saved', exact: true })).toBeVisible();
   await expect(modal.getByRole('button', { name: 'Complete review', exact: true })).toHaveCount(0);
   await modal.getByRole('button', { name: 'Change the feedback', exact: true }).click();
@@ -917,7 +915,6 @@ test('Full case shows satisfaction feedback already saved and waiting for Zoom, 
   await page.keyboard.press('Escape');
   await page.locator('[data-sheet-row="2"]').getByRole('button', { name: 'All cases (1)', exact: true }).click();
   modal = page.getByRole('dialog', { name: 'Full case', exact: true });
-  await modal.getByText('Complete the satisfaction feedback', { exact: true }).click();
   await expect(modal.getByRole('alert')).toContainText('Zoom reported the call as not answered');
   await expect(modal.getByRole('button', { name: 'Complete review', exact: true })).toBeVisible();
 });

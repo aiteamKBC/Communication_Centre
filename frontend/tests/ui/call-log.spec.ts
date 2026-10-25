@@ -10,6 +10,7 @@ const LOG: CallLogData = {
       id: 11, pressed_at: '2026-10-20T10:30:00Z', agent: { id: 1, name: 'Operator' }, learner_name: 'Akmal Learner',
       learner_email: 'akmal@example.org', number: '+447700900123', saved: true,
       zoom: { state: 'answered', id: 501, started_at: '2026-10-20T10:30:20Z', duration_seconds: 245, transcript: 'ready' },
+      recordings: [{ id: 31, transcript: 'ready', duration_seconds: 245, rating: 'good' }],
       cases: [
         { id: 1, source_type: 'attendance', organisation: '', status: 'resolved', resolution_option: 'catch_up_session', next_followup_at: null,
           outcome: { state: 'applied', outcome: 'reached', option: 'catch_up_session', note: 'Was ill, booked a catch-up.', callback_at: null, promised_at: null },
@@ -111,6 +112,11 @@ test('a specialist sees their last calls with every outcome, booking and satisfa
   const { requests, writes } = await open(page, false);
   expect(requests[0].searchParams.get('agent_id')).toBe('1');
   const call = page.getByRole('article', { name: 'Call to Akmal Learner' });
+  // Closed: who, what Zoom reported, the AI rating and the recording to play straight away.
+  await expect(call.locator('.cl-head')).toContainText('Good');
+  await expect(call.locator('.cl-head audio')).toHaveAttribute('src', '/api/zoom/recordings/31/audio/');
+  await expect(call.locator('.cl-body')).toHaveCount(0);
+  await call.locator('.cl-toggle').click();
   await expect(call).toContainText('answered · 4m 5s');
   await expect(call).toContainText('Reached: Book a catch-up session');
   await expect(call).toContainText('Booked · Catch-up session');
@@ -118,7 +124,6 @@ test('a specialist sees their last calls with every outcome, booking and satisfa
   await expect(call.getByRole('link', { name: 'https://zoom.example/j/1' })).toBeVisible();
   await expect(call).toContainText('Satisfaction feedback · Review completed');
   await expect(call).toContainText('Coach to share recordings');
-  await expect(call.getByRole('button', { name: 'Recording & transcript' })).toBeVisible();
   await expect(page.locator('.ed-log-totals')).toContainText('Sessions booked1');
   await page.getByRole('region', { name: 'My last calls' }).getByLabel('Period').selectOption('30');
   await expect.poll(() => requests.at(-1)?.searchParams.get('days')).toBe('30');
@@ -135,6 +140,8 @@ test('the director monitors every specialist’s calls on the Call monitor page'
   const monitor = page.getByRole('region', { name: 'Call monitor' });
   await expect(monitor.getByRole('article', { name: /^Call to/ })).toHaveCount(2);
   await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('Waiting for Zoom');
+  await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('No recording');
+  await monitor.getByRole('article', { name: 'Call to Bea Learner' }).locator('.cl-toggle').click();
   await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('Applies when Zoom reports the call');
   await monitor.getByLabel('Specialist').selectOption('2');
   await expect.poll(() => requests.at(-1)?.searchParams.get('agent_id')).toBe('2');
@@ -142,14 +149,22 @@ test('the director monitors every specialist’s calls on the Call monitor page'
   await monitor.screenshot({ path: test.info().outputPath('call-monitor.png') });
 });
 
-test('a call recording plays from Zoom next to its transcript', async ({ page }) => {
+test('a call opens to what it did, the learner’s case, and its transcript with the AI review', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
-  const { requests } = await open(page, false);
-  await page.getByRole('article', { name: 'Call to Akmal Learner' }).getByRole('button', { name: 'Recording & transcript' }).click();
-  const dialog = page.locator('dialog[open]');
-  await expect(dialog).toContainText('Hello Akmal, it is about your catch-up.');
-  await dialog.getByRole('button', { name: '▶ Play' }).click();
-  // Streamed from Zoom only when Play is pressed; a recording Zoom no longer has says so.
-  await expect.poll(() => requests.some(url => url.pathname === '/api/zoom/recordings/31/audio/')).toBe(true);
-  await expect(dialog.getByRole('alert')).toContainText('Zoom could not play this recording');
+  await open(page, false);
+  const call = page.getByRole('article', { name: 'Call to Akmal Learner' });
+  await call.locator('.cl-toggle').click();
+  await expect(call.locator('.cl-toggle')).toHaveAttribute('aria-expanded', 'true');
+  // The transcript waits in its own small accordion until asked for.
+  const transcript = call.locator('details.cl-transcript');
+  await expect(transcript).not.toHaveAttribute('open', '');
+  await transcript.locator('summary').click();
+  await expect(transcript).toContainText('Hello Akmal, it is about your catch-up.');
+  await expect(transcript.getByRole('button', { name: 'Download text' })).toBeVisible();
+  // The director (or the specialist) opens the learner's case from the call, to see everything done on it.
+  await page.route('**/api/callcentre/tickets/1/**', route => route.fulfill({ status: 404, json: { detail: 'Record not found.' } }));
+  const asked = page.waitForRequest(request => new URL(request.url()).pathname === '/api/callcentre/tickets/1/');
+  await call.getByRole('button', { name: 'Open the learner’s case' }).click();
+  await asked;
+  await expect(page.locator('dialog.ed-case-dialog')).toBeVisible();
 });

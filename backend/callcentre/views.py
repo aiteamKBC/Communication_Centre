@@ -18,7 +18,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
+from . import contact_history, email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
 from .aptem_summaries import parse_date_safe
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback, held_feedback
 from .access import is_director, refused
@@ -481,6 +481,7 @@ def detail(request, pk):
         issues = CaseTicket.objects.open().exclude(source_type='employer_feedback').filter(same_person)
     payload = ticket_json(ticket)
     payload['meeting'] = review_meeting_summaries([ticket]).get(ticket.pk)
+    payload['manager_phone'] = employer_check.manager_phone(ticket)
     add_lecture_times([payload])
     return JsonResponse({'ticket': payload,
         'issues': [{**issue_json(issue), 'created_at': issue.created_at, 'booking_at': issue.booking_at,
@@ -497,6 +498,8 @@ def detail(request, pk):
                                else agent_for(request.user)),
         # Satisfaction feedback saved before Zoom reported its call: still waiting, or dropped (call not answered).
         'held_feedback': held_feedback(ticket),
+        # Full case: everything done with this person across all their cases (?history=1).
+        **({'history': contact_history.history(ticket, request.user, agent_for(request.user))} if request.GET.get('history') else {}),
     })
 
 

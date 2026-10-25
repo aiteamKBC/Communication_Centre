@@ -110,8 +110,22 @@ export type CaseCall = {
 };
 export type HeldFeedback = { state: 'held' | 'dropped'; at: string; by: string; reason: string };
 
+/** A call in a learner's history (Full case): every case it recorded, and its recordings to play and read. */
+export type HistoryCall = {
+  call_id: number; started_at: string; result: string; direction: string; duration_seconds: number | null; agent: string; manual: boolean;
+  cases: { id: number; label: string; outcome: string }[];
+  recordings: { id: number; transcript: string; duration_seconds: number | null; rating: CallRating | null }[];
+};
+/** Everything done with one person across all their cases, open or closed (``?history=1``). */
+export type ContactHistory = {
+  calls: HistoryCall[]; cases: number;
+  events: { id: number; kind: string; actor: string; data: Record<string, unknown>; created_at: string; case_id: number; case_label: string }[];
+  missed_calls: import('./engagement/inbound').InboundItem[];
+};
+
 export type CaseDetail = {
-  ticket: Case & { booking_links: BookingLinks }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
+  ticket: Case & { booking_links: BookingLinks; manager_phone?: string }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
+  history?: ContactHistory;
   events: { id: number; kind: string; actor: string; data: Record<string, unknown>; call_id: number | null; created_at: string }[];
   emails: { id: number; kind: string; status: string; mode: string; subject: string; text: string; error: string; created_at: string }[];
   /** The signed-in specialist's call to this learner (last two hours) whose outcome is not saved yet: the cases it covers. */

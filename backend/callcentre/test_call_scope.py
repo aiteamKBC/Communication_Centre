@@ -387,6 +387,23 @@ class SystemCallScopeTests(TestCase):
         self.assertEqual(gone.status_code, 502)
         self.assertIn('no audio for this recording', json.loads(gone.content)['detail'])
 
+    def test_full_case_history_has_every_call_of_the_learner_across_cases_with_recordings(self):
+        from .contact_history import contact_cases, history
+        older = self.case(status='resolved', source_type='mcm', source_data={'review_type': 'coaching'})
+        call = self.internal()
+        recording = self.recording(call)
+        legacy_call, _ = self.legacy()   # dialled by hand, not from the system: not a system call
+        self.user.is_superuser = True
+        result = history(self.ticket, self.user, self.agent)
+        self.assertEqual(result['cases'], 2)
+        self.assertEqual([item['call_id'] for item in result['calls']], [call.pk])
+        self.assertNotIn(legacy_call.pk, [item['call_id'] for item in result['calls']])
+        self.assertEqual(result['calls'][0]['recordings'][0]['id'], recording.pk)
+        self.assertEqual(result['calls'][0]['cases'][0]['id'], self.ticket.pk)
+        self.assertTrue(all(event['case_label'] for event in result['events']))
+        self.assertIn(older.pk, {pk for pk, _ in contact_cases(self.ticket)})   # closed cases count too
+        self.assertEqual(result['missed_calls'], [])
+
     def test_audio_fallback_only_downloads_internal_recording(self):
         call = self.internal()
         external = self.call(callee_number='+447700999999')

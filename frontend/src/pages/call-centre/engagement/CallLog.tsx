@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useCallCentre } from '../api';
+import type { CallRating } from '../api';
+import { RatingTag } from './CallReview';
+import TranscriptPanel from './TranscriptPanel';
 import { PageNumbers } from './MonthlyHistory';
-import RecordingDialog from './Recordings';
 import { ISSUE_LABELS, human, outcomeLabel, promiseLabel, shortDate, when } from './model';
 import '../styles/monthly-history.css';
 
@@ -20,6 +22,8 @@ type LoggedCase = {
 type LoggedCall = {
   id: number; pressed_at: string; agent: { id: number; name: string }; learner_name: string; learner_email: string; number: string;
   zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string; short?: boolean };
+  /** The call's recordings, oldest first: played and read here. */
+  recordings?: { id: number; transcript: string; duration_seconds: number | null; rating: CallRating | null }[];
   saved: boolean; cases: LoggedCase[];
   /** The learner rang the specialist's number (no Call press); the after-call form works the same. */
   incoming?: boolean;
@@ -116,15 +120,76 @@ function CaseImpact({ item, onOpen }: { item: LoggedCase; onOpen: (id: number) =
   );
 }
 
+/** One call as an accordion. Closed: when, who, what Zoom reported, the AI rating and the recording to play straight away.
+ * Open: what the call did to each case (with the learner's case to open) and, per recording, the transcript and AI review. */
+function CallRow({ call, manager, onOpen }: { call: LoggedCall; manager: boolean; onOpen: (id: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const recordings = call.recordings || [];
+  const rating = recordings.map(item => item.rating).find(Boolean) || null;
+  const closed = call.cases.filter(item => item.closed).length;
+  const booked = call.cases.reduce((sum, item) => sum + item.bookings.length, 0);
+  const summary = [`${call.cases.length} ${call.cases.length === 1 ? 'case' : 'cases'}`, closed ? `${closed} closed` : '', booked ? `${booked} booked` : '']
+    .filter(Boolean).join(' · ');
+  const id = `call-${call.id}`;
+  const who = call.learner_name || call.number;
+  return (
+    <article className={`cl-call${open ? ' open' : ''}`} aria-label={`Call to ${who}`}>
+      <div className="cl-head">
+        <button type="button" className="cl-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>
+          <span className="cl-chevron" aria-hidden="true">›</span>
+          <span className="cl-who">
+            <time dateTime={call.pressed_at}>{when(call.pressed_at)}{manager ? ` · ${call.agent.name}` : ''}</time>
+            <strong>{who}</strong>
+            <small>{summary}{call.incoming ? ' · the learner rang' : ''}</small>
+          </span>
+          <span className="cl-result">
+            <ZoomResult zoom={call.zoom} />
+            {recordings.length > 0 && <RatingTag rating={rating} />}
+            {!call.saved && <small className="danger">Form not saved</small>}
+          </span>
+        </button>
+        <div className="cl-player">
+          {recordings.length
+            ? <audio controls preload="none" src={`/api/zoom/recordings/${recordings[0].id}/audio/`} aria-label={`Recording of the call to ${who}`} />
+            : <small>{call.zoom.state === 'answered' ? 'No recording yet' : 'No recording'}</small>}
+        </div>
+      </div>
+      {open && (
+        <div className="cl-body" id={id}>
+          <div className="cl-facts">
+            <span>{call.learner_email}</span><span>{call.number}</span>
+            {call.zoom.short && <span className="danger">Answered under 10 s: voicemail?</span>}
+            {call.wrap_up_seconds != null && <span>Form saved {minutes(call.wrap_up_seconds)} after the call</span>}
+            {call.cases[0] && <button type="button" className="primary" onClick={() => onOpen(call.cases[0].id)}>Open the learner’s case</button>}
+          </div>
+          <div className="ed-log-cases">
+            {call.cases.map(item => <CaseImpact key={item.id} item={item} onOpen={onOpen} />)}
+          </div>
+          {recordings.slice(1).map((item, index) => (
+            <div key={item.id} className="cl-player cl-more">
+              <small>Recording {index + 2}</small>
+              <audio controls preload="none" src={`/api/zoom/recordings/${item.id}/audio/`} aria-label={`Recording ${index + 2} of the call to ${who}`} />
+            </div>
+          ))}
+          {recordings.map((item, index) => (
+            <TranscriptPanel key={item.id} recordingId={item.id} state={item.transcript}
+              label={recordings.length > 1 ? `Transcript and AI review · recording ${index + 1}` : 'Transcript and AI review'} />
+          ))}
+          {!recordings.length && <p className="ec-muted">No recording, so no transcript or AI review for this call.</p>}
+        </div>
+      )}
+    </article>
+  );
+}
+
 /** Calls started from the system and everything each one did: outcomes, closed cases, bookings, satisfaction feedback.
- * A specialist sees their own; a manager sees everyone's, or one specialist's. */
+ * A specialist sees their own; a manager sees everyone's, or one specialist's. Each call is an accordion. */
 export default function CallLog({ agentId, manager = false, revision, onOpen }: {
   agentId: number | null; manager?: boolean; revision: string; onOpen: (id: number) => void;
 }) {
   const [days, setDays] = useState(7);
   const [page, setPage] = useState(1);
   const [who, setWho] = useState('');
-  const [recording, setRecording] = useState<number | null>(null);
   const params = new URLSearchParams({ days: String(days), page: String(page) });
   // A manager picks a specialist, unless the page is about one already.
   const chosen = manager && agentId === null ? who : agentId === null ? '' : String(agentId);
@@ -172,38 +237,13 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
       </section>
       {data && (
         <section className="ec-card">
-          <div className="ed-history-call-list">
-            {data.calls.map(call => (
-              <article key={call.id} className="ed-history-call" aria-label={`Call to ${call.learner_name || call.number}`}>
-                <div className="ed-history-call-main">
-                  <div className="ed-history-contact">
-                    <time dateTime={call.pressed_at}>{when(call.pressed_at)}{manager ? ` · ${call.agent.name}` : ''}</time>
-                    {call.incoming && <span className="ec-tag">The learner rang</span>}
-                    <h3>{call.learner_name || call.number}</h3>
-                    <div><span>{call.learner_email}</span><span>{call.number}</span></div>
-                  </div>
-                  <div className="ed-history-call-result">
-                    <ZoomResult zoom={call.zoom} />
-                    {call.zoom.short && <small className="danger" title="Zoom reports it answered, but for only a few seconds: usually the learner’s voicemail.">Answered under 10 s: voicemail?</small>}
-                    {!call.saved && <small className="danger">After-call form not saved</small>}
-                    {call.wrap_up_seconds != null && <small>Form saved {minutes(call.wrap_up_seconds)} after the call</small>}
-                    {call.zoom.id !== null && call.zoom.transcript !== 'none' && (
-                      <button type="button" onClick={() => setRecording(call.zoom.id)}>
-                        {call.zoom.transcript === 'ready' ? 'Recording & transcript' : 'Recording (transcript pending)'}</button>
-                    )}
-                  </div>
-                </div>
-                <div className="ed-log-cases">
-                  {call.cases.map(item => <CaseImpact key={item.id} item={item} onOpen={onOpen} />)}
-                </div>
-              </article>
-            ))}
+          <div className="cl-list">
+            {data.calls.map(call => <CallRow key={call.id} call={call} manager={manager} onOpen={onOpen} />)}
             {!data.calls.length && <p>No calls in this period.</p>}
           </div>
           <PageNumbers page={page} total={Math.max(1, Math.ceil(data.total / data.page_size))} disabled={loading} onPage={setPage} />
         </section>
       )}
-      <RecordingDialog callId={recording} onClose={() => setRecording(null)} />
     </section>
   );
 }

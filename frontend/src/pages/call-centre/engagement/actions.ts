@@ -28,7 +28,10 @@ export function requestCallSync(session: Session) {
 }
 
 /** One case; with `agentId`, its open call is the one that specialist's desk made. */
-export const loadCase = (id: number, agentId?: number | null) => api<CaseDetail>(`tickets/${id}/${agentId ? `?agent_id=${agentId}` : ''}`);
+export const loadCase = (id: number, agentId?: number | null, history = false) => {
+  const query = new URLSearchParams({ ...(agentId ? { agent_id: String(agentId) } : {}), ...(history ? { history: '1' } : {}) }).toString();
+  return api<CaseDetail>(`tickets/${id}/${query ? `?${query}` : ''}`);
+};
 
 /** Why the Call button is unavailable for a case, or '' when the session can call. */
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {

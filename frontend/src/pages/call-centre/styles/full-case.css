@@ -1,0 +1,112 @@
+/* Full case (.lf): one person and everything about them, in the dashboard's colours (director.css tokens).
+   A dark band says who they are and holds the one Call; a rail says why we are calling and how to reach them; cards hold
+   each case's steps; the history holds the calls to play and read. */
+
+.kbc-portals .ec .lf.ed-contact-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
+
+/* ---- The band ---- */
+.kbc-portals .lf-band {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem 2rem; flex-wrap: wrap;
+  padding: 1.2rem 1.4rem; border-radius: 16px; color: #efe9f7;
+  background: radial-gradient(120% 160% at 100% 0%, #3b2058 0%, var(--dd-aubergine) 60%);
+  box-shadow: 0 10px 28px rgba(41, 22, 61, .18);
+}
+.kbc-portals .lf-who { display: grid; gap: .25rem; min-width: 0; flex: 1 1 22rem; }
+.kbc-portals .lf-eyebrow { margin: 0; font-size: .76rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-lilac); }
+.kbc-portals .workspace-app .ec .lf-who h2 { margin: 0; font-family: var(--dd-serif); font-weight: 400; font-size: 2.1rem; line-height: 1.1; color: #fff; letter-spacing: -.01em; }
+.kbc-portals .lf-who > p { margin: 0; font-size: .92rem; color: rgba(239, 233, 247, .8); }
+.kbc-portals .lf-flags { display: flex; flex-wrap: wrap; gap: .4rem; list-style: none; margin: .5rem 0 0; padding: 0; }
+.kbc-portals .lf-flags li { padding: .2rem .65rem; border-radius: 99px; font-size: .82rem; background: rgba(255, 255, 255, .12); color: #fff; }
+.kbc-portals .lf-flags li.red { background: rgba(214, 92, 104, .3); color: #ffdfe2; }
+.kbc-portals .lf-flags li.amber { background: rgba(242, 181, 68, .22); color: #ffe9bd; }
+.kbc-portals .lf-flags li.gold { background: rgba(187, 138, 50, .35); color: #ffefcc; }
+.kbc-portals .lf-call { display: grid; justify-items: end; gap: .45rem; text-align: right; }
+.kbc-portals .lf-phone { font-family: var(--dd-serif); font-weight: 400; font-size: 1.6rem; color: #fff; letter-spacing: .02em; }
+.kbc-portals .lf-call p { margin: 0; font-size: .85rem; color: var(--dd-lilac); max-width: 18rem; }
+.kbc-portals .workspace-app .ec button.lf-call-button {
+  min-height: 48px; padding: .7rem 1.4rem; border: 0; border-radius: 12px; font-size: 1.05rem; font-weight: 700;
+  background: var(--dd-lilac); color: var(--dd-aubergine); box-shadow: 0 6px 16px rgba(0, 0, 0, .2);
+}
+.kbc-portals .workspace-app .ec button.lf-call-button:hover { background: #e2d0f5; border: 0; }
+.kbc-portals .workspace-app .ec button.lf-call-button:disabled { opacity: .55; }
+
+/* ---- Recording the call ---- */
+.kbc-portals .lf-record { padding: 1rem 1.2rem; border: 1px solid var(--dd-lilac); border-left: 4px solid var(--dd-purple); border-radius: 14px; background: var(--dd-soft); }
+.kbc-portals .workspace-app .ec .lf-record h3 { margin: 0 0 .6rem; font-family: var(--dd-serif); font-weight: 400; font-size: 1.35rem; }
+
+/* ---- Rail and cases ---- */
+.kbc-portals .lf-grid { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.kbc-portals .lf-rail { position: sticky; top: 4.5rem; display: grid; gap: 1rem; max-height: calc(90vh - 6rem); overflow: auto; scrollbar-width: thin; }
+.kbc-portals .workspace-app .ec .lf-rail h3, .kbc-portals .workspace-app .ec .lf-history h3 {
+  margin: 0 0 .5rem; font-size: .76rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); font-family: inherit;
+}
+.kbc-portals .lf-reasons { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.kbc-portals .workspace-app .ec .lf-reasons button {
+  display: grid; gap: .1rem; justify-content: stretch; justify-items: start; width: 100%; min-height: 0; padding: .55rem .7rem; text-align: left; font-weight: 400;
+  border: 1px solid var(--dd-line); border-radius: 10px; background: #fff; color: var(--dd-ink);
+}
+.kbc-portals .workspace-app .ec .lf-reasons button:hover { border-color: var(--dd-purple); background: var(--dd-soft); }
+.kbc-portals .workspace-app .ec .lf-reasons button[aria-current='true'] { border-color: var(--dd-purple); box-shadow: inset 3px 0 0 var(--dd-purple); }
+.kbc-portals .lf-reasons strong { font-size: .9rem; }
+.kbc-portals .lf-reasons span, .kbc-portals .lf-reasons small { font-size: .8rem; color: var(--dd-muted); }
+.kbc-portals .lf-reasons small.danger { color: var(--dd-bad); font-weight: 600; }
+.kbc-portals .lf-contact { padding: .8rem .9rem; border: 1px solid var(--dd-line); border-radius: 12px; background: #fff; }
+.kbc-portals .lf-contact dl { margin: 0; display: grid; gap: .45rem; }
+.kbc-portals .lf-contact dt { font-size: .74rem; color: var(--dd-muted); }
+.kbc-portals .lf-contact dd { margin: 0; font-size: .88rem; overflow-wrap: anywhere; }
+.kbc-portals .lf-contact dd small { display: block; color: var(--dd-muted); }
+
+.kbc-portals .lf-main { display: grid; gap: 1rem; min-width: 0; }
+.kbc-portals .lf-case {
+  display: grid; gap: .6rem; padding: 1rem 1.2rem; border: 1px solid var(--dd-line); border-radius: 14px; background: #fff;
+  scroll-margin-top: 5rem; transition: border-color .2s, box-shadow .2s;
+}
+.kbc-portals .lf-case.selected { border-color: var(--dd-purple); box-shadow: 0 6px 18px rgba(79, 45, 127, .1); }
+.kbc-portals .lf-case.late { border-left: 4px solid var(--dd-bad); }
+.kbc-portals .lf-case-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem 1rem; flex-wrap: wrap; }
+.kbc-portals .lf-kind { margin: 0; font-size: .76rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dd-purple); }
+.kbc-portals .workspace-app .ec .lf-case-head h3 { margin: .1rem 0 0; font-family: var(--dd-serif); font-weight: 400; font-size: 1.35rem; line-height: 1.2; letter-spacing: 0; }
+.kbc-portals .lf-case-state { display: grid; justify-items: end; gap: .2rem; }
+.kbc-portals .lf-case-state small { font-size: .8rem; color: var(--dd-muted); }
+.kbc-portals .ec .lf-purpose { margin: 0; font-size: 1rem; line-height: 1.5; max-width: 60rem; }
+.kbc-portals .ec .lf-warning { margin: 0; padding: .45rem .7rem; border-radius: 8px; background: #fff3e0; color: #7a4a10; font-size: .88rem; }
+.kbc-portals .ec .lf-note { margin: 0; font-size: .86rem; color: var(--dd-muted); }
+.kbc-portals .lf-steps { display: grid; gap: .5rem; padding: .6rem .7rem; border-radius: 10px; background: var(--dd-soft); }
+.kbc-portals .lf-steps .ed-employer { margin: 0; }
+.kbc-portals .lf-actions { display: flex; flex-wrap: wrap; gap: .45rem; }
+.kbc-portals .ec details.lf-more { margin: 0; border-top: 1px solid var(--dd-line); padding-top: .5rem; }
+.kbc-portals .lf-more > summary { font-size: .9rem; color: var(--dd-purple); }
+
+/* ---- History ---- */
+.kbc-portals .lf-history { padding: 1rem 1.2rem; border: 1px solid var(--dd-line); border-radius: 14px; background: #fff; }
+.kbc-portals .lf-history > header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .lf-history > header small { color: var(--dd-muted); font-size: .82rem; }
+.kbc-portals .lf-history .cl-body { padding-left: 2.6rem; }
+.kbc-portals .lf-outcomes { list-style: none; margin: 0; padding: 0; display: grid; gap: .3rem; font-size: .88rem; }
+.kbc-portals .lf-outcomes li { display: flex; gap: .8rem; flex-wrap: wrap; }
+.kbc-portals .lf-outcomes li span:last-child { color: var(--dd-muted); }
+.kbc-portals .lf-missed-list, .kbc-portals .lf-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+.kbc-portals .lf-missed { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem 1rem; padding: .7rem .8rem; border: 1px solid var(--dd-line); border-radius: 10px; }
+.kbc-portals .lf-missed > div:first-child { display: grid; }
+.kbc-portals .lf-missed > div:first-child span, .kbc-portals .lf-missed > small { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .lf-voicemail { grid-column: 1 / -1; display: grid; gap: .4rem; }
+.kbc-portals .lf-voicemail blockquote { margin: 0; padding: .5rem .7rem; border-radius: 8px; background: var(--dd-soft); font-style: italic; font-size: .9rem; }
+.kbc-portals .lf-voicemail audio { width: 100%; }
+.kbc-portals .lf-timeline { border-left: 2px solid var(--dd-lilac); padding-left: 1rem; }
+.kbc-portals .lf-timeline li { display: grid; gap: .1rem; position: relative; }
+.kbc-portals .lf-timeline li::before { content: ''; position: absolute; left: -1.38rem; top: .4rem; width: 9px; height: 9px; border-radius: 50%; background: var(--dd-purple); }
+.kbc-portals .lf-timeline time, .kbc-portals .lf-timeline small, .kbc-portals .lf-timeline-case { font-size: .8rem; color: var(--dd-muted); }
+.kbc-portals .ec .lf-timeline p { margin: 0; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kbc-portals .lf-emails { display: grid; gap: .5rem; }
+
+@media (max-width: 900px) {
+  .kbc-portals .lf-grid { grid-template-columns: minmax(0, 1fr); }
+  .kbc-portals .lf-rail { position: static; max-height: none; }
+}
+@media (max-width: 600px) {
+  .kbc-portals .lf-band { padding: 1rem; }
+  .kbc-portals .lf-call { justify-items: start; text-align: left; }
+  .kbc-portals .workspace-app .ec .lf-who h2 { font-size: 1.7rem; }
+  .kbc-portals .lf-history .cl-body { padding-left: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) { .kbc-portals .lf-case { transition: none; } }
