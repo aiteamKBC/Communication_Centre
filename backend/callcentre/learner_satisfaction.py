@@ -2,8 +2,8 @@
 
 One open case per learner (``learner_satisfaction``) and per employer (``employer_feedback``: a line
 manager from Aptem, with their learners listed); completed cycles remain separate, immutable history.
-Only an explicit feedback completion after an answered call, or closing a review that cannot be done
-(wrong number, refused, unreachable), starts the three-calendar-month clock.
+Only an explicit feedback completion (after a call; one Zoom reports as not answered is flagged), or closing a review
+that cannot be done (wrong number, refused, unreachable), starts the three-calendar-month clock.
 """
 import calendar
 import hashlib
@@ -18,7 +18,7 @@ from .db import DB
 from .learners import program_status
 from .models import CallIntent, CaseTicket, CycleState
 from .rules import LONDON, due_at, parse_moment
-from .services import PENDING_OUTCOME_WINDOW, Conflict, can_work, close, event, release_fields
+from .services import Conflict, can_work, close, event, latest_press, release_fields
 
 SOURCE = 'learner_satisfaction'
 EMPLOYER = 'employer_feedback'
@@ -233,11 +233,16 @@ def clean_feedback(score, problem, action, note):
     return {'score': score, 'problem': problem, 'agreed_action': action, 'note': note}
 
 
+COMPLETED = ('learner_feedback_completed', 'employer_feedback_completed')
+
+
 @transaction.atomic(using=DB)
 def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None):
-    """Complete the review after an answered call. Straight after the call, before Zoom reports it, the feedback is
-    held and completes the review once Zoom reports the call answered (``apply_pending_feedback``).
-    Returns True when the review was completed now, False when it is held."""
+    """Complete the review now, like any outcome; nobody waits for Zoom. The feedback goes with the last Call press for
+    the review, never an earlier call. When Zoom has reported that call it is recorded with it; otherwise the review is
+    completed without a call and the call is attached when Zoom reports it (``apply_pending_feedback``). Zoom never
+    refuses feedback: a call it reports as not answered is flagged (``flag_unanswered``).
+    Returns True when the call was attached now."""
     ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
     agent = can_work(ticket, user, acting_agent=acting_agent)
     if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.archived or not ticket.source_data.get('eligible', True):
@@ -245,33 +250,27 @@ def complete(ticket_id, user, *, score, problem, action, note, acting_agent=None
     if ticket.status == 'resolved':
         raise Conflict('This satisfaction review has already been completed.')
     fields = clean_feedback(score, problem, action, note)
-    # Sending a message, dialing, or a failed Zoom call is never completion evidence.
-    calls = system_case_calls(ticket.calls.all()).filter(processed_result='answered', match__call__ended_at__lte=timezone.now())
-    calls = calls.filter(match__call__started_at__gte=ticket.evidence_after or ticket.created_at)
-    if not is_director(user):
-        calls = calls.filter(match__agent=agent)
-    call = calls.select_related('match__call').order_by('-match__call__started_at').first()
-    if call:
-        record_feedback(ticket, agent, None if agent else user.get_username(), fields, call.match.call)
+    actor = None if agent else user.get_username()
+    intent = latest_press(ticket, agent)
+    link = (system_case_calls(ticket.calls.all()).select_related('match__call', 'match__agent')
+            .filter(match__call_id=intent.matched_call_id).first() if intent and intent.matched_call_id else None)
+    if link and link.processed_result:
+        record_feedback(ticket, agent, actor, fields, link.match.call)
+        flag_unanswered(ticket, link.match)
         return True
-    # A call just made from the system that Zoom has not reported yet: hold the feedback for it.
-    intent = agent and (ticket.intents.filter(agent=agent, created_at__gte=timezone.now() - PENDING_OUTCOME_WINDOW)
-                        .order_by('-created_at').first())
-    if intent:
-        link = (system_case_calls(ticket.calls.all()).filter(match__call_id=intent.matched_call_id).first()
-                if intent.matched_call_id else None)
-        if not link or not link.processed_result:
-            event(ticket, 'feedback_pending', {'intent_id': intent.pk, **fields}, agent)
-            return False
-        if link.processed_result != 'answered':
-            raise ValueError('Zoom reports this call as not answered, so it cannot complete the review.')
-    raise ValueError('An answered, synced Zoom call in this review cycle is required before completing feedback.')
+    record_feedback(ticket, agent, actor, fields, None, intent=intent)
+    return False
 
 
-def record_feedback(ticket, agent, actor, fields, call):
-    """Complete a locked review with its feedback, given on ``call``; the next review is due in three months."""
+def record_feedback(ticket, agent, actor, fields, call, intent=None):
+    """Complete a locked review with its feedback, given on ``call``; the next review is due in three months. Without
+    ``call`` (Zoom has not reported one) ``intent`` is the Call press whose call is attached when Zoom reports it."""
     now = timezone.now()
-    feedback = {**fields, 'completed_at': now.isoformat(), 'call_id': call.pk, 'next_due_at': next_review_at(now).isoformat()}
+    feedback = {**fields, 'completed_at': now.isoformat(), 'call_id': call.pk if call else None, 'next_due_at': next_review_at(now).isoformat()}
+    if not call:
+        feedback['without_call'] = True
+        if intent:
+            feedback['intent_id'] = intent.pk
     ticket.source_data = {**ticket.source_data, 'feedback': feedback, 'last_completed_at': now.isoformat(),
                           'next_due_at': feedback['next_due_at']}
     kind = 'employer_feedback_completed' if ticket.source_type == EMPLOYER else 'learner_feedback_completed'
@@ -279,12 +278,38 @@ def record_feedback(ticket, agent, actor, fields, call):
     close(ticket, agent, 'agent', kind, feedback, actor)
 
 
+def flag_unanswered(ticket, match):
+    """Feedback was saved on a call Zoom reports as not answered (e.g. cut off): kept, and flagged for a manager to check."""
+    if match.call.result != 'answered':
+        event(ticket, 'feedback_call_mismatch', {'result': match.call.result}, match.agent, call=match.call)
+
+
 def apply_pending_feedback(ticket, match):
-    """Complete a review whose feedback was given before Zoom reported its call, once Zoom reports it answered."""
-    if ticket.source_type not in (SOURCE, EMPLOYER) or ticket.status == 'resolved':
+    """Attach this call to the feedback already completed for its Call press (flagged if Zoom reports it not answered),
+    or complete a review whose feedback was held for Zoom before feedback was completed straight away."""
+    if ticket.source_type not in (SOURCE, EMPLOYER):
+        return
+    if ticket.events.filter(kind__in=COMPLETED, call=match.call).exists():
+        # Zoom changed the result of the call the feedback was given on (e.g. answered, now cut off): check it again.
+        flag_unanswered(ticket, match)
         return
     intent = CallIntent.objects.filter(matched_call=match.call).first()
-    pending = intent and ticket.events.filter(kind='feedback_pending', data__intent_id=intent.pk).order_by('-id').first()
+    if not intent:
+        return
+    done = ticket.events.filter(kind__in=COMPLETED, data__intent_id=intent.pk, call__isnull=True).order_by('-id').first()
+    if done:
+        if ticket.events.filter(kind='feedback_call_linked', data__feedback_event=done.pk).exists():
+            return
+        feedback = ticket.source_data.get('feedback') or {}
+        if feedback.get('intent_id') == intent.pk:
+            ticket.source_data = {**ticket.source_data, 'feedback': {**feedback, 'call_id': match.call.pk, 'without_call': False}}
+            ticket.save(update_fields=['source_data'])
+        event(ticket, 'feedback_call_linked', {'result': match.call.result, 'feedback_event': done.pk}, match.agent, call=match.call)
+        flag_unanswered(ticket, match)
+        return
+    if ticket.status == 'resolved':
+        return
+    pending = ticket.events.filter(kind='feedback_pending', data__intent_id=intent.pk).order_by('-id').first()
     if not pending:
         return
     call = match.call

@@ -56,7 +56,8 @@ def out_of_scope():
 
 SLA_DAYS = {'attendance': 2, 'mcm': 3, 'pr': 3, 'mcm_missed': 3, 'pr_missed': 3, 'signature': 3, 'otj': 5, 'epa': 5,
             'satisfaction': 14, 'learner_satisfaction': 10, 'employer_feedback': 10}
-FAILED_RESULTS = {'no_answer', 'missed', 'busy', 'voicemail', 'rejected'}
+# 'cut_off': an outgoing call "answered" for under 10 seconds (voicemail picking up, or the learner hanging up at once).
+FAILED_RESULTS = {'no_answer', 'missed', 'busy', 'voicemail', 'rejected', 'cut_off'}
 WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unreachable', 'escalated'}
 # What a learner can agree to on a call, per case type, and the calendar days they have to do it.
 # The case stays open until source evidence proves it; a missed deadline returns it to the queue.

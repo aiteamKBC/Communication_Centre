@@ -173,14 +173,16 @@ def mapped_result(value):
     }.get(value, 'other')
 
 
-# An outgoing call "answered" for less than this was the learner's voicemail or network message picking up, not the learner.
-VOICEMAIL_SECONDS = 10
+# An outgoing call "answered" for less than this was cut off: voicemail or a network message picking up, or the learner
+# hanging up at once (Zoom cannot tell which). It counts as not answered.
+CUT_OFF_SECONDS = 10
+CUT_OFF = 'cut_off'
 
 
 def call_result(direction, row, duration):
     result = mapped_result(row.get('call_result') or row.get('result'))
-    if direction == 'outbound' and result == 'answered' and duration is not None and duration < VOICEMAIL_SECONDS:
-        return 'voicemail'
+    if direction == 'outbound' and result == 'answered' and duration is not None and duration < CUT_OFF_SECONDS:
+        return CUT_OFF
     return result
 
 

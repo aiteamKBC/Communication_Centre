@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useCallCentre } from '../api';
-import { human, ISSUE_LABELS, longDate, promiseLabel } from './model';
+import { FAILED_RESULTS, callResult, human, ISSUE_LABELS, longDate, promiseLabel } from './model';
 import '../styles/monthly-history.css';
 
 type Totals = { attempts: number; connected: number; not_answered: number; other: number; seconds: number };
@@ -139,9 +139,9 @@ function HistoryPage({ agentId, month, page, today, revision, onMonth, onPage, o
                       <div>{call.contact_email && <span>{call.contact_email}</span>}{call.number && <span>{call.number}</span>}</div>
                     </div>
                     <div className="ed-history-call-result">
-                      <span className={`ed-history-result ${answered ? 'ed-history-answered' : ''}`}>{human(call.result)}</span>
+                      <span className={`ed-history-result ${answered ? 'ed-history-answered' : ''}`}>{callResult(call.result)}</span>
                       {answered ? <><strong>{call.duration_seconds === null ? 'Unavailable' : callTime(call.duration_seconds)}</strong><small>Connected time · Zoom</small></>
-                        : <small>{['no_answer', 'missed', 'busy', 'voicemail', 'rejected'].includes(call.result) ? 'No connected conversation' : 'No connected duration recorded'}</small>}
+                        : <small>{FAILED_RESULTS.has(call.result) ? 'No connected conversation' : 'No connected duration recorded'}</small>}
                     </div>
                   </div>
                   {outcomes.length > 0 && <p className="ed-history-outcome">{outcomes.join(' · ')}</p>}

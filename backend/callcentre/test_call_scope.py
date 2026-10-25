@@ -253,11 +253,13 @@ class SystemCallScopeTests(TestCase):
     def test_external_calls_cannot_complete_satisfaction_or_prove_attempt(self):
         CaseTicket.objects.filter(pk=self.ticket.pk).update(source_type='learner_satisfaction')
         self.legacy()
-        with self.assertRaisesMessage(ValueError, 'answered, synced'):
-            complete(self.ticket.pk, self.user, score=4, problem='None', action='No action needed',
-                     note='Learner is happy with the programme.')
         with self.assertRaisesMessage(ValueError, 'Call them first'):
             close_without_feedback(self.ticket.pk, self.user, 'unreachable', 'Unable to reach learner.')
+        # Feedback is never refused for want of a call, but a call made outside the system is not taken as its call.
+        complete(self.ticket.pk, self.user, score=4, problem='None', action='No action needed',
+                 note='Learner is happy with the programme.')
+        self.ticket.refresh_from_db()
+        self.assertEqual((self.ticket.source_data['feedback']['call_id'], self.ticket.source_data['feedback']['without_call']), (None, True))
 
     def test_new_internal_result_ignores_old_external_attempts_and_last_call(self):
         self.legacy(result='no_answer', started_at=self.now - timedelta(minutes=1))

@@ -9,7 +9,7 @@ import type { FieldProblem, Problem } from './formErrors';
 import { ZoomChanges } from './LiveCalls';
 import ZoomAccountsSection from './ZoomAccounts';
 import type { ZoomAccount, ZoomAccounts } from './ZoomAccounts';
-import { human, when } from './model';
+import { callResult, human, when } from './model';
 import RecordingDialog from './Recordings';
 import TranscriptsDialog from './Transcripts';
 
@@ -644,7 +644,7 @@ export default function ZoomPhone({ overview, csrf, isManager }: { overview: Ove
                     <td>{when(call.started_at)}<small>{seconds(call.duration_seconds)}</small></td>
                     <td>{accountLabel(call.source_account, report?.accounts)}<small>{call.direction === 'outbound' ? `From ${call.caller_name || call.caller_email || call.caller_number}` : `To ${call.callee_name || call.callee_number}`}</small></td>
                     <td>{person.name}<small>{person.role} · {person.number || 'Unknown'}</small></td>
-                    <td><span className={`ec-tag ${call.result === 'answered' ? 'green' : 'amber'}`}>{human(call.result) || call.raw_result || 'Other'}</span></td>
+                    <td><span className={`ec-tag ${call.result === 'answered' ? 'green' : 'amber'}`}>{callResult(call.result) || call.raw_result || 'Other'}</span></td>
                     <td><button type="button" onClick={() => setRecording(call.id)}>Read transcript</button></td>
                   </tr>
                 );

@@ -4,12 +4,14 @@ import type { CallRating } from '../api';
 import { RatingTag } from './CallReview';
 import TranscriptPanel from './TranscriptPanel';
 import { PageNumbers } from './MonthlyHistory';
-import { ISSUE_LABELS, human, outcomeLabel, promiseLabel, shortDate, when } from './model';
+import { FAILED_RESULTS, ISSUE_LABELS, callResult, human, outcomeLabel, promiseLabel, shortDate, when } from './model';
 import '../styles/monthly-history.css';
 
 type Feedback = {
   state: 'completed' | 'waiting' | 'dropped' | 'extra'; score: number | null; problem: string | null; agreed_action: string | null;
   note: string | null; next_due_at: string | null; reason?: string;
+  /** Zoom's result for the call, when it was not answered (e.g. cut off): the feedback stands, for a manager to check. */
+  mismatch?: string;
 };
 type LoggedCase = {
   id: number; source_type: string; organisation: string; status: string; resolution_option: string; next_followup_at: string | null;
@@ -44,7 +46,6 @@ const STATUS_NAMES: Record<string, string> = {
   new: 'Back on the list', in_progress: 'Being worked', pending_learner: 'Callback booked', pending_verification: 'Waiting for proof',
   ai_suggested_close: 'AI suggests closing', resolved: 'Closed', unreachable: 'Unreachable', escalated: 'Escalated',
 };
-const FAILED = new Set(['no_answer', 'missed', 'busy', 'voicemail', 'rejected']);
 
 const minutes = (seconds: number | null) => (seconds === null ? '' : `${Math.floor(seconds / 60)}m ${seconds % 60}s`);
 
@@ -53,8 +54,8 @@ function ZoomResult({ zoom }: { zoom: LoggedCall['zoom'] }) {
   if (zoom.state === 'not_matched') {
     return <span className="ed-history-result ed-log-bad" title="Zoom never reported a call for this Call press: dialled from the Zoom app, another number, or not made.">Zoom has no call</span>;
   }
-  return <span className={`ed-history-result ${zoom.state === 'answered' ? 'ed-history-answered' : FAILED.has(zoom.state) ? 'ed-log-bad' : ''}`}>
-    {human(zoom.state)}{zoom.state === 'answered' && zoom.duration_seconds !== null ? ` · ${minutes(zoom.duration_seconds)}` : ''}</span>;
+  return <span className={`ed-history-result ${zoom.state === 'answered' ? 'ed-history-answered' : FAILED_RESULTS.has(zoom.state) ? 'ed-log-bad' : ''}`}>
+    {callResult(zoom.state)}{zoom.state === 'answered' && zoom.duration_seconds !== null ? ` · ${minutes(zoom.duration_seconds)}` : ''}</span>;
 }
 
 function Outcome({ item }: { item: LoggedCase }) {
@@ -67,7 +68,7 @@ function Outcome({ item }: { item: LoggedCase }) {
       <strong>{what}</strong>
       {outcome.state === 'waiting' && <span className="ec-tag amber">Applies when Zoom reports the call</span>}
       {outcome.state === 'dropped' && <span className="ec-tag red">Not applied: {outcome.reason}</span>}
-      {outcome.mismatch && <span className="ec-tag red">Zoom says {human(outcome.mismatch)}: check this outcome</span>}
+      {outcome.mismatch && <span className="ec-tag red">Zoom says {callResult(outcome.mismatch)}: check this outcome</span>}
       {outcome.callback_at && <small>Follow-up {when(outcome.callback_at)}</small>}
       {outcome.promised_at && <small>Promise due {shortDate(outcome.promised_at)}</small>}
       {outcome.note && <small className="ed-log-note">“{outcome.note}”</small>}
@@ -85,6 +86,7 @@ function FeedbackBox({ feedback }: { feedback: Feedback }) {
   return (
     <div className={`ed-log-box ${feedback.state === 'dropped' ? 'bad' : ''}`}>
       <span>Satisfaction feedback · {state}</span>
+      {feedback.mismatch && <span className="ec-tag red">Zoom says {callResult(feedback.mismatch)}: check this feedback</span>}
       <strong>{feedback.score ?? '–'} / 5</strong>
       <dl>
         {feedback.problem && <><dt>Problem</dt><dd>{feedback.problem}</dd></>}

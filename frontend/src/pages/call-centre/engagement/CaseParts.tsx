@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import type { CaseDetail } from '../api';
 import { caseAction, saveOutcome } from './actions';
 import type { Session } from './actions';
-import { QUICK_FOLLOW_UPS, closesCase, duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, workdayInput } from './model';
+import { QUICK_FOLLOW_UPS, callResult, closesCase, duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, workdayInput } from './model';
 
 type FormProps = { detail: CaseDetail; session: Session; onSaved: (message: string) => void; onError: (message: string) => void; compact?: boolean };
 
@@ -122,7 +122,7 @@ export function CallEvidence({ detail, onRecording }: { detail: CaseDetail; onRe
     <>
       {detail.calls.map(call => (
         <details key={call.call_id}>
-          <summary>{longDate(call.started_at)} · {human(call.result)} · {call.duration_seconds === null ? 'Duration unknown' : duration(call.duration_seconds)}</summary>
+          <summary>{longDate(call.started_at)} · {callResult(call.result)} · {call.duration_seconds === null ? 'Duration unknown' : duration(call.duration_seconds)}</summary>
           <p>{call.agent}{call.manual ? ' · dialled manually' : ''}</p>
           <p>{call.outcome ? `Outcome: ${human(call.outcome)}` : 'Outcome not recorded yet.'}</p>
           <button type="button" onClick={() => onRecording(call.call_id)}>Recording & transcript</button>

@@ -599,8 +599,12 @@ def save_call(ticket_id, user, items, note='', callback_at=None, acting_agent=No
 def apply_pending_outcome(ticket, link, match):
     """Attach this call to the outcome already saved for its Call press (flagged if Zoom's result contradicts it), or
     apply an outcome held for Zoom before outcomes were applied straight away."""
+    if link.outcome:
+        # Zoom changed the result of a call that already has its outcome (e.g. answered, now cut off): check it again.
+        flag_mismatch(ticket, link.outcome, match)
+        return
     intent = CallIntent.objects.filter(matched_call=match.call).first()
-    if not intent or link.outcome:
+    if not intent:
         return
     saved = ticket.events.filter(kind='outcome', data__intent_id=intent.pk, call__isnull=True).order_by('-id').first()
     if saved:
