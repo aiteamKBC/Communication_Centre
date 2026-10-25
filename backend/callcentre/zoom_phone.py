@@ -173,6 +173,17 @@ def mapped_result(value):
     }.get(value, 'other')
 
 
+# An outgoing call "answered" for less than this was the learner's voicemail or network message picking up, not the learner.
+VOICEMAIL_SECONDS = 10
+
+
+def call_result(direction, row, duration):
+    result = mapped_result(row.get('call_result') or row.get('result'))
+    if direction == 'outbound' and result == 'answered' and duration is not None and duration < VOICEMAIL_SECONDS:
+        return 'voicemail'
+    return result
+
+
 def call_datetime(value, required=False):
     if value in (None, '') and not required:
         return None
@@ -215,7 +226,7 @@ def normalize_call(key, account_id, row):
         'ended_at': call_datetime(row.get('end_time')),
         'duration_seconds': duration,
         'raw_result': str(row.get('call_result') or row.get('result') or ''),
-        'result': mapped_result(row.get('call_result') or row.get('result')),
+        'result': call_result(row['direction'], row, duration),
     }
     for field in ZoomPhoneCall._meta.fields:
         if field.max_length and len(str(values.get(field.name, ''))) > field.max_length:

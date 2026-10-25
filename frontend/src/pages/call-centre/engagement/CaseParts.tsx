@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CaseDetail } from '../api';
-import { caseAction, pickCall } from './actions';
+import { caseAction, saveOutcome } from './actions';
 import type { Session } from './actions';
-import { QUICK_FOLLOW_UPS, closesCase, duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, when, workdayInput } from './model';
+import { QUICK_FOLLOW_UPS, closesCase, duration, human, isSatisfaction, londonInput, longDate, outcomeChoices, outcomeHelp, promiseLabel, splitOutcome, workdayInput } from './model';
 
 type FormProps = { detail: CaseDetail; session: Session; onSaved: (message: string) => void; onError: (message: string) => void; compact?: boolean };
 
-/** Outcome of the latest Zoom call, resolution and notes for one case. */
+/** Outcome of the latest call, resolution and notes for one case. The outcome goes with the case's last call by itself. */
 export function NextStepForm({ detail, session, onSaved, onError, compact = false }: FormProps) {
   const ticket = detail.ticket;
   const resolved = ticket.status === 'resolved';
@@ -16,7 +16,6 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   // Falls back to the first choice when the form moves to a case of another type.
   const choice = choices.some(([value]) => value === picked) ? picked : choices[0][0];
   const { outcome } = splitOutcome(choice);
-  const [callId, setCallId] = useState('');
   const [callback, setCallback] = useState('');
   // Only proof closes a case; a manager can close one by hand, a specialist only those with nothing to prove.
   const canClose = !isSatisfaction(ticket) && (session.isManager || ticket.specialist_closes);
@@ -24,12 +23,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   const [closeReason, setCloseReason] = useState('wrong_number');
   const [busy, setBusy] = useState(false);
   const blocked = session.preview || !session.canAct || (!!ticket.claimed_agent_id && ticket.claimed_agent_id !== session.agentId);
-  const calls = detail.calls;
 
-  const callKey = `${ticket.id}:${calls.map(call => call.call_id).join(',')}`;
-  useEffect(() => {
-    setCallId(String(pickCall(calls, outcome, session)?.call_id ?? ''));
-  }, [callKey]); // eslint-disable-line react-hooks/exhaustive-deps -- re-pick only when the case or its calls change
   useEffect(() => {
     setNote('');
     setCallback('');
@@ -38,7 +32,9 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
   async function run(command: string, payload: Record<string, unknown>, message: string) {
     setBusy(true);
     try {
-      await caseAction(session, ticket.id, command, payload);
+      await (command === 'plan'
+        ? saveOutcome(session, ticket.id, payload as Parameters<typeof saveOutcome>[2])
+        : caseAction(session, ticket.id, command, payload));
       setNote('');
       onSaved(message);
     } catch (reason) {
@@ -50,12 +46,8 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!callId) {
-      onError('Zoom has not reported a call for this case yet. Call the learner, then save once the call appears.');
-      return;
-    }
-    void run('outcome', {
-      call_id: Number(callId), ...splitOutcome(choice), note,
+    void run('plan', {
+      ...splitOutcome(choice), note,
       // The chosen follow-up applies to every outcome; an outcome that closes the case ignores it.
       callback_at: callback ? londonInput(callback).toISOString() : null,
     }, 'Next step saved.');
@@ -72,12 +64,6 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
           <label>Call outcome
             <select value={choice} onChange={event => setChoice(event.target.value)}>
               {choices.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </label>
-          <label>Zoom call
-            <select value={callId} onChange={event => setCallId(event.target.value)}>
-              {!calls.length && <option value="">No verified call yet</option>}
-              {calls.map(call => <option key={call.call_id} value={call.call_id}>{when(call.started_at)} · {human(call.result)}{call.outcome ? ` · ${human(call.outcome)}` : ''}</option>)}
             </select>
           </label>
           {!closesCase(choice, ticket) && (
@@ -124,7 +110,7 @@ export function NextStepForm({ detail, session, onSaved, onError, compact = fals
             : <p className="ec-muted wide">{ticket.promised_at && !resolved
               ? `${ticket.promise_missed ? 'Promise missed' : 'Waiting for the learner'}: ${promiseLabel(ticket.resolution_option)} by ${longDate(ticket.promised_at)}. `
               : ''}{isSatisfaction(ticket) ? 'Use Complete feedback after the answered call; ordinary outcomes do not complete the review.' : canClose
-              ? 'An outcome is recorded against a call Zoom has verified.'
+              ? 'The outcome goes with your last call to them; with no call from Zoom it is saved on the case without one.'
               : 'The case closes by itself when the learner’s action shows up; if it does not by the deadline, it comes back to the queue.'}</p>}
     </form>
   );

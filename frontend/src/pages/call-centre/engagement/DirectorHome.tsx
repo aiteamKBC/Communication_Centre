@@ -1,7 +1,7 @@
 import { useCallCentre } from '../api';
 import type { Overview } from '../api';
 import { CallsByDay, QualityStrip, TalkByDay } from './charts';
-import { caseload, monthTotals, ranked, rate } from './dashboard';
+import { caseload, monthTotals, ranked, rate, sharedQueueLearners } from './dashboard';
 import type { Live } from './live';
 import { liveSeconds } from './live';
 import { duration, failingSources } from './model';
@@ -33,7 +33,7 @@ function NeedsYou({ overview, go }: { overview: Overview; go: Go }) {
     [callbacks.data?.summary.open || 0, 'learners waiting for a call back', 'missed'],
     [load.late, 'cases past their call date', 'specialists'],
     [(overview.call_reviews?.flags || []).length, 'calls rated bad this month', 'calls'],
-    [load.unallocated, 'learners in the shared queue', 'allocations'],
+    [sharedQueueLearners(overview), 'learners in the shared queue', 'allocations'],
     [(changes.data?.changes || []).filter(change => change.serious).length, 'Zoom changes that stop matching or recording', 'phone'],
     [recordings.data?.calls.length || 0, 'answered calls Zoom did not record (7 days)', 'phone'],
     [failingSources(overview).length, 'data sources not reading', 'settings'],

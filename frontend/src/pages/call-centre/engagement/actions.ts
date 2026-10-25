@@ -1,5 +1,5 @@
 import { api, post } from '../api';
-import type { CaseCall, CaseDetail, OverviewCase } from '../api';
+import type { CaseDetail, OverviewCase } from '../api';
 
 /** Who is working: `name` is the specialist whose desk is shown (the signed-in user outside a preview). */
 export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string;
@@ -47,25 +47,8 @@ export function callDisabledReason(c: OverviewCase, session: Session, now = Date
   return '';
 }
 
-const FAILED = ['no_answer', 'missed', 'busy', 'voicemail', 'rejected'];
-
-/** The call an outcome belongs to: the newest one in this cycle, made by this specialist (any for a manager),
- * whose Zoom result fits the outcome. Calls arrive newest first. */
-export function pickCall(calls: CaseCall[], outcome: string, session: Session) {
-  const usable = calls.filter(call => call.current && (session.isManager || call.agent_id === session.agentId));
-  const fits = (call: CaseCall) => (outcome === 'no_answer' ? FAILED.includes(call.result)
-    : outcome === 'wrong_number' || call.result === 'answered');
-  return usable.find(call => !call.outcome && fits(call)) || usable.find(fits) || usable[0];
-}
-
-/** Records an outcome against the Zoom call it belongs to (``pickCall``). Straight after a call (`justCalled`), or
- * before Zoom has reported any call, the outcome is held for the latest call and applied once Zoom reports it. */
-export async function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null },
-  justCalled = false) {
-  const values = { option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null };
-  if (justCalled) return caseAction(session, id, 'plan', values);
-  const detail = await loadCase(id);
-  const call = pickCall(detail.calls, data.outcome, session);
-  if (!call) return caseAction(session, id, 'plan', values);
-  return caseAction(session, id, 'outcome', { call_id: call.call_id, ...values });
+/** Saves a case's outcome. The server attaches it to the case's last call (never an earlier one): held while Zoom may
+ * still report that call (`applied: false`), saved without a call when Zoom has none, so a save is never refused for want of one. */
+export function saveOutcome(session: Session, id: number, data: { outcome: string; note: string; option?: string; callback_at?: string | null }) {
+  return caseAction(session, id, 'plan', { option: data.option || '', note: data.note, outcome: data.outcome, callback_at: data.callback_at || null });
 }

@@ -562,7 +562,7 @@ def action(request, pk, command):
     elif command == 'resolve':
         resolve(pk, request.user, note=str(data.get('note', ''))[:5000], option=data.get('option', 'other'), acting_agent=agent)
     elif command == 'plan':
-        # The outcome straight after a call; held until Zoom reports the call if it has not yet.
+        # A case's outcome, applied now: the case's last call is attached now or when Zoom reports it; never refused for want of one.
         applied = plan_outcome(pk, request.user, data.get('outcome', ''), option=data.get('option', ''),
                                note=str(data.get('note', ''))[:5000],
                                callback_at=parse_moment(data['callback_at']) if data.get('callback_at') else None, acting_agent=agent)

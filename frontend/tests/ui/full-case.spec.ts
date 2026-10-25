@@ -61,6 +61,7 @@ function detail(c: OverviewCase, history = false): CaseDetail {
 
 async function open(page: Page, path: string, role: 'operator' | 'director' = 'operator') {
   const posts: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -76,7 +77,7 @@ async function open(page: Page, path: string, role: 'operator' | 'director' = 'o
     if (!['127.0.0.1', 'localhost'].includes(url.hostname)) return route.abort();
     if (!url.pathname.startsWith('/api/')) return route.continue();
     const json = (body: unknown) => route.fulfill({ json: body });
-    if (route.request().method() === 'POST') { posts.push(url.pathname); return json({ ok: true }); }
+    if (route.request().method() === 'POST') { posts.push(url.pathname); bodies.push(route.request().postDataJSON()); return json({ ok: true }); }
     if (url.pathname === '/api/callcentre/config/') return json({ csrf_token: 't', agent_id: 1, agents: [], sources: [], cycle: null });
     if (url.pathname === '/api/callcentre/live/') return json({ enabled: true, calls: [] });
     if (url.pathname === '/api/callcentre/inbound/') return json({ summary: { open: 1, received: 1, done: 0, median_minutes: null, within_hour: 0, days: 90 }, items: [] });
@@ -102,7 +103,7 @@ async function open(page: Page, path: string, role: 'operator' | 'director' = 'o
   });
   await page.goto(path);
   await expect(page.locator('h1').first(), `Browser errors: ${errors.join('; ')}`).toBeVisible();
-  return { posts, errors };
+  return { posts, bodies, errors };
 }
 
 test('Full case from Today: who, one Call for every case, each case’s steps, and the whole history', async ({ page }) => {
@@ -152,5 +153,22 @@ test('the director’s case page is the same Full case', async ({ page }) => {
   await expect(page.locator('.lf-band').getByRole('heading', { name: 'Ann Lee' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'History' })).toContainText('All 4 cases, open and closed');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}full-case-director.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test('an outcome recorded by hand needs no call picked: it goes with the last call by itself', async ({ page }) => {
+  const { posts, bodies, errors } = await open(page, '/dashboard/call-centre?view=operator&section=missed');
+  await page.locator('[data-sheet-row="7"]').getByRole('button', { name: 'Full case', exact: true }).click();
+  const lecture = page.locator('dialog.ed-case-dialog').getByRole('article', { name: /^Missed lecture/ });
+  await lecture.getByText('Record an outcome by hand or add a note', { exact: true }).click();
+  const form = lecture.locator('form.ed-outcome');
+  await expect(form.getByText('Zoom call', { exact: true })).toHaveCount(0);
+  await expect(form.locator('select')).toHaveCount(1);   // the outcome only
+  await form.locator('textarea').fill('Rang back as agreed; will book the catch-up today.');
+  await form.getByRole('button', { name: 'Save next step', exact: true }).click();
+  await expect.poll(() => posts).toContain('/api/callcentre/tickets/7/plan/');
+  const saved = bodies[posts.indexOf('/api/callcentre/tickets/7/plan/')];
+  expect(saved).toMatchObject({ note: 'Rang back as agreed; will book the catch-up today.' });
+  expect(saved).not.toHaveProperty('call_id');
   expect(errors).toEqual([]);
 });

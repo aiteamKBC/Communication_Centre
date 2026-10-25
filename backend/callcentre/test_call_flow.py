@@ -19,8 +19,9 @@ from django.utils import timezone
 from .allocation import owners
 from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, Setting, ZoomPhoneCall, ZoomSyncState
 from .rules import LONDON, add_workdays, missed_call, promise_deadline
-from .services import (Conflict, agent_for, allocated_owner, apply_call_result, can_work, claim, create_intent,
-                       event, open_call, plan_outcome, record_outcome, save_call)
+from .services import (Conflict, agent_for, allocated_owner, apply_call_result, apply_stale_outcomes, can_work, claim,
+                       create_intent, event, open_call, plan_outcome, record_outcome, save_call)
+from .zoom_phone import normalize_call
 from .learner_satisfaction import held_feedback
 from .views import rank, with_followup_agent, with_last_call
 
@@ -122,12 +123,12 @@ class CallFlowTests(TestCase):
         record_outcome(ann.pk, self.user, self.zoom(ann, 'no_answer').pk, 'no_answer')
         self.assertEqual(self.fresh(ann).next_followup_at, self.morning())
 
-    def test_no_answer_saved_before_zoom_reports_the_call_is_applied_when_it_does(self):
+    def test_no_answer_saved_before_zoom_reports_the_call_is_applied_at_once_and_the_call_attached_when_it_does(self):
         ann = self.case('ann')
         intent = CallIntent.objects.create(agent=self.agent, learner_email=ann.learner_email, number=ann.learner_phone)
         intent.tickets.add(ann)
-        self.assertFalse(plan_outcome(ann.pk, self.user, 'no_answer'))
-        self.assertIsNone(self.fresh(ann).next_followup_at)
+        self.assertFalse(plan_outcome(ann.pk, self.user, 'no_answer'))   # no call attached yet
+        self.assertEqual((self.fresh(ann).status, self.fresh(ann).next_followup_at), ('new', self.morning()))
         call = ZoomPhoneCall.objects.create(
             source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()), direction='outbound',
             started_at=self.now - timedelta(minutes=2), ended_at=self.now - timedelta(minutes=1), result='no_answer')
@@ -137,6 +138,116 @@ class CallFlowTests(TestCase):
         apply_call_result(match)
         ann = self.fresh(ann)
         self.assertEqual((ann.status, ann.attempts, ann.next_followup_at), ('new', 1, self.morning()))
+        self.assertEqual(CaseCall.objects.get(ticket=ann).outcome, 'no_answer')
+        self.assertFalse(ann.events.filter(kind='outcome_call_mismatch').exists())
+        self.assertEqual(ann.events.filter(kind='outcome').count(), 1)
+
+    # Which call an outcome belongs to: the specialist never picks it
+
+    def press(self, ticket, minutes_ago=0):
+        """Alice presses Call for this case ``minutes_ago``."""
+        intent = CallIntent.objects.create(agent=self.agent, learner_email=ticket.learner_email, number=ticket.learner_phone)
+        intent.tickets.add(ticket)
+        CallIntent.objects.filter(pk=intent.pk).update(created_at=self.now - timedelta(minutes=minutes_ago))
+        return CallIntent.objects.get(pk=intent.pk)
+
+    def report(self, ticket, intent, result, minutes_ago=1):
+        """Zoom reports the call made from this press."""
+        call = ZoomPhoneCall.objects.create(
+            source_account='student', zoom_account_id='account', history_id=str(uuid.uuid4()), direction='outbound',
+            started_at=self.now - timedelta(minutes=minutes_ago + 1), ended_at=self.now - timedelta(minutes=minutes_ago), result=result)
+        match = CallMatch.objects.create(call=call, agent=self.agent, learner_email=ticket.learner_email)
+        CallIntent.objects.filter(pk=intent.pk).update(matched_call=call)
+        CaseCall.objects.create(ticket=ticket, match=match)
+        apply_call_result(match)
+        return call
+
+    def outcome_calls(self, ticket):
+        return list(CaseCall.objects.filter(ticket=ticket).order_by('match__call__started_at').values_list('outcome', flat=True))
+
+    def test_the_outcome_of_a_call_back_never_lands_on_the_first_call(self):
+        ann = self.case('ann')
+        first = self.press(ann, 60)
+        self.report(ann, first, 'answered', 55)
+        self.assertTrue(plan_outcome(ann.pk, self.user, 'callback', callback_at=add_workdays(self.now, 1)))
+        CaseTicket.objects.filter(pk=ann.pk).update(next_followup_at=None)
+        # The call-back: Zoom has not reported it yet. The case moves on now, and the outcome waits for that call
+        # instead of taking the first one.
+        second = self.press(ann, 2)
+        self.assertFalse(plan_outcome(ann.pk, self.user, 'reached', 'epa_step'))
+        self.assertEqual(self.fresh(ann).status, 'pending_verification')
+        self.assertEqual(self.outcome_calls(ann), ['callback'])
+        self.report(ann, second, 'answered')
+        self.assertEqual(self.outcome_calls(ann), ['callback', 'reached'])
+
+    def test_an_outcome_is_saved_without_a_call_when_there_is_none(self):
+        ann = self.case('ann')
+        self.assertFalse(plan_outcome(ann.pk, self.user, 'no_answer'))   # no Call press at all (dialled outside the system)
+        ann = self.fresh(ann)
+        self.assertEqual((ann.status, ann.next_followup_at), ('new', self.morning()))
+        saved = ann.events.get(kind='outcome')
+        self.assertIsNone(saved.call_id)
+        self.assertTrue(saved.data['without_call'])
+
+    def test_an_outcome_is_saved_without_the_call_when_zoom_never_reported_it(self):
+        ann = self.case('ann')
+        self.press(ann, 45)
+        self.assertFalse(plan_outcome(ann.pk, self.user, 'callback', callback_at=add_workdays(self.now, 1)))
+        self.assertEqual(self.fresh(ann).status, 'pending_learner')
+
+    def test_zoom_contradicting_the_outcome_never_refuses_it_but_flags_it(self):
+        # Zoom has already reported the call as voicemail (under 10 seconds): Reached is saved and flagged.
+        ann = self.case('ann')
+        intent = self.press(ann, 10)
+        call = self.report(ann, intent, 'voicemail', 5)
+        self.assertTrue(plan_outcome(ann.pk, self.user, 'reached', 'epa_step'))
+        self.assertEqual((self.fresh(ann).status, self.outcome_calls(ann)), ('pending_verification', ['reached']))
+        flag = ann.events.get(kind='outcome_call_mismatch')
+        self.assertEqual((flag.data, flag.call_id), ({'outcome': 'reached', 'result': 'voicemail'}, call.pk))
+        # Zoom reports it after the save: the call is attached, then flagged the same way.
+        ben = self.case('ben')
+        intent = self.press(ben, 2)
+        plan_outcome(ben.pk, self.user, 'callback', callback_at=add_workdays(self.now, 1))
+        self.assertFalse(ben.events.filter(kind='outcome_call_mismatch').exists())
+        self.report(ben, intent, 'no_answer')
+        self.assertEqual((self.fresh(ben).status, self.outcome_calls(ben)), ('pending_learner', ['callback']))
+        self.assertEqual(ben.events.get(kind='outcome_call_mismatch').data, {'outcome': 'callback', 'result': 'no_answer'})
+        self.assertEqual(ben.events.filter(kind='outcome_call_linked').count(), 1)
+
+    def test_a_call_with_an_outcome_is_not_given_another_one(self):
+        ann = self.case('ann')
+        intent = self.press(ann, 30)
+        self.report(ann, intent, 'answered', 25)
+        plan_outcome(ann.pk, self.user, 'callback', callback_at=add_workdays(self.now, 1))
+        plan_outcome(ann.pk, self.user, 'reached', 'epa_step')
+        self.assertEqual(self.outcome_calls(ann), ['callback'])
+        self.assertEqual(self.fresh(ann).status, 'pending_verification')
+
+    def test_an_outcome_held_before_this_release_is_applied_without_the_call_when_zoom_is_too_late(self):
+        ann = self.case('ann')
+        intent = self.press(ann, 5)
+        event(ann, 'outcome_pending', {'intent_id': intent.pk, 'outcome': 'reached', 'option': 'epa_step', 'note': '',
+                                       'callback_at': None}, self.agent)   # held the old way
+        self.assertEqual(apply_stale_outcomes(), 0)   # Zoom may still report it
+        self.assertEqual(self.fresh(ann).status, 'new')
+        CallIntent.objects.filter(pk=intent.pk).update(created_at=self.now - timedelta(minutes=31))
+        self.assertEqual(apply_stale_outcomes(), 1)
+        self.assertEqual(apply_stale_outcomes(), 0)   # once
+        self.assertEqual(self.fresh(ann).status, 'pending_verification')
+        # Zoom reports the call after all: it is attached to the outcome, and says whether its result fits.
+        self.report(ann, intent, 'voicemail')
+        self.assertEqual(self.outcome_calls(ann), ['reached'])
+        self.assertEqual(ann.events.get(kind='outcome_call_linked').data['result'], 'voicemail')
+        self.assertTrue(ann.events.filter(kind='outcome_call_mismatch').exists())
+        self.assertEqual(ann.events.filter(kind='outcome').count(), 1)
+
+    def test_a_short_answered_call_out_is_voicemail(self):
+        row = {'id': 'h1', 'direction': 'outbound', 'start_time': '2026-10-20T10:00:00Z', 'end_time': '2026-10-20T10:00:09Z',
+               'call_result': 'answered'}
+        self.assertEqual(normalize_call('student', 'account', {**row, 'duration': 9})['result'], 'voicemail')
+        self.assertEqual(normalize_call('student', 'account', {**row, 'duration': 10})['result'], 'answered')
+        self.assertEqual(normalize_call('student', 'account', {**row, 'duration': 9})['raw_result'], 'answered')
+        self.assertEqual(normalize_call('student', 'account', {**row, 'direction': 'inbound', 'duration': 4})['result'], 'answered')
 
     def test_a_broken_promise_ranks_with_red_risk_above_everyone_else(self):
         self.case('ben', overdue_since=self.now.date() - timedelta(days=30))
@@ -220,12 +331,12 @@ class CallFlowTests(TestCase):
         return tickets
 
     def outcomes(self, ticket):
-        return list(ticket.events.filter(kind='outcome_pending').values_list('data__outcome', flat=True))
+        return list(ticket.events.filter(kind='outcome').values_list('data__outcome', flat=True))
 
     def test_an_unanswered_call_is_saved_for_every_case_at_once(self):
         tickets = self.learner_with('epa', 'epa', 'manual')
         items = [{'id': ticket.pk, 'outcome': 'no_answer'} for ticket in tickets]
-        self.assertFalse(save_call(tickets[0].pk, self.user, items))   # held until Zoom reports the call
+        self.assertFalse(save_call(tickets[0].pk, self.user, items))   # applied; the call is attached when Zoom reports it
         self.assertEqual([self.outcomes(ticket) for ticket in tickets], [['no_answer']] * 3)
 
     def test_one_case_failing_saves_none_of_them(self):
@@ -576,12 +687,13 @@ class EmployerSpecialistTests(TestCase):
                                                'join_url': 'https://zoom.test/j/1', 'link_warning': ''}, self.bob)
         save_call(self.learner.pk, self.bob.user, [{'id': self.learner.pk, 'outcome': 'reached', 'option': 'epa_step'}])
         case, = self.logged()['calls'][0]['cases']
-        self.assertEqual((case['outcome']['state'], case['outcome']['outcome']), ('waiting', 'reached'))
+        self.assertEqual((case['outcome']['state'], case['outcome']['outcome']), ('applied', 'reached'))
         self.assertEqual(case['bookings'][0]['coach'], 'Coach Carter')
-        self.zoom_reports(intent, 'answered')
+        self.zoom_reports(intent, 'voicemail')
         case, = self.logged()['calls'][0]['cases']
-        self.assertEqual((case['outcome']['state'], case['outcome']['option']), ('applied', 'epa_step'))
-        self.assertEqual(self.logged()['summary'], {'calls': 1, 'answered': 1, 'not_matched': 0, 'closed': 0, 'booked': 1, 'feedback': 0})
+        # Zoom says voicemail: the outcome stands, flagged for a manager to check.
+        self.assertEqual((case['outcome']['state'], case['outcome']['option'], case['outcome']['mismatch']), ('applied', 'epa_step', 'voicemail'))
+        self.assertEqual(self.logged()['summary'], {'calls': 1, 'answered': 0, 'not_matched': 0, 'closed': 0, 'booked': 1, 'feedback': 0})
 
     def test_what_happens_after_the_next_call_belongs_to_the_next_call(self):
         first = create_intent(self.learner.pk, self.bob)
@@ -595,14 +707,12 @@ class EmployerSpecialistTests(TestCase):
         self.assertEqual(older['cases'][0]['outcome']['state'], 'not_discussed')
         self.assertFalse(newer['saved'])
 
-    def test_an_outcome_zoom_never_reported_a_call_for_is_shown_as_not_applied(self):
+    def test_an_outcome_zoom_never_reported_a_call_for_is_still_applied(self):
         intent = create_intent(self.learner.pk, self.bob)
         save_call(self.learner.pk, self.bob.user, [{'id': self.learner.pk, 'outcome': 'no_answer'}])
         CallIntent.objects.filter(pk=intent.pk).update(created_at=timezone.now() - timedelta(minutes=40))
         row, = self.logged()['calls']
-        self.assertEqual(row['zoom']['state'], 'not_matched')
-        self.assertEqual((row['cases'][0]['outcome']['state'], row['cases'][0]['outcome']['reason']),
-                         ('dropped', 'Zoom has no call for this Call press.'))
+        self.assertEqual((row['zoom']['state'], row['cases'][0]['outcome']['state']), ('not_matched', 'applied'))
 
     def test_a_specialist_sees_only_their_own_calls_and_a_manager_sees_everyones(self):
         import json

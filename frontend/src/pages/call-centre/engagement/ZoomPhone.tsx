@@ -610,7 +610,7 @@ export default function ZoomPhone({ overview, csrf, isManager }: { overview: Ove
       <section className="ec-card" style={{ marginTop: '1rem' }}>
         <h2>3. Enable the call buttons</h2>
         <p>The Call button opens the Zoom desktop app with the learner’s number and the specialist’s engagement caller ID. Each specialist keeps the Zoom desktop app signed in with their college account.</p>
-        <p className="ec-muted">Outcomes are recorded once Zoom reports the call.</p>
+        <p className="ec-muted">Outcomes are saved straight away; Zoom’s call is attached when Zoom reports it, and flagged if its result does not match.</p>
       </section>
 
       <section className="ec-card" style={{ marginTop: '1rem' }}>

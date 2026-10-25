@@ -115,9 +115,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
         ...splitOutcome(draft.outcome), note: draft.notes.trim(),
         // The chosen follow-up applies to every outcome; an outcome that closes the case ignores it.
         callback_at: followUp ? followUp.toISOString() : null,
-      }, ended.has(c.id));
+      });
       setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false,
-        status: result.applied === false ? 'Saved: applied when Zoom reports the call' : 'Saved' }));
+        status: 'Saved' }));
       setEnded(current => { const next = new Set(current); next.delete(c.id); return next; });
       onSaved();
     } catch (reason) {
@@ -222,7 +222,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
           ? `Calls are disabled in the director preview. ${session.name} must sign in to call. `
           : !session.agentId ? 'Ask a manager to set up your agent profile before calling. '
             : 'Zoom Phone opens with your caller ID; keep the Zoom desktop app signed in. '}
-        Nothing changes on the case until you save; the outcome is applied once Zoom reports the call.
+        Nothing changes on the case until you save; saving moves it on straight away.
       </p>
       <div id="ed-sheet-body">
         <p className="ed-sheet-hint">This section contains {eligible.length} open tickets across {uniqueLearners(eligible).length} contacts before the filters below. A contact can have multiple tickets.</p>

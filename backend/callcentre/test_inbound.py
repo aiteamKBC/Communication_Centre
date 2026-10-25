@@ -112,15 +112,15 @@ class InboundTests(InboundBase):
         self.call('inbound', '+447911000111', 'no_answer')
         self.sync()
         enquiry = Inbound.objects.get(kind='enquiry')
-        # Ann is Bob's learner, though she rang Alice's number.
-        self.assertEqual(len(listing(self.bob.user, self.bob, 'callback', 'open', 7)['items']), 1)
-        self.assertEqual(listing(self.alice.user, self.alice, 'callback', 'open', 7)['items'], [])
+        # Ann is Bob's learner, but she rang Alice's number: Alice calls her back.
+        self.assertEqual(len(listing(self.alice.user, self.alice, 'callback', 'open', 7)['items']), 1)
+        self.assertEqual(listing(self.bob.user, self.bob, 'callback', 'open', 7)['items'], [])
         # The unknown caller rang Alice's number: she sees it among her enquiries; Bob does not.
         self.assertEqual(len(listing(self.alice.user, self.alice, 'enquiry', 'open', 7)['items']), 1)
         self.assertEqual(listing(self.bob.user, self.bob, 'enquiry', 'open', 7)['items'], [])
         # A director looking at one specialist sees what is on that specialist's desk.
-        self.assertEqual(len(listing(self.director, None, 'callback', 'open', 7, of_agent=self.bob)['items']), 1)
-        self.assertEqual(listing(self.director, None, 'callback', 'open', 7, of_agent=self.alice)['items'], [])
+        self.assertEqual(len(listing(self.director, None, 'callback', 'open', 7, of_agent=self.alice)['items']), 1)
+        self.assertEqual(listing(self.director, None, 'callback', 'open', 7, of_agent=self.bob)['items'], [])
         with self.assertRaises(PermissionDenied):
             change(enquiry.pk, self.alice.user, self.alice, 'assign', assign_to=self.alice.pk)
         change(enquiry.pk, self.director, None, 'assign', assign_to=self.alice.pk)
@@ -129,6 +129,15 @@ class InboundTests(InboundBase):
             change(enquiry.pk, self.alice.user, self.alice, 'done')
         change(enquiry.pk, self.alice.user, self.alice, 'done', note='Sent the course details by email')
         self.assertEqual(Inbound.objects.get(pk=enquiry.pk).done_by, 'Alice')
+
+    def test_a_call_back_to_a_shared_line_goes_to_the_learners_specialist(self):
+        from .inbound import listing
+        Allocation.objects.create(learner_email='ann@x.test', agent=self.bob, updated_by='director')
+        self.call('inbound', ANN, 'no_answer', callee_number='+441622000999')   # nobody's own number
+        self.sync()
+        self.assertIsNone(Inbound.objects.get().agent_id)
+        self.assertEqual(len(listing(self.bob.user, self.bob, 'callback', 'open', 7)['items']), 1)
+        self.assertEqual(listing(self.alice.user, self.alice, 'callback', 'open', 7)['items'], [])
 
     def test_an_answered_call_from_a_learner_counts_as_a_call_and_its_outcome_is_saved_as_usual(self):
         from .services import open_call, save_call

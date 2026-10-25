@@ -27,7 +27,9 @@ export function dueText(c: Pick<Case, 'status' | 'sla_breached' | 'sla_days_over
 
 const EVENT_NAMES: Record<string, string> = {
   created: 'Case opened', dial_requested: 'Call started', call_saved: 'Call saved', outcome: 'Outcome recorded',
-  outcome_pending: 'Outcome waiting for Zoom', outcome_pending_dropped: 'Outcome not applied', not_discussed: 'Not discussed',
+  outcome_pending: 'Outcome waiting for Zoom', outcome_pending_dropped: 'Outcome not applied', outcome_call_linked: 'Zoom call attached',
+  outcome_call_mismatch: 'Outcome does not match Zoom',
+  not_discussed: 'Not discussed',
   resolved: 'Closed', reopened: 'Reopened', note: 'Note', claimed: 'Taken', released: 'Released', session_booked: 'Session booked',
   meeting_cancelled: 'Meeting cancelled', meeting_rescheduled: 'Meeting moved', employer_check: 'Employer step',
   employer_dialled: 'Employer rung', email_dry_run: 'Email (dry run)', email_requested: 'Email sent', reminder_eligibility_changed: 'Reminder changed',
@@ -46,6 +48,9 @@ export function eventText(kind: string, data: Record<string, unknown>) {
   if (kind === 'employer_check') return [EMPLOYER_RESULTS[text('result')] || human(text('result')), text('note')].filter(Boolean).join(': ');
   if (kind === 'meeting_rescheduled' && text('to')) return `Moved to ${appointmentTime(text('to'))}`;
   if (kind === 'meeting_cancelled') return text('reason');
+  if (kind === 'outcome_call_linked') return `Zoom: ${human(text('result'))}`;
+  if (kind === 'outcome_call_mismatch') return `Saved as ${human(text('outcome'))}, but Zoom reports ${human(text('result'))}`;
+  if (kind === 'outcome' && data.without_call) return [eventText('', data), 'saved without a Zoom call'].filter(Boolean).join(' · ');
   const parts = ['note', 'outcome', 'option', 'reason', 'error', 'problem', 'agreed_action'].map(text).filter(Boolean).map(human);
   if (data.score) parts.unshift(`Satisfaction: ${text('score')}/5`);
   return parts.join(' · ');

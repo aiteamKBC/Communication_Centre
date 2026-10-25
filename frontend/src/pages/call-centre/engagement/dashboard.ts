@@ -1,5 +1,5 @@
-import type { AgentStats, OverviewCase } from '../api';
-import { ISSUE_LABELS, dueForCall, human } from './model';
+import type { AgentStats, Overview, OverviewCase } from '../api';
+import { ISSUE_LABELS, contactKey, dueForCall, human } from './model';
 
 /** One colour per specialist, from the Engagement Centre palette (same order everywhere). */
 export const SERIES = ['#60359a', '#268a8b', '#c0632b', '#2f6db5', '#a3326e', '#5b8a2a', '#8a6bc0', '#1f5f63'];
@@ -38,8 +38,15 @@ export function caseload(cases: OverviewCase[]) {
     missed: cases.filter(c => c.missed_call).length,
     promises: cases.filter(c => c.promise_missed).length,
     ai: cases.filter(c => c.status === 'ai_suggested_close').length,
-    unallocated: cases.filter(c => !c.allocated_agent_id).length,
   };
+}
+
+/** Learners in the shared queue: people with an open case whom no specialist looks after. Each person counts once, and the
+ * employer calls of the employer specialists are theirs, not shared. */
+export function sharedQueueLearners(overview: Pick<Overview, 'cases' | 'employer_specialists'>) {
+  const employerTeam = !!overview.employer_specialists?.length;
+  return new Set(overview.cases.filter(c => !c.allocated_agent_id && !c.optional
+    && !(employerTeam && c.source_type === 'employer_feedback')).map(contactKey)).size;
 }
 
 /** Open cases by reason for the call, largest first. */

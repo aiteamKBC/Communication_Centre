@@ -14,7 +14,9 @@ type Feedback = {
 type LoggedCase = {
   id: number; source_type: string; organisation: string; status: string; resolution_option: string; next_followup_at: string | null;
   outcome: { state: 'applied' | 'waiting' | 'dropped' | 'not_discussed'; outcome: string; option: string; note: string;
-    callback_at: string | null; promised_at: string | null; reason?: string } | null;
+    callback_at: string | null; promised_at: string | null; reason?: string;
+    /** Zoom's result for the call, when it contradicts the outcome saved (e.g. Reached on a voicemail). */
+    mismatch?: string } | null;
   closed: { at: string; note: string } | null;
   bookings: { session_type: string; start: string; coach: string; join_url: string; link_warning: string }[];
   feedback: Feedback | null;
@@ -65,6 +67,7 @@ function Outcome({ item }: { item: LoggedCase }) {
       <strong>{what}</strong>
       {outcome.state === 'waiting' && <span className="ec-tag amber">Applies when Zoom reports the call</span>}
       {outcome.state === 'dropped' && <span className="ec-tag red">Not applied: {outcome.reason}</span>}
+      {outcome.mismatch && <span className="ec-tag red">Zoom says {human(outcome.mismatch)}: check this outcome</span>}
       {outcome.callback_at && <small>Follow-up {when(outcome.callback_at)}</small>}
       {outcome.promised_at && <small>Promise due {shortDate(outcome.promised_at)}</small>}
       {outcome.note && <small className="ed-log-note">“{outcome.note}”</small>}

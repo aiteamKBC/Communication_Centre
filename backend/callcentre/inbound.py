@@ -217,8 +217,9 @@ def open_callbacks():
 
 
 def visible(items, user, agent):
-    """What this person sees: a director everything; a specialist the call-backs of their learners (or to their number
-    when the learner has nobody), and unknown callers to their number or given to them."""
+    """What this person sees: a director everything; a specialist the call-backs to their own number (the learner rang
+    them), the call-backs to a shared line of the learners they look after (or of learners nobody looks after), and
+    unknown callers to their number or given to them."""
     from .access import is_director
     if is_director(user):
         return items
@@ -228,9 +229,10 @@ def visible(items, user, agent):
     allocated = owners()
 
     def theirs(item):
+        if item.agent_id:   # the learner rang this specialist's own number: theirs to call back
+            return item.agent_id == agent.pk
         owner = learner_owner(item.caller_email, allocated) if item.caller_email else None
-        # The learner's specialist; for a learner nobody looks after, whoever's number was called (or anyone).
-        return owner == agent.pk if owner else item.agent_id in (agent.pk, None)
+        return owner in (agent.pk, None)
     mine = [item.pk for item in items.filter(kind=Inbound.CALLBACK) if theirs(item)]
     return items.filter(Q(pk__in=mine) | Q(kind=Inbound.ENQUIRY, assigned_agent=agent)
                         | Q(kind=Inbound.ENQUIRY, assigned_agent=None, agent=agent))

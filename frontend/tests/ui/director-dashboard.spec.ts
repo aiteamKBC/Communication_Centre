@@ -28,10 +28,16 @@ const CASES = Array.from({ length: 46 }, (_, index) => ({
   ai_summary: 'Learner confirmed attendance is back on track.', ai_confidence: 0.82, resolution_option: '',
   due_at: '2026-10-19T10:00:00Z', claimed_agent_id: null, attempts: 1,
 }));
+// With an employer specialist, unallocated employer calls are theirs, and a learner with two unallocated cases is one learner.
+const extra = { status: 'open', sla_breached: false, missed_call: false, promise_missed: false, allocated_agent_id: null, next_followup_at: null,
+  promised_at: null, booking_at: null, ai_summary: '', ai_confidence: null, resolution_option: '', due_at: '2026-10-21T10:00:00Z',
+  claimed_agent_id: null, attempts: 0, issue_name: '' };
+CASES.push({ ...extra, id: 90, source_type: 'employer_feedback', learner_name: 'Boss', learner_email: 'boss@acme.example' },
+  { ...extra, id: 91, source_type: 'pr', learner_name: 'Learner 1', learner_email: 'l1@example.org' });
 const OVERVIEW = {
   today: '2026-10-20', next_workday: '2026-10-21', holidays: [], month: '2026-10', generated_at: '2026-10-20T12:00:00Z',
   access: { role: 'director', agent_id: null, is_superuser: true, display_name: 'Director', email: 'director@example.org' },
-  agents: AGENTS, cases: CASES, cases_truncated: false, resolutions: { agent: 70, ai: 9, system: 14 }, unclaimed_breaches: 1,
+  agents: AGENTS, cases: CASES, employer_specialists: [2], cases_truncated: false, resolutions: { agent: 70, ai: 9, system: 14 }, unclaimed_breaches: 1,
   sources: [], cycle: { last_success_at: new Date().toISOString() }, connections: { calling: true, email_mode: 'dry_run', ai: true },
   call_reviews: {
     agents: { 1: { excellent: 9, good: 14, bad: 1, not_rated: 0 }, 2: { excellent: 4, good: 12, bad: 3, not_rated: 0 }, 3: { excellent: 2, good: 6, bad: 0, not_rated: 0 } },
@@ -106,6 +112,7 @@ test('the overview shows the board live, what needs the director, the month in g
   const needs = page.getByRole('region', { name: 'Needs you' });
   await expect(needs.getByRole('button', { name: /3 learners waiting for a call back/ })).toBeVisible();
   await expect(needs.getByRole('button', { name: /1 Zoom changes that stop matching or recording/ })).toBeVisible();
+  await expect(needs.getByRole('button', { name: /^5 learners in the shared queue/ })).toBeVisible();
   await expect(page.locator('.dd-figure').filter({ has: page.getByText('Calls made', { exact: true }) }).locator('strong')).toHaveText('860');
   await expect(page.getByRole('img', { name: /Talk time per working day/ }).locator('.recharts-bar-rectangle').first()).toBeVisible();
   await expect(page.getByRole('img', { name: /Calls made per working day/ })).toBeVisible();
@@ -117,7 +124,7 @@ test('the overview shows the board live, what needs the director, the month in g
     await expect(nav.getByRole('button', { name, exact: true })).toBeVisible();
   }
   await needs.getByRole('button', { name: /learners waiting for a call back/ }).click();
-  await expect(page.getByRole('heading', { name: 'Calls', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Missed calls & voicemails', level: 1 })).toBeVisible();
 });
 
 test('each specialist has a page: live line, month, graphs, caseload, quality, week, call-backs and calls', async ({ page }) => {

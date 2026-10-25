@@ -14,7 +14,7 @@ from .emails import process_emails
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
-from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
+from .services import Conflict, apply_stale_outcomes, event, expire_claims, match_call, release_fields, resolve
 from .rules import LATE_FROM, is_late, late_cutoff
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
 from .zoom_phone import account_labels, sync_account
@@ -247,6 +247,8 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         from .helpdesk import sync as sync_helpdesk
         step(result, 'technical_issues', sync_helpdesk)
         step(result, 'matched', match_calls)
+        # After matching: an outcome still waiting for a call Zoom has not reported is applied without it.
+        step(result, 'held_outcomes', apply_stale_outcomes)
         step(result, 'inbound', inbound_sync)
         if not skip_zoom:
             from .zoom_watch import check

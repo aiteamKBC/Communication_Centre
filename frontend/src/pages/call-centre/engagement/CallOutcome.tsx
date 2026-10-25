@@ -129,10 +129,10 @@ export default function CallOutcome({ callFrom, name, issues, session, notify, o
         const { outcome, option } = splitOutcome(choiceOf(c));
         return { id: c.id, outcome, option, note: answered ? (caseNotes.get(c.id) || '').trim() : '' };
       });
-      const result = await caseAction(session, callFrom, 'save_call', {
+      await caseAction(session, callFrom, 'save_call', {
         items, note: note.trim(), callback_at: followUp ? londonInput(followUp).toISOString() : null,
       });
-      const message = result.applied ? `Saved for ${name}.` : `Saved for ${name}. It is applied as soon as Zoom reports the call.`;
+      const message = `Saved for ${name}.`;
       // A reached review is completed in its own form; the other cases are already saved.
       const reviews = answered ? open.filter(c => isSatisfaction(c) && picked.get(c.id) === 'reached') : [];
       if (reviews.length) {

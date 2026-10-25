@@ -689,7 +689,7 @@ test('Next call: Call becomes End call, and only Save records the outcome', asyn
 test('call sheet: Call becomes End call and the outcome is held for the call just made', async ({ page }) => {
   await openSheet(page, [ticket(1, { learner_phone: '+447700900001' })]);
   const posts = capturePosts(page);
-  // Zoom has not reported the call yet, so the server holds the outcome.
+  // Zoom has not reported the call yet: the outcome is still saved and applied now.
   await page.route('**/api/callcentre/tickets/1/plan/', route => route.fulfill({ json: { ok: true, applied: false } }));
   await page.getByRole('button', { name: 'Call Learner 1', exact: true }).click();
   await page.getByRole('button', { name: 'End call with Learner 1', exact: true }).click();
@@ -698,7 +698,7 @@ test('call sheet: Call becomes End call and the outcome is held for the call jus
   await page.getByLabel('Outcome for Learner 1', { exact: true }).selectOption('no_answer');
   await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('No answer, try tomorrow.');
   await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.locator('[data-sheet-row="1"] .ed-row-status')).toHaveText('Saved: applied when Zoom reports the call');
+  await expect(page.locator('[data-sheet-row="1"] .ed-row-status')).toHaveText('Saved');
   expect(posts.map(([path]) => path)).toEqual(['/api/callcentre/tickets/1/call/', '/api/callcentre/tickets/1/plan/']);
   expect(posts[1][1]).toMatchObject({ outcome: 'no_answer', note: 'No answer, try tomorrow.' });
 });
