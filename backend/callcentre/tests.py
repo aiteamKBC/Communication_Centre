@@ -474,6 +474,15 @@ class BookingEmailTests(SimpleTestCase):
         self.assertNotIn('send', checks)   # the Send button exists now
         self.assertEqual(booking_email.render(ticket, 'Agent One')['link']['url'], '')
 
+    def test_employer_missing_signature_email_targets_the_line_manager(self):
+        ticket = self.ticket('signature', manager_name='Robert Beat', manager_email='robert@example.com')
+        ticket.source_data = {'review_type': 'Progress Review', 'employer_signature_missing': True}
+        draft = booking_email.render(ticket, 'Agent One')
+        self.assertEqual(booking_email.recipient_for(ticket), 'robert@example.com')
+        self.assertIn("employer signature for Sam Learner", draft['text'])
+        self.assertIn("Sam Learner's Progress Review", draft['subject'])
+        self.assertEqual(draft['link']['url'], '')
+
     def test_links_come_from_the_lms_catalogue_by_email(self):
         afaan, med = booking_links.booking_links('Afaan  Khan'), booking_links.booking_links('Med Maher')
         self.assertTrue(afaan['mcm'].endswith('sJ6ozTEGHkOFKCognZbvjQ2'))
@@ -921,6 +930,49 @@ class LmsReviewTests(SimpleTestCase):
         self.assertIsNone(lms_reviews.imported_state({**booked, 'booking_matches': 2}))
         self.assertEqual(lms_reviews.imported_state({**booked, 'status': 'Completed'})[0], 'completed')
 
+    def test_verified_missing_signature_survives_review_completion(self):
+        row = {'status': 'Completed', 'planned_day': date(2026, 9, 10),
+               'completed_date': datetime(2026, 9, 10),
+               'signature_status': {'state': 'missing', 'verified': True}}
+        self.assertEqual(lms_reviews.imported_state(row), ('awaiting-signature', date(2026, 9, 10), None))
+
+    def test_unverified_signature_snapshot_does_not_override_review_state(self):
+        row = {'status': 'Completed', 'planned_day': date(2026, 9, 10),
+               'completed_date': datetime(2026, 9, 10),
+               'signature_status': {'state': 'missing', 'verified': False}}
+        self.assertEqual(lms_reviews.imported_state(row), ('completed', date(2026, 9, 10), datetime(2026, 9, 10)))
+
+    def test_signature_queue_only_accepts_missing_learner_or_employer(self):
+        def row(role):
+            return {'signature_status': {'verified': True, 'state': 'missing', 'roles': {
+                'coach': {'required': True, 'status': 'missing'},
+                'learner': {'required': True, 'status': 'signed'},
+                'employer': {'required': True, 'status': 'signed'},
+            } | ({role: {'required': True, 'status': 'missing'}} if role else {})}}
+
+        self.assertFalse(lms_reviews.actionable_signature(row('coach')))
+        self.assertTrue(lms_reviews.actionable_signature(row('learner')))
+        self.assertTrue(lms_reviews.actionable_signature(row('employer')))
+        self.assertFalse(lms_reviews.actionable_signature({'signature_status': {'verified': True, 'state': 'missing'}}))
+
+    def test_review_items_drops_coach_only_and_native_unknown_signatures(self):
+        base = {'id': 7, 'email': 'learner@example.com', 'review_type': 'Progress Review',
+                'status': 'Completed', 'planned_day': date(2026, 9, 20), 'completed_date': datetime(2026, 9, 20),
+                'booking_matches': 0, 'overlay_matches': 0,
+                'signature_status': {'verified': True, 'state': 'missing', 'roles': {
+                    'coach': {'required': True, 'status': 'missing'},
+                    'learner': {'required': True, 'status': 'signed'},
+                    'employer': {'required': True, 'status': 'signed'},
+                }}}
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: mock.MagicMock()}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[base], []]):
+            self.assertEqual(lms_reviews.review_items(self.today), [])
+        learner_missing = {**base, 'signature_status': {**base['signature_status'], 'roles': {
+            **base['signature_status']['roles'], 'learner': {'required': True, 'status': 'missing'}}}}
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: mock.MagicMock()}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[learner_missing], []]):
+            self.assertEqual([item['ref'] for item in lms_reviews.review_items(self.today)], ['reviews:7'])
+
     def test_legacy_mode_reads_aptem_learners_from_aptem_only(self):
         today = date(2026, 10, 4)
         native = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'not-scheduled',
@@ -939,6 +991,48 @@ class LmsReviewTests(SimpleTestCase):
 class StaleCaseTests(SimpleTestCase):
     """Open cases whose source no longer reports the issue are set aside, never resolved."""
     people = {'a@x.com': {'learner_email': 'a@x.com'}, 'alias@x.com': {'learner_email': 'a@x.com'}}
+
+    def test_signature_generation_carries_roles_and_reuses_the_open_case(self):
+        from . import sources
+
+        class Directory(dict):
+            active = {'a@x.com'}
+
+        people = Directory({'a@x.com': {'learner_email': 'a@x.com'}})
+        item = {'email': 'a@x.com', 'case_type': 'signature', 'review_type': 'Progress Review',
+                'day': date(2026, 9, 15), 'ref': 'reviews:100',
+                'missing_signature_roles': ['employer', 'learner'],
+                'signature_contacts': {'employer': {'email': 'boss@example.org'}}}
+        reasons = set()
+        with mock.patch.object(sources, 'get_source', return_value=[item]), \
+                mock.patch.object(sources, 'closed_case_covers', return_value=True), \
+                mock.patch.object(sources, 'upsert_case', return_value=(None, True)) as create, \
+                mock.patch.object(sources, 'reviews_done', return_value=set()), \
+                mock.patch.object(sources, 'add_review_refs') as refresh:
+            self.assertEqual(sources.generate_review_cases(people, date(2026, 10, 26), reasons), 1)
+            data = create.call_args.kwargs['data']
+            self.assertTrue(data['employer_signature_missing'])
+            self.assertTrue(data['learner_signature_missing'])
+            self.assertEqual(data['review_refs'], ['reviews:100'])
+            existing = [{'pk': 10, 'source_type': 'signature', 'learner_email': 'a@x.com',
+                         'overdue_since': item['day'], 'source_data': data, 'archived': False}]
+            self.assertEqual(sources.generate_review_cases(people, date(2026, 10, 26), reasons, existing), 0)
+            create.assert_called_once()
+            self.assertTrue(refresh.call_args.kwargs['signature_data']['employer_signature_missing'])
+
+    def test_signature_generation_does_not_create_for_inactive_learners(self):
+        from . import sources
+
+        class Directory(dict):
+            active = set()
+
+        item = {'email': 'a@x.com', 'case_type': 'signature', 'review_type': 'Progress Review',
+                'day': date(2026, 9, 15), 'ref': 'reviews:100', 'missing_signature_roles': ['employer']}
+        with mock.patch.object(sources, 'get_source', return_value=[item]), \
+                mock.patch.object(sources, 'upsert_case') as create, \
+                mock.patch.object(sources, 'reviews_done', return_value=set()):
+            self.assertEqual(sources.generate_review_cases(Directory(self.people), date(2026, 10, 26), set()), 0)
+            create.assert_not_called()
 
     def case(self, pk, source_type='mcm', email='a@x.com', **data):
         return {'pk': pk, 'source_type': source_type, 'learner_email': email, 'overdue_since': date(2026, 9, 10),

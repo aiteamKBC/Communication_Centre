@@ -7,6 +7,8 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDir = $scriptDir
+$venvPython = Join-Path $projectDir "venv\Scripts\python.exe"
+$pythonExe = if (Test-Path $venvPython) { $venvPython } else { "python" }
 $logDir = Join-Path $projectDir "logs"
 $stdoutLog = Join-Path $logDir "backend-8000.out.log"
 $stderrLog = Join-Path $logDir "backend-8000.err.log"
@@ -38,16 +40,19 @@ $arguments = @(
 )
 
 $process = Start-Process `
-    -FilePath "python" `
+    -FilePath $pythonExe `
     -ArgumentList $arguments `
     -WorkingDirectory $projectDir `
     -RedirectStandardOutput $stdoutLog `
     -RedirectStandardError $stderrLog `
     -PassThru
 
-Start-Sleep -Seconds 3
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $listeningConnection = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listeningConnection) { break }
+    Start-Sleep -Milliseconds 500
+}
 
-$listeningConnection = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $listeningConnection) {
     Write-Error "Backend failed to start. Check $stderrLog and $stdoutLog."
 }

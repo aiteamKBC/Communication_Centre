@@ -244,6 +244,22 @@ def upsert_case(category, profile, discriminator, *, risk='amber', overdue=None,
         case, created = CaseTicket.objects.get_or_create(reason_key=key, defaults=defaults)
     if created:
         event(case, 'created', {'source': category, 'source_id': case.source_id, 'reason': str(discriminator)})
+    elif (case.status == 'resolved' and category == 'signature'
+          and ((data or {}).get('employer_signature_missing') or (data or {}).get('learner_signature_missing'))):
+        # A resolved signature ticket must return when a fresh, verified LMS snapshot still
+        # reports a learner or employer signature as missing. This also repairs older tickets
+        # that were resolved before signature roles were stored in source_data.
+        case.status = 'new'
+        case.resolved_at = None
+        case.resolved_by = ''
+        case.resolved_agent = None
+        case.archived = False
+        case.attempts = 0
+        case.evidence_after = now
+        case.source_data = {**case.source_data, **(data or {})}
+        case.save(update_fields=['status', 'resolved_at', 'resolved_by', 'resolved_agent', 'archived', 'attempts',
+                                 'evidence_after', 'source_data', 'updated_at'])
+        event(case, 'reopened', {'note': 'The LMS still reports a verified missing learner/employer signature.', 'source': category})
     elif case.status != 'resolved':
         # Refresh contacts/risk, but never reset workflow, claims, SLA or previous decisions.
         changes = {k: defaults[k] for k in profile if k != 'learner_email'}
@@ -456,9 +472,18 @@ def generate_review_cases(people, today, open_reasons, existing=()):
         key = (category, email, None, review)
         current.add(key)
         refs = sorted({item['ref'] for item in group})
+        missing_roles = sorted({role for item in group for role in item.get('missing_signature_roles', [])})
+        contacts = {role: contact for item in group for role, contact in item.get('signature_contacts', {}).items()
+                    if contact}
+        signature_data = {
+            'missing_signature_roles': missing_roles,
+            'learner_signature_missing': 'learner' in missing_roles,
+            'employer_signature_missing': 'employer' in missing_roles,
+            'signature_contacts': contacts,
+        } if category == 'signature' else {}
         if key in open_reasons:
             for case in open_cases.get(key, []):
-                add_review_refs(case['pk'], refs)
+                add_review_refs(case['pk'], refs, signature_data=signature_data)
             continue
         days = [item['day'] for item in group]
         review_type = group[0]['review_type']
@@ -472,7 +497,7 @@ def generate_review_cases(people, today, open_reasons, existing=()):
             summaries.mcm_risk(count) if category == 'mcm' else 'amber')
         # Overdue since the earliest review on the case, so its age and priority are not understated.
         _, fresh = upsert_case(category, people[email], discriminator, risk=risk, overdue=min(days), misses=count,
-                               data={'review_type': review_type, 'review_refs': refs[:50]}, person=person)
+                               data={'review_type': review_type, 'review_refs': refs[:50], **signature_data}, person=person)
         total += fresh
         open_reasons.add(key)
     candidates = [case for cases in open_cases.values() for case in cases]
@@ -484,14 +509,16 @@ def generate_review_cases(people, today, open_reasons, existing=()):
     return total
 
 
-def add_review_refs(ticket_id, refs):
+def add_review_refs(ticket_id, refs, signature_data=None):
     """Keep every review the LMS reports for an open case's issue on the case, so its proof covers all of them."""
     with transaction.atomic(using=DB):
         ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
         known = list(ticket.source_data.get('review_refs') or [])
         merged = known + [ref for ref in refs if ref not in known]
-        if merged != known and ticket.status != 'resolved':
-            ticket.source_data = {**ticket.source_data, 'review_refs': merged[:50]}
+        signature_data = signature_data or {}
+        changed = merged != known or any(ticket.source_data.get(key) != value for key, value in signature_data.items())
+        if changed and ticket.status != 'resolved':
+            ticket.source_data = {**ticket.source_data, 'review_refs': merged[:50], **signature_data}
             ticket.save(update_fields=['source_data', 'updated_at'])
 
 

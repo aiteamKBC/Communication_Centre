@@ -24,6 +24,15 @@ class Conflict(ValueError):
     pass
 
 
+def call_contact(ticket, role=''):
+    """The phone/email used for a call; missing employer signatures are employer contacts."""
+    data = ticket.source_data if isinstance(ticket.source_data, dict) else {}
+    if ticket.source_type == 'signature' and data.get('employer_signature_missing') and role != 'learner':
+        from .employer_check import manager_phone
+        return email_key(ticket.manager_email), normalize_phone(manager_phone(ticket))
+    return ticket.learner_email, normalize_phone(ticket.learner_phone)
+
+
 def agent_for(user):
     return Agent.objects.filter(user=user, active=True, user__is_active=True).first()
 
@@ -153,14 +162,14 @@ REDIAL_AFTER = timedelta(seconds=30)
 
 
 @transaction.atomic(using=DB)
-def create_intent(ticket_id, agent, actor=None):
+def create_intent(ticket_id, agent, actor=None, contact_role=''):
     now = timezone.now()
     ticket = CaseTicket.objects.get(pk=ticket_id)
     if ticket.source_type == 'satisfaction':
         raise Conflict('Employer surveys are followed up by email, not by phone.')
     if ticket.next_followup_at and ticket.next_followup_at > now:
         raise Conflict('The next follow-up is not due yet.')
-    number = normalize_phone(ticket.learner_phone)
+    call_email, number = call_contact(ticket, contact_role)
     if not number:
         raise ValueError('A valid learner telephone number is required.')
     if not agent.zoom_email or not agent.zoom_account:
@@ -170,7 +179,7 @@ def create_intent(ticket_id, agent, actor=None):
     # An optional call is about that call alone; it is linked to the learner's open satisfaction review (not claimed,
     # so it stays on the other agents' lists) so feedback given on it can complete the review.
     linked = []
-    if optional(ticket.source_data):
+    if optional(ticket.source_data) or (ticket.source_type == 'signature' and ticket.source_data.get('employer_signature_missing')):
         tickets = [ticket]
         linked = list(CaseTicket.objects.open().filter(source_type=SATISFACTION, learner_email=ticket.learner_email))
     if not tickets:
@@ -178,11 +187,11 @@ def create_intent(ticket_id, agent, actor=None):
     for item in tickets:
         claim(item.pk, agent, now, actor=actor)
     # A second press within seconds is the same call (a double click); a later one is a redial, a call of its own.
-    prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=ticket.learner_email, number=number,
+    prior = CallIntent.objects.filter(agent=agent, tickets=ticket, learner_email=call_email, number=number,
                                       matched_call__isnull=True, created_at__gte=now - REDIAL_AFTER).first()
     if prior:
         return prior
-    intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email, number=number)
+    intent = CallIntent.objects.create(agent=agent, learner_email=call_email, number=number)
     intent.tickets.add(*tickets, *linked)
     for item in tickets:
         event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number}, agent=agent, actor=actor)

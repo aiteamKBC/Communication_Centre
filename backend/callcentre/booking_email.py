@@ -46,6 +46,14 @@ def _data(ticket):
     return ticket.source_data if isinstance(ticket.source_data, dict) else {}
 
 
+def employer_signature_missing(ticket):
+    return ticket.source_type == 'signature' and bool(_data(ticket).get('employer_signature_missing'))
+
+
+def recipient_for(ticket, role=''):
+    return email_key(ticket.manager_email if employer_signature_missing(ticket) and role != 'learner' else ticket.learner_email)
+
+
 def _when(ticket):
     return f'{ticket.overdue_since:%A %d %B %Y}' if ticket.overdue_since else ''
 
@@ -64,12 +72,17 @@ def _say(sentence, automatic):
     return f'Thank you for speaking with us today.\n\nAs we discussed, {sentence[0].lower()}{sentence[1:]}'
 
 
-def defaults(ticket, automatic=False):
+def defaults(ticket, automatic=False, recipient_role=''):
     """The case's link and default wording: (button label, url, help line, subject, message)."""
     coach, when = ticket.coach or 'your coach', _when(ticket)
     on = f' on {when}' if when else ''
     if ticket.source_type == 'signature':
         review = str(_data(ticket).get('review_type') or 'review').strip()
+        if employer_signature_missing(ticket) and recipient_role != 'learner':
+            employer = ticket.manager_name or 'the employer'
+            return ('', '', '', f"Please sign {ticket.learner_name}'s {review}",
+                    _say(f"{employer}, the employer signature for {ticket.learner_name}'s {review} is still missing. "
+                         'Please open the review in the LMS and sign it, or reply to this email if you need help.', automatic))
         return ('', '', '', f'Please sign your {review}',
                 _say(f'Your {review}{" from " + when if when else ""} is waiting for your signature. Please sign in '
                      'to the LMS and sign it, or reply to this email if you need help.', automatic))
@@ -126,33 +139,34 @@ def layout(subject, greeting, message, sender, button='', url='', help_line='', 
     return text, html
 
 
-def render(ticket, sender, subject=None, message=None, automatic=False):
+def render(ticket, sender, subject=None, message=None, automatic=False, recipient_role=''):
     """Subject, plain text and HTML for this case; the specialist's wording replaces the defaults when given."""
-    button, url, help_line, default_subject, default_message = defaults(ticket, automatic)
+    button, url, help_line, default_subject, default_message = defaults(ticket, automatic, recipient_role)
     subject = ' '.join(str(subject if subject is not None else default_subject).split())[:SUBJECT_MAX]
     message = str(message if message is not None else default_message).strip()[:MESSAGE_MAX]
     if not subject:
         raise ValueError('Enter a subject.')
     if not message:
         raise ValueError('Enter a message.')
-    first = (ticket.learner_name or '').split(' ')[0] or 'there'
+    first = ((ticket.manager_name if employer_signature_missing(ticket) and recipient_role != 'learner' else ticket.learner_name) or '').split(' ')[0] or 'there'
     text, html = layout(subject, first, message, sender, button, url, help_line,
                         '' if ticket.source_type == 'signature' else NO_LINK_LINE)
     return {'subject': subject, 'message': message, 'text': text, 'html': html,
             'link': {'label': button, 'url': url}}
 
 
-def readiness(ticket):
+def readiness(ticket, recipient_role=''):
     """What stands between this draft and sending it: the email itself, then the sending setup."""
     checks = []
     try:
-        validate_email(email_key(ticket.learner_email))
-        checks.append(_check('recipient', 'Learner email address', 'ok', ticket.learner_email))
+        target = recipient_for(ticket, recipient_role)
+        validate_email(target)
+        checks.append(_check('recipient', 'Employer email address' if employer_signature_missing(ticket) and recipient_role != 'learner' else 'Learner email address', 'ok', target))
     except ValidationError:
-        checks.append(_check('recipient', 'Learner email address', 'missing', 'No valid email on the case.'))
+        checks.append(_check('recipient', 'Employer email address' if employer_signature_missing(ticket) and recipient_role != 'learner' else 'Learner email address', 'missing', 'No valid email on the case.'))
 
-    button, url, *_ = defaults(ticket)
-    checks.append(_check('link', f'{button} link', 'ok' if url else 'missing', url or (
+    button, url, *_ = defaults(ticket, recipient_role=recipient_role)
+    checks.append(_check('link', f'{button} link', 'ok' if url or employer_signature_missing(ticket) else 'missing', url or (
         f'{ticket.coach} has no Microsoft Bookings link for this. Ask a manager to add it to the booking links.'
         if ticket.coach else 'The case has no coach, so there is no Bookings link.')))
 
@@ -166,7 +180,7 @@ def readiness(ticket):
                          f'Sends as {mailer.sender()}.' if mailer.configured() else f'Set {", ".join(mailer.missing())}.'))
     try:
         today = timezone.now().astimezone(LONDON).date()
-        sent = EmailQuota.objects.filter(recipient=email_key(ticket.learner_email), day=today).values_list('count', flat=True).first() or 0
+        sent = EmailQuota.objects.filter(recipient=recipient_for(ticket, recipient_role), day=today).values_list('count', flat=True).first() or 0
         cap = max(0, config['daily_cap'])
         checks.append(_check('quota', 'Daily email limit for this learner', 'ok' if sent < cap else 'missing',
                              f'{sent} of {cap} emails sent today (limit set in Director → Settings).'))
@@ -195,10 +209,13 @@ def send(ticket_id, user, sender, data, acting_agent=None):
     with transaction.atomic(using=DB, durable=True):
         ticket = CaseTicket.objects.select_for_update().get(pk=ticket_id)
         agent = can_work(ticket, user, acting_agent=acting_agent)
-        if ticket.source_type in NO_BOOKING_EMAIL or ticket.archived:
+        if (ticket.source_type in NO_BOOKING_EMAIL and not employer_signature_missing(ticket)) or ticket.archived:
             raise ValueError('This case has no booking email.')
-        draft = render(ticket, sender, data.get('subject'), data.get('message'))
-        recipient = email_key(ticket.learner_email)
+        recipient_role = str(data.get('recipient_role') or '')
+        if recipient_role not in ('', 'learner', 'employer'):
+            raise ValueError('Invalid email recipient.')
+        draft = render(ticket, sender, data.get('subject'), data.get('message'), recipient_role=recipient_role)
+        recipient = recipient_for(ticket, recipient_role)
         previous = EmailDelivery.objects.filter(dedupe_key=key).first()
         if previous:
             if previous.subject != draft['subject'] or previous.text != draft['text'] or previous.recipient != recipient:

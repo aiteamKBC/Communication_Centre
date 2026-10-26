@@ -26,8 +26,8 @@ from .ai import ai_enabled, call_reviews
 from .cycle_requests import request_call_sync
 from .allocation import learner_owner, manager_owners, owners
 from .employer_desk import optional, specialists
-from .booking_email import (NO_BOOKING_EMAIL, readiness as booking_email_readiness, render as render_booking_email,
-                            send as send_booking_email, send_confirmation)
+from .booking_email import (NO_BOOKING_EMAIL, employer_signature_missing, readiness as booking_email_readiness,
+                            recipient_for, render as render_booking_email, send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
 from .call_log import call_log
 from .db import DB
@@ -41,7 +41,7 @@ from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, days_late, email_key, holidays_from,
                     is_late, late_cutoff, missed_call, next_workday, normalize_phone, parse_moment, priority, promise_missed, same_contact)
-from .services import NOT_DISCUSSED, Conflict, agent_for, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
+from .services import NOT_DISCUSSED, Conflict, agent_for, call_contact, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,8 @@ def ticket_json(ticket):
     now = timezone.now()
     active_claim = bool(ticket.claimed_by_id and ticket.last_activity_at and ticket.last_activity_at > now - timedelta(minutes=30))
     score = priority(ticket, now)
+    call_email, call_phone = call_contact(ticket)
+    call_name = ticket.manager_name if employer_signature_missing(ticket) else ticket.learner_name
     employer_learners = ticket.source_data.get('learners', []) if ticket.source_type == 'employer_feedback' else []
     if employer_learners and ticket.status != 'resolved' and not ticket.archived:
         from .sources import cached_directory
@@ -213,6 +215,7 @@ def ticket_json(ticket):
         **issue_json(ticket), **epa_dates(ticket), 'source_id': ticket.source_id,
         'module': str(ticket.source_data.get('module') or '').strip(),
         'learner_email': ticket.learner_email, 'learner_name': ticket.learner_name, 'learner_phone': ticket.learner_phone,
+        'call_email': call_email, 'call_name': call_name, 'call_phone': call_phone,
         'contact_key': contact_key(ticket),
         'programme_status': ticket.source_data.get('programme_status', ''),
         'contact_sources': ticket.source_data.get('contact_sources', {}),
@@ -230,7 +233,9 @@ def ticket_json(ticket):
         'resolved_at': ticket.resolved_at, 'resolved_by': ticket.resolved_by, 'archived': ticket.archived,
         'created_at': ticket.created_at, 'escalated': ticket.escalated, 'source_data': ticket.source_data,
         'booking_links': booking_links(ticket.coach), 'bookable': lms_booking.session_types(ticket),
-        'booking_email': ticket.source_type not in NO_BOOKING_EMAIL,
+        'booking_email': ticket.source_type not in NO_BOOKING_EMAIL or employer_signature_missing(ticket),
+        'learner_signature_missing': bool((ticket.source_data or {}).get('learner_signature_missing')),
+        'employer_signature_missing': employer_signature_missing(ticket),
         'promised_at': ticket.promised_at, 'promise_missed': promise_missed(ticket, now), 'missed_call': missed_call(ticket),
         'called_back_at': getattr(ticket, 'called_back_at', None),
         # What the learner can agree to (option -> days to do it); without options the specialist closes the case.
@@ -351,7 +356,7 @@ def overview(request):
         item['followup_agent_id'] = ticket.followup_agent_id
         if item['optional']:
             owner = ticket.source_data.get('agent_id')
-        elif ticket.source_type == 'employer_feedback':
+        elif ticket.source_type == 'employer_feedback' or employer_signature_missing(ticket):
             owner = None if team else employers.get(ticket.learner_email)
         else:
             owner = learner_owner(ticket.learner_email, allocated)
@@ -545,7 +550,7 @@ def action(request, pk, command):
         if command == 'claim':
             ticket = claim(pk, agent, actor=request.user.get_username())
             return JsonResponse({'ticket': ticket_json(ticket)})
-        intent = create_intent(pk, agent, actor=request.user.get_username())
+        intent = create_intent(pk, agent, actor=request.user.get_username(), contact_role=str(data.get('call_role') or ''))
         return JsonResponse(dial_json(intent, agent))
     if command == 'complete_feedback':
         completed = complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
@@ -688,15 +693,18 @@ def booked_response(request, pk, data, agent, booked):
 def booking_email(request, pk):
     """Render the booking email for this case (default or reworded) with what it still needs to be sent. Sends nothing."""
     ticket = CaseTicket.objects.get(pk=pk)
-    if ticket.source_type in NO_BOOKING_EMAIL:
+    if ticket.source_type in NO_BOOKING_EMAIL and not employer_signature_missing(ticket):
         raise ValueError('This case has no booking email.')
     data = body(request)
     agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
     if not agent and not is_director(request.user):
         raise PermissionDenied('An active agent profile or manager permission is required.')
     sender = agent.display_name if agent else (request.user.get_full_name() or request.user.get_username())
-    draft = render_booking_email(ticket, sender, data.get('subject'), data.get('message'))
-    return JsonResponse({**draft, 'recipient': ticket.learner_email, 'checks': booking_email_readiness(ticket),
+    recipient_role = str(data.get('recipient_role') or '')
+    if recipient_role not in ('', 'learner', 'employer'):
+        raise ValueError('Invalid email recipient.')
+    draft = render_booking_email(ticket, sender, data.get('subject'), data.get('message'), recipient_role=recipient_role)
+    return JsonResponse({**draft, 'recipient': recipient_for(ticket, recipient_role), 'checks': booking_email_readiness(ticket, recipient_role),
                          'mode': email_settings.current()['email_mode']})
 
 

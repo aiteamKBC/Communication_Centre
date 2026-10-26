@@ -23,6 +23,8 @@ export const CALL_TABS: CallTab[] = [
     hint: 'Active, Delivery and Onboarding learners: complete a satisfaction review every three calendar months. First reviews are due now. Unanswered calls and emails do not complete a review.' },
   { key: 'employer_satisfaction', label: 'Employer Satisfaction', icon: 'people', reasons: [],
     hint: 'Each employer (line manager) with their learners: complete a feedback call every three calendar months. Unanswered calls do not complete a review.' },
+  { key: 'missing_signature', label: 'MISSING SIGNATURE', icon: 'message', reasons: [],
+    hint: 'Employer signatures confirmed missing in the LMS. Call the employer, ask them to sign the review, and use Email to send a reminder.' },
   { key: 'manager', label: 'Extra Calls by Manager', icon: 'message', reasons: [],
     hint: 'Additional calls requested by a manager. Follow the request’s purpose and record the agreed outcome; the case closes when a specialist resolves it.' },
   { key: 'tech', label: 'Technical issues', icon: 'settings', reasons: [],
@@ -190,6 +192,7 @@ export function dueForCall(c: OverviewCase, now = Date.now()) {
 
 export function categoryFor(c: OverviewCase, today: string, nextWorkday: string) {
   if (c.source_type === 'tech_support') return 'tech';
+  if (c.source_type === 'signature' && c.employer_signature_missing) return 'missing_signature';
   if (['attendance', 'pr_missed', 'mcm_missed', 'signature'].includes(c.source_type)) return 'missed';
   if (['pr', 'mcm', 'otj', 'epa'].includes(c.source_type)) return 'due';
   if (c.source_type === 'reminder') return londonDate(c.booking_at) === nextWorkday ? 'nextday' : null;
@@ -199,6 +202,12 @@ export function categoryFor(c: OverviewCase, today: string, nextWorkday: string)
   return null;
 }
 
+export function belongsToCategory(c: OverviewCase, key: string, today: string, nextWorkday: string) {
+  if (key === 'missing_signature') return c.source_type === 'signature' && !!c.employer_signature_missing;
+  if (key === 'missed' && c.source_type === 'signature') return !!c.learner_signature_missing;
+  return categoryFor(c, today, nextWorkday) === key;
+}
+
 /** Sources whose last read failed. A source the cycle no longer reads (e.g. a paused one) keeps its old error;
  * only errors from the last two hours describe the lists as they are now. */
 export const failingSources = (overview: Pick<Overview, 'sources'>, now = Date.now()) =>
@@ -206,7 +215,7 @@ export const failingSources = (overview: Pick<Overview, 'sources'>, now = Date.n
     && now - Date.parse(source.details.checked_at) < 2 * 60 * 60 * 1000);
 
 export const categoryCases = (cases: OverviewCase[], key: string, today: string, nextWorkday: string) =>
-  cases.filter(c => activeCase(c) && categoryFor(c, today, nextWorkday) === key);
+  cases.filter(c => activeCase(c) && belongsToCategory(c, key, today, nextWorkday));
 
 export const contactKey = (c: Pick<OverviewCase, 'learner_email'> & { contact_key?: string; id?: number; source_type?: string }) =>
   c.contact_key || (c.learner_email.trim()
@@ -226,7 +235,8 @@ export function uniqueLearners(cases: OverviewCase[]) {
 
 export function matchesSearch(c: OverviewCase, query: string) {
   const q = query.trim().toLowerCase();
-  return !q || [c.learner_name, c.learner_email, c.learner_phone, c.programme, c.coach, c.organisation].join(' ').toLowerCase().includes(q);
+  return !q || [c.learner_name, c.learner_email, c.learner_phone, c.call_name, c.call_email, c.call_phone,
+    c.manager_name, c.manager_email, c.programme, c.coach, c.organisation].join(' ').toLowerCase().includes(q);
 }
 
 /** Daily points from verified Zoom records: call-time target (100) and completed calls (5 each, 100). Quality is not scored. */
@@ -264,12 +274,13 @@ export function reviewBookingPage(c: { source_type: string; booking_links: Booki
 }
 
 /** What the booking tools do for this case, or why there is nothing to book. */
-export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links' | 'meeting'>) {
+export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links' | 'meeting' | 'employer_signature_missing'>) {
   if (c.meeting?.cancellable) return 'Already booked. If the learner cannot attend, cancel it or move it to a time the coach is free.';
   if (c.bookable.includes('catch-up')) return 'Book a catch-up or support session in the coach’s LMS calendar, or send the booking email.';
   if (c.bookable.length) return 'Book a support session in the coach’s LMS calendar, or send the booking email.';
   if (reviewBookingPage(c)) return 'Book it with the learner on the coach’s page (use the learner’s own name and email), or send the booking email. The coach links it to the LMS review.';
   const rebook = 'The learner rebooks the review from the coach’s page in the booking email.';
+  if (c.source_type === 'signature' && c.employer_signature_missing) return 'Nothing to book: call or email the employer and ask them to sign the review in the LMS.';
   return ({
     pr: 'The learner books the review from the coach’s page in the booking email.',
     mcm: 'The learner books the meeting from the coach’s page in the booking email.',
@@ -353,7 +364,9 @@ export type DeskLayout = { pages: [string, string, string][]; lists: string[] };
 export function deskLayout(overview: Pick<Overview, 'employer_specialists'>, agentId: number | null): DeskLayout {
   const team = overview.employer_specialists || [];
   const employer = agentId !== null && team.includes(agentId);
-  const sheets = CALL_TABS.map(tab => tab.key).filter(key => (employer ? key === 'employer_satisfaction' : !team.length || key !== 'employer_satisfaction'));
+  const sheets = CALL_TABS.map(tab => tab.key).filter(key => (employer
+    ? key === 'employer_satisfaction' || key === 'missing_signature'
+    : !team.length || (key !== 'employer_satisfaction' && key !== 'missing_signature')));
   return { pages: DESK_PAGES.filter(([key]) => (employer ? key !== 'bookings' : key !== 'learners')), lists: [...sheets, 'followups'] };
 }
 

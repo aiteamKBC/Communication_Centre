@@ -14,7 +14,7 @@ const STATE_TEXT = { ok: 'Ready', warning: 'Check', missing: 'Missing' };
 const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : 'Something went wrong. Try again.');
 
 /** The booking email for one case: the college template with only this case's link, a live preview and what sending still needs. */
-export default function BookingEmail({ caseId, session }: { caseId: number; session: Session }) {
+export default function BookingEmail({ caseId, recipientRole, session }: { caseId: number; recipientRole?: 'learner' | 'employer'; session: Session }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -36,7 +36,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
   useEffect(() => {
     const request = ++latest.current;
     const timer = window.setTimeout(() => {
-      post<Draft>(`tickets/${caseId}/booking-email/`, session.csrf, { agent_id: session.agentId, ...(wording ? JSON.parse(wording) : {}) })
+      post<Draft>(`tickets/${caseId}/booking-email/`, session.csrf, { agent_id: session.agentId, ...(recipientRole ? { recipient_role: recipientRole } : {}), ...(wording ? JSON.parse(wording) : {}) })
         .then(value => {
           if (request !== latest.current) return;
           setDraft(value);
@@ -46,7 +46,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
         .catch(reason => { if (request === latest.current) setError(errorText(reason)); });
     }, wording ? 400 : 0);
     return () => window.clearTimeout(timer);
-  }, [caseId, session.csrf, session.agentId, wording]);
+  }, [caseId, recipientRole, session.csrf, session.agentId, wording]);
 
   async function copy() {
     if (!draft) return;
@@ -68,7 +68,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
     setAttempted(true);
     try {
       const delivery = await post<Delivery>(`tickets/${caseId}/booking-email/send/`, session.csrf, {
-        agent_id: session.agentId, request_id: requestId.current, subject, message,
+        agent_id: session.agentId, ...(recipientRole ? { recipient_role: recipientRole } : {}), request_id: requestId.current, subject, message,
       });
       if (delivery.status === 'failed') {
         // Definitely not sent: a new request id lets it be fixed and sent again.
