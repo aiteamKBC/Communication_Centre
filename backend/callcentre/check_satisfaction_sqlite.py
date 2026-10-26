@@ -69,7 +69,7 @@ def main():
         checked += 1
 
         feedback = dict(score=4, problem='None', action='No action needed', note='Learner is happy with their coaching.')
-        raises(ValueError, lambda: complete(ticket.pk, user, **feedback))
+        # A review closes only with its feedback form (or Close without feedback), never with the generic close.
         raises(ValueError, lambda: resolve(ticket.pk, user, note='Try generic close'))
         checked += 1
 
@@ -83,9 +83,9 @@ def main():
         link = CaseCall.objects.create(ticket=ticket, match=match)
         apply_call_result(match)
         ticket.refresh_from_db()
-        assert ticket.attempts == 1 and ticket.status == 'new' and ticket.next_followup_at > now
+        # Zoom's result is counted; only the specialist's saved outcome moves the case on.
+        assert ticket.attempts == 1 and ticket.status == 'new' and ticket.next_followup_at is None
         assert 'last_completed_at' not in ticket.source_data
-        raises(ValueError, lambda: complete(ticket.pk, user, **feedback))
         checked += 1
 
         call.result = 'answered'
@@ -103,10 +103,11 @@ def main():
 
         completed_at = now + timedelta(minutes=10)
         with patch('django.utils.timezone.now', return_value=completed_at):
-            complete(ticket.pk, user, **feedback)
+            assert complete(ticket.pk, user, **feedback)   # the answered call Zoom reported is attached now
             raises(Conflict, lambda: complete(ticket.pk, user, **feedback))
         ticket.refresh_from_db()
-        assert ticket.status == 'resolved'
+        assert ticket.status == 'resolved' and ticket.source_data['feedback']['call_id'] == call.pk
+        assert not TicketEvent.objects.filter(kind='feedback_call_mismatch').exists()
         assert TicketEvent.objects.filter(kind='learner_feedback_completed').count() == 1
         assert generate(people, next_review_at(completed_at) - timedelta(seconds=1))['renewed'] == 0
         checked += 1
@@ -120,8 +121,7 @@ def main():
         assert ticket.status == 'new' and ticket.attempts == 0 and ticket.created_at == next_due
         assert CaseTicket.objects.count() == 2
         assert CaseTicket.objects.get(pk=previous_id).resolved_at == completed_at
-        raises(ValueError, lambda: complete(ticket.pk, user, **feedback))  # previous cycle's call is not proof
-        raises(ValueError, lambda: record_outcome(ticket.pk, user, call.pk, 'reached', note='Old call'))
+        raises(ValueError, lambda: record_outcome(ticket.pk, user, call.pk, 'reached', note='Old call'))   # previous cycle's call
         checked += 1
 
         generate(merge([lms(Programme_status='Withdrawn')], [aptem()]), next_due)
@@ -186,11 +186,11 @@ def check_employers(user, agent, raises):
         checked += 1
 
         feedback = dict(score=5, problem='None', action='No action needed', note='Employer is happy with both learners.')
-        raises(ValueError, lambda: complete(ticket.pk, user, **feedback))
         raises(ValueError, lambda: resolve(ticket.pk, user, note='Try generic close'))
+        # Zoom reports the call answered for under 10 seconds (cut off): the feedback still completes the review, flagged.
         call = ZoomPhoneCall.objects.create(
             source_account='student', zoom_account_id='test-account', history_id='employer', direction='outbound',
-            started_at=now + timedelta(minutes=1), ended_at=now + timedelta(minutes=5), result='answered')
+            started_at=now + timedelta(minutes=1), ended_at=now + timedelta(minutes=5), result='cut_off')
         match = CallMatch.objects.create(call=call, agent=agent, learner_email=ticket.learner_email)
         intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email,
                                           number=ticket.learner_phone, matched_call=call)
@@ -203,6 +203,7 @@ def check_employers(user, agent, raises):
         ticket.refresh_from_db()
         assert ticket.status == 'resolved' and not employers.filter(pk=ticket.pk).open().exists()
         assert TicketEvent.objects.filter(kind='employer_feedback_completed').count() == 1
+        assert ticket.events.get(kind='feedback_call_mismatch').data == {'result': 'cut_off'}
         checked += 1
 
         next_due = next_review_at(completed_at)

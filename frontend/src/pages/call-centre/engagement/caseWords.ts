@@ -1,6 +1,6 @@
 // Words for Full case: what a case is about, its state, and its history in plain language.
 import type { Case } from '../api';
-import { appointmentTime, human, longDate, shortDate } from './model';
+import { appointmentTime, callResult, human, longDate, shortDate } from './model';
 
 export const STATUS_NAMES: Record<string, string> = {
   new: 'To call', in_progress: 'Being worked', pending_learner: 'Callback booked', pending_verification: 'Waiting for proof',
@@ -28,7 +28,8 @@ export function dueText(c: Pick<Case, 'status' | 'sla_breached' | 'sla_days_over
 const EVENT_NAMES: Record<string, string> = {
   created: 'Case opened', dial_requested: 'Call started', call_saved: 'Call saved', outcome: 'Outcome recorded',
   outcome_pending: 'Outcome waiting for Zoom', outcome_pending_dropped: 'Outcome not applied', outcome_call_linked: 'Zoom call attached',
-  outcome_call_mismatch: 'Outcome does not match Zoom',
+  outcome_call_mismatch: 'Outcome does not match Zoom', feedback_call_linked: 'Zoom call attached',
+  feedback_call_mismatch: 'Feedback on a call Zoom reports not answered',
   not_discussed: 'Not discussed',
   resolved: 'Closed', reopened: 'Reopened', note: 'Note', claimed: 'Taken', released: 'Released', session_booked: 'Session booked',
   meeting_cancelled: 'Meeting cancelled', meeting_rescheduled: 'Meeting moved', employer_check: 'Employer step',
@@ -48,9 +49,10 @@ export function eventText(kind: string, data: Record<string, unknown>) {
   if (kind === 'employer_check') return [EMPLOYER_RESULTS[text('result')] || human(text('result')), text('note')].filter(Boolean).join(': ');
   if (kind === 'meeting_rescheduled' && text('to')) return `Moved to ${appointmentTime(text('to'))}`;
   if (kind === 'meeting_cancelled') return text('reason');
-  if (kind === 'outcome_call_linked') return `Zoom: ${human(text('result'))}`;
-  if (kind === 'outcome_call_mismatch') return `Saved as ${human(text('outcome'))}, but Zoom reports ${human(text('result'))}`;
-  if (kind === 'outcome' && data.without_call) return [eventText('', data), 'saved without a Zoom call'].filter(Boolean).join(' · ');
+  if (kind === 'outcome_call_linked' || kind === 'feedback_call_linked') return `Zoom: ${callResult(text('result'))}`;
+  if (kind === 'outcome_call_mismatch') return `Saved as ${human(text('outcome'))}, but Zoom reports ${callResult(text('result'))}`;
+  if (kind === 'feedback_call_mismatch') return `Zoom reports ${callResult(text('result'))}`;
+  if (data.without_call) return [eventText('', { ...data, without_call: false }), 'saved without a Zoom call'].filter(Boolean).join(' · ');
   const parts = ['note', 'outcome', 'option', 'reason', 'error', 'problem', 'agreed_action'].map(text).filter(Boolean).map(human);
   if (data.score) parts.unshift(`Satisfaction: ${text('score')}/5`);
   return parts.join(' · ');

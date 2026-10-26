@@ -26,11 +26,11 @@ const LOG: CallLogData = {
     {
       id: 12, pressed_at: '2026-10-20T11:00:00Z', agent: { id: 2, name: 'Tina' }, learner_name: 'Bea Learner',
       learner_email: 'bea@example.org', number: '+447700900124', saved: true,
-      // Saved as reached straight away; Zoom then reported a voicemail (answered for under 10 seconds).
-      zoom: { state: 'voicemail', id: 502, started_at: '2026-10-20T11:00:10Z', duration_seconds: 0, transcript: 'none' },
+      // Saved as reached straight away; Zoom then reported it answered for under 10 seconds (cut off).
+      zoom: { state: 'cut_off', id: 502, started_at: '2026-10-20T11:00:10Z', duration_seconds: 0, transcript: 'none' },
       cases: [
         { id: 3, source_type: 'pr', organisation: '', status: 'pending_verification', resolution_option: '', next_followup_at: null,
-          outcome: { state: 'applied', outcome: 'reached', option: '', note: '', callback_at: null, promised_at: null, mismatch: 'voicemail' },
+          outcome: { state: 'applied', outcome: 'reached', option: '', note: '', callback_at: null, promised_at: null, mismatch: 'cut_off' },
           closed: null, bookings: [], feedback: null },
       ],
     },
@@ -140,10 +140,10 @@ test('the director monitors every specialist’s calls on the Call monitor page'
   expect(requests[0].searchParams.get('agent_id')).toBeNull();
   const monitor = page.getByRole('region', { name: 'Call monitor' });
   await expect(monitor.getByRole('article', { name: /^Call to/ })).toHaveCount(2);
-  await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText(/voicemail/i);
+  await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('cut off · under 10 s');
   await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('No recording');
   await monitor.getByRole('article', { name: 'Call to Bea Learner' }).locator('.cl-toggle').click();
-  await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('Zoom says voicemail: check this outcome');
+  await expect(monitor.getByRole('article', { name: 'Call to Bea Learner' })).toContainText('Zoom says cut off · under 10 s: check this outcome');
   await monitor.getByLabel('Specialist').selectOption('2');
   await expect.poll(() => requests.at(-1)?.searchParams.get('agent_id')).toBe('2');
   await expect(monitor.getByRole('article', { name: /^Call to/ })).toHaveCount(1);

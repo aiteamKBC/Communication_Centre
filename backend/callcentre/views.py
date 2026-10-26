@@ -555,11 +555,10 @@ def action(request, pk, command):
     if command == 'complete_feedback':
         completed = complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),
                                               action=data.get('agreed_action'), note=data.get('note'), acting_agent=agent)
-        # Held: given straight after the call, it completes the review once Zoom reports the call answered.
-        # The worker fetches the call now rather than at its next cycle.
+        # Completed now; when Zoom has not reported the call yet, the worker fetches it now to attach it.
         if not completed:
             request_call_sync(request.user.get_username())
-        return JsonResponse({'ok': True, 'held': not completed})
+        return JsonResponse({'ok': True, 'held': False})
     elif command == 'extra_feedback':
         optional_calls.extra_feedback(pk, request.user, data, acting_agent=agent)
     elif command == 'release':

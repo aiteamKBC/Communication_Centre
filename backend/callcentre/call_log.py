@@ -7,21 +7,21 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import CallIntent, TicketEvent, ZoomPhoneRecording
-from .zoom_phone import VOICEMAIL_SECONDS
+from .zoom_phone import CUT_OFF_SECONDS
 
 # What a call can do to a case, and how long after the Call press it may still happen: Zoom reports a call about ten
 # minutes after it ends, and an outcome held until then is applied when it does.
 IMPACT_KINDS = (
     'outcome', 'outcome_pending', 'outcome_pending_dropped', 'not_discussed', 'optional_outcome', 'resolved',
     'session_booked', 'learner_feedback_completed', 'employer_feedback_completed', 'feedback_pending',
-    'feedback_pending_dropped', 'satisfaction_feedback_extra', 'outcome_call_mismatch',
+    'feedback_pending_dropped', 'satisfaction_feedback_extra', 'outcome_call_mismatch', 'feedback_call_mismatch',
 )
 IMPACT_WINDOW = timedelta(days=1)
 # A Call press Zoom has not reported after this long is not going to be matched.
 ZOOM_WAIT = timedelta(minutes=30)
-# An "answered" call this short is most likely voicemail picking up, not the learner (an outgoing one is recorded as
-# voicemail when it is imported; an incoming one keeps Zoom's result).
-SHORT_ANSWER_SECONDS = VOICEMAIL_SECONDS
+# An "answered" call this short was most likely not a conversation (an outgoing one is recorded as cut off when it is
+# imported; an incoming one keeps Zoom's result).
+SHORT_ANSWER_SECONDS = CUT_OFF_SECONDS
 FEEDBACK_FIELDS = ('score', 'problem', 'agreed_action', 'note')
 
 
@@ -102,6 +102,8 @@ def case_impact(events):
             impact['feedback'] = {'state': {'feedback_pending': 'waiting', 'satisfaction_feedback_extra': 'extra'}.get(kind, 'completed'),
                                   **{key: data.get(key) for key in FEEDBACK_FIELDS},
                                   'next_due_at': data.get('next_due_at'), 'at': item.created_at}
+        elif kind == 'feedback_call_mismatch' and impact['feedback']:
+            impact['feedback'] = {**impact['feedback'], 'mismatch': data.get('result', '')}
         elif kind == 'feedback_pending_dropped' and impact['feedback']:
             impact['feedback'] = {**impact['feedback'], 'state': 'dropped', 'reason': data.get('reason', '')}
     return impact

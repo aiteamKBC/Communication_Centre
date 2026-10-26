@@ -3,7 +3,7 @@ import type { CaseDetail, ContactHistory, HistoryCall } from '../api';
 import { RatingTag } from './CallReview';
 import { eventName, eventText } from './caseWords';
 import { RESULTS, ROLES, waited } from './inbound';
-import { duration, human, outcomeLabel, when } from './model';
+import { callResult, duration, human, outcomeLabel, when } from './model';
 import TranscriptPanel from './TranscriptPanel';
 
 type Tab = 'calls' | 'missed' | 'timeline' | 'emails';
@@ -22,7 +22,7 @@ function CallItem({ call, onOpenCase }: { call: HistoryCall; onOpenCase?: (id: n
           <span className="cl-chevron" aria-hidden="true">›</span>
           <span className="cl-who">
             <time dateTime={call.started_at}>{when(call.started_at)} · {call.agent}{call.direction === 'inbound' ? ' · the learner rang' : ''}</time>
-            <strong>{sentence(human(call.result))}{call.duration_seconds ? ` · ${duration(call.duration_seconds)}` : ''}</strong>
+            <strong>{sentence(callResult(call.result))}{call.duration_seconds ? ` · ${duration(call.duration_seconds)}` : ''}</strong>
             <small>{outcomes || 'No outcome saved'} · {call.cases.map(item => item.label).join(', ')}</small>
           </span>
           <span className="cl-result">{call.recordings.length > 0 && <RatingTag rating={rating} />}</span>

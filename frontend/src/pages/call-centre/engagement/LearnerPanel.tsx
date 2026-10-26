@@ -13,7 +13,7 @@ import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
 import LearnerCases from './LearnerCases';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
-import { casePurpose, feedbackMessage, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
+import { callResult, casePurpose, feedbackMessage, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -116,7 +116,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
           {[['Email', c.learner_email], ['Employer', c.organisation], ['Line manager', c.manager_name], ['Line manager email', c.manager_email], ['Unanswered calls', String(c.attempts)], ['In progress with', c.claimed_by || 'Nobody']]
             .map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || 'Not recorded'}</dd></div>)}
         </dl>
-        {lastCall ? <><h3>Last call</h3><p>{longDate(lastCall.started_at)} · {human(lastCall.result)}{lastCall.outcome ? ` · ${human(lastCall.outcome)}` : ''}</p></> : <p className="ec-muted">No verified call yet.</p>}
+        {lastCall ? <><h3>Last call</h3><p>{longDate(lastCall.started_at)} · {callResult(lastCall.result)}{lastCall.outcome ? ` · ${human(lastCall.outcome)}` : ''}</p></> : <p className="ec-muted">No verified call yet.</p>}
       </details>
 
       {epa && (

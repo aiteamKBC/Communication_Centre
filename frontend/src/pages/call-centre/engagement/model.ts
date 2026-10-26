@@ -155,6 +155,11 @@ export function londonInput(value: string) {
 }
 
 export const human = (value: string | null | undefined) => String(value || '').replaceAll('_', ' ');
+/** Zoom results that are not a conversation. `cut_off`: an outgoing call answered for under 10 seconds (voicemail
+ * picking up, or the learner hanging up at once). */
+export const FAILED_RESULTS = new Set(['no_answer', 'missed', 'busy', 'voicemail', 'rejected', 'cut_off']);
+/** A Zoom call result in words. */
+export const callResult = (result: string | null | undefined) => (result === 'cut_off' ? 'cut off · under 10 s' : human(result));
 /** Form values have no UTC offset: interpret them in London, never the browser's zone. */
 const displayDate = (value: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)
   ? londonInput(value)
@@ -397,7 +402,7 @@ export const listCount = (overview: Pick<Overview, 'cases' | 'today' | 'next_wor
 export const listsTotal = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, layout: DeskLayout) =>
   uniqueLearners(layout.lists.filter(key => key !== 'followups').flatMap(key => listCases(overview, key, null))).length;
 
-/** What saving the satisfaction feedback did: completed now, or held until Zoom reports the call answered. */
+/** What saving the satisfaction feedback did: completed now (`held` only for feedback saved before it completed straight away). */
 export const feedbackMessage = (held?: boolean) => (held
   ? 'Feedback saved. It completes the review as soon as Zoom reports the call answered (usually within 10 minutes).'
   : 'Feedback completed. Next review is due in three calendar months.');
