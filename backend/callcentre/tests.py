@@ -35,8 +35,11 @@ from .zoom_views import can_view_call, zoom_transcript_report
 
 def member_of(*names):
     """A stand-in for ``user.groups`` holding exactly these access groups."""
+    def matching(name=None, name__in=()):
+        found = [item for item in names if item == name or item in name__in]
+        return mock.Mock(exists=mock.Mock(return_value=bool(found)), values_list=mock.Mock(return_value=found))
     groups = mock.Mock()
-    groups.using.return_value.filter.side_effect = lambda name: mock.Mock(exists=mock.Mock(return_value=name in names))
+    groups.using.return_value.filter.side_effect = matching
     return groups
 
 
@@ -215,12 +218,12 @@ class AccessTests(SimpleTestCase):
         self.assertEqual(phone_keys('+44 7700 900123'), ['07700900123', '7700900123', '700900123'])
 
     def test_only_directors_manage_agents(self):
-        require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True))
+        require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True, groups=member_of()))
         with self.assertRaises(Exception):
             require_manager(SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True, is_superuser=False, groups=member_of()))
 
     def test_directors_can_view_any_call(self):
-        self.assertTrue(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True), object()))
+        self.assertTrue(can_view_call(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True, groups=member_of()), object()))
 
     def test_user_without_agent_cannot_view_call(self):
         with mock.patch('callcentre.services.agent_for', return_value=None):
@@ -239,13 +242,16 @@ class AccessTests(SimpleTestCase):
         self.assertEqual(refused(staff('Call Centre Access')).status_code, 403)
         self.assertIsNone(refused(staff(AGENT_GROUP)))
         self.assertIsNone(refused(staff(DIRECTOR_GROUP)))
-        self.assertIsNone(refused(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True)))
+        self.assertIsNone(refused(SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=True, groups=member_of())))
 
     def test_director_is_the_director_group_or_a_super_admin(self):
         def user(*groups, superuser=False):
             return SimpleNamespace(is_authenticated=True, is_active=True, is_superuser=superuser, groups=member_of(*groups))
         self.assertTrue(is_director(user(DIRECTOR_GROUP)))
         self.assertTrue(is_director(user(superuser=True)))
+        # A super admin who is also a specialist works as a specialist, unless also ticked as a director.
+        self.assertFalse(is_director(user(AGENT_GROUP, superuser=True)))
+        self.assertTrue(is_director(user(AGENT_GROUP, DIRECTOR_GROUP, superuser=True)))
         self.assertFalse(is_director(user(AGENT_GROUP)))
         self.assertTrue(has_access(user(AGENT_GROUP)))
         self.assertFalse(is_director(SimpleNamespace(is_authenticated=True, is_active=False, is_superuser=False, groups=member_of(DIRECTOR_GROUP))))
@@ -332,7 +338,7 @@ class CallRequestTests(SimpleTestCase):
             response = call_requests(request)
         return response.status_code, json.loads(response.content)
 
-    manager = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=True, get_username=lambda: 'manager')
+    manager = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=True, groups=member_of(), get_username=lambda: 'manager')
 
     def test_only_managers_can_request_calls(self):
         agent = SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False, is_superuser=False, groups=member_of(AGENT_GROUP))

@@ -1,6 +1,8 @@
 """Who may use the Engagement Centre.
 
-Directors are the accounts with **Call centre director** ticked in Django admin, and every Django super admin.
+Directors are the accounts with **Call centre director** ticked in Django admin, and every Django super admin who is
+not ticked as a Call centre agent: a super admin who is also a specialist works as a specialist (their own desk, list
+and Zoom line) unless **Call centre director** is ticked as well.
 Engagement specialists (call-centre agents) are the accounts with **Call centre agent** ticked: ticking it
 creates their specialist profile, unticking it switches the profile off (it is never deleted, so their call
 history stays).
@@ -21,7 +23,8 @@ DEFAULT_ZOOM_ACCOUNT = 'student'
 def is_director(user):
     if not user.is_authenticated or not user.is_active:
         return False
-    return user.is_superuser or user.groups.using(DB).filter(name=DIRECTOR_GROUP).exists()
+    groups = set(user.groups.using(DB).filter(name__in=(DIRECTOR_GROUP, AGENT_GROUP)).values_list('name', flat=True))
+    return DIRECTOR_GROUP in groups or (user.is_superuser and AGENT_GROUP not in groups)
 
 
 def has_access(user):

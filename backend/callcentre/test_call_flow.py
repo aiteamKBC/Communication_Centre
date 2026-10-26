@@ -224,6 +224,15 @@ class CallFlowTests(TestCase):
         self.assertEqual(cat.events.get(kind='outcome_call_mismatch').data, {'outcome': 'reached', 'result': 'cut_off'})
         self.assertEqual(self.fresh(cat).attempts, 1)
 
+    def test_no_answer_on_a_call_zoom_reports_answered_is_not_flagged(self):
+        # A voicemail picked up and the specialist left a message for 42 seconds: Zoom says answered; No answer is right.
+        ann = self.case('ann')
+        intent = self.press(ann, 10)
+        self.report(ann, intent, 'answered', 5)
+        self.assertTrue(plan_outcome(ann.pk, self.user, 'no_answer', note='Left voicemail.'))
+        self.assertEqual((self.fresh(ann).status, self.outcome_calls(ann)), ('new', ['no_answer']))
+        self.assertFalse(ann.events.filter(kind='outcome_call_mismatch').exists())
+
     def test_a_call_with_an_outcome_is_not_given_another_one(self):
         ann = self.case('ann')
         intent = self.press(ann, 30)

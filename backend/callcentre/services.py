@@ -407,8 +407,7 @@ def check_outcome(ticket, outcome, option, note, callback_at):
 
 
 def check_call_result(outcome, call):
-    if outcome == 'no_answer' and call.result not in FAILED_RESULTS:
-        raise ValueError('Zoom does not report this call as unanswered.')
+    # No answer is never questioned: a voicemail that picks up is "answered" to Zoom, however long the message left.
     if outcome in {'reached', 'callback', 'refused'} and call.result != 'answered':
         raise ValueError('Zoom must confirm an answered call.')
 
