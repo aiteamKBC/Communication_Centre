@@ -114,7 +114,6 @@ export function SpecialistPage({ overview, agentId, live, now, go, session, onOp
           <Figure label="Talk time" value={duration(totals.seconds)} hint={`Target ${duration(agent.target_seconds)} a day`} />
           <Figure label="Learners reached" value={totals.learners} />
           <Figure label="Cases resolved" value={totals.resolved} hint={`${agent.month.pending} worked, still open`} />
-          <Figure label="Cases gone late" value={totals.breaches} hint="Passed their call date this month" tone={totals.breaches ? 'bad' : undefined} />
         </div>
         <div className="dd-pair">
           <article className="dd-panel">
