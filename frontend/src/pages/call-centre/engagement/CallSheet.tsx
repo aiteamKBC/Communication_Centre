@@ -238,9 +238,12 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                 const disabled = session.preview || !session.canAct;
                 const employer = c.source_type === 'employer_feedback';
                 return (
-                  <tr key={c.id} data-sheet-row={c.id} className={d?.dirty ? 'is-dirty' : ''} onKeyDown={event => onKey(event, c)}>
+                  <tr key={c.id} data-sheet-row={c.id} className={[d?.dirty ? 'is-dirty' : '', c.desk === 'covered' ? 'ed-covered' : ''].filter(Boolean).join(' ')}
+                    onKeyDown={event => onKey(event, c)}>
                     <th scope="row">
                       <strong>{c.learner_name}</strong>
+                      {c.desk === 'covered' && c.cover && <span className="ed-cover-tag">Covered by {c.cover.to_name}</span>}
+                      {c.desk === 'task' && c.cover && <span className="ed-cover-tag task">For {c.cover.from_name}</span>}
                       <span>{c.learner_phone || 'No phone recorded'}</span>
                       {!employer && <button type="button" className="ed-all-cases" onClick={() => onOpen(c.id)}>
                         All cases ({allCasesByContact.get(contactKey(c))?.length || 1}{overview.cases_truncated ? '+' : ''})

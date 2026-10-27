@@ -5,7 +5,7 @@ import { ROLES, waited } from './inbound';
 import type { InboundItem, InboundListing } from './inbound';
 import type { Live } from './live';
 import { liveSeconds } from './live';
-import { listCount, listLabel, points, ratedCalls, when } from './model';
+import { TASK, listCount, listLabel, points, ratedCalls, taskKey, taskLabel, when } from './model';
 import NextCall from './NextCall';
 import { Line } from './Switchboard';
 
@@ -66,8 +66,22 @@ function RangCard({ item, onOpen, onAll }: { item: InboundItem; onOpen: (id: num
 export default function DeskToday({ overview, agent, session, live, now, rang, lists, onSection, onOpen, onRefresh, notify }: Props) {
   const waiting = (rang?.items || []).filter(item => item.status === 'open');
   const open = rang?.summary?.open ?? waiting.length;
+  // Tasks the director gave this desk that it has not opened yet.
+  const fresh = (overview.tasks || []).filter(task => task.to_agent_id === session.agentId && !task.seen_at);
+  const placed = (after: string) => (after ? `after your ${listLabel(after, overview.tasks)}` : 'first on your list');
   return (
     <div className="dk">
+      {fresh.length > 0 && (
+        <section className="dk-new-tasks" aria-label="New tasks from the director">
+          {fresh.map(task => (
+            <p key={task.id}>
+              <strong>New task from the director:</strong> {listCount(overview, taskKey(task), session.agentId)} of {taskLabel(task)}
+              {task.catch_new ? ' (and its new learners)' : ''}, {placed(task.after_topic)}.
+              <button type="button" className="primary" onClick={() => onSection(taskKey(task))}>Open</button>
+            </p>
+          ))}
+        </section>
+      )}
       {agent && <MyLine agent={agent} overview={overview} live={live} now={now} agentId={session.agentId} />}
 
       {rang && (
@@ -88,7 +102,8 @@ export default function DeskToday({ overview, agent, session, live, now, rang, l
         <header className="dk-section-head">
           <div><p className="dd-eyebrow">One conversation at a time</p><h2 id="dk-next">Call next</h2></div>
         </header>
-        <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={onOpen} />
+        <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={onOpen}
+          topics={lists.some(key => key.startsWith(TASK)) ? lists : undefined} />
       </section>
 
       <section className="dk-section" aria-labelledby="dk-lists">
@@ -98,10 +113,11 @@ export default function DeskToday({ overview, agent, session, live, now, rang, l
         <div className="dk-tiles">
           {lists.map(key => {
             const count = listCount(overview, key, session.agentId);
+            const label = listLabel(key, overview.tasks);
             return (
-              <button key={key} type="button" className={`dk-tile${count ? '' : ' empty'}`} onClick={() => onSection(key)}
-                aria-label={`${listLabel(key)}: ${count} ${count === 1 ? 'person' : 'people'}`}>
-                <b>{count}</b><span>{listLabel(key)}</span>
+              <button key={key} type="button" className={`dk-tile${count ? '' : ' empty'}${key.startsWith(TASK) ? ' task' : ''}`} onClick={() => onSection(key)}
+                aria-label={`${label}: ${count} ${count === 1 ? 'person' : 'people'}`}>
+                <b>{count}</b><span>{label}</span>{key.startsWith(TASK) && <small>Covering</small>}
               </button>
             );
           })}

@@ -14,12 +14,19 @@ import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
-import { activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, issueLabel, promiseLabel, shortDate, uniqueLearners, when } from './model';
+import { TASK, activeCase, appointmentTime, casePurpose, categoryFor, contactKey, dueForCall, issueLabel, promiseLabel, shortDate, uniqueLearners, when } from './model';
 
-type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void };
+type Props = { overview: Overview; session: Session; onRefresh: () => void; notify: (message: string, error?: boolean) => void; onOpen: (id: number) => void;
+  /** The desk's topics in calling order, when the director has given it tasks: learners are taken topic by topic. */
+  topics?: string[] };
+
+/** Whether this desk calls about the case: a task given to it (and what comes along on its calls) whatever kind of desk
+ * it is; otherwise its own kind of case (employer calls on an employer desk), unless someone else covers it. */
+const onDesk = (c: OverviewCase, employerDesk: boolean) => c.desk === 'task' || c.desk === 'call'
+  || (c.desk !== 'covered' && (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk);
 
 /** The simple calling screen: one learner, Call, End call, then the outcome of the whole call (CallOutcome), saved together. */
-export default function NextCall({ overview, session, onRefresh, notify, onOpen }: Props) {
+export default function NextCall({ overview, session, onRefresh, notify, onOpen, topics }: Props) {
   // An employer specialist's next calls are the employers (and their own optional calls' callbacks); everyone else's are learners.
   const employerDesk = !!session.employerDesk;
   const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
@@ -37,16 +44,23 @@ export default function NextCall({ overview, session, onRefresh, notify, onOpen 
   const [busy, setBusy] = useState(false);
 
   const eligible = useMemo(() => overview.cases.filter(c => activeCase(c) && categoryFor(c, overview.today, overview.next_workday) !== null
-    && (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk && !!c.learner_phone && dueForCall(c)
+    && c.desk !== 'call' && onDesk(c, employerDesk) && !!c.learner_phone && dueForCall(c)
     && (!c.claimed_agent_id || c.claimed_agent_id === session.agentId)), [overview, session.agentId, employerDesk]);
-  // The same order as the call sheets: one learner per contact, in the chosen ticket order.
-  const queue = useMemo(() => uniqueLearners(orderTickets(eligible.filter(c => matchesCaseFilters(c, caseFilters)), order))
-    .filter(c => !done.has(contactKey(c))), [eligible, caseFilters, order, done]);
+  // The same order as the call sheets: one learner per contact, in the chosen ticket order; with tasks, topic by topic
+  // in the order the director set (the sort keeps the ticket order within a topic).
+  const queue = useMemo(() => {
+    const rank = (c: OverviewCase) => {
+      const at = topics ? topics.indexOf(c.desk === 'task' && c.cover ? `${TASK}${c.cover.task_id}` : categoryFor(c, overview.today, overview.next_workday) || '') : 0;
+      return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+    };
+    const ordered = orderTickets(eligible.filter(c => matchesCaseFilters(c, caseFilters)), order);
+    return uniqueLearners(topics ? [...ordered].sort((a, b) => rank(a) - rank(b)) : ordered).filter(c => !done.has(contactKey(c)));
+  }, [eligible, caseFilters, order, done, topics, overview.today, overview.next_workday]);
   const at = Math.min(position, Math.max(queue.length - 1, 0));
   const next = queue[at] || null;
   const current = calling ? calling.person : next;
   const issues = calling ? calling.issues : next ? orderTickets(overview.cases.filter(c => contactKey(c) === contactKey(next) && activeCase(c)
-    && (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk && dueForCall(c)), order) : [];
+    && onDesk(c, employerDesk) && dueForCall(c)), order) : [];
   const allCases = current ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(current)).length : 0;
 
   function reset(next: Set<string>) {

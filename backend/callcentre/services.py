@@ -11,6 +11,7 @@ from .allocation import learner_owner, manager_owners, owners
 from .call_log import ZOOM_WAIT
 from .call_scope import system_case_calls, system_matches
 from .db import DB
+from .delegation import cover_of, work_rule
 from .employer_desk import EMPLOYER, SATISFACTION, optional, scope_error, specialists
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
@@ -81,6 +82,13 @@ def can_work(ticket, user, now=None, acting_agent=None):
         if not agent or ticket.claimed_by_id != agent.pk:
             raise Conflict('Another agent is working on this ticket.')
     if agent and not director:
+        # A director's task decides first: its receiver works the learner whoever owns them, and nobody else works a
+        # case on the delegated list.
+        delegated = work_rule(ticket, agent)
+        if delegated is True:
+            return agent
+        if delegated:
+            raise PermissionDenied(delegated)
         team = specialists()
         owner = allocated_owner(ticket.learner_email, ticket.source_type, team, ticket.source_data)
         if owner and owner != agent.pk:
@@ -97,15 +105,19 @@ def claim(ticket_id, agent, now=None, actor=None):
     now = now or timezone.now()
     if not agent.active or not agent.user.is_active:
         raise PermissionDenied('Agent is inactive.')
-    learner, source, data = (CaseTicket.objects.filter(pk=ticket_id).values_list('learner_email', 'source_type', 'source_data')
-                             .first() or ('', '', {}))
-    team = specialists()
-    owner = allocated_owner(learner, source, team, data)
-    if owner and owner != agent.pk:
-        raise Conflict(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. Ask a manager to change the allocation.')
-    refused = scope_error(source, agent.pk, team, data)
-    if refused:
-        raise Conflict(refused)
+    current = CaseTicket.objects.filter(pk=ticket_id).first()
+    delegated = work_rule(current, agent) if current else None
+    if delegated and delegated is not True:
+        raise Conflict(delegated)
+    if delegated is not True:
+        learner, source, data = (current.learner_email, current.source_type, current.source_data) if current else ('', '', {})
+        team = specialists()
+        owner = allocated_owner(learner, source, team, data)
+        if owner and owner != agent.pk:
+            raise Conflict(f'{Agent.objects.get(pk=owner).display_name} looks after this learner. Ask a manager to change the allocation.')
+        refused = scope_error(source, agent.pk, team, data)
+        if refused:
+            raise Conflict(refused)
     # A single conditional UPDATE is the arbiter, including on SQLite.
     available = Q(claimed_by__isnull=True) | Q(last_activity_at__lte=now - timedelta(minutes=30)) | Q(claimed_by=agent)
     changed = CaseTicket.objects.open().filter(available, pk=ticket_id).update(
@@ -185,7 +197,10 @@ def create_intent(ticket_id, agent, actor=None):
     intent = CallIntent.objects.create(agent=agent, learner_email=ticket.learner_email, number=number)
     intent.tickets.add(*tickets, *linked)
     for item in tickets:
-        event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number}, agent=agent, actor=actor)
+        # A case called for a director's task names it, for the task's summary.
+        cover = cover_of(item)
+        task = {'task_id': cover.task.pk} if cover and cover.direct and cover.task.to_agent_id == agent.pk else {}
+        event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number, **task}, agent=agent, actor=actor)
     return intent
 
 

@@ -128,3 +128,20 @@
   .kbc-portals .cl-body { padding-left: 1rem; }
 }
 @media (prefers-reduced-motion: reduce) { .kbc-portals .cl-chevron { transition: none; } }
+
+/* ---- Tasks from the director (task delegation) ---- */
+.kbc-portals .dk-new-tasks { display: grid; gap: .5rem; }
+.kbc-portals .dk-new-tasks p {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; margin: 0; padding: .75rem 1rem;
+  background: #fffdf8; border: 1px solid var(--dd-line); border-left: 4px solid var(--dd-gold); border-radius: 12px;
+}
+.kbc-portals .workspace-app .ec .dk-new-tasks button { margin-left: auto; }
+.kbc-portals .workspace-app .ec button.dk-tile.task { border-style: dashed; border-color: var(--dd-gold); background: #fffdf8; }
+.kbc-portals .dk-tile.task small { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: #8a6d1f; }
+.kbc-portals .ed-cover-tag {
+  display: inline-block; justify-self: start; margin: .15rem 0; padding: .05rem .5rem; border-radius: 99px;
+  background: var(--dd-soft); color: var(--dd-purple); font-size: .75rem; font-weight: 600;
+}
+.kbc-portals .ed-cover-tag.task { background: #fbf3dc; color: #7a5c12; }
+.kbc-portals .ed-sheet tr.ed-covered > * { opacity: .55; }
+.kbc-portals .ed-task-note { margin: 0 0 .8rem; padding: .6rem .9rem; border-left: 3px solid var(--dd-gold); background: #fffdf8; border-radius: 8px; }

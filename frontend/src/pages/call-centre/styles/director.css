@@ -191,3 +191,45 @@
 .kbc-portals .rm-history li { display: grid; gap: .1rem; position: relative; }
 .kbc-portals .rm-history li::before { content: ''; position: absolute; left: -1.38rem; top: .45rem; width: 10px; height: 10px; border-radius: 50%; background: var(--dd-purple); }
 .kbc-portals .rm-history span, .kbc-portals .rm-history small { font-size: .82rem; color: var(--dd-muted); }
+
+/* ---- Task delegation ---- */
+.kbc-portals .td-step { display: flex; flex-wrap: wrap; gap: .8rem 1.2rem; align-items: end; }
+.kbc-portals .td-step label { display: grid; gap: .25rem; min-width: 16rem; }
+.kbc-portals .td-lists { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; margin-top: 1rem; }
+.kbc-portals .workspace-app .ec button.td-list {
+  display: grid; justify-content: stretch; justify-items: start; align-content: start; gap: .1rem; padding: .7rem .9rem;
+  background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; color: var(--dd-ink); font-weight: 400; text-align: left;
+}
+.kbc-portals .workspace-app .ec button.td-list[aria-checked='true'] { border-color: var(--dd-purple); box-shadow: inset 0 0 0 1px var(--dd-purple); background: var(--dd-soft); }
+.kbc-portals .td-list b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.6rem; color: var(--dd-purple); line-height: 1.1; }
+.kbc-portals .td-list span { font-weight: 600; font-size: .88rem; }
+.kbc-portals .td-list small { font-size: .75rem; color: var(--dd-muted); }
+.kbc-portals .td-builder { display: grid; gap: 1rem; margin-top: 1.2rem; padding-top: 1.2rem; border-top: 1px solid var(--dd-line); }
+.kbc-portals .td-mode { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
+.kbc-portals .td-mode label, .kbc-portals .td-absence-list header label { display: flex; align-items: center; gap: .45rem; font-weight: 600; }
+.kbc-portals .td-pick { display: grid; gap: .6rem; }
+.kbc-portals .td-pick input[type='number'] { width: 5rem; margin-left: .4rem; }
+.kbc-portals .td-people { list-style: none; margin: 0; padding: 0; max-height: 20rem; overflow: auto; border: 1px solid var(--dd-line); border-radius: 10px; }
+.kbc-portals .td-people li { border-bottom: 1px solid var(--dd-line); }
+.kbc-portals .td-people li:last-child { border-bottom: 0; }
+.kbc-portals .td-people label { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; padding: .45rem .7rem; }
+.kbc-portals .td-people small { color: var(--dd-muted); font-size: .8rem; }
+.kbc-portals .td-parts { display: grid; gap: .7rem; }
+.kbc-portals .td-part { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin: 0; padding: .7rem .9rem; border: 1px solid var(--dd-line); border-radius: 10px; }
+.kbc-portals .td-part legend { padding: 0 .3rem; font-weight: 600; font-size: .85rem; color: var(--dd-purple); }
+.kbc-portals .td-part label, .kbc-portals .td-new { display: grid; gap: .25rem; }
+.kbc-portals .td-part input[type='number'] { width: 6rem; }
+.kbc-portals .td-new { max-width: 22rem; }
+.kbc-portals .td-table td small { display: block; color: var(--dd-muted); }
+.kbc-portals .td-table tr.td-recalled td { color: var(--dd-muted); }
+.kbc-portals .td-absences { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.kbc-portals .td-absences li { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.2rem; padding: .7rem .9rem; border: 1px solid var(--dd-line); border-left: 4px solid var(--dd-bad); border-radius: 10px; background: #fff; }
+.kbc-portals .td-absences li div { display: grid; margin-right: auto; }
+.kbc-portals .td-absences small { color: var(--dd-muted); font-size: .8rem; }
+.kbc-portals .td-absence { display: grid; gap: 1rem; }
+.kbc-portals .td-absence-list header label { white-space: nowrap; }
+.kbc-portals .td-absence-list { display: grid; gap: .6rem; padding: .8rem 0; border-top: 1px solid var(--dd-line); }
+.kbc-portals .td-absence-list header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+@media (max-width: 760px) {
+  .kbc-portals .td-step label { min-width: 0; width: 100%; }
+}

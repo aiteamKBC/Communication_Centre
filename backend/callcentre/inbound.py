@@ -219,23 +219,33 @@ def open_callbacks():
 def visible(items, user, agent):
     """What this person sees: a director everything; a specialist the call-backs to their own number (the learner rang
     them), the call-backs to a shared line of the learners they look after (or of learners nobody looks after), and
-    unknown callers to their number or given to them."""
+    unknown callers to their number or given to them. A director's task and an absence come first: a learner a task
+    covers is called back by its receiver, and while a specialist is absent their line cover also sees the rest of
+    the missed calls to their number."""
     from .access import is_director
     if is_director(user):
         return items
     if not agent:
         return items.none()
     from .allocation import learner_owner, owners
+    from .delegation import phone_covers
     allocated = owners()
+    covered, away = phone_covers()
+    covering = [absent for absent, cover in away.items() if cover == agent.pk]
 
     def theirs(item):
-        if item.agent_id:   # the learner rang this specialist's own number: theirs to call back
-            return item.agent_id == agent.pk
+        email = email_key(item.caller_email)
+        receiver = covered.get(email, covered.get(f'employer:{email}')) if email else None
+        if receiver:
+            return receiver == agent.pk
+        if item.agent_id:   # the learner rang this specialist's own number: theirs (and their line cover's) to call back
+            return item.agent_id == agent.pk or item.agent_id in covering
         owner = learner_owner(item.caller_email, allocated) if item.caller_email else None
         return owner in (agent.pk, None)
     mine = [item.pk for item in items.filter(kind=Inbound.CALLBACK) if theirs(item)]
     return items.filter(Q(pk__in=mine) | Q(kind=Inbound.ENQUIRY, assigned_agent=agent)
-                        | Q(kind=Inbound.ENQUIRY, assigned_agent=None, agent=agent))
+                        | Q(kind=Inbound.ENQUIRY, assigned_agent=None, agent=agent)
+                        | Q(kind=Inbound.ENQUIRY, assigned_agent=None, agent__in=covering))
 
 
 def row(item, now):

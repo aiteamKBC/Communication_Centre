@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { post } from '../api';
 import type { AgentStats, Overview } from '../api';
 import type { Session } from './actions';
 import BookingLinksView from './BookingLinksView';
@@ -23,7 +24,8 @@ import MonthlyHistory from './MonthlyHistory';
 import { MissingRecordings, Scorecard, TranscriptSearch } from './Scorecard';
 import {
   CALL_TABS, DESK_PAGES, DOING_TABS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
-  duration, human, issueLabel, listCount, listLabel, longDate, matchesSearch, points, ratedCalls, shortDate, uniqueLearners, when,
+  duration, human, issueLabel, listCount, listLabel, longDate, matchesSearch, ownWork, points, ratedCalls, shortDate, taskCases, taskOf,
+  uniqueLearners, when,
 } from './model';
 
 type Props = {
@@ -74,10 +76,18 @@ export default function Desk({ overview, agent, session, section, page, lists, r
     setTouched(new Set());
   }, [section]);
 
+  // A task given to this desk: its own list. Its first opening tells the director's banner it was seen.
+  const task = taskOf(section, overview.tasks);
+  const seenTask = task && !task.seen_at && session.ownDesk && !session.preview ? task.id : null;
+  useEffect(() => {
+    if (seenTask !== null) post('delegation/seen/', session.csrf, { task_ids: [seenTask] }).then(onRefresh, () => {});
+  }, [seenTask]); // eslint-disable-line react-hooks/exhaustive-deps -- once per task opened
+  // The desk's own lists leave out its tasks (on their own lists) and the cases that only come along on a task's call.
+  const own = useMemo(() => ({ ...overview, cases: overview.cases.filter(c => c.desk !== 'task' && c.desk !== 'call') }), [overview]);
   // Follow-ups: only the cases whose current follow-up was set by this specialist's own call.
-  const active = useMemo(() => overview.cases.filter(c => activeCase(c)
-    && (section !== 'followups' || (!!session.agentId && c.followup_agent_id === session.agentId))),
-  [overview.cases, section, session.agentId]);
+  const active = useMemo(() => (task ? taskCases(overview.cases, section) : overview.cases.filter(c => activeCase(c) && ownWork(c)
+    && (section !== 'followups' || (!!session.agentId && c.followup_agent_id === session.agentId)))),
+  [overview.cases, section, session.agentId, task]);
   const queue = useMemo(() => uniqueLearners(active.filter(c => (issue === 'all' || c.source_type === issue)
     && !touched.has(contactKey(c)) && matchesSearch(c, search) && matchesCaseFilters(c, caseFilters))),
   [active, issue, touched, search, caseFilters]);
@@ -118,7 +128,7 @@ export default function Desk({ overview, agent, session, section, page, lists, r
     }
   }
 
-  const tab = CALL_TABS.find(item => item.key === section);
+  const tab = CALL_TABS.find(item => item.key === (task ? task.category : section));
   const panels = (
     <>
       {tabs.map(id => (
@@ -133,7 +143,14 @@ export default function Desk({ overview, agent, session, section, page, lists, r
     body = <DeskToday overview={overview} agent={agent} session={session} live={live} now={now} rang={rang} lists={lists}
       onSection={onSection} onOpen={setDetailId} onRefresh={onRefresh} notify={notify} />;
   } else if (tab) {
-    body = <CallSheet key={tab.key} overview={overview} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />;
+    // A task's sheet holds its learners only, with the cases that come along on their calls.
+    const sheet = task ? { ...overview, cases: overview.cases.filter(c => (c.desk === 'task' && c.cover?.task_id === task.id) || c.desk === 'call') } : own;
+    body = (
+      <>
+        {task && <p className="ed-task-note">Covering {listLabel(section, overview.tasks)}, from the director{task.catch_new ? ', with its new learners' : ''}. Your calls count for you.</p>}
+        <CallSheet key={section} overview={sheet} tab={tab} session={session} onOpen={setDetailId} onSaved={onRefresh} notify={notify} />
+      </>
+    );
   } else if (section === 'learners') {
     body = <CallLearner overview={overview} session={session} notify={notify} onRefresh={onRefresh} />;
   } else if (section === 'calls') {
@@ -278,7 +295,7 @@ export default function Desk({ overview, agent, session, section, page, lists, r
 
   // My lists: one tab per list with its people; How I'm doing: the week, the month, call reviews and achievements.
   const pageTabs: [string, string][] | null = page === 'lists'
-    ? lists.map(key => [key, `${listLabel(key)} (${listCount(overview, key, session.agentId)})`])
+    ? lists.map(key => [key, `${listLabel(key, overview.tasks)} (${listCount(overview, key, session.agentId)})`])
     : page === 'doing' ? DOING_TABS : null;
 
   return (

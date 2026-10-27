@@ -25,7 +25,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
+from . import booking_links, delegation, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
@@ -548,3 +548,44 @@ def save_allocations(request, people):
     except IntegrityError:
         raise Conflict('Allocations changed since you loaded them. Refresh and review again.') from None
     return {'ok': True, 'changed': changed}
+
+
+def absence_json(item):
+    return {'id': item.pk, 'agent_id': item.agent_id, 'agent_name': item.agent.display_name, 'line_cover_id': item.line_cover_id,
+            'line_cover_name': item.line_cover.display_name if item.line_cover else '', 'started_at': item.started_at,
+            'started_by': item.started_by}
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def task_delegation(request):
+    """Director's Task delegation page: hand a list to another specialist, recall it, mark someone absent or back; and
+    for a day (?day=YYYY-MM-DD, today by default) each task with what its receiver did, and the audit."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request, limit=256000)
+        action = data.get('action')
+        if action == 'delegate':
+            return JsonResponse({'ok': True, 'task_ids': delegation.delegate(data, actor)})
+        if action == 'recall':
+            return JsonResponse({'ok': True, 'recalled': delegation.recall(data.get('task_ids'), actor)})
+        if action == 'absent':
+            return JsonResponse({'ok': True, 'absence_id': delegation.mark_absent(data, actor)})
+        if action == 'back':
+            return JsonResponse({'ok': True, 'recalled': delegation.mark_back(data, actor)})
+        raise ValueError('Unknown action.')
+    today = timezone.now().astimezone(LONDON).date()
+    asked = request.GET.get('day')
+    day = date.fromisoformat(asked) if asked else today
+    if not date(2026, 1, 1) <= day <= today:
+        raise ValueError('Choose a day up to today.')
+    found = delegation.summary(day)
+    agents = Agent.objects.filter(active=True, user__is_active=True).order_by('display_name')
+    return JsonResponse({
+        'set_up': found['set_up'], 'not_set_up': '' if found['set_up'] else delegation.NOT_SET_UP, 'day': day,
+        'tasks': found['tasks'], 'absences': [absence_json(item) for item in delegation.open_absences().values()],
+        'agents': [{'id': agent.pk, 'display_name': agent.display_name} for agent in agents],
+        'history': delegation.history(),
+    })

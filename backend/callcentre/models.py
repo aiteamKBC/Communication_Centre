@@ -530,3 +530,69 @@ class ReviewMeetingEvent(Retained):
         db_table = 'callcenter_review_meeting_event'
         managed = False
         ordering = ['at', 'id']
+
+
+class Absence(Retained):
+    """A specialist marked away by a director, until marked back in. ``line_cover`` sees the missed calls to their
+    number that no task covers (enquiries, unknown numbers, learners not in any task)."""
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='absences')
+    line_cover = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    started_at = models.DateTimeField(auto_now_add=True)
+    started_by = models.CharField(max_length=255)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    ended_by = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = 'callcenter_absence'
+        managed = False
+
+
+class DelegatedTask(Retained):
+    """One list of one desk handed to another specialist until a director recalls it (``delegation``): the whole list
+    (``catch_new``: it keeps taking the list's new cases), chosen learners on it, or both (a part of a split list that
+    also takes the new ones). ``after_topic`` places it in the receiver's Today order."""
+    AGENT, SHARED, EMPLOYER = 'agent', 'shared', 'employer'
+    source = models.CharField(max_length=12)
+    from_agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    category = models.CharField(max_length=32)
+    to_agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='delegated_tasks')
+    catch_new = models.BooleanField(default=False)
+    after_topic = models.CharField(max_length=64, blank=True)
+    # The parts of one split list, or of one Mark absent plan, share a group.
+    group = models.CharField(max_length=36)
+    absence = models.ForeignKey(Absence, null=True, blank=True, on_delete=models.PROTECT, related_name='tasks')
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=255)
+    recalled_at = models.DateTimeField(null=True, blank=True)
+    recalled_by = models.CharField(max_length=255, blank=True)
+    # When the receiver first opened it (until then their Today page shows it as new).
+    seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'callcenter_task'
+        managed = False
+
+
+class DelegatedLearner(Retained):
+    """A learner chosen for a task, by contact (``delegation.member``)."""
+    task = models.ForeignKey(DelegatedTask, on_delete=models.PROTECT, related_name='learners')
+    contact = models.CharField(max_length=300)
+
+    class Meta:
+        db_table = 'callcenter_task_learner'
+        managed = False
+        unique_together = [('task', 'contact')]
+
+
+class DelegationHistory(Retained):
+    """Every delegation, recall, absence and return, never edited: the audit trail."""
+    task = models.ForeignKey(DelegatedTask, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    absence = models.ForeignKey(Absence, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    action = models.CharField(max_length=24)
+    data = models.JSONField(default=dict, blank=True)
+    actor = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_task_history'
+        managed = False

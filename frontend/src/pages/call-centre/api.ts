@@ -58,7 +58,23 @@ export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { bookin
   /** An optional call an employer specialist chose to make (to any learner): theirs only, never a task. */
   optional?: boolean;
   /** The specialist whose saved call set the case's current follow-up; null when no call has set one. */
-  followup_agent_id: number | null; contact_sources?: Record<string, string> };
+  followup_agent_id: number | null; contact_sources?: Record<string, string>;
+  /** A director's task covering this case: on the task's list (`direct`), or another case of a learner it covers. */
+  cover?: CaseCover | null;
+  /** Where the case sits on the desk being shown (set by the page, not the server): its own list; a task given to
+   * this specialist; another specialist covers it (read-only); or it only comes along on a covered learner's call. */
+  desk?: 'own' | 'task' | 'covered' | 'call' };
+export type CaseCover = { task_id: number; to_agent_id: number; to_name: string; from_name: string; direct: boolean };
+/** A list handed to another specialist by a director until recalled (delegation.py). */
+export type DelegatedTask = {
+  id: number; group: string; source: 'agent' | 'shared' | 'employer'; from_agent_id: number | null; from_name: string;
+  category: string; category_label: string; to_agent_id: number; to_name: string; catch_new: boolean;
+  /** Where it sits in the receiver's Today order: after this topic ('' = first; a list key, or task:<id>). */
+  after_topic: string; learners: string[]; absence_id: number | null; created_at: string; created_by: string;
+  recalled_at: string | null; recalled_by: string; seen_at: string | null;
+  counts?: { open: number; called: number; reached: number; closed: number };
+};
+export type Absence = { agent_id: number; line_cover_id: number | null; started_at: string; started_by: string };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
 /** The employer step of a next-day progress review: the line manager, how to reach them, and what they said. */
 export type EmployerCheck = {
@@ -89,6 +105,8 @@ export type Overview = {
   holidays: string[];
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
+  /** The director's tasks not recalled, and who is marked absent. */
+  tasks?: DelegatedTask[]; absences?: Absence[];
   /** Specialists who make every employer satisfaction call (director's choice); empty when that is off. */
   employer_specialists?: number[];
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;

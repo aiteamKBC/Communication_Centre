@@ -37,6 +37,8 @@ export const loadCase = (id: number, agentId?: number | null, history = false) =
 export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {
   if (session.preview) return 'Read-only preview';
   if (c.status === 'resolved') return 'Case is not active';
+  // A director's task: only its receiver calls the learner (a director still can).
+  if (c.cover?.direct && c.cover.to_agent_id !== session.agentId && !session.isManager) return `Covered by ${c.cover.to_name}`;
   if (c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;
   if (!c.learner_phone?.trim()) return 'No number recorded';

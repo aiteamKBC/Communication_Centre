@@ -1,5 +1,5 @@
 // Presentation rules for the Engagement Centre screens. The server stays authoritative for access and outcomes.
-import type { AgentStats, BookingLinks, CallRating, Case, Overview, OverviewCase } from '../api';
+import type { AgentStats, BookingLinks, CallRating, Case, DelegatedTask, Overview, OverviewCase } from '../api';
 
 export type CallTab = { key: string; label: string; icon: string; hint: string; reasons: [string, string][] };
 
@@ -362,22 +362,67 @@ export function deskLayout(overview: Pick<Overview, 'employer_specialists'>, age
   return { pages: DESK_PAGES.filter(([key]) => (employer ? key !== 'bookings' : key !== 'learners')), lists: [...sheets, 'followups'] };
 }
 
+/** A task given to this desk is a list of its own, `task:<id>`, placed among the desk's lists. */
+export const TASK = 'task:';
+export const taskKey = (task: Pick<DelegatedTask, 'id'>) => `${TASK}${task.id}`;
+export const taskOf = (key: string, tasks: DelegatedTask[] | undefined) =>
+  (key.startsWith(TASK) ? tasks?.find(task => taskKey(task) === key) : undefined);
+/** "Safiyah’s Next Day", or "Shared queue · Next Day". */
+export const taskLabel = (task: Pick<DelegatedTask, 'source' | 'from_name' | 'category_label'>) =>
+  (task.source === 'agent' ? `${task.from_name}’s ${task.category_label}` : `${task.from_name} · ${task.category_label}`);
+
+/** The desk's topics in calling order: its own lists, with each task given to it placed where the director put it
+ * (after a list or after another task; first, or at the end when that place is gone). */
+export function deskTopics(lists: string[], tasks: DelegatedTask[] | undefined, agentId: number | null) {
+  const mine = (tasks || []).filter(task => task.to_agent_id === agentId);
+  const order: string[] = [];
+  const place = (key: string) => {
+    order.push(key);
+    mine.filter(task => task.after_topic === key).forEach(task => place(taskKey(task)));
+  };
+  mine.filter(task => task.after_topic === '').forEach(task => place(taskKey(task)));
+  lists.forEach(place);
+  mine.filter(task => !order.includes(taskKey(task))).forEach(task => order.push(taskKey(task)));
+  return order;
+}
+
+/** How a task names a person (delegation.member): their email, `employer:<email>` as a line manager, or the case. */
+export const memberKey = (c: Pick<OverviewCase, 'learner_email' | 'source_type' | 'id'>) => {
+  const email = c.learner_email.trim().toLowerCase();
+  if (!email) return `case:${c.id}`;
+  return c.source_type === 'employer_feedback' ? `employer:${email}` : email;
+};
+
 /** The section the address asks for (old addresses included) and the desk page it sits on. */
 export function deskSection(asked: string | null, layout: DeskLayout) {
   const section = OLD_SECTIONS[asked || ''] || asked || 'today';
-  if (layout.lists.includes(section)) return { section, page: 'lists' };
+  if (layout.lists.includes(section) || section.startsWith(TASK)) return { section, page: 'lists' };
   if (DOING_TABS.some(([key]) => key === section)) return { section, page: 'doing' };
   if (section === 'lists') return { section: layout.lists[0], page: 'lists' };
   if (section === 'doing') return { section: DOING_TABS[0][0], page: 'doing' };
   return layout.pages.some(([key]) => key === section) ? { section, page: section } : { section: 'today', page: 'today' };
 }
 
-export const listLabel = (key: string) => (key === 'followups' ? 'Follow-ups' : CALL_TABS.find(tab => tab.key === key)?.label || human(key));
+export const listLabel = (key: string, tasks?: DelegatedTask[]) => {
+  const task = taskOf(key, tasks);
+  if (task) return taskLabel(task);
+  return key === 'followups' ? 'Follow-ups' : CALL_TABS.find(tab => tab.key === key)?.label || human(key);
+};
 
-/** The cases a list counts: feedback lists only those due now, Follow-ups only those this specialist's own call set. */
+/** A case on the desk's own lists: not a task given to it, not covered by someone else, not just along on a call. */
+export const ownWork = (c: Pick<OverviewCase, 'desk'>) => !c.desk || c.desk === 'own';
+
+/** The cases of a task given to this desk. */
+export const taskCases = (cases: OverviewCase[], key: string) =>
+  cases.filter(c => activeCase(c) && c.desk === 'task' && !!c.cover && `${TASK}${c.cover.task_id}` === key);
+
+/** The cases a list counts: feedback lists only those due now, Follow-ups only those this specialist's own call set;
+ * a task, its cases. */
 function listCases(overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, key: string, agentId: number | null) {
-  if (key === 'followups') return overview.cases.filter(c => activeCase(c) && agentId !== null && c.followup_agent_id === agentId);
-  const cases = categoryCases(overview.cases, key, overview.today, overview.next_workday);
+  if (key.startsWith(TASK)) return taskCases(overview.cases, key).filter(c => !isSatisfaction(c) || dueForCall(c));
+  const own = overview.cases.filter(ownWork);
+  if (key === 'followups') return own.filter(c => activeCase(c) && agentId !== null && c.followup_agent_id === agentId);
+  const cases = categoryCases(own, key, overview.today, overview.next_workday);
   return key === 'learner_satisfaction' || key === 'employer_satisfaction' ? cases.filter(c => dueForCall(c)) : cases;
 }
 
@@ -386,8 +431,8 @@ export const listCount = (overview: Pick<Overview, 'cases' | 'today' | 'next_wor
   uniqueLearners(listCases(overview, key, agentId)).length;
 
 /** People on any of the call sheets, each counted once. */
-export const listsTotal = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, layout: DeskLayout) =>
-  uniqueLearners(layout.lists.filter(key => key !== 'followups').flatMap(key => listCases(overview, key, null))).length;
+export const listsTotal = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, layout: DeskLayout, topics: string[] = layout.lists) =>
+  uniqueLearners(topics.filter(key => key !== 'followups').flatMap(key => listCases(overview, key, null))).length;
 
 /** What saving the satisfaction feedback did: completed now (`held` only for feedback saved before it completed straight away). */
 export const feedbackMessage = (held?: boolean) => (held

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
 import { useCallCentre } from './api';
-import type { Config, Overview } from './api';
+import type { Config, Overview, OverviewCase } from './api';
 import type { Session } from './engagement/actions';
 import Allocation from './engagement/Allocation';
 import BookingLinksView from './engagement/BookingLinksView';
@@ -16,11 +16,12 @@ import EmployerSpecialists from './engagement/EmployerSpecialists';
 import Imports from './engagement/Imports';
 import { useLive } from './engagement/live';
 import type { InboundListing } from './engagement/inbound';
-import { deskLayout, deskSection, failingSources, human, listsTotal, longDate, setHolidays } from './engagement/model';
+import { deskLayout, deskSection, deskTopics, failingSources, human, listsTotal, longDate, setHolidays } from './engagement/model';
 import MissedCalls from './engagement/MissedCalls';
 import RequestCall from './engagement/RequestCall';
 import ReviewMeetings from './engagement/ReviewMeetings';
 import Settings from './engagement/Settings';
+import TaskDelegation from './engagement/TaskDelegation';
 import Shell from './engagement/Shell';
 import type { NavGroup } from './engagement/Shell';
 import { MissingRecordings } from './engagement/Scorecard';
@@ -35,7 +36,8 @@ import './styles/full-case.css';
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
   ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart'],
     ['meetings', 'Review meetings', 'calendar']]],
-  ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['operator', 'Calling desk', 'phone']]],
+  ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['delegation', 'Task delegation', 'people'],
+    ['operator', 'Calling desk', 'phone']]],
   ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
     ['settings', 'Settings', 'check']]],
 ];
@@ -43,6 +45,7 @@ const TITLES: Record<string, string> = {
   director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
   bookings: 'Coach booking links', allocations: 'Learner allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
+  delegation: 'Task delegation',
 };
 // Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
 const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
@@ -122,11 +125,21 @@ export default function CallCentrePage() {
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
   // A specialist's desk holds their allocated learners plus the shared queue; with employer specialists chosen, theirs
-  // holds the employer calls only and everyone else's none.
-  const deskOverview = useMemo(() => (overview && deskAgentId
-    ? { ...overview, cases: overview.cases.filter(c => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
-      && (!team.length || (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk)) }
-    : overview), [overview, deskAgentId, team, employerDesk]);
+  // holds the employer calls only and everyone else's none. A director's task adds the learners it gives them, whoever
+  // owns them (`task`, and their other cases that come along on the call); a case covered by someone else stays on its
+  // owner's lists read-only (`covered`).
+  const deskOverview = useMemo(() => {
+    if (!overview || !deskAgentId) return overview;
+    const onDesk = (c: OverviewCase) => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
+      && (!team.length || (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk);
+    const cases = overview.cases.flatMap((c): OverviewCase[] => {
+      if (c.cover && c.cover.to_agent_id === deskAgentId) return [{ ...c, desk: c.cover.direct ? 'task' : onDesk(c) ? 'own' : 'call' }];
+      return onDesk(c) ? [{ ...c, desk: c.cover?.direct ? 'covered' : 'own' }] : [];
+    });
+    return { ...overview, cases };
+  }, [overview, deskAgentId, team, employerDesk]);
+  // The desk's lists in calling order, with the tasks given to it where the director placed them.
+  const topics = useMemo(() => deskTopics(layout.lists, overview?.tasks, deskAgentId), [layout.lists, overview?.tasks, deskAgentId]);
 
   // Who rang the desk's specialist and is still waiting: the Missed calls count and the Today page's call-backs.
   const rangState = useCallCentre<InboundListing>(overview && (inDesk || !director) && (session.canAct || director)
@@ -137,7 +150,7 @@ export default function CallCentrePage() {
 
   const deskItems = !deskOverview ? [] : layout.pages.map(([key, label, icon]) => ({
     key: `desk:${key}`, icon,
-    label: key === 'lists' ? `${label} (${listsTotal(deskOverview, layout)})` : key === 'rang' && rangOpen ? `${label} (${rangOpen})` : label,
+    label: key === 'lists' ? `${label} (${listsTotal(deskOverview, layout, topics)})` : key === 'rang' && rangOpen ? `${label} (${rangOpen})` : label,
   }));
   const groups: NavGroup[] = !overview || !deskOverview ? [] : inDesk
     ? [
@@ -192,7 +205,7 @@ export default function CallCentrePage() {
         {overview.cases_truncated && <p className="ec-alert" role="alert">The case list is truncated. These counters do not include every case.</p>}
         {role === 'viewer' && <p className="ec-alert">Ask a manager to set up your agent profile to call learners and record outcomes. This calling workspace is read-only until then.</p>}
         <Desk
-          overview={deskOverview} agent={deskAgent} session={session} section={section} page={deskPage} lists={layout.lists}
+          overview={deskOverview} agent={deskAgent} session={session} section={section} page={deskPage} lists={topics}
           rang={rangState.data}
           name={deskAgent?.display_name || overview.access.display_name} status={status}
           onSection={key => setParam({ section: key })} onExit={director && session.preview ? () => navigateTo('exit') : undefined}
@@ -245,6 +258,7 @@ export default function CallCentrePage() {
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
                 ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
                   : view === 'meetings' ? <ReviewMeetings today={overview.today} />
+                  : view === 'delegation' ? <TaskDelegation overview={overview} csrf={config.data?.csrf_token || ''} onChanged={refresh} notify={notify} />
                   : view === 'missed' ? <MissedCalls session={session} revision={overview.generated_at} onOpenCase={openCase} />
                   : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
                     : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}

@@ -18,7 +18,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import contact_history, email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
+from . import contact_history, delegation, email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
 from .aptem_summaries import parse_date_safe
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback, held_feedback
 from .access import is_director, refused
@@ -340,6 +340,9 @@ def overview(request):
     # One contact per person, also when only some of their cases carry the person ID.
     keys = contact_keys(listed)
     meetings = review_meeting_summaries(listed)
+    # The director's tasks: which cases another specialist covers for now.
+    coverage = delegation.Coverage(today=today)
+    covers = coverage.resolve(tickets, {ticket.pk: ticket.followup_agent_id for ticket in tickets})
     for ticket in listed:
         item = ticket_json(ticket)
         item['contact_key'] = keys[ticket.pk]
@@ -356,6 +359,7 @@ def overview(request):
         else:
             owner = learner_owner(ticket.learner_email, allocated)
         item['allocated_agent_id'] = owner if item['optional'] or owner not in team else None
+        item['cover'] = delegation.cover_json(covers[ticket.pk]) if ticket.pk in covers else None
         cases.append(item)
 
     add_lecture_times(cases)
@@ -385,7 +389,10 @@ def overview(request):
             'display_name': (agent.display_name if agent else '') or request.user.get_full_name() or request.user.get_username(),
             'email': request.user.email,
         },
-        'agents': agents, 'employer_specialists': sorted(team), 'cases': cases, 'cases_truncated': len(tickets) > OVERVIEW_CASE_LIMIT,
+        'agents': agents, 'employer_specialists': sorted(team), 'cases': cases,
+        'tasks': [delegation.task_json(task) for task in coverage.tasks],
+        'absences': [{'agent_id': item.agent_id, 'line_cover_id': item.line_cover_id, 'started_at': item.started_at,
+                      'started_by': item.started_by} for item in delegation.open_absences().values()], 'cases_truncated': len(tickets) > OVERVIEW_CASE_LIMIT,
         'resolutions': report['resolutions'], 'unclaimed_breaches': report['unclaimed_breaches'],
         'sources': list(CycleState.objects.filter(name__startswith='source:').values('name', 'last_success_at', 'details')),
         'cycle': CycleState.objects.filter(name='cycle').values('last_success_at', 'details').first(),
@@ -1063,3 +1070,14 @@ def voicemail_audio(request, pk):
     response = FileResponse(file, content_type=content_type)
     response['Cache-Control'] = 'no-store'
     return response
+
+
+@authenticated
+@require_POST
+@csrf_protect
+def delegation_seen(request):
+    """The receiver opened their new tasks from the director: their Today banner stops showing them."""
+    agent = agent_for(request.user)
+    if not agent:
+        raise PermissionDenied('Only the specialist the tasks were given to can mark them seen.')
+    return JsonResponse({'ok': True, 'seen': delegation.mark_seen(agent, body(request).get('task_ids'))})
