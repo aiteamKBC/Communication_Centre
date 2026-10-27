@@ -11,6 +11,8 @@ Each review is one of three call reasons: ``due`` (date passed, never booked), `
 not completed) or ``signature`` (waiting for a signature). Reviews in progress are the coach's to finish and are
 left out, as are completed and archived ones. Only review dates from ``REVIEWS_SINCE`` count.
 """
+import json
+
 from django.db import connections
 
 from .db import LMS
@@ -43,11 +45,59 @@ def normalise_status(value):
             'inprogress': 'in-progress', 'awaitingsignature': 'awaiting-signature'}.get(text, text)
 
 
+def verified_missing_signature(row):
+    """Only a verified signature snapshot can turn a completed review into a signature case."""
+    snapshot = row.get('signature_status')
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except (TypeError, ValueError):
+            snapshot = None
+    return isinstance(snapshot, dict) and snapshot.get('verified') is True and snapshot.get('state') == 'missing'
+
+
+def signature_missing_roles(row):
+    """Return the required signature roles that are verified as missing in an imported review."""
+    snapshot = row.get('signature_status')
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except (TypeError, ValueError):
+            snapshot = None
+    if not isinstance(snapshot, dict) or snapshot.get('verified') is not True:
+        return []
+    roles = snapshot.get('roles')
+    if not isinstance(roles, dict):
+        return []
+    return sorted(role for role, value in roles.items()
+                  if isinstance(value, dict) and value.get('required') is True and value.get('status') == 'missing')
+
+
+def signature_contacts(row):
+    """The LMS follow-up contacts for missing signature roles, when supplied by the snapshot."""
+    snapshot = row.get('signature_status')
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except (TypeError, ValueError):
+            snapshot = None
+    roles = snapshot.get('roles') if isinstance(snapshot, dict) else None
+    return {role: value.get('follow_up_contact') for role, value in (roles or {}).items()
+            if isinstance(value, dict) and value.get('required') is True and value.get('status') == 'missing'
+            and isinstance(value.get('follow_up_contact'), dict)}
+
+
+def actionable_signature(row):
+    """Only learner/employer signatures create call-centre work; coach-only and unknown are ignored."""
+    return bool(set(signature_missing_roles(row)) & {'learner', 'employer'})
+
+
 # An imported review as the LMS shows it: the raw Aptem row, then its new-LMS booking ("Coach".coach_calendar_event,
 # by exact key or the learner's own booking key) and its form continuation ("Coach".coach_imported_review_instance).
 # The joins follow coach_api.review_sources (linked_overlay, linked_booking); more than one match is a conflict.
 IMPORTED_SQL = '''SELECT r.id, lower(trim(r.learner_email)) AS email, trim(r.review_type) AS review_type, r.status,
         r.completed_date, r.updated_at, (r.planned_scheduled_date AT TIME ZONE 'Europe/London')::date AS planned_day,
+        r.review_data->'signature_status' AS signature_status,
         o.matches AS overlay_matches, o.status AS overlay_status, o.completed_at AS overlay_completed,
         b.matches AS booking_matches, b.status AS booking_status, b.verified AS booking_verified,
         b.scheduled_date AS booking_day
@@ -80,7 +130,11 @@ IMPORTED_SQL = '''SELECT r.id, lower(trim(r.learner_email)) AS email, trim(r.rev
                    AND e.learner_id IN (r.learner_id, p.enrolment_id)))
     ) b ON TRUE
     WHERE {where}'''
+# Only current, verified Aptem membership can create new cases. REF_SQL below
+# deliberately retains historical ID lookup for existing tickets and evidence.
 IMPORTED_WHERE = '''lower(trim(r.review_type)) = ANY(%(kinds)s) AND nullif(trim(r.learner_email), '') IS NOT NULL
+      AND r.review_data->'aptem_visibility'->>'verified' = 'true'
+      AND r.review_data->'aptem_visibility'->>'visible' = 'true'
       AND greatest((r.planned_scheduled_date AT TIME ZONE 'Europe/London')::date, b.scheduled_date) >= %(since)s'''
 # New-LMS reviews. An unbooked review has no calendar event, so the learner's own profile gives the email, and a
 # cancelled booking puts the review back on its target date. ``aptem_source``: the LMS reads this learner's reviews
@@ -109,6 +163,11 @@ def _fetch(cursor, sql, params=()):
 def imported_state(row):
     """(status, day, completed) of an imported review as the LMS shows it (review_sources.apply_imported_state);
     None while more than one booking or form continuation claims it, which the LMS refuses to choose between."""
+    # Aptem marks the review itself completed when the meeting/form is finished, then keeps the
+    # signature workflow open afterwards.  A verified signature snapshot is the authoritative
+    # source for that transition; checking completed_date first silently hid missing signatures.
+    if verified_missing_signature(row):
+        return 'awaiting-signature', row.get('booking_day') or row.get('planned_day'), None
     source = normalise_status(row.get('status'))
     planned = row.get('planned_day')
     if source == 'completed' or row.get('completed_date'):
@@ -169,9 +228,13 @@ def review_items(today, people=None):
                 continue
             email = people[email]['learner_email']
         case_type = classify(row['review_type'], status, day, completed, today)
+        if case_type == 'signature' and (prefix != 'reviews' or not actionable_signature(row)):
+            continue
         if case_type:
             items.append({'email': email, 'case_type': case_type, 'review_type': row['review_type'],
-                          'day': day, 'ref': f'{prefix}:{row["id"]}'})
+                          'day': day, 'ref': f'{prefix}:{row["id"]}',
+                          'missing_signature_roles': signature_missing_roles(row) if prefix == 'reviews' else [],
+                          'signature_contacts': signature_contacts(row) if prefix == 'reviews' else {}})
     return items
 
 
@@ -209,7 +272,7 @@ def ref_states(refs):
                     state = imported_state(row)
                     if not state:
                         continue   # conflicting bookings: no state is proof
-                    row = {'id': row['id'], 'status': state[0], 'completed': state[2], 'updated_at': row['updated_at']}
+                    row = {**row, 'id': row['id'], 'status': state[0], 'completed': state[2], 'updated_at': row['updated_at']}
                 states[f'{prefix}:{row["id"]}'] = row
     return states
 

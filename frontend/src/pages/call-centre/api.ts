@@ -22,6 +22,7 @@ export type Case = {
   /** EPA dates from the last synced Aptem snapshot; absent on older servers. */
   programme_end_date?: string | null; gateway_review_date?: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
+  call_email?: string; call_name?: string; call_phone?: string;
   contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
   /** Employer feedback calls: the line manager's learners in the directory. */
   employer_learners?: { name: string; email: string; programme: string }[];
@@ -48,6 +49,10 @@ export type Case = {
   bookable: ('catch-up' | 'student-support')[];
   /** The case has a booking email (the coach's booking link, or the review's rebooking link). */
   booking_email: boolean;
+  /** Imported review snapshot confirms that the employer's required signature is missing. */
+  employer_signature_missing?: boolean;
+  /** Imported review snapshot confirms that the learner's required signature is missing. */
+  learner_signature_missing?: boolean;
 };
 
 export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>

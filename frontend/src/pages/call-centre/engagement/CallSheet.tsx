@@ -44,7 +44,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
   const [page, setPage] = useState(1);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scope, setScope] = useState(tab.key === 'learner_satisfaction' || tab.key === 'employer_satisfaction' ? 'due' : 'all');
-  const [emailCase, setEmailCase] = useState<number | null>(null);
+  const [emailCase, setEmailCase] = useState<{ id: number; role?: 'learner' | 'employer' } | null>(null);
   const [feedbackCase, setFeedbackCase] = useState<OverviewCase | null>(null);
   const [satisfactionEmail, setSatisfactionEmail] = useState<OverviewCase | null>(null);
   const from = dateMode === 'day' ? selectedDay : dateMode === 'range' ? dateFrom : '';
@@ -135,9 +135,10 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     if (dialling !== null) return;
     setDialling(c.id);
     try {
-      await caseAction(session, c.id, 'call');
+      const role = c.employer_signature_missing && session.employerDesk ? 'employer' : 'learner';
+      await caseAction(session, c.id, 'call', { call_role: role });
       setOnCall(current => new Set(current).add(c.id));
-      notify(`Zoom opened for ${c.learner_name}. When you hang up, press End call, then choose the outcome and Save.`);
+      notify(`Zoom opened for ${c.call_name || c.learner_name}. When you hang up, press End call, then choose the outcome and Save.`);
       onSaved();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
@@ -237,6 +238,10 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                 const callReason = callDisabledReason(c, session);
                 const disabled = session.preview || !session.canAct;
                 const employer = c.source_type === 'employer_feedback';
+                const employerContact = !!c.employer_signature_missing && !!session.employerDesk;
+                const contactName = employerContact ? (c.call_name || c.manager_name) : c.learner_name;
+                const contactPhone = employerContact ? (c.call_phone ?? '') : c.learner_phone;
+                const signatureEmailRole = employerContact ? 'employer' as const : 'learner' as const;
                 return (
                   <tr key={c.id} data-sheet-row={c.id} className={[d?.dirty ? 'is-dirty' : '', c.desk === 'covered' ? 'ed-covered' : ''].filter(Boolean).join(' ')}
                     onKeyDown={event => onKey(event, c)}>
@@ -248,7 +253,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       {!employer && <button type="button" className="ed-all-cases" onClick={() => onOpen(c.id)}>
                         All cases ({allCasesByContact.get(contactKey(c))?.length || 1}{overview.cases_truncated ? '+' : ''})
                       </button>}
-                      {!employer && c.source_type !== 'tech_support' && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
+                      {!employer && !c.employer_signature_missing && c.source_type !== 'tech_support' && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
                       {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
                       {employer ? (
                         <>
@@ -262,8 +267,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       ) : (
                         <details>
                           <summary>Contact details</summary>
-                          <span>{c.learner_email || 'Email not recorded'}</span>
-                          <small>Phone source: {c.contact_sources?.phone || 'Not recorded'} · Email source: {c.contact_sources?.email || 'Not recorded'}</small>
+                          <span>{(employerContact ? c.call_email || c.manager_email : c.learner_email) || 'Email not recorded'}</span>
+                          {employerContact ? <span>Learner: {c.learner_name} · {c.learner_email}</span>
+                            : <small>Phone source: {c.contact_sources?.phone || 'Not recorded'} · Email source: {c.contact_sources?.email || 'Not recorded'}</small>}
                           <span>{c.programme || 'Programme not recorded'}</span>
                           <span>{c.organisation || 'Employer not recorded'}</span>
                           {c.manager_email && <span>Line manager: {c.manager_name || c.manager_email}</span>}
@@ -296,17 +302,17 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                     <td>
                       <div className="ed-call-actions">
                         {onCall.has(c.id) ? (
-                          <button type="button" className="primary ed-call-action ed-end-call" aria-label={`End call with ${c.learner_name}`} onClick={() => endCall(c)}>
+                          <button type="button" className="primary ed-call-action ed-end-call" aria-label={`End call with ${contactName}`} onClick={() => endCall(c)}>
                             End call
                           </button>
                         ) : (
-                          <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
+                          <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${contactName}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
                             {session.preview ? 'Preview' : 'Call'}
                           </button>
                         )}
-                        {isSatisfaction(c) && <button type="button" className="ed-call-action"
-                          disabled={disabled || !satisfactionRecipient(c)}
-                          title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
+                        {(isSatisfaction(c) || c.employer_signature_missing) && <button type="button" className="ed-call-action"
+                          disabled={disabled || !(c.employer_signature_missing ? (signatureEmailRole === 'employer' ? c.manager_email : c.learner_email) : satisfactionRecipient(c))}
+                          title="Review and send an email via Microsoft 365" onClick={() => c.employer_signature_missing ? setEmailCase({ id: c.id, role: signatureEmailRole }) : setSatisfactionEmail(c)}>Email</button>}
                       </div>
                       {onCall.has(c.id) ? <span className="ed-call-reason">On the call: press End call when you hang up</span>
                         : ended.has(c.id) ? <span className="ed-call-reason">Call ended: choose the outcome and Save</span>
@@ -319,7 +325,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         <EmployerCheck c={c} session={session} notify={notify} onChanged={onSaved} />
                         {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />}
                         <BookingPage c={c} className="ed-sheet-link" />
-                        {c.booking_email && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
+                        {c.booking_email && !c.employer_signature_missing && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase({ id: c.id })}>Booking email</button>}
                         <small>{bookingHint(c)}</small>
                       </>}
                     </td>
@@ -381,7 +387,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       </div>
 
       <Dialog open={emailCase !== null} onClose={() => setEmailCase(null)}>
-        {emailCase !== null && <BookingEmail caseId={emailCase} session={session} />}
+        {emailCase !== null && <BookingEmail caseId={emailCase.id} recipientRole={emailCase.role} session={session} />}
       </Dialog>
       <Dialog open={feedbackCase !== null} onClose={() => setFeedbackCase(null)}>
         {feedbackCase && <SatisfactionFeedback key={feedbackCase.id} caseId={feedbackCase.id} name={feedbackCase.learner_name}

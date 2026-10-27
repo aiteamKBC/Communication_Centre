@@ -41,7 +41,8 @@ export function callDisabledReason(c: OverviewCase, session: Session, now = Date
   if (c.cover?.direct && c.cover.to_agent_id !== session.agentId && !session.isManager) return `Covered by ${c.cover.to_name}`;
   if (c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;
-  if (!c.learner_phone?.trim()) return 'No number recorded';
+  const phone = c.employer_signature_missing && session.employerDesk ? c.call_phone : c.learner_phone;
+  if (!phone?.trim()) return 'No number recorded';
   if (!session.agentId) return 'Agent profile needed';
   // TEMPORARY: the director may call from any specialist's desk until every specialist has their own account.
   // Remove `!session.isManager` once they do.

@@ -79,6 +79,29 @@ class CallFlowTests(TestCase):
     def morning(self, workdays=1):
         return datetime.combine(add_workdays(timezone.now(), workdays).date(), time(9), tzinfo=LONDON)
 
+    def test_missing_signature_call_intent_targets_the_requested_contact_role(self):
+        for role, expected_email, expected_phone in (
+                ('employer', 'manager@example.org', '+447700900999'),
+                ('learner', 'signaturelearner@x.test', '+447700900016')):
+            with self.subTest(role=role):
+                ticket = self.case('signature' + role, source_type='signature',
+                                   manager_email='manager@example.org', manager_name='Employer',
+                                   overdue_since=self.now.date(),
+                                   source_data={'employer_signature_missing': True, 'learner_signature_missing': True})
+                with mock.patch('callcentre.employer_check.manager_phone', return_value='+447700900999'):
+                    intent = create_intent(ticket.pk, self.agent, contact_role=role)
+                self.assertEqual(intent.learner_email, expected_email)
+                self.assertEqual(intent.number, expected_phone if role == 'employer' else ticket.learner_phone)
+                self.assertEqual(list(intent.tickets.values_list('pk', flat=True)), [ticket.pk])
+
+    def test_missing_employer_phone_never_falls_back_to_the_learner_phone(self):
+        ticket = self.case('missingphone', source_type='signature', manager_email='manager@example.org',
+                           overdue_since=self.now.date(), source_data={'employer_signature_missing': True})
+        with mock.patch('callcentre.employer_check.manager_phone', return_value=''):
+            with self.assertRaises(ValueError):
+                create_intent(ticket.pk, self.agent, contact_role='employer')
+        self.assertFalse(CallIntent.objects.filter(tickets=ticket).exists())
+
     # Not answered
 
     def test_zoom_reporting_an_unanswered_call_does_not_move_the_case(self):

@@ -20,7 +20,7 @@ function ticket(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
   };
 }
 
-async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', lastSync: string | null = null, extra: Partial<Overview> = {}) {
+async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', lastSync: string | null = null, extra: Partial<Overview> = {}, respond?: (path: string, body: Record<string, unknown>) => unknown) {
   await page.addInitScript(() => {
     if (window.top !== window) return;
     localStorage.setItem('kbc-auth-user', JSON.stringify({
@@ -41,6 +41,8 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
     if (!url.pathname.startsWith('/api/')) return route.continue();
     const json = (body: unknown) => route.fulfill({ json: body });
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(url.pathname);
+    const custom = respond?.(url.pathname, request.postDataJSON() || {});
+    if (custom !== undefined) return json(custom);
     if (url.pathname === '/api/callcentre/config/') {
       return json({ csrf_token: 'test', agent_id: 1, is_manager: false, is_superuser: false,
         email_mode: 'dry_run', ai_enabled: false, agents: [], sources: [], cycle: null });
@@ -82,6 +84,174 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
 }
 
 const rowIds = (page: Page) => page.locator('[data-sheet-row]').evaluateAll(rows => rows.map(row => Number(row.getAttribute('data-sheet-row'))));
+
+const signature = (id: number, fields: Partial<OverviewCase> = {}) => ticket(id, {
+  source_type: 'signature', issue_name: 'Progress Review', employer_signature_missing: true,
+  learner_signature_missing: false, manager_name: `Employer ${id}`, manager_email: `boss${id}@example.org`,
+  call_name: `Employer ${id}`, call_email: `boss${id}@example.org`, call_phone: '+447700900999',
+  learner_phone: '+447700900111', booking_email: true, promises: { sign: 3 }, ...fields,
+});
+
+test('missing signature: employer routing, all filters, pagination and draft preservation', async ({ page }) => {
+  const cases = Array.from({ length: 23 }, (_, i) => signature(i + 1, {
+    issue_date: i === 0 ? '2026-10-01' : '2026-09-15',
+    filter_contexts: [{ coach: i === 0 ? 'Coach B' : 'Coach A', cohort: 'Cohort 1', module: 'Review' }],
+  }));
+  cases.push(signature(99, { employer_signature_missing: false, learner_signature_missing: true }));
+  const writes = await openSheet(page, cases, 'missing_signature', null, { employer_specialists: [1] });
+  await expect(page.getByRole('tab', { name: 'MISSING SIGNATURE (23)', exact: true })).toBeVisible();
+  await expect(page.locator('[data-sheet-row]')).toHaveCount(20);
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect(page.locator('[data-sheet-row]')).toHaveCount(3);
+  await page.getByLabel('Ticket page', { exact: true }).selectOption('1');
+  await expect(page.getByRole('button', { name: 'Previous page', exact: true })).toBeDisabled();
+  await page.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Keep the employer reminder notes.');
+  await page.getByLabel('Search the call sheet').fill('Employer 1');
+  await expect(page.locator('[data-sheet-row="1"]')).toBeVisible();
+  await page.getByLabel('Search the call sheet').fill('boss1@example.org');
+  expect(await rowIds(page)).toEqual([1]);
+  await page.getByLabel('Search the call sheet').fill('');
+  await page.getByLabel('Filter call reason').selectOption('signature');
+  await page.getByLabel('Follow-up timing').selectOption('due');
+  await page.getByLabel('Filter by coach', { exact: true }).selectOption({ label: 'Coach B' });
+  await page.getByLabel('Filter by cohort', { exact: true }).selectOption({ label: 'Cohort 1' });
+  await page.getByLabel('Filter by module', { exact: true }).selectOption({ label: 'Review' });
+  expect(await rowIds(page)).toEqual([1]);
+  await page.getByRole('button', { name: 'Clear coach / cohort / module', exact: true }).click();
+  await page.getByLabel('Date filter', { exact: true }).selectOption('day');
+  await page.getByLabel('Ticket date', { exact: true }).fill('2026-10-01');
+  expect(await rowIds(page)).toEqual([1]);
+  await page.getByRole('button', { name: 'Clear dates', exact: true }).click();
+  await expect(page.getByLabel('Notes and action for Learner 1', { exact: true })).toHaveValue('Keep the employer reminder notes.');
+  await page.locator('[data-sheet-row="1"]').getByRole('button', { name: 'Discard edits' }).click();
+  expect(writes.filter(p => p.startsWith('/api/callcentre/'))).toEqual([]);
+});
+
+test('missing signature: call role, end call, follow-up validation and save', async ({ page }) => {
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  await openSheet(page, [signature(1), signature(2, { call_phone: '', manager_email: '' })], 'missing_signature', null,
+    { employer_specialists: [1] }, (path, body) => {
+      if (path.endsWith('/call/') || path.endsWith('/plan/') || path.endsWith('/call-sync/')) {
+        requests.push({ path, body }); return { ok: true };
+      }
+    });
+  const row = page.locator('[data-sheet-row="1"]');
+  await expect(page.getByRole('button', { name: 'Call Employer 2', exact: true })).toBeDisabled();
+  await expect(page.locator('[data-sheet-row="2"]').getByRole('button', { name: 'Email', exact: true })).toBeDisabled();
+  await row.getByRole('button', { name: 'Call Employer 1', exact: true }).click();
+  await expect(row.getByRole('button', { name: 'End call with Employer 1' })).toBeVisible();
+  expect(requests.find(r => r.path.endsWith('/call/'))?.body.call_role).toBe('employer');
+  await row.getByRole('button', { name: 'End call with Employer 1' }).click();
+  await expect.poll(() => requests.filter(r => r.path.endsWith('/call-sync/')).length).toBe(1);
+  await row.getByLabel('Outcome for Learner 1', { exact: true }).selectOption('callback');
+  await row.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(row).toContainText('at least 10 characters');
+  await row.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Employer requested a callback to sign.');
+  await row.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(row).toContainText('Choose the date and time');
+  await row.getByRole('button', { name: '+3 days', exact: true }).click();
+  await row.getByRole('button', { name: '+5 days', exact: true }).click();
+  await row.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(row).toContainText('Saved');
+  expect(requests.filter(r => r.path.endsWith('/plan/'))).toHaveLength(1);
+  await expect(row.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+});
+
+test('missing signature: employer email preview, reset, copy, send and duplicate prevention', async ({ page }) => {
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await openSheet(page, [signature(1)], 'missing_signature', null, { employer_specialists: [1] }, (path, body) => {
+    if (!path.includes('/booking-email/')) return;
+    requests.push({ path, body });
+    if (path.endsWith('/send/')) return { id: 1, status: 'dry_run', mode: 'dry_run', recipient: 'boss1@example.org', error: '' };
+    return { recipient: 'boss1@example.org', subject: body.subject || 'Please sign the review',
+      message: body.message || 'Please sign your learner review.', text: 'Employer signature reminder',
+      html: '<p>Employer signature reminder</p>', link: { label: 'Sign review', url: '' },
+      checks: [{ key: 'recipient', label: 'Employer email', state: 'ok', detail: '' }], mode: 'dry_run' };
+  });
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('boss1@example.org');
+  expect(requests[0].body.recipient_role).toBe('employer');
+  await dialog.getByLabel('Subject', { exact: true }).fill('Updated signature reminder');
+  await dialog.getByRole('textbox', { name: 'Message', exact: true }).fill('Please complete the employer signature today.');
+  await expect.poll(() => requests.some(r => r.body.subject === 'Updated signature reminder')).toBe(true);
+  await dialog.getByRole('button', { name: 'Reset to the standard wording' }).click();
+  await expect(dialog.getByLabel('Subject', { exact: true })).toHaveValue('Please sign the review');
+  await dialog.getByRole('button', { name: 'Copy email', exact: true }).click();
+  await expect(dialog).toContainText('Email copied');
+  await expect(dialog.getByRole('link', { name: 'Open in my mail app' })).toHaveAttribute('href', /^mailto:boss1%40example.org/);
+  await dialog.getByRole('button', { name: 'Send (dry run: record only)' }).click();
+  await expect(dialog).toContainText('nothing was sent to boss1@example.org');
+  await expect(dialog.getByRole('button', { name: 'Recorded', exact: true })).toBeDisabled();
+  expect(requests.filter(r => r.path.endsWith('/send/'))).toHaveLength(1);
+  expect(requests.find(r => r.path.endsWith('/send/'))?.body.recipient_role).toBe('employer');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+});
+
+test('missing signature: full case, contact details, dates, refresh and returning to the sheet', async ({ page }) => {
+  const writes = await openSheet(page, [signature(1)], 'missing_signature', null, { employer_specialists: [1] });
+  const row = page.locator('[data-sheet-row="1"]');
+  await row.getByText('Contact details', { exact: true }).click();
+  await expect(row).toContainText('boss1@example.org');
+  await page.getByLabel('Ticket order', { exact: true }).selectOption('oldest');
+  await page.getByLabel('Date filter', { exact: true }).selectOption('range');
+  await page.getByLabel('From date').fill('2026-09-15');
+  await page.getByLabel('To date').fill('2026-09-15');
+  await expect(row).toBeVisible();
+  await page.getByLabel('To date').fill('2026-09-14');
+  await expect(page.getByRole('alert').filter({ hasText: 'end date must' })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear dates', exact: true }).click();
+  await row.getByLabel('Notes and action for Learner 1', { exact: true }).fill('Keep this draft when opening details.');
+  for (const name of ['All cases (1)', 'Full case']) {
+    await row.getByRole('button', { name, exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Full case', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Learner 1');
+    await dialog.getByRole('button', { name: 'Close full case', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+  }
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(row.getByLabel('Notes and action for Learner 1', { exact: true })).toHaveValue('Keep this draft when opening details.');
+  expect(writes.filter(p => p.startsWith('/api/callcentre/'))).toEqual([]);
+});
+
+test('missing signature: failed email request retries the same id and preserves wording', async ({ page }) => {
+  await openSheet(page, [signature(1)], 'missing_signature', null, { employer_specialists: [1] }, path => {
+    if (path.endsWith('/booking-email/')) return {
+      recipient: 'boss1@example.org', subject: 'Sign review', message: 'Please sign the review.', text: 'Reminder', html: '<p>Reminder</p>',
+      link: { label: 'Sign', url: '' }, checks: [], mode: 'dry_run',
+    };
+  });
+  const attempts: Record<string, unknown>[] = [];
+  await page.route('**/tickets/1/booking-email/send/', route => {
+    attempts.push(route.request().postDataJSON());
+    return route.fulfill(attempts.length === 1 ? { status: 500, json: { detail: 'Temporary failure' } }
+      : { json: { id: 1, status: 'dry_run', recipient: 'boss1@example.org', mode: 'dry_run' } });
+  });
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Send (dry run: record only)' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Temporary failure');
+  await expect(dialog.getByRole('textbox', { name: 'Subject', exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Check / retry this email' }).click();
+  await expect(dialog.getByRole('button', { name: 'Recorded', exact: true })).toBeDisabled();
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
+});
+
+test('missing signature: a dual-signature case calls the learner from the learner desk', async ({ page }) => {
+  const calls: Record<string, unknown>[] = [];
+  await openSheet(page, [signature(1, { learner_signature_missing: true })], 'missed', null,
+    { employer_specialists: [7] }, (path, body) => {
+      if (path.endsWith('/call/')) { calls.push(body); return {}; }
+    });
+  await page.getByRole('button', { name: 'Call Learner 1', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'End call with Learner 1' })).toBeVisible();
+  expect(calls).toHaveLength(1);
+  expect(calls[0].call_role).toBe('learner');
+});
 
 test('coach, cohort and module combine before contact grouping and preserve hidden drafts', async ({ page }) => {
   const fields = (coach: string, cohort: string, module: string): Partial<OverviewCase> => ({
@@ -298,7 +468,7 @@ test('every missed-ticket type and other tickets display source and opened dates
     ticket(1),
     ticket(2, { source_type: 'mcm_missed', issue_date: '2026-09-12' }),
     ticket(3, { source_type: 'pr_missed', issue_date: '2026-09-13' }),
-    ticket(4, { source_type: 'signature', issue_date: '2026-09-14' }),
+    ticket(4, { source_type: 'signature', issue_date: '2026-09-14', learner_signature_missing: true }),
     ticket(5, { learner_email: 'learner1@example.org', issue_date: '2026-09-02' }),
   ]);
   for (const [id, day] of [[1, 15], [2, 12], [3, 13], [4, 14]]) {
