@@ -41,6 +41,8 @@ export type Case = {
   promised_at: string | null; promise_missed: boolean;
   /** What the learner can agree to (option -> days to do it, null: agreeing closes the case); without options a specialist closes the case. */
   promises: Record<string, number | null>; specialist_closes: boolean;
+  /** Missed lectures: the same session with another group of the learner's cohort, from the LMS; absent on older servers. */
+  alternative_session?: { starts_at: string; group: string } | null;
   /** The latest call went unanswered: the case sits at the bottom of its list. */
   missed_call: boolean;
   /** The learner rang and nobody answered (inbound): their cases are at the top of the list until someone calls back. */

@@ -40,7 +40,7 @@ export const ISSUE_LABELS: Record<string, string> = {
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
-  attendance: 'The register shows the learner absent from this lecture. Find out why, then book a catch-up session with their coach (Book with coach) or send the booking email.',
+  attendance: 'The register shows the learner absent from this lecture. Find out why, then agree they attend the same lecture with another group (this closes the case), book a catch-up session with their coach (Book with coach) or send the booking email.',
   pr: 'The progress review is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s progress review link.',
   mcm: 'The monthly coaching meeting is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s coaching link.',
   pr_missed: 'The progress review was booked but is not completed in the LMS. Check whether it went ahead; if not, send the booking email so the learner can rebook it.',
@@ -63,21 +63,26 @@ export function helpdeskStatus(helpdesk: NonNullable<Case['helpdesk']>) {
 
 const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem']];
 const PROMISE_LABELS: Record<string, string> = {
-  catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording',
+  catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording', other_group_session: 'Attend this lecture with another group',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
   epa_step: 'Complete the EPA step', sign_review: 'Sign the review', other: 'Other',
 };
 export const promiseLabel = (option: string) => PROMISE_LABELS[option] || human(option);
 export const outcomeLabel = (outcome: string) => OUTCOMES.find(([key]) => key === outcome)?.[1] || human(outcome);
 
+/** The other group's session for a missed lecture, in words: "Group B on Thu 6 Nov at 14:00". */
+export const otherGroupSession = (session: { starts_at: string; group: string }) => `${session.group || 'another group'} on ${appointmentTime(session.starts_at)}`;
+const OTHER_GROUP = 'other_group_session';
+
 /**
  * Outcome choices for one case. A reached learner is recorded with what they agreed to, as
  * `reached:<option>`; cases with nothing to agree keep a plain "Reached".
  */
-export function outcomeChoices(c: Pick<OverviewCase, 'promises'>): [string, string][] {
+export function outcomeChoices(c: Pick<OverviewCase, 'promises'> & Partial<Pick<OverviewCase, 'alternative_session'>>): [string, string][] {
   const promises = Object.entries(c.promises);
   const reached: [string, string][] = promises.length
-    ? promises.map(([option, days]) => [`reached:${option}`, `Agreed: ${promiseLabel(option)} ${days === null ? '(closes the case)' : `(within ${days} day${days === 1 ? '' : 's'})`}`])
+    ? promises.map(([option, days]) => [`reached:${option}`, `Agreed: ${option === OTHER_GROUP && c.alternative_session
+      ? `Attend this lecture with ${otherGroupSession(c.alternative_session)}` : promiseLabel(option)} ${days === null ? '(closes the case)' : `(within ${days} day${days === 1 ? '' : 's'})`}`])
     : [['reached', 'Reached']];
   return [...reached, ...OUTCOMES.slice(1)];
 }
@@ -297,7 +302,8 @@ export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | '
   } as Record<string, string>)[c.source_type] || '';
 }
 
-type GuideCase =Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose' | 'issue_name' | 'issue_date' | 'booking_at' | 'coach' | 'booking_links'>;
+type GuideCase =Pick<OverviewCase, 'learner_name' | 'source_type' | 'purpose' | 'issue_name' | 'issue_date' | 'booking_at' | 'coach' | 'booking_links'>
+  & Partial<Pick<OverviewCase, 'alternative_session'>>;
 
 /** The call guide: the opening, what to say about this case, and how to close. Words the specialist can say as written. */
 export function shortGuide(c: GuideCase, operator: string) {
@@ -318,7 +324,9 @@ export function shortGuide(c: GuideCase, operator: string) {
       : `Can you confirm you will attend tomorrow’s ${review.toLowerCase()} with ${coach}? If you can’t make it, please contact ${coach} to rearrange.`,
     attendance: catchUp
       ? `Our records show you missed the catch-up session booked for ${c.issue_name.replace(/^Missed catch-up( — )?/, '') || 'your missed lecture'}. What happened? Can we book another catch-up with ${coach}?`
-      : `Our register shows you as absent from ${c.issue_name || 'your lecture'}${on}. Is everything OK? What stopped you attending? (If you did attend, tell me and we will check the register.) Can we book a catch-up session with ${coach} so you don’t fall behind?`,
+      : `Our register shows you as absent from ${c.issue_name || 'your lecture'}${on}. Is everything OK? What stopped you attending? (If you did attend, tell me and we will check the register.) ${c.alternative_session
+        ? `The same lecture runs with ${otherGroupSession(c.alternative_session)}: can you join that one? If not, can we book a catch-up session with ${coach}?`
+        : `Can you attend this lecture with another group? If not, can we book a catch-up session with ${coach} so you don’t fall behind?`}`,
     pr: `Your progress review with ${coach} is due and isn’t booked yet. When would suit you? ${book}`,
     mcm: `Your monthly coaching meeting with ${coach} is due and isn’t booked yet. When would suit you? ${book}`,
     pr_missed: `Your ${review.toLowerCase()}${on} isn’t showing as completed. Did it go ahead? If it did, I’ll note it so ${coach} can complete the record. If not, ${rebook}`,

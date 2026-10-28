@@ -2,7 +2,7 @@ import type { Overview } from '../api';
 import { human, longDate } from './model';
 
 const rules: [string, string][] = [
-  ['Missed lecture: due within 2 working days', 'A catch-up session booked in the LMS calendar, or attendance evidence. Lectures appear 3 days after they happen.'],
+  ['Missed lecture: due within 2 working days', 'A catch-up session booked in the LMS calendar, attendance evidence, or the learner agreeing on the call to attend the same lecture with another group. Lectures appear as soon as the register shows the absence.'],
   ['Progress review or monthly coaching overdue: 3 working days', 'The review or meeting is booked and completed in the LMS.'],
   ['Off-the-job hours or EPA preparation: 5 working days', 'The source shows the learner back on track.'],
   ['Tomorrow’s appointment', 'Attendance confirmed or the session rebooked before it starts.'],

@@ -196,6 +196,11 @@ class CaseTicket(Retained):
     escalated = models.BooleanField(default=False)
     ai_summary = models.TextField(blank=True)
     ai_confidence = models.FloatField(null=True, blank=True)
+    # Missed lectures: the same session with another group of the learner's cohort, still ahead, found in the LMS
+    # (alternative_sessions.py). Kept as agreed while the learner has promised to attend it.
+    alternative_occurrence_id = models.CharField(max_length=128, blank=True, default='')
+    alternative_session_at = models.DateTimeField(null=True, blank=True)
+    alternative_group = models.CharField(max_length=255, blank=True, default='')
     archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

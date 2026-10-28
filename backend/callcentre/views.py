@@ -240,6 +240,12 @@ def ticket_json(ticket):
         'called_back_at': getattr(ticket, 'called_back_at', None),
         # What the learner can agree to (option -> days to do it); without options the specialist closes the case.
         'promises': PROMISES.get(ticket.source_type, {}), 'specialist_closes': ticket.source_type in SPECIALIST_CLOSES,
+        # Missed lectures: the same session with another group of the learner's cohort (alternative_sessions.py).
+        # Not shown to specialists for now (user decision 2026-10-28): the group and date are not suggested to learners
+        # until the LMS has a confirmed alternative-lecture logic. Without it the call guide and the "Attend this lecture
+        # with another group" option use the general wording. The worker still records them on the case.
+        # 'alternative_session': {'starts_at': ticket.alternative_session_at, 'group': ticket.alternative_group}
+        # if ticket.alternative_session_at else None,
         # Next-day progress reviews: the employer (line manager) is confirmed too.
         'employer_check': employer_check.state(ticket),
         'purpose': str(ticket.source_data.get('purpose') or '') if isinstance(ticket.source_data, dict) else '',

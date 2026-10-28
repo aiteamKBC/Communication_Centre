@@ -76,10 +76,9 @@ class RulesTests(SimpleTestCase):
         self.assertEqual(keys[6], 'case:6')
         self.assertEqual(contact_keys(list(reversed(tickets))), keys)
 
-    def test_missed_lecture_waits_three_days(self):
-        # Absent on the 1st: not ready on the 3rd, ready on the 4th.
-        self.assertLess(missed_lectures_ready_until(date(2026, 10, 3)), date(2026, 10, 1))
-        self.assertEqual(missed_lectures_ready_until(date(2026, 10, 4)), date(2026, 10, 1))
+    def test_missed_lecture_is_a_case_the_same_day(self):
+        # Absent on the 1st: ready on the 1st, as soon as the register shows it.
+        self.assertEqual(missed_lectures_ready_until(date(2026, 10, 1)), date(2026, 10, 1))
 
 
 class PromiseTests(SimpleTestCase):
@@ -93,7 +92,7 @@ class PromiseTests(SimpleTestCase):
         self.assertEqual(promise_deadline('epa', 'epa_step', now), datetime(2026, 10, 9, 17, tzinfo=LONDON))
 
     def test_catchup_waits_for_evidence_while_legacy_review_promises_are_unchanged(self):
-        self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7})
+        self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7, 'other_group_session': None})
         self.assertIsNone(PROMISES['pr']['book_pr'])
         self.assertIsNone(PROMISES['mcm']['book_mcm'])
 
@@ -140,6 +139,7 @@ class OutcomeTests(SimpleTestCase):
         from .services import check_outcome
         missed_lecture = SimpleNamespace(source_type='attendance')
         check_outcome(missed_lecture, 'reached', 'catch_up_session', '', None)
+        check_outcome(missed_lecture, 'reached', 'other_group_session', '', None)
         with self.assertRaisesMessage(ValueError, 'Choose what the learner agreed to.'):
             check_outcome(missed_lecture, 'reached', '', '', None)
         with self.assertRaisesMessage(ValueError, 'Say what the learner said.'):

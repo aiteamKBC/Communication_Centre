@@ -18,9 +18,10 @@ MISSED_LECTURES_SINCE = SYSTEM_CUTOFF
 REVIEWS_SINCE = SYSTEM_CUTOFF
 # Cases made from the LMS reviews (lms_reviews.py): overdue, missed and unsigned reviews.
 REVIEW_CATEGORIES = {'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature'}
-# A missed lecture waits this many calendar days after the lecture date before it becomes a case,
-# so late attendance corrections land first. Absent on the 1st → on the list on the 4th.
-MISSED_LECTURE_DELAY_DAYS = 3
+# A missed lecture waits this many calendar days after the lecture date before it becomes a case. 0: it becomes a
+# case as soon as the register shows the absence (an LMS lecture once its Teams attendance report has synced).
+# A register corrected later sets the case aside (sources.retire).
+MISSED_LECTURE_DELAY_DAYS = 0
 # Case types switched off for now: none are created and open ones are left out of every list.
 # 'satisfaction' (emailed quarterly employer surveys) was replaced by employer_feedback calls on 2026-10-05.
 PAUSED_CATEGORIES = {'otj', 'satisfaction'}
@@ -62,8 +63,11 @@ WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unr
 # What a learner can agree to on a call, per case type, and the calendar days they have to do it.
 # The case stays open until source evidence proves it; a missed deadline returns it to the queue.
 # None: agreeing closes the case straight away (MVP — booking proof is not connected yet).
+# A missed lecture the learner says they will attend with another group of their cohort: their word closes the case.
+# The other group's session, when the LMS has one, is kept on the case (alternative_sessions.py).
+OTHER_GROUP = 'other_group_session'
 PROMISES = {
-    'attendance': {'catch_up_session': 7},
+    'attendance': {'catch_up_session': 7, OTHER_GROUP: None},
     'pr': {'book_pr': None},
     'mcm': {'book_mcm': None},
     'pr_missed': {'book_pr': None},

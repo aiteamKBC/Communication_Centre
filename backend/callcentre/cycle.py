@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .ai import process_ai
+from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
 from .call_scope import system_calls
 from .emails import process_emails
@@ -239,6 +240,8 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         else:
             result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
+        # Before evidence: a missed lecture's session with another group, offered on the call and checked as proof.
+        get_source('alternative_sessions', refresh_alternative_sessions)
         result['epa_metrics'] = get_source('epa_metrics', refresh_epa_metrics)
         # Evidence wins over returning a promised-date case to the queue.
         step(result, 'resolved', evidence_cycle)
