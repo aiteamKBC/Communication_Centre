@@ -108,6 +108,27 @@ def user_path(mailbox):
     return f'users/{quote(mailbox, safe="")}'
 
 
+def event_state(organizer, event_id):
+    """Current state of a Teams meeting from the organizer's calendar.
+
+    Returns ``{'found': True, 'cancelled': bool, 'start': '<ISO datetime>' | None}`` for a live event,
+    ``{'found': False, 'cancelled': True, 'start': None}`` when Graph returns 404 (the event has
+    been deleted from Teams), or ``None`` when Graph is unavailable or not configured — callers
+    then trust the LMS's cached state instead of inventing one.
+    """
+    if not organizer or not event_id or not configured('calendar'):
+        return None
+    try:
+        data = request('GET',
+            f"{user_path(organizer)}/events/{quote(event_id, safe='')}?$select=start,isCancelled")
+    except GraphError as exc:
+        if exc.status == 404:
+            return {'found': False, 'cancelled': True, 'start': None}
+        return None
+    start = (data.get('start') or {}).get('dateTime') if isinstance(data, dict) else None
+    return {'found': True, 'cancelled': bool(data.get('isCancelled')), 'start': start or None}
+
+
 def meeting_owner_id(organizer, join_url):
     """The organizer's object id, which the onlineMeetings routes require (an email is refused)."""
     try:

@@ -138,7 +138,8 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
       const role = c.employer_signature_missing && session.employerDesk ? 'employer' : 'learner';
       await caseAction(session, c.id, 'call', { call_role: role });
       setOnCall(current => new Set(current).add(c.id));
-      notify(`Zoom opened for ${c.call_name || c.learner_name}. When you hang up, press End call, then choose the outcome and Save.`);
+      const name = role === 'employer' ? c.call_name || c.manager_name : c.learner_name;
+      notify(`Zoom opened for ${name}. When you hang up, press End call, then choose the outcome and Save.`);
       onSaved();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
@@ -176,7 +177,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
         <input type="search" aria-label="Search the call sheet" placeholder="Find a name, number or coach…" value={search} onChange={event => setSearch(event.target.value)} />
         <select aria-label="Filter call reason" value={reason} onChange={event => setReason(event.target.value)}>
           <option value="all">All call reasons</option>
-          {[...new Set(eligible.map(c => c.source_type))].map(key => <option key={key} value={key}>{ISSUE_LABELS[key] || key}</option>)}
+          {[...new Set([...tab.reasons.map(([key]) => key), ...eligible.map(c => c.source_type)])].map(key => <option key={key} value={key}>{ISSUE_LABELS[key] || key}</option>)}
         </select>
         <select aria-label="Follow-up timing" value={scope} onChange={event => setScope(event.target.value)}>
           <option value="all">All active</option><option value="due">Due now</option>
@@ -326,7 +327,7 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />}
                         <BookingPage c={c} className="ed-sheet-link" />
                         {c.booking_email && !c.employer_signature_missing && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase({ id: c.id })}>Booking email</button>}
-                        <small>{bookingHint(c)}</small>
+                        <small>{bookingHint(c, !!session.employerDesk)}</small>
                       </>}
                     </td>
                     <td>

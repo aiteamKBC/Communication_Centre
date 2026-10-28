@@ -854,9 +854,11 @@ class LmsReviewTests(SimpleTestCase):
     def test_imported_statuses_become_due_missed_or_signature(self):
         self.assertEqual(self.classify(), 'pr')
         self.assertEqual(self.classify(status='Scheduled'), 'pr_missed')
+        self.assertEqual(self.classify(status='In Progress'), 'pr_missed')
         self.assertEqual(self.classify(status='AwaitingSignature', completed=datetime(2026, 9, 20)), 'signature')
         self.assertEqual(self.classify('Monthly Coaching Meeting', 'Scheduled'), 'mcm_missed')
-        for status in ('In Progress', 'Completed', 'Archived'):
+        self.assertEqual(self.classify('Monthly Coaching Meeting', 'In Progress'), 'mcm_missed')
+        for status in ('Completed', 'Archived'):
             self.assertIsNone(self.classify(status=status))
 
     def test_both_progress_reviews_count_and_other_reviews_do_not(self):
@@ -875,7 +877,7 @@ class LmsReviewTests(SimpleTestCase):
         self.assertEqual(self.classify('Monthly Coaching Meeting', 'not-scheduled', reasons=native), 'mcm')
         self.assertEqual(self.classify('Monthly Coaching Meeting', 'scheduled', reasons=native), 'mcm_missed')
         self.assertEqual(self.classify(status='awaiting-signature', reasons=native), 'signature')
-        self.assertIsNone(self.classify(status='in-progress', reasons=native))
+        self.assertEqual(self.classify(status='in-progress', reasons=native), 'pr_missed')
 
     def test_two_progress_review_kinds_are_separate_calls(self):
         items = [{'email': 'a@x.com', 'case_type': 'pr', 'review_type': t, 'day': date(2026, 9, d), 'ref': f'reviews:{d}'}
@@ -960,6 +962,70 @@ class LmsReviewTests(SimpleTestCase):
         self.assertTrue(lms_reviews.actionable_signature(row('learner')))
         self.assertTrue(lms_reviews.actionable_signature(row('employer')))
         self.assertFalse(lms_reviews.actionable_signature({'signature_status': {'verified': True, 'state': 'missing'}}))
+
+    def test_graph_overrides_an_lms_cached_date_with_the_live_teams_date(self):
+        """Teams says the MCM/PR was moved to a later day: don't show it as missed."""
+        row = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'Scheduled',
+               'planned_day': date(2026, 9, 10), 'booking_matches': 1, 'booking_status': 'scheduled',
+               'booking_day': date(2026, 9, 10), 'booking_verified': True, 'booking_event_id': 42,
+               'booking_learner_id': 1, 'graph_event_id': 'ev-1', 'graph_organizer_email': 'coach@x.com',
+               'overlay_matches': 0}
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: mock.MagicMock()}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[row], []]), \
+                mock.patch.object(lms_reviews.graph, 'event_state',
+                                  return_value={'found': True, 'cancelled': False, 'start': '2026-10-30T10:00:00Z'}):
+            self.assertEqual(lms_reviews.review_items(self.today), [])  # future meeting -> no missed ticket
+
+    def test_graph_cancellation_without_a_replacement_keeps_the_missed_ticket(self):
+        """Teams says the meeting was cancelled and no replacement was booked: the learner still owes
+        a catch-up call, so the ticket must stay open."""
+        row = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'Scheduled',
+               'planned_day': date(2026, 9, 10), 'booking_matches': 1, 'booking_status': 'scheduled',
+               'booking_day': date(2026, 9, 10), 'booking_verified': True, 'booking_event_id': 42,
+               'booking_learner_id': 1, 'graph_event_id': 'ev-1', 'graph_organizer_email': 'coach@x.com',
+               'overlay_matches': 0}
+        cursor = mock.MagicMock()
+        cursor.fetchone.return_value = None  # no replacement booking
+        connection = mock.MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: connection}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[row], []]), \
+                mock.patch.object(lms_reviews.graph, 'event_state',
+                                  return_value={'found': False, 'cancelled': True, 'start': None}):
+            items = lms_reviews.review_items(self.today)
+            self.assertEqual([item['case_type'] for item in items], ['pr_missed'])
+            self.assertEqual(items[0]['ref'], 'reviews:7')
+
+    def test_graph_cancellation_with_a_future_replacement_uses_the_replacement_date(self):
+        """Teams meeting cancelled, but LMS has a newer non-cancelled booking: follow the replacement."""
+        row = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'Scheduled',
+               'planned_day': date(2026, 9, 10), 'booking_matches': 1, 'booking_status': 'scheduled',
+               'booking_day': date(2026, 9, 10), 'booking_verified': True, 'booking_event_id': 42,
+               'booking_learner_id': 1, 'graph_event_id': 'ev-1', 'graph_organizer_email': 'coach@x.com',
+               'overlay_matches': 0}
+        cursor = mock.MagicMock()
+        cursor.fetchone.return_value = (date(2026, 10, 30), 'scheduled', 'ev-2', 'coach@x.com')
+        connection = mock.MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: connection}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[row], []]), \
+                mock.patch.object(lms_reviews.graph, 'event_state',
+                                  return_value={'found': True, 'cancelled': True, 'start': None}):
+            self.assertEqual(lms_reviews.review_items(self.today), [])  # replacement is future -> no ticket
+
+    def test_graph_unavailable_leaves_the_lms_cached_state_in_place(self):
+        """If Graph is down we must not invent a cancellation; the LMS cache keeps the ticket as it was."""
+        row = {'id': 7, 'email': 'a@x.com', 'review_type': 'Progress Review', 'status': 'Scheduled',
+               'planned_day': date(2026, 9, 10), 'booking_matches': 1, 'booking_status': 'scheduled',
+               'booking_day': date(2026, 9, 10), 'booking_verified': True, 'booking_event_id': 42,
+               'booking_learner_id': 1, 'graph_event_id': 'ev-1', 'graph_organizer_email': 'coach@x.com',
+               'overlay_matches': 0}
+        with mock.patch.object(lms_reviews, 'connections', {lms_reviews.LMS: mock.MagicMock()}), \
+                mock.patch.object(lms_reviews, '_fetch', side_effect=[[row], []]), \
+                mock.patch.object(lms_reviews.graph, 'event_state', return_value=None):
+            items = lms_reviews.review_items(self.today)
+            self.assertEqual([item['ref'] for item in items], ['reviews:7'])
+            self.assertEqual(items[0]['case_type'], 'pr_missed')
 
     def test_review_items_drops_coach_only_and_native_unknown_signatures(self):
         base = {'id': 7, 'email': 'learner@example.com', 'review_type': 'Progress Review',

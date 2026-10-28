@@ -12,11 +12,13 @@ not completed) or ``signature`` (waiting for a signature). Reviews in progress a
 left out, as are completed and archived ones. Only review dates from ``REVIEWS_SINCE`` count.
 """
 import json
+from datetime import datetime, timezone
 
 from django.db import connections
 
+from . import graph
 from .db import LMS
-from .rules import REVIEWS_SINCE, email_key
+from .rules import LONDON, REVIEWS_SINCE, email_key
 
 # LMS review type (lower case) -> the call centre's review kind. Two kinds of progress review stay separate cases.
 # Aptem has exported the monthly coaching meeting under three names; the LMS treats them as one (review_history.py).
@@ -29,7 +31,10 @@ REVIEW_KINDS = {
 }
 MCM_NAMES = [name for name, kind in REVIEW_KINDS.items() if kind == 'mcm']
 # Review status, normalised as the LMS does (both sources) -> call reason.
-STATUS_REASONS = {'not-scheduled': 'due', 'scheduled': 'missed', 'awaiting-signature': 'signature'}
+# ``in-progress`` past its date counts as missed: a review the coach began but has not finished by the
+# planned day did not actually happen on time, so the learner still needs the catch-up call.
+STATUS_REASONS = {'not-scheduled': 'due', 'scheduled': 'missed', 'in-progress': 'missed',
+                  'awaiting-signature': 'signature'}
 IMPORTED_REASONS = NATIVE_REASONS = STATUS_REASONS
 # (review kind, call reason) -> case type.
 CASE_TYPES = {('mcm', 'due'): 'mcm', ('pr', 'due'): 'pr', ('mcm', 'missed'): 'mcm_missed',
@@ -100,7 +105,8 @@ IMPORTED_SQL = '''SELECT r.id, lower(trim(r.learner_email)) AS email, trim(r.rev
         r.review_data->'signature_status' AS signature_status,
         o.matches AS overlay_matches, o.status AS overlay_status, o.completed_at AS overlay_completed,
         b.matches AS booking_matches, b.status AS booking_status, b.verified AS booking_verified,
-        b.scheduled_date AS booking_day
+        b.scheduled_date AS booking_day, b.event_id AS booking_event_id, b.learner_id AS booking_learner_id,
+        b.graph_event_id, b.graph_organizer_email
     FROM "Learner".reviews r
     LEFT JOIN "Learner".learners p ON p.id = r.learner_id
     LEFT JOIN LATERAL (
@@ -112,6 +118,8 @@ IMPORTED_SQL = '''SELECT r.id, lower(trim(r.learner_email)) AS email, trim(r.rev
     ) o ON TRUE
     LEFT JOIN LATERAL (
         SELECT count(*) AS matches, max(e.status) AS status, max(e.scheduled_date) AS scheduled_date,
+               max(e.id) AS event_id, max(e.learner_id) AS learner_id,
+               max(e.graph_event_id) AS graph_event_id, max(e.graph_organizer_email) AS graph_organizer_email,
                bool_or(e.sync_state = 'synced' AND coalesce(e.graph_event_id, '') <> ''
                        AND (coalesce(e.meeting_link, '') <> '' OR coalesce(e.graph_web_link, '') <> '')) AS verified
         FROM "Coach".coach_calendar_event e
@@ -143,6 +151,8 @@ NATIVE_DAY = "CASE WHEN e.id IS NULL OR e.status = 'cancelled' THEN i.target_dat
 NATIVE_EMAIL = "coalesce(nullif(trim(e.learner_email), ''), l.email_normalized)"
 NATIVE_SQL = f'''SELECT i.id, i.learner_id AS profile_id, lower(trim({NATIVE_EMAIL})) AS email,
         trim(t.name) AS review_type, i.status, i.completed_at, {NATIVE_DAY} AS day,
+        e.id AS booking_event_id, e.learner_id AS booking_learner_id,
+        e.graph_event_id, e.graph_organizer_email, e.status AS booking_status,
         coalesce(coalesce(nullif(trim(u.aptem_id::text), ''), nullif(trim(l.aptem_id::text), '')) ~ '^0*[1-9][0-9]*$',
                  false) AS aptem_source
     FROM curriculum.review_instances i
@@ -158,6 +168,108 @@ def _fetch(cursor, sql, params=()):
     cursor.execute(sql, params)
     columns = [c[0] for c in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+# Call-centre review kind -> coach_calendar_event.event_type, so we can find a replacement
+# booking after a Teams cancellation.
+BOOKING_EVENT_TYPES = {'mcm': 'mcr', 'pr': 'progress-review'}
+
+
+def _as_london_date(iso_string):
+    """Parse a Graph ``start.dateTime`` into a London calendar date, or None if unusable."""
+    if not iso_string:
+        return None
+    try:
+        when = datetime.fromisoformat(str(iso_string).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(LONDON).date()
+
+
+def _replacement_booking(cursor, learner_id, event_type, exclude_id):
+    """A newer, non-cancelled booking for the same learner & event type — the LMS form's answer
+    to 'if this Teams meeting was cancelled, was a replacement booked?'."""
+    if learner_id is None or not event_type:
+        return None
+    cursor.execute(
+        '''SELECT scheduled_date, status, graph_event_id, graph_organizer_email
+           FROM "Coach".coach_calendar_event
+           WHERE learner_id = %s AND event_type = %s AND id <> %s
+             AND coalesce(status, '') <> 'cancelled'
+             AND scheduled_date IS NOT NULL
+           ORDER BY updated_at DESC NULLS LAST
+           LIMIT 1''',
+        [learner_id, event_type, exclude_id or 0])
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {'scheduled_date': row[0], 'status': row[1], 'graph_event_id': row[2], 'graph_organizer_email': row[3]}
+
+
+def _graph_state(cache, organizer, event_id):
+    """Memoise Graph lookups for one sync pass so each Teams event is fetched at most once."""
+    key = (organizer or '', event_id or '')
+    if not key[0] or not key[1]:
+        return None
+    if key not in cache:
+        cache[key] = graph.event_state(organizer, event_id)
+    return cache[key]
+
+
+def _reconcile_imported(cursor, row, cache):
+    """Overlay the real Teams state onto an imported review's booking columns.
+
+    * Teams says the meeting moved → update ``booking_day`` so a now-future meeting stops looking missed.
+    * Teams says cancelled/deleted and the LMS has a replacement booking → follow the replacement.
+    * Teams says cancelled/deleted and no replacement exists → leave the row alone so the review still
+      shows as missed (the meeting didn't happen; the learner still needs a catch-up call).
+    * Graph unavailable or no event id → leave the row untouched (trust the LMS cache)."""
+    kind = REVIEW_KINDS.get(str(row.get('review_type') or '').strip().lower())
+    if not kind or not row.get('booking_matches'):
+        return
+    state = _graph_state(cache, row.get('graph_organizer_email'), row.get('graph_event_id'))
+    if state is None:
+        return
+    if state.get('found') and not state.get('cancelled'):
+        new_day = _as_london_date(state.get('start'))
+        if new_day:
+            row['booking_day'] = new_day
+        return
+    replacement = _replacement_booking(cursor, row.get('booking_learner_id'),
+                                       BOOKING_EVENT_TYPES.get(kind), row.get('booking_event_id'))
+    if replacement:
+        row['booking_day'] = replacement['scheduled_date']
+        row['booking_status'] = replacement['status']
+
+
+def _reconcile_native(cursor, row, cache):
+    """Same reconciliation for a new-LMS review (``curriculum.review_instances``)."""
+    kind = REVIEW_KINDS.get(str(row.get('review_type') or '').strip().lower())
+    if not kind or not row.get('booking_event_id'):
+        return
+    state = _graph_state(cache, row.get('graph_organizer_email'), row.get('graph_event_id'))
+    if state is None:
+        return
+    if state.get('found') and not state.get('cancelled'):
+        new_day = _as_london_date(state.get('start'))
+        if new_day:
+            row['day'] = new_day
+            if normalise_status(row.get('status')) == 'cancelled':
+                row['status'] = 'scheduled'
+        return
+    replacement = _replacement_booking(cursor, row.get('booking_learner_id'),
+                                       BOOKING_EVENT_TYPES.get(kind), row.get('booking_event_id'))
+    if replacement:
+        row['day'] = replacement['scheduled_date']
+        row['status'] = replacement['status'] or 'scheduled'
+        return
+    # No replacement: the Teams meeting disappeared without a new booking taking its place, so the
+    # review still owes a catch-up call. Normalise the review's own status to 'scheduled' so a review
+    # the LMS has already marked 'cancelled' does not silently vanish from the missed list.
+    if normalise_status(row.get('status')) == 'cancelled':
+        row['status'] = 'scheduled'
 
 
 def imported_state(row):
@@ -208,6 +320,11 @@ def review_items(today, people=None):
     with connections[LMS].cursor() as cursor:
         imported = _fetch(cursor, IMPORTED_SQL.format(where=IMPORTED_WHERE), params)
         native = _fetch(cursor, NATIVE_SQL, params)
+        graph_cache = {}
+        for row in imported:
+            _reconcile_imported(cursor, row, graph_cache)
+        for row in native:
+            _reconcile_native(cursor, row, graph_cache)
     reviews = []
     for row in imported:
         state = imported_state(row)

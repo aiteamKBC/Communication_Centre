@@ -131,7 +131,10 @@ export default function CallCentrePage() {
   const deskOverview = useMemo(() => {
     if (!overview || !deskAgentId) return overview;
     const onDesk = (c: OverviewCase) => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
-      && (!team.length || (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk);
+      && (!team.length || (employerDesk
+        ? c.source_type === 'employer_feedback' || !!c.optional || (c.source_type === 'signature' && !!c.employer_signature_missing)
+        : c.source_type !== 'employer_feedback' && !c.optional
+          && (c.source_type !== 'signature' || !!c.learner_signature_missing)));
     const cases = overview.cases.flatMap((c): OverviewCase[] => {
       if (c.cover && c.cover.to_agent_id === deskAgentId) return [{ ...c, desk: c.cover.direct ? 'task' : onDesk(c) ? 'own' : 'call' }];
       return onDesk(c) ? [{ ...c, desk: c.cover?.direct ? 'covered' : 'own' }] : [];

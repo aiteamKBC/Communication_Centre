@@ -279,13 +279,15 @@ export function reviewBookingPage(c: { source_type: string; booking_links: Booki
 }
 
 /** What the booking tools do for this case, or why there is nothing to book. */
-export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links' | 'meeting' | 'employer_signature_missing'>) {
+export function bookingHint(c: Pick<OverviewCase, 'source_type' | 'bookable' | 'booking_links' | 'meeting' | 'employer_signature_missing'>, employerDesk = false) {
+  if (c.source_type === 'signature') return employerDesk && c.employer_signature_missing
+    ? 'Nothing to book: call or email the employer and ask them to sign the review in the LMS.'
+    : 'Nothing to book: the learner signs the review in the LMS.';
   if (c.meeting?.cancellable) return 'Already booked. If the learner cannot attend, cancel it or move it to a time the coach is free.';
   if (c.bookable.includes('catch-up')) return 'Book a catch-up or support session in the coach’s LMS calendar, or send the booking email.';
   if (c.bookable.length) return 'Book a support session in the coach’s LMS calendar, or send the booking email.';
   if (reviewBookingPage(c)) return 'Book it with the learner on the coach’s page (use the learner’s own name and email), or send the booking email. The coach links it to the LMS review.';
   const rebook = 'The learner rebooks the review from the coach’s page in the booking email.';
-  if (c.source_type === 'signature' && c.employer_signature_missing) return 'Nothing to book: call or email the employer and ask them to sign the review in the LMS.';
   return ({
     pr: 'The learner books the review from the coach’s page in the booking email.',
     mcm: 'The learner books the meeting from the coach’s page in the booking email.',
