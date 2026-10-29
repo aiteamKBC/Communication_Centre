@@ -127,7 +127,7 @@ test('the overview shows the board live, what needs the director, the month in g
   await expect(page.getByRole('heading', { name: 'Missed calls & voicemails', level: 1 })).toBeVisible();
 });
 
-test('each specialist has a page: live line, month, graphs, caseload, quality, week, call-backs and calls', async ({ page }) => {
+test('each specialist has a page: live line, lists today, month, graphs, caseload, quality, week and calls', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const { asked } = await open(page);
   await page.getByRole('region', { name: 'The team' }).getByRole('button', { name: /Tina Shah/ }).click();
@@ -138,8 +138,10 @@ test('each specialist has a page: live line, month, graphs, caseload, quality, w
   await expect(page.getByRole('button', { name: /Did not confirm the catch-up date/ })).toBeVisible();
   const week = page.getByRole('region', { name: 'Weekly scorecard' });
   await expect(week.getByRole('row')).toHaveCount(2);   // header + Tina only
-  await expect.poll(() => asked.some(url => url.pathname.endsWith('/inbound/') && url.searchParams.get('agent_id') === '2')).toBe(true);
+  await expect(page.getByRole('region', { name: 'Tina’s lists' })).toBeVisible();
   await expect.poll(() => asked.some(url => url.pathname.endsWith('/call-log/') && url.searchParams.get('agent_id') === '2')).toBe(true);
+  // Missed calls to call back have their own page; the specialist page no longer repeats them.
+  expect(asked.some(url => url.pathname.endsWith('/inbound/') && url.searchParams.get('agent_id') === '2')).toBe(false);
   await page.screenshot({ path: test.info().outputPath('specialist.png'), fullPage: true });
   await page.getByRole('button', { name: 'Omar Patel' }).click();
   await expect(page.getByRole('heading', { name: 'Omar Patel', level: 2 })).toBeVisible();

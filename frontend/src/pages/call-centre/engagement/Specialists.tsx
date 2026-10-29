@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { CallFlag, Overview } from '../api';
 import { useCallCentre } from '../api';
-import type { Session } from './actions';
 import { CallReviewDialog } from './CallReview';
 import DeskProgress, { NowOn } from './DeskProgress';
 import CallLog from './CallLog';
@@ -11,7 +10,6 @@ import { Figure } from './DirectorHome';
 import type { Go } from './DirectorHome';
 import type { Live } from './live';
 import { liveSeconds } from './live';
-import MissedCalls from './MissedCalls';
 import { duration, when } from './model';
 import type { DeskWork } from './model';
 import { Scorecard } from './Scorecard';
@@ -57,10 +55,10 @@ export function SpecialistIndex({ overview, live, now, go }: { overview: Overvie
   );
 }
 
-/** One specialist up close: live now, the month in figures and graphs, call quality, their caseload, their week, the
- * learners waiting for their call back, and every call they made. */
-export function SpecialistPage({ overview, agentId, live, now, go, session, onOpenCase, onPreview }: {
-  overview: Overview; agentId: number; live: Live | null; now: number; go: Go; session: Session;
+/** One specialist up close: live now, their lists today, the month in figures and graphs, call quality, their caseload,
+ * their week and every call they made. Missed calls to call back have their own page (view=missed). */
+export function SpecialistPage({ overview, agentId, live, now, go, onOpenCase, onPreview }: {
+  overview: Overview; agentId: number; live: Live | null; now: number; go: Go;
   onOpenCase: (id: number) => void; onPreview: (id: number) => void;
 }) {
   const [flag, setFlag] = useState<CallFlag | null>(null);
@@ -176,7 +174,6 @@ export function SpecialistPage({ overview, agentId, live, now, go, session, onOp
       </section>
 
       <Scorecard manager revision={overview.generated_at} agentId={agent.id} />
-      <MissedCalls session={session} revision={overview.generated_at} onOpenCase={onOpenCase} agentId={agent.id} />
       <div className="dd-log"><CallLog agentId={agent.id} manager revision={overview.generated_at} onOpen={onOpenCase} /></div>
       <CallReviewDialog call={flag} onClose={() => setFlag(null)} />
     </div>

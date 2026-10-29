@@ -244,7 +244,7 @@ export default function CallCentrePage() {
                 </>
               ) : view === 'specialists' ? <SpecialistIndex overview={overview} live={live} now={now} go={go} />
                 : view === 'specialist' && specialistId ? (
-                  <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go} session={session}
+                  <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go}
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
                 ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
                   : view === 'meetings' ? <ReviewMeetings today={overview.today} />
