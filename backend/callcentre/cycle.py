@@ -18,6 +18,7 @@ from .learner_satisfaction import generate as generate_learner_satisfaction, gen
 from .services import Conflict, apply_stale_outcomes, event, expire_claims, match_call, release_fields, resolve
 from .rules import LATE_FROM, is_late, late_cutoff
 from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
+from .voicemail_calls import detect as detect_voicemails, effective_result_expression
 from .zoom_phone import account_labels, sync_account
 from .zoom_views import current_account_filter
 
@@ -121,13 +122,15 @@ def match_calls():
     matched = 0
     if earliest:
         # Calls before the module's first case cannot be its contact attempts.
-        changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('result'))
+        # The result as the cases take it: a call a voicemail picked up is not answered (voicemail_calls).
+        changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('case_result'))
         pending_intent = CallIntent.objects.filter(
             matched_call__isnull=True, agent__zoom_account=OuterRef('source_account'),
             created_at__lte=OuterRef('started_at'),
             created_at__gte=OuterRef('started_at') - timedelta(minutes=10),
         )
         calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
+            case_result=effective_result_expression()).annotate(
             needs_result=Exists(changed_result), pending_intent=Exists(pending_intent),
             system_call=Exists(system_calls().filter(pk=OuterRef('pk'))),
         ).filter(Q(callmatch__isnull=True, pending_intent=True) | Q(needs_result=True, system_call=True)).order_by('started_at')
@@ -199,6 +202,8 @@ def run_recording_sync():
         for account in account_labels():
             step(result, 'zoom_' + account, lambda account=account: sync_account(account, include_recordings=True))
             step(result, 'voicemails_' + account, lambda account=account: voicemail_sync(account))
+        # Before matching: a call whose transcript is a voicemail greeting is then applied to its cases as one.
+        step(result, 'voicemail_calls', detect_voicemails)
         step(result, 'matched', match_calls)
         step(result, 'inbound', inbound_sync)
         step(result, 'analyses', process_ai)
@@ -249,6 +254,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
         # After maintenance: a technical issue still with support ends the cycle waiting, whatever a call did meanwhile.
         from .helpdesk import sync as sync_helpdesk
         step(result, 'technical_issues', sync_helpdesk)
+        step(result, 'voicemail_calls', detect_voicemails)
         step(result, 'matched', match_calls)
         # After matching: an outcome still waiting for a call Zoom has not reported is applied without it.
         step(result, 'held_outcomes', apply_stale_outcomes)

@@ -17,6 +17,7 @@ from .employer_desk import EMPLOYER, SATISFACTION, optional, scope_error, specia
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
+from .voicemail_calls import SPECIALIST, effective_result, mark as mark_voicemail
 from .zoom_views import current_account_filter
 
 logger = logging.getLogger(__name__)
@@ -378,13 +379,15 @@ def apply_call_result(match):
     if not system_matches().filter(pk=match.pk).exists():
         return
     call = match.call
-    if not call.ended_at or call.result not in FAILED_RESULTS | {'answered'}:
+    # A voicemail that picked up counts as not answered (voicemail_calls).
+    result = effective_result(call)
+    if not call.ended_at or result not in FAILED_RESULTS | {'answered'}:
         return
     for link in system_case_calls(match.cases.all()).select_for_update().select_related('ticket'):
-        if link.processed_result == call.result:
+        if link.processed_result == result:
             continue
         ticket = CaseTicket.objects.select_for_update().get(pk=link.ticket_id)
-        link.processed_result = call.result
+        link.processed_result = result
         link.save(update_fields=['processed_result'])
         # Recompute from distinct real calls so re-syncs and out-of-order imports cannot inflate counts.
         eligible = system_case_calls(ticket.calls.all())
@@ -401,7 +404,7 @@ def apply_call_result(match):
             ticket.save(update_fields=['attempts', 'last_contact_at'])
         else:
             ticket.save(update_fields=['attempts'])
-        event(ticket, 'zoom_result', {'result': call.result, 'failed_attempts': ticket.attempts}, agent=match.agent, call=call)
+        event(ticket, 'zoom_result', {'result': result, 'failed_attempts': ticket.attempts}, agent=match.agent, call=call)
         apply_pending_outcome(ticket, link, match)
         from .learner_satisfaction import apply_pending_feedback   # learner_satisfaction imports this module
         apply_pending_feedback(ticket, match)
@@ -435,7 +438,7 @@ def check_outcome(ticket, outcome, option, note, callback_at):
 
 def check_call_result(outcome, call):
     # No answer is never questioned: a voicemail that picks up is "answered" to Zoom, however long the message left.
-    if outcome in {'reached', 'callback', 'refused'} and call.result != 'answered':
+    if outcome in {'reached', 'callback', 'refused'} and effective_result(call) != 'answered':
         raise ValueError('Zoom must confirm an answered call.')
 
 
@@ -636,6 +639,8 @@ def apply_pending_outcome(ticket, link, match):
     if saved:
         link.outcome, link.outcome_at = saved.data.get('outcome', ''), timezone.now()
         link.save(update_fields=['outcome', 'outcome_at'])
+        if link.outcome == 'no_answer':
+            mark_voicemail(match, SPECIALIST)
         event(ticket, 'outcome_call_linked', {'outcome': link.outcome, 'result': match.call.result,
                                               'outcome_event': saved.pk}, match.agent, call=match.call)
         flag_mismatch(ticket, link.outcome, match)
@@ -673,6 +678,8 @@ def apply_outcome(ticket, link, agent, actor, outcome, option, note, callback_at
             raise ValueError('A verified call started from this system is required.')
         link.outcome, link.outcome_at = outcome, timezone.now()
         link.save(update_fields=['outcome', 'outcome_at'])
+        if outcome == 'no_answer':
+            mark_voicemail(link.match, SPECIALIST)
     promises = PROMISES.get(ticket.source_type, {})
     # MVP: agreeing to book is accepted as the close, because booking proof is not connected yet.
     closes_now = outcome == 'reached' and option in promises and promises[option] is None

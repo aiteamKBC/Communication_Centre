@@ -6,6 +6,7 @@ from django.db.models import Q
 from .models import CallMatch, CaseTicket, TicketEvent
 from .rules import FAILED_RESULTS, LONDON
 from .call_scope import system_calls
+from .voicemail_calls import effective_result
 
 
 def monthly_history(agent, lower, upper, now, page, page_size=30):
@@ -20,9 +21,11 @@ def monthly_history(agent, lower, upper, now, page, page_size=30):
     for call in calls:
         row = daily[call.started_at.astimezone(LONDON).date().isoformat()]
         row['attempts'] += 1
-        row['connected'] += call.result == 'answered'
-        row['not_answered'] += call.result in FAILED_RESULTS
-        row['other'] += call.result != 'answered' and call.result not in FAILED_RESULTS
+        # A voicemail that picked up is not connected; its time stays in the talk time (voicemail_calls).
+        result = effective_result(call)
+        row['connected'] += result == 'answered'
+        row['not_answered'] += result in FAILED_RESULTS
+        row['other'] += result != 'answered' and result not in FAILED_RESULTS
         if call.result == 'answered':
             row['seconds'] += call.duration_seconds or 0
 

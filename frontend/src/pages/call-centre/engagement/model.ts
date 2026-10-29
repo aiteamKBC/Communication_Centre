@@ -455,6 +455,68 @@ export const listCount = (overview: Pick<Overview, 'cases' | 'today' | 'next_wor
 export const listsTotal = (overview: Pick<Overview, 'cases' | 'today' | 'next_workday'>, layout: DeskLayout, topics: string[] = layout.lists) =>
   uniqueLearners(topics.filter(key => key !== 'followups').flatMap(key => listCases(overview, key, null))).length;
 
+/** A specialist's desk: their allocated learners plus the shared queue; with employer specialists chosen, theirs holds
+ * the employer calls (and missing employer signatures) only, and everyone else's none. A director's task adds the
+ * learners it gives them, whoever owns them (`task`, and their other cases that come along on the call); a case covered
+ * by someone else stays on its owner's lists read-only (`covered`). */
+export function deskCases<T extends Pick<Overview, 'cases' | 'employer_specialists'>>(overview: T, agentId: number): T {
+  const team = overview.employer_specialists || [];
+  const employerDesk = team.includes(agentId);
+  const onThisDesk = (c: OverviewCase) => (!c.allocated_agent_id || c.allocated_agent_id === agentId)
+    && (!team.length || (employerDesk
+      ? c.source_type === 'employer_feedback' || !!c.optional || (c.source_type === 'signature' && !!c.employer_signature_missing)
+      : c.source_type !== 'employer_feedback' && !c.optional
+        && (c.source_type !== 'signature' || !!c.learner_signature_missing)));
+  const cases = overview.cases.flatMap((c): OverviewCase[] => {
+    if (c.cover && c.cover.to_agent_id === agentId) return [{ ...c, desk: c.cover.direct ? 'task' : onThisDesk(c) ? 'own' : 'call' }];
+    return onThisDesk(c) ? [{ ...c, desk: c.cover?.direct ? 'covered' : 'own' }] : [];
+  });
+  return { ...overview, cases };
+}
+
+/** Whether Call next takes this case on a desk: its own work (employer calls on an employer desk), or a director's task. */
+export const callsOnDesk = (c: OverviewCase, employerDesk: boolean) => c.desk === 'task' || c.desk === 'call'
+  || (c.desk !== 'covered' && (employerDesk
+    ? c.source_type === 'employer_feedback' || !!c.optional || (c.source_type === 'signature' && !!c.employer_signature_missing)
+    : c.source_type !== 'employer_feedback' && !c.optional));
+
+/** A case Call next offers this specialist now: on one of their lists, due, with a number, and not claimed by another. */
+export const callable = (c: OverviewCase, agentId: number | null, employerDesk: boolean, today: string, nextWorkday: string) =>
+  activeCase(c) && categoryFor(c, today, nextWorkday) !== null && c.desk !== 'call' && callsOnDesk(c, employerDesk)
+  && !!c.learner_phone && dueForCall(c) && (!c.claimed_agent_id || c.claimed_agent_id === agentId);
+
+/** A case a specialist saved a result on today (desk-progress/): any outcome, a close or completed feedback. */
+export type DeskWork = {
+  agent_id: number; case_id: number; learner_name: string; learner_email: string; contact_key: string; source_type: string;
+  booking_at: string | null; employer_signature_missing: boolean; learner_signature_missing: boolean; task_id: number | null;
+  outcome: string; resolved: boolean; at: string; status: string;
+};
+export type ListProgress = { key: string; label: string; done: DeskWork[]; remaining: OverviewCase[]; waiting: number };
+
+/** A specialist's lists in their Today order: who they finished today on each (by the list the case is on, or the task
+ * it was called for), who Call next still has for them now, and who waits (not due yet). ``current`` is the list Call
+ * next is on: the first with someone still to call. */
+export function listProgress(overview: Overview, agentId: number, worked: DeskWork[]) {
+  const employerDesk = (overview.employer_specialists || []).includes(agentId);
+  const desk = deskCases(overview, agentId);
+  const topics = deskTopics(deskLayout(overview, agentId).lists, overview.tasks, agentId);
+  const listOf = (row: DeskWork) => (row.task_id && topics.includes(`${TASK}${row.task_id}`) ? `${TASK}${row.task_id}`
+    : categoryFor({ ...row, id: row.case_id } as unknown as OverviewCase, overview.today, overview.next_workday));
+  const mine = worked.filter(row => row.agent_id === agentId);
+  const lists: ListProgress[] = topics.map(key => {
+    const done = [...new Map(mine.filter(row => listOf(row) === key).map(row => [row.contact_key || row.learner_email, row])).values()];
+    // The feed names a person by case or email; the overview by its own contact key: either one matching is the person.
+    const finished = new Set(done.flatMap(row => [row.contact_key, row.learner_email.trim().toLowerCase()]).filter(Boolean));
+    const cases = listCases(desk, key, agentId);
+    const remaining = uniqueLearners(cases.filter(c => callable(c, agentId, employerDesk, overview.today, overview.next_workday)));
+    const due = new Set(remaining.map(contactKey));
+    const waiting = uniqueLearners(cases).filter(c => !due.has(contactKey(c)) && !finished.has(contactKey(c))
+      && !finished.has(c.learner_email.trim().toLowerCase())).length;
+    return { key, label: listLabel(key, overview.tasks), done, remaining, waiting };
+  });
+  return { lists, current: lists.find(list => list.remaining.length)?.key || null };
+}
+
 /** What saving the satisfaction feedback did: completed now (`held` only for feedback saved before it completed straight away). */
 export const feedbackMessage = (held?: boolean) => (held
   ? 'Feedback saved. It completes the review as soon as Zoom reports the call answered (usually within 10 minutes).'

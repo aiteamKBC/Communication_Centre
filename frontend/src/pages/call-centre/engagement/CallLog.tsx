@@ -25,7 +25,9 @@ type LoggedCase = {
 };
 type LoggedCall = {
   id: number; pressed_at: string; agent: { id: number; name: string }; learner_name: string; learner_email: string; number: string;
-  zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string; short?: boolean };
+  zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string; short?: boolean;
+    /** Zoom says answered but a voicemail picked up: the specialist saved No answer, or the transcript is a greeting. */
+    voicemail?: '' | 'specialist' | 'transcript' };
   /** The call's recordings, oldest first: played and read here. */
   recordings?: { id: number; transcript: string; duration_seconds: number | null; rating: CallRating | null }[];
   saved: boolean; cases: LoggedCase[];
@@ -156,7 +158,7 @@ function CallRow({ call, manager, onOpen }: { call: LoggedCall; manager: boolean
         <div className="cl-player">
           {recordings.length
             ? <audio controls preload="none" src={`/api/zoom/recordings/${recordings[0].id}/audio/`} aria-label={`Recording of the call to ${who}`} />
-            : <small>{call.zoom.state === 'answered' ? 'No recording yet' : 'No recording'}</small>}
+            : <small>{call.zoom.state === 'answered' || call.zoom.voicemail ? 'No recording yet' : 'No recording'}</small>}
         </div>
       </div>
       {open && (
@@ -164,6 +166,9 @@ function CallRow({ call, manager, onOpen }: { call: LoggedCall; manager: boolean
           <div className="cl-facts">
             <span>{call.learner_email}</span><span>{call.number}</span>
             {call.zoom.short && <span className="danger">Answered under 10 s: voicemail?</span>}
+            {call.zoom.voicemail && <span className="danger">
+              {call.zoom.voicemail === 'specialist' ? 'Voicemail: saved as No answer' : 'Voicemail: the transcript is a greeting'} · counted as not answered
+            </span>}
             {call.wrap_up_seconds != null && <span>Form saved {minutes(call.wrap_up_seconds)} after the call</span>}
             {call.cases[0] && <button type="button" className="primary" onClick={() => onOpen(call.cases[0].id)}>Open the learner’s case</button>}
           </div>

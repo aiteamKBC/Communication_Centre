@@ -260,6 +260,8 @@ class CallMatch(Retained):
     agent = models.ForeignKey(Agent, on_delete=models.PROTECT)
     learner_email = models.EmailField(db_index=True)
     manual = models.BooleanField(default=False)
+    # A voicemail picked up this "answered" call (voicemail_calls): 'specialist' (saved No answer) or 'transcript'.
+    voicemail = models.CharField(max_length=12, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

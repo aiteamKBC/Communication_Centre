@@ -7,6 +7,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import CallIntent, TicketEvent, ZoomPhoneRecording
+from .voicemail_calls import effective_result, marked
 from .zoom_phone import CUT_OFF_SECONDS
 
 # What a call can do to a case, and how long after the Call press it may still happen: Zoom reports a call about ten
@@ -28,9 +29,10 @@ FEEDBACK_FIELDS = ('score', 'problem', 'agreed_action', 'note')
 def zoom_state(intent, now):
     call = intent.matched_call
     if call:
-        return {'state': call.result, 'id': call.pk, 'started_at': call.started_at,
+        # A voicemail that picked up shows as one (voicemail_calls); its time is still shown.
+        return {'state': effective_result(call), 'voicemail': marked(call), 'id': call.pk, 'started_at': call.started_at,
                 'duration_seconds': call.duration_seconds if call.result == 'answered' else 0, 'short': short_answer(call)}
-    return {'state': 'waiting' if intent.created_at > now - ZOOM_WAIT else 'not_matched', 'id': None,
+    return {'state': 'waiting' if intent.created_at > now - ZOOM_WAIT else 'not_matched', 'voicemail': '', 'id': None,
             'started_at': None, 'duration_seconds': None, 'short': False}
 
 
@@ -149,7 +151,7 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
     if agents is not None:
         intents = intents.filter(agent__in=agents)
     total = intents.count()
-    summary = {'calls': total, 'answered': intents.filter(matched_call__result='answered').count(),
+    summary = {'calls': total, 'answered': intents.filter(matched_call__result='answered', matched_call__callmatch__voicemail='').count(),
                'not_matched': intents.filter(matched_call__isnull=True, created_at__lt=now - ZOOM_WAIT).count()}
     # What the specialists achieved in the period, on any case: closed, booked, satisfaction feedback taken.
     done = TicketEvent.objects.filter(created_at__gte=lower, created_at__lt=upper, agent__isnull=False)
@@ -158,7 +160,7 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
     summary['closed'] = done.filter(kind='resolved').values('ticket_id').distinct().count()
     summary['booked'] = done.filter(kind='session_booked').count()
     summary['feedback'] = done.filter(kind__in=('learner_feedback_completed', 'employer_feedback_completed')).count()
-    selected = list(intents.select_related('agent', 'matched_call').prefetch_related('tickets')
+    selected = list(intents.select_related('agent', 'matched_call__callmatch').prefetch_related('tickets')
                     .order_by('-created_at', '-id')[(page - 1) * page_size:page * page_size])
     ticket_ids = {ticket.pk for intent in selected for ticket in intent.tickets.all()}
     # A case's events belong to the call until the same specialist's next Call press on that case.

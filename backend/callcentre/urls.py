@@ -19,6 +19,7 @@ urlpatterns = [
     path('performance/', views.agent_report),
     path('my-history/', views.my_history),
     path('call-log/', views.call_log_view),
+    path('desk-progress/', views.desk_progress_view),
     path('inbound/', views.inbound_view),
     path('scorecard/', views.scorecard_view),
     path('missing-recordings/', views.missing_recordings_view),

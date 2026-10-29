@@ -887,6 +887,17 @@ CALL_LOG_DAYS = {1, 7, 30, 90}
 
 @authenticated
 @require_GET
+def desk_progress_view(request):
+    """Director: what each specialist worked today, for the progress of their lists (desk_progress)."""
+    if not is_director(request.user):
+        raise PermissionDenied('Only a manager can see every specialist’s progress.')
+    from .desk_progress import worked
+    today = timezone.now().astimezone(LONDON).date()
+    return JsonResponse({'day': today.isoformat(), 'worked': worked(today)})
+
+
+@authenticated
+@require_GET
 def call_log_view(request):
     """Calls started from the system and what each did to its cases: a specialist's own, or for a manager everyone's
     (or one specialist's)."""

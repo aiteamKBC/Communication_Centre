@@ -102,8 +102,8 @@ export default function DeskToday({ overview, agent, session, live, now, rang, l
         <header className="dk-section-head">
           <div><p className="dd-eyebrow">One conversation at a time</p><h2 id="dk-next">Call next</h2></div>
         </header>
-        <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={onOpen}
-          topics={lists.some(key => key.startsWith(TASK)) ? lists : undefined} />
+        {/* List by list, in the order of the lists below: the director sees which list each specialist is on. */}
+        <NextCall overview={overview} session={session} onRefresh={onRefresh} notify={notify} onOpen={onOpen} topics={lists} />
       </section>
 
       <section className="dk-section" aria-labelledby="dk-lists">

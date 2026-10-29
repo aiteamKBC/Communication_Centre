@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import type { CallFlag, Overview } from '../api';
+import { useCallCentre } from '../api';
 import type { Session } from './actions';
 import { CallReviewDialog } from './CallReview';
+import DeskProgress, { NowOn } from './DeskProgress';
 import CallLog from './CallLog';
 import { Bars, CallsByDay, QualityStrip, TalkByDay } from './charts';
 import { byReason, caseload, firstName, monthTotals, ranked, rate } from './dashboard';
@@ -11,12 +13,15 @@ import type { Live } from './live';
 import { liveSeconds } from './live';
 import MissedCalls from './MissedCalls';
 import { duration, when } from './model';
+import type { DeskWork } from './model';
 import { Scorecard } from './Scorecard';
 import Switchboard from './Switchboard';
 
 /** Every specialist at a glance: today against target and the month so far. Each card opens their page. */
 export function SpecialistIndex({ overview, live, now, go }: { overview: Overview; live: Live | null; now: number; go: Go }) {
   const reviews = overview.call_reviews?.agents || {};
+  // Today's work of every specialist, for each one's list progress.
+  const progress = useCallCentre<{ day: string; worked: DeskWork[] }>('desk-progress/');
   return (
     <div className="dd">
       <div className="dd-people">
@@ -35,6 +40,7 @@ export function SpecialistIndex({ overview, live, now, go }: { overview: Overvie
                 <span className="dd-meter light" aria-hidden="true"><span className={`dd-meter-fill${share >= 1 ? ' met' : ''}`} style={{ width: `${share * 100}%` }} /></span>
                 <small>{duration(today)} of {duration(agent.target_seconds)} today</small>
               </span>
+              <NowOn overview={overview} agentId={agent.id} worked={progress.data?.worked} />
               <span className="dd-person-figures">
                 <span><b>{agent.month.attempts}</b>calls</span>
                 <span><b>{rate(agent.month.connected, agent.month.attempts) ?? '—'}{agent.month.attempts ? '%' : ''}</b>answered</span>
@@ -58,6 +64,7 @@ export function SpecialistPage({ overview, agentId, live, now, go, session, onOp
   onOpenCase: (id: number) => void; onPreview: (id: number) => void;
 }) {
   const [flag, setFlag] = useState<CallFlag | null>(null);
+  const progress = useCallCentre<{ day: string; worked: DeskWork[] }>('desk-progress/');
   const agent = overview.agents.find(item => item.id === agentId);
   if (!agent) {
     return (
@@ -103,6 +110,7 @@ export function SpecialistPage({ overview, agentId, live, now, go, session, onOp
       )}
 
       <Switchboard agents={[agent]} live={live} now={now} title="Now" />
+      <DeskProgress overview={overview} agentId={agent.id} name={name} worked={progress.data?.worked} error={progress.error} onOpenCase={onOpenCase} />
 
       <section className="dd-section" aria-labelledby="dd-their-month">
         <header className="dd-section-head">

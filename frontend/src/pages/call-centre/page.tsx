@@ -17,7 +17,7 @@ import EmployerSpecialists from './engagement/EmployerSpecialists';
 import Imports from './engagement/Imports';
 import { useLive } from './engagement/live';
 import type { InboundListing } from './engagement/inbound';
-import { deskLayout, deskSection, deskTopics, failingSources, human, listsTotal, longDate, setHolidays } from './engagement/model';
+import { deskCases, deskLayout, deskSection, deskTopics, failingSources, human, listsTotal, longDate, setHolidays } from './engagement/model';
 import MissedCalls from './engagement/MissedCalls';
 import RequestCall from './engagement/RequestCall';
 import ReviewMeetings from './engagement/ReviewMeetings';
@@ -125,24 +125,8 @@ export default function CallCentrePage() {
   }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role, employerDesk]);
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
-  // A specialist's desk holds their allocated learners plus the shared queue; with employer specialists chosen, theirs
-  // holds the employer calls only and everyone else's none. A director's task adds the learners it gives them, whoever
-  // owns them (`task`, and their other cases that come along on the call); a case covered by someone else stays on its
-  // owner's lists read-only (`covered`).
-  const deskOverview = useMemo(() => {
-    if (!overview || !deskAgentId) return overview;
-    // A missing employer signature is an employer call: on the employer specialists' desk, off the others'.
-    const onDesk = (c: OverviewCase) => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
-      && (!team.length || (employerDesk
-        ? c.source_type === 'employer_feedback' || !!c.optional || (c.source_type === 'signature' && !!c.employer_signature_missing)
-        : c.source_type !== 'employer_feedback' && !c.optional
-          && (c.source_type !== 'signature' || !!c.learner_signature_missing)));
-    const cases = overview.cases.flatMap((c): OverviewCase[] => {
-      if (c.cover && c.cover.to_agent_id === deskAgentId) return [{ ...c, desk: c.cover.direct ? 'task' : onDesk(c) ? 'own' : 'call' }];
-      return onDesk(c) ? [{ ...c, desk: c.cover?.direct ? 'covered' : 'own' }] : [];
-    });
-    return { ...overview, cases };
-  }, [overview, deskAgentId, team, employerDesk]);
+  // The desk being shown: its lists, with each director's task (deskCases).
+  const deskOverview = useMemo(() => (overview && deskAgentId ? deskCases(overview, deskAgentId) : overview), [overview, deskAgentId]);
   // The desk's lists in calling order, with the tasks given to it where the director placed them.
   const topics = useMemo(() => deskTopics(layout.lists, overview?.tasks, deskAgentId), [layout.lists, overview?.tasks, deskAgentId]);
 

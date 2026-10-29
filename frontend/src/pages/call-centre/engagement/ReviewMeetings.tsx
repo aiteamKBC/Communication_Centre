@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useCallCentre } from '../api';
 import Dialog from './Dialog';
 import { csvText, downloadBlob, human, when } from './model';
@@ -23,6 +23,7 @@ const FILTERS: [string, string, (counts: Listing['counts']) => number][] = [
   ['cancelled_here', 'Cancelled by us', c => c.cancelled_here], ['unmatched', 'No learner matched', c => c.unmatched],
 ];
 const TYPES = { pr: 'Progress review', mcm: 'Monthly coaching' };
+const PAGE_SIZE = 25;
 const EMPLOYER: Record<string, string> = {
   confirmed: 'Employer confirmed', cannot_attend: 'Employer says the learner cannot attend', no_answer: 'No answer from the employer',
   not_reachable: 'Employer could not be reached', no_manager: 'No line manager on record',
@@ -74,6 +75,12 @@ export default function ReviewMeetings({ today }: { today: string }) {
     const q = query.trim().toLowerCase();
     return (data?.items || []).filter(m => !q || [m.learner_name, m.learner_email, m.coach_email, m.subject].join(' ').toLowerCase().includes(q));
   }, [data, query]);
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visible = shown.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  // A new range, filter or search starts again at the first page.
+  useEffect(() => setPage(1), [from, to, status, query]);
 
   function download() {
     const rows = shown.map(m => ({
@@ -123,7 +130,7 @@ export default function ReviewMeetings({ today }: { today: string }) {
             <table className="rm-table">
               <thead><tr><th>When</th><th>Meeting</th><th>Learner</th><th>Coach</th><th>Outlook reply</th><th>Status</th><th /></tr></thead>
               <tbody>
-                {shown.map(m => {
+                {visible.map(m => {
                   const [label, tone, by] = state(m);
                   return (
                     <tr key={m.id}>
@@ -143,6 +150,19 @@ export default function ReviewMeetings({ today }: { today: string }) {
                 {!shown.length && <tr><td colSpan={7}>No meetings match.</td></tr>}
               </tbody>
             </table>
+            {pageCount > 1 && (
+              <nav className="ed-pagination rm-pages" aria-label="Meeting pages">
+                <button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>Previous page</button>
+                <label>Page
+                  <select aria-label="Meeting page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>
+                    {Array.from({ length: pageCount }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+                  </select>
+                  of {pageCount}
+                </label>
+                <button type="button" disabled={currentPage === pageCount} onClick={() => setPage(currentPage + 1)}>Next page</button>
+                <span>{shown.length} meetings · {PAGE_SIZE} per page</span>
+              </nav>
+            )}
           </div>
         )}
       </section>

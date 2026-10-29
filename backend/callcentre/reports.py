@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import Agent, CallMatch, CaseTicket, TicketEvent, ZoomSyncState
 from .rules import FAILED_RESULTS, LONDON, working_day
 from .call_scope import system_calls
+from .voicemail_calls import effective_result, reached
 from .zoom_phone import account_config
 from .zoom_views import current_account_filter
 
@@ -41,15 +42,16 @@ def performance(start, end):
         # The verified match names the specialist: a shared Zoom line reports no caller email.
         calls = list(system_calls().filter(current_account_filter(), callmatch__agent=agent, source_account=agent.zoom_account,
                      direction='outbound', started_at__gte=lower, started_at__lt=upper)
-                     .order_by('started_at'))
+                     .select_related('callmatch').order_by('started_at'))
         daily = []
         day = start
         while day <= end:
             current = [call for call in calls if call.started_at.astimezone(LONDON).date() == day]
+            # Talk time is everything Zoom reports as answered; a voicemail that picked up is not an answered call.
             answered = [call for call in current if call.result == 'answered']
             gaps, unknown = gaps_for_day(current, day, now)
-            daily.append({'date': day.isoformat(), 'calls': len(current), 'answered': len(answered),
-                'not_answered': sum(c.result in FAILED_RESULTS for c in current),
+            daily.append({'date': day.isoformat(), 'calls': len(current), 'answered': sum(reached(c) for c in current),
+                'not_answered': sum(effective_result(c) in FAILED_RESULTS for c in current),
                 'seconds': sum(c.duration_seconds or 0 for c in answered),
                 'missing_duration': sum(c.duration_seconds is None for c in answered),
                 'first_call': current[0].started_at if current else None, 'last_call': current[-1].started_at if current else None,
@@ -67,7 +69,7 @@ def performance(start, end):
             'seconds': sum(d['seconds'] for d in daily),
             'missing_duration': sum(c.duration_seconds is None for c in calls),
             'answered_missing_duration': sum(d['missing_duration'] for d in daily),
-            'unique_learners': CallMatch.objects.filter(agent=agent, call_id__in=[c.pk for c in calls if c.result == 'answered'])
+            'unique_learners': CallMatch.objects.filter(agent=agent, call_id__in=[c.pk for c in calls if reached(c)])
                 .exclude(cases__outcome='wrong_number').values('learner_email').distinct().count(),
             'resolved': cases.filter(resolved_agent=agent, resolved_at__gte=lower, resolved_at__lt=upper).count(),
             'pending': cases.open().filter(pk__in=worked_ids).count(),

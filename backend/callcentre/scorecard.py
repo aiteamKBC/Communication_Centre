@@ -11,6 +11,7 @@ from .call_log import SHORT_ANSWER_SECONDS
 from .call_scope import system_calls
 from .models import Agent, CallIntent, CaseTicket, TicketEvent, ZoomPhoneRecording
 from .rules import FAILED_RESULTS, LONDON, working_day
+from .voicemail_calls import effective_result, reached
 
 # A recording is expected for an answered call this long, once Zoom has had time to process it.
 RECORDING_MIN_SECONDS = 30
@@ -61,7 +62,9 @@ def card(agent, lower, upper, now=None):
     calls = list(system_calls().filter(callmatch__agent=agent, started_at__gte=lower, started_at__lt=min(upper, now))
                  .select_related('callmatch'))
     made = [call for call in calls if call.direction == 'outbound']
+    # Talk time is everything Zoom reports as answered; a voicemail that picked up is not an answered call.
     answered = [call for call in made if call.result == 'answered']
+    spoke = [call for call in answered if reached(call)]
     incoming = [call for call in calls if call.direction == 'inbound' and call.result == 'answered']
     talk_out = sum(call.duration_seconds or 0 for call in answered)
     talk_in = sum(call.duration_seconds or 0 for call in incoming)
@@ -77,9 +80,9 @@ def card(agent, lower, upper, now=None):
     reviews = call_reviews(lower, upper, [agent], own_only=True)['agents'][agent.pk]
     return {
         'agent': {'id': agent.pk, 'name': agent.display_name},
-        'calls': len(made), 'answered': len(answered), 'not_answered': sum(call.result in FAILED_RESULTS for call in made),
-        'reach_rate': round(100 * len(answered) / len(made)) if made else None,
-        'learners_reached': len({call.callmatch.learner_email for call in answered + incoming}),
+        'calls': len(made), 'answered': len(spoke), 'not_answered': sum(effective_result(call) in FAILED_RESULTS for call in made),
+        'reach_rate': round(100 * len(spoke) / len(made)) if made else None,
+        'learners_reached': len({call.callmatch.learner_email for call in spoke + incoming}),
         'talk_seconds': talk_out + talk_in, 'talk_out_seconds': talk_out, 'incoming_answered': len(incoming), 'talk_in_seconds': talk_in,
         'target_seconds': agent.daily_talk_target_minutes * 60 * days, 'working_days': days,
         'short_answered': sum(call.duration_seconds is not None and call.duration_seconds < SHORT_ANSWER_SECONDS for call in answered),
