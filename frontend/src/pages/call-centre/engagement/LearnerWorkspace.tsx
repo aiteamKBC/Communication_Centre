@@ -29,7 +29,9 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
   const person = detail?.ticket || overview.cases.find(c => c.id === id);
 
   // The person's open cases as the lists see them (with their meeting and employer steps), then any only the case knows.
-  const listed = person ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(person)) : [];
+  // Matched on the lists' key for this person: the case on its own may name them differently (person ID or email).
+  const known = overview.cases.find(c => c.id === id || detail?.issues.some(issue => issue.id === c.id));
+  const listed = person ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(known || person)) : [];
   const caseIds = [...new Set([...listed.map(c => c.id), ...(detail?.issues || []).filter(activeCase).map(c => c.id)])];
   const due = listed.filter(c => dueForCall(c));
   const callFrom = due.find(c => c.id === id) || due[0];

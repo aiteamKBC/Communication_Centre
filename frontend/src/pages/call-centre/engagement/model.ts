@@ -197,7 +197,8 @@ export const activeCase = (c: Pick<OverviewCase, 'status'>) => c.status !== 'res
 /** A case is due for a call unless it is waiting on evidence, an AI decision or a future callback. */
 export function dueForCall(c: OverviewCase, now = Date.now()) {
   if (!activeCase(c) || ['pending_verification', 'ai_suggested_close'].includes(c.status)) return false;
-  return !c.next_followup_at || Date.parse(c.next_followup_at) <= now;
+  // A learner who rang and was missed is called back now, whatever follow-up the case waits for.
+  return !!c.called_back_at || !c.next_followup_at || Date.parse(c.next_followup_at) <= now;
 }
 
 export function categoryFor(c: OverviewCase, today: string, nextWorkday: string) {

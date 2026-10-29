@@ -105,6 +105,19 @@ class InboundTests(InboundBase):
         self.assertTrue(ann.called_back_at)
         self.assertGreater(rank(ann, now), rank(zed, now))
 
+    def test_a_learner_waiting_for_a_call_back_is_called_now_about_all_their_cases(self):
+        from .services import Conflict, create_intent
+        later = timezone.now() + timedelta(hours=3)
+        CaseTicket.objects.filter(pk=self.ann.pk).update(next_followup_at=later)
+        lecture = CaseTicket.objects.create(source_type='attendance', reason_key='attendance:ann', learner_email='ann@x.test',
+                                            learner_name='Ann Smith', learner_phone=ANN, due_at=timezone.now(), next_followup_at=later)
+        with self.assertRaisesMessage(Conflict, 'The next follow-up is not due yet.'):
+            create_intent(self.ann.pk, self.alice)
+        self.call('inbound', ANN, 'no_answer')   # Ann rang and nobody answered
+        self.sync()
+        intent = create_intent(self.ann.pk, self.alice)
+        self.assertEqual(set(intent.tickets.values_list('pk', flat=True)), {self.ann.pk, lecture.pk})
+
     def test_who_sees_what_and_only_a_director_gives_out_enquiries(self):
         from .inbound import change, listing
         Allocation.objects.create(learner_email='ann@x.test', agent=self.bob, updated_by='director')

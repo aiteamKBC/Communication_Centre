@@ -216,6 +216,12 @@ def open_callbacks():
     return found
 
 
+def waiting_for_callback(email):
+    """Whether this learner rang, was missed and is still waiting for a call back: their cases are called now, whatever
+    follow-up date they carry."""
+    return bool(email) and ready() and Inbound.objects.filter(status='open', kind=Inbound.CALLBACK, caller_email=email_key(email)).exists()
+
+
 def visible(items, user, agent):
     """What this person sees: a director everything; a specialist the call-backs to their own number (the learner rang
     them), the call-backs to a shared line of the learners they look after (or of learners nobody looks after), and

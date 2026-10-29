@@ -181,7 +181,10 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     ticket = CaseTicket.objects.get(pk=ticket_id)
     if ticket.source_type == 'satisfaction':
         raise Conflict('Employer surveys are followed up by email, not by phone.')
-    if ticket.next_followup_at and ticket.next_followup_at > now:
+    from .inbound import waiting_for_callback
+    # A learner who rang and was missed is called back now, whatever follow-up their cases wait for.
+    rang = waiting_for_callback(ticket.learner_email)
+    if ticket.next_followup_at and ticket.next_followup_at > now and not rang:
         raise Conflict('The next follow-up is not due yet.')
     call_email, number = call_contact(ticket, contact_role)
     if email_key(call_email) in do_not_call_emails():
@@ -191,7 +194,7 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    tickets = call_cases(ticket, now)
+    tickets = call_cases(ticket, now, rang)
     # An optional call is about that call alone; it is linked to the learner's open satisfaction review (not claimed,
     # so it stays on the other agents' lists) so feedback given on it can complete the review.
     linked = []
@@ -217,8 +220,9 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     return intent
 
 
-def call_cases(ticket, now):
-    """The cases one call to this contact covers: this one, and the person's other open cases that are due now."""
+def call_cases(ticket, now, rang=False):
+    """The cases one call to this contact covers: this one, and the person's other open cases that are due now (all of
+    them when ``rang``: the learner rang us and is waiting for a call back)."""
     candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
     person_id = ticket.source_data.get('person_id')
     if person_id and ticket.source_type != 'employer_feedback':
@@ -230,7 +234,8 @@ def call_cases(ticket, now):
         candidates = candidates.filter(same_contact(ticket)) if ticket.learner_email else candidates.filter(pk=ticket.pk)
     # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
     # keeps its waiting state.
-    candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
+    if not rang:
+        candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
     # A technical issue still with support is not part of another call: the call would send it back to the list.
     candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
     return list(candidates.order_by('pk'))
