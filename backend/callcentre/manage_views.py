@@ -25,7 +25,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, delegation, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
+from . import booking_links, delegation, do_not_call, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
@@ -318,6 +318,28 @@ def employer_specialists(request):
         'open_employer_cases': CaseTicket.objects.open().filter(source_type=employer_desk.EMPLOYER).count(),
         'history': employer_desk.history(),
     })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def do_not_call_view(request):
+    """Director card: learners taken off every call list (no calls, emails allowed), and the history."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        actor = request.user.get_username()
+        if data.get('action') == 'add':
+            people, email = learner_directory(), email_key(data.get('learner_email'))
+            person = people.resolve(email=email) if hasattr(people, 'resolve') else people.get(email)
+            if not person:
+                raise ValueError('Choose a learner from the list.')
+            do_not_call.add(person['learner_email'], person['learner_name'], data.get('reason'), data.get('note'), actor)
+        elif data.get('action') == 'remove':
+            do_not_call.remove(data.get('id'), data.get('note'), actor)
+        else:
+            raise ValueError('Unknown action.')
+    return JsonResponse(do_not_call.listing())
 
 
 @authenticated

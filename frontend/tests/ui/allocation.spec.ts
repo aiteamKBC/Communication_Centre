@@ -36,6 +36,9 @@ test('the director transfers the whole shared queue to one specialist', async ({
     if (url.pathname === '/api/callcentre/employer-specialists/') {
       return json({ values: { enabled: true, agent_ids: [7] }, revision: 0, set_up: true, not_set_up: '', open_employer_cases: 0, agents: [], history: [] });
     }
+    if (url.pathname === '/api/callcentre/do-not-call/') {
+      return json({ set_up: true, not_set_up: '', reasons: { medical: 'Medical: cannot take phone calls' }, current: [], history: [] });
+    }
     if (url.pathname === '/api/callcentre/config/') return json({ csrf_token: 't', agent_id: null, agents: [], sources: [], cycle: null });
     if (url.pathname === '/api/callcentre/overview/') {
       return json({ today: '2026-10-20', next_workday: '2026-10-21', holidays: [], month: '2026-10', generated_at: new Date().toISOString(),

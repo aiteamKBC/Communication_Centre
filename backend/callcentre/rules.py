@@ -38,6 +38,7 @@ def missed_lectures_ready_until(today):
 def out_of_scope():
     """Open cases the call centre does not work on now. They stay in the database, untouched."""
     from .sources import active_case_contacts, on_break_emails, test_learner_emails   # sources imports this module
+    from .do_not_call import listed   # do_not_call imports models, which imports this module
     today = datetime.now(LONDON).date()
     ready = missed_lectures_ready_until(today)
     return (Q(source_type__in=PAUSED_CATEGORIES)
@@ -48,6 +49,8 @@ def out_of_scope():
             | Q(source_type='reminder', booking_at__lt=datetime.combine(next_workday(today), time.min, tzinfo=LONDON))
             | Q(learner_email__in=on_break_emails())
             | Q(learner_email__in=test_learner_emails())
+            # Taken off every call list by a director (do_not_call); a missing employer signature is the employer's call.
+            | (Q(learner_email__in=listed()) & ~Q(source_type='signature', source_data__employer_signature_missing=True))
             | Q(source_type='attendance', overdue_since__lt=MISSED_LECTURES_SINCE)
             | Q(source_type='attendance', overdue_since__gt=ready)
             | Q(source_type__in=REVIEW_CATEGORIES, overdue_since__lt=REVIEWS_SINCE)

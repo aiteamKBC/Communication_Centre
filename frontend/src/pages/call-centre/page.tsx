@@ -12,6 +12,7 @@ import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
 import { CallsPage, ScorecardsPage } from './engagement/Director';
 import DirectorHome from './engagement/DirectorHome';
+import DoNotCall from './engagement/DoNotCall';
 import EmployerSpecialists from './engagement/EmployerSpecialists';
 import Imports from './engagement/Imports';
 import { useLive } from './engagement/live';
@@ -130,8 +131,12 @@ export default function CallCentrePage() {
   // owner's lists read-only (`covered`).
   const deskOverview = useMemo(() => {
     if (!overview || !deskAgentId) return overview;
+    // A missing employer signature is an employer call: on the employer specialists' desk, off the others'.
     const onDesk = (c: OverviewCase) => (!c.allocated_agent_id || c.allocated_agent_id === deskAgentId)
-      && (!team.length || (c.source_type === 'employer_feedback' || !!c.optional) === employerDesk);
+      && (!team.length || (employerDesk
+        ? c.source_type === 'employer_feedback' || !!c.optional || (c.source_type === 'signature' && !!c.employer_signature_missing)
+        : c.source_type !== 'employer_feedback' && !c.optional
+          && (c.source_type !== 'signature' || !!c.learner_signature_missing)));
     const cases = overview.cases.flatMap((c): OverviewCase[] => {
       if (c.cover && c.cover.to_agent_id === deskAgentId) return [{ ...c, desk: c.cover.direct ? 'task' : onDesk(c) ? 'own' : 'call' }];
       return onDesk(c) ? [{ ...c, desk: c.cover?.direct ? 'covered' : 'own' }] : [];
@@ -237,6 +242,7 @@ export default function CallCentrePage() {
           ) : view === 'allocations' ? (
             <>
               <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />
+              <DoNotCall session={session} onChanged={refresh} notify={notify} />
               <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             </>
           ) : view === 'phone' ? (

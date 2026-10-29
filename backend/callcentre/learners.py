@@ -70,9 +70,18 @@ def calling_status(lms_status, aptem_status):
 # Owner names that are not a coach: a learner showing one of these needs the next source.
 PLACEHOLDER_COACHES = {'default owner'}
 
+# A learner withdrawn in the LMS is Withdrawn here too, even while Programme_status still says Active: their
+# Created_users " Status" (the column name starts with a space) or their learner record's lifecycle_status
+# ("Learner".learners, as on the learner page, linked by enrolment_id) says withdrawn. Aptem then drops them from its
+# active extract, so no other source says so.
 LMS_LEARNERS_SQL = '''SELECT id, "Username", "Email", "Phone_number", aptem_id, "Coach_name", "Coach_email",
-    "Case_owner", "Programme", "Programme_status", "Orgnization", "Employer", "Line_manager", "Cohort", "Group"
-    FROM enrolment."Created_users"'''
+    "Case_owner", "Programme",
+    CASE WHEN lower(trim(u." Status")) = 'withdrawn'
+              OR EXISTS (SELECT 1 FROM "Learner".learners l
+                         WHERE l.enrolment_id = u.id AND lower(trim(l.lifecycle_status)) = 'withdrawn')
+         THEN 'Withdrawn' ELSE "Programme_status" END AS "Programme_status",
+    "Orgnization", "Employer", "Line_manager", "Cohort", "Group"
+    FROM enrolment."Created_users" u'''
 STAFF_SQL = 'SELECT "Username", "Email" FROM enrolment."Staff_users"'
 
 

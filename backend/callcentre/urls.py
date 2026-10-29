@@ -40,6 +40,7 @@ urlpatterns = [
     path('coach-pages/', manage_views.coach_pages),
     path('settings/', manage_views.settings_view),
     path('employer-specialists/', manage_views.employer_specialists),
+    path('do-not-call/', manage_views.do_not_call_view),
     path('phone-lines/', manage_views.phone_lines),
     path('zoom-accounts/', manage_views.zoom_account_list),
     path('delegation/', manage_views.task_delegation),

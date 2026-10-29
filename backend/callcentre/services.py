@@ -12,6 +12,7 @@ from .call_log import ZOOM_WAIT
 from .call_scope import system_case_calls, system_matches
 from .db import DB
 from .delegation import cover_of, work_rule
+from .do_not_call import emails as do_not_call_emails
 from .employer_desk import EMPLOYER, SATISFACTION, optional, scope_error, specialists
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
@@ -182,6 +183,8 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     if ticket.next_followup_at and ticket.next_followup_at > now:
         raise Conflict('The next follow-up is not due yet.')
     call_email, number = call_contact(ticket, contact_role)
+    if email_key(call_email) in do_not_call_emails():
+        raise Conflict('This person is on the do-not-call list: do not phone them. You can still email them.')
     if not number:
         raise ValueError('A valid learner telephone number is required.')
     if not agent.zoom_email or not agent.zoom_account:

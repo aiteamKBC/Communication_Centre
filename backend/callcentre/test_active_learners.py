@@ -52,6 +52,14 @@ class ActiveDirectoryTests(SimpleTestCase):
             self.assertFalse(people.active)
             self.assertNotIn('', people.on_break)
 
+    def test_learner_withdrawn_on_the_lms_learner_page_is_withdrawn_here(self):
+        # Created_users can still say Active after the LMS learner record (and Aptem) say withdrawn.
+        sql = ' '.join(learners.LMS_LEARNERS_SQL.split())
+        self.assertIn('l.enrolment_id = u.id AND lower(trim(l.lifecycle_status)) = \'withdrawn\'', sql)
+        self.assertIn('lower(trim(u." Status")) = \'withdrawn\'', sql)
+        self.assertIn("THEN 'Withdrawn' ELSE \"Programme_status\" END AS \"Programme_status\"", sql)
+        self.assertTrue(sql.startswith('SELECT id,'))   # unified_directory adds id_aptem after it
+
     def test_unified_identity_keeps_inactive_person_for_historical_evidence(self):
         people = identity.build([lms()], [aptem(**{'Program-Status': 'OnBreak'})])
         self.assertEqual(people.resolve('lms', 1)['programme_status'], 'OnBreak')
