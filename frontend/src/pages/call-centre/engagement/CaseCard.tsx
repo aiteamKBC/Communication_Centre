@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Overview } from '../api';
 import type { Session } from './actions';
+import AttendancePanel from './AttendancePanel';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
 import BookingPage from './BookingPage';
@@ -52,6 +53,7 @@ export default function CaseCard({ id, overview, session, selected, onSaved, not
   const epaRaw = c.source_type === 'epa' ? (c.source_data?.epa_metrics as Record<string, string | number> | undefined) : undefined;
   const epa = epaRaw && Object.keys(epaRaw).length ? epaRaw : undefined;
   const canClose = !isSatisfaction(c) && (session.isManager || c.specialist_closes);
+  const attendance = c.source_type === 'attendance';
 
   return (
     <article className={`lf-case${selected ? ' selected' : ''}${late ? ' late' : ''}`} id={`ed-case-${id}`} aria-label={`${issueLabel(c)}: ${caseWhen(c)}`}>
@@ -66,60 +68,66 @@ export default function CaseCard({ id, overview, session, selected, onSaved, not
         </div>
       </header>
 
-      <p className="lf-purpose">{casePurpose(c)}</p>
-      {late && <p className="lf-warning">This call is {c.sla_days_overdue} {c.sla_days_overdue === 1 ? 'day' : 'days'} late: first check where the learner is now.</p>}
-      <CaseDates ticket={c} />
-      {c.helpdesk && (
-        <p className="lf-note">Ticket {c.helpdesk.ticket} ({c.helpdesk.subcategory}) · {helpdeskStatus(c.helpdesk)} · raised by {c.helpdesk.raised_by}
-          {c.helpdesk.helpdesk_error ? ` · last status check failed: ${c.helpdesk.helpdesk_error}` : ''}</p>
-      )}
-      {employer && <p className="lf-note">Learners: {c.employer_learners?.map(l => l.name).join(', ') || 'none in the directory'}</p>}
-      {c.ai_summary && <p className="lf-note">AI case review: {c.ai_summary}</p>}
+      {/* A missed lecture: the learner's register beside the case, to read before calling and correct on the call. */}
+      <div className={attendance ? 'lf-case-split' : undefined}>
+        <div className="lf-case-body">
+          <p className="lf-purpose">{casePurpose(c)}</p>
+          {late && <p className="lf-warning">This call is {c.sla_days_overdue} {c.sla_days_overdue === 1 ? 'day' : 'days'} late: first check where the learner is now.</p>}
+          <CaseDates ticket={c} />
+          {c.helpdesk && (
+            <p className="lf-note">Ticket {c.helpdesk.ticket} ({c.helpdesk.subcategory}) · {helpdeskStatus(c.helpdesk)} · raised by {c.helpdesk.raised_by}
+              {c.helpdesk.helpdesk_error ? ` · last status check failed: ${c.helpdesk.helpdesk_error}` : ''}</p>
+          )}
+          {employer && <p className="lf-note">Learners: {c.employer_learners?.map(l => l.name).join(', ') || 'none in the directory'}</p>}
+          {c.ai_summary && <p className="lf-note">AI case review: {c.ai_summary}</p>}
 
-      {open && (c.meeting || c.employer_check) && (
-        <div className="lf-steps">
-          <MeetingTools c={c} session={session} notify={notify} onChanged={changed} />
-          <EmployerCheck c={c} session={session} notify={notify} onChanged={changed} />
+          {open && (c.meeting || c.employer_check) && (
+            <div className="lf-steps">
+              <MeetingTools c={c} session={session} notify={notify} onChanged={changed} />
+              <EmployerCheck c={c} session={session} notify={notify} onChanged={changed} />
+            </div>
+          )}
+
+          {open && (
+            <div className="lf-actions">
+              {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={changed} />}
+              <BookingPage c={c} />
+              {c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
+              {isSatisfaction(c) && <button type="button" disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}
+                onClick={() => setEmailOpen(true)}>Satisfaction email</button>}
+              {!employer && c.source_type !== 'tech_support' && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={changed} />}
+            </div>
+          )}
+
+          {epa && (
+            <details className="lf-more" open>
+              <summary>EPA readiness</summary>
+              <p className="ec-muted">From the last Aptem sync: check the learner’s current position before agreeing the next step.</p>
+              <dl className="ec-dl">
+                {EPA_ROWS.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{`${value(epa) ?? ''}`.trim() || 'Not recorded'}</dd></div>)}
+              </dl>
+            </details>
+          )}
+          {isSatisfaction(c) && open && (
+            <details className="lf-more" open={!!detail.held_feedback}>
+              <summary>Satisfaction feedback</summary>
+              <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={employer} session={session}
+                held={detail.held_feedback} onSaved={held => { refresh(); onSaved(feedbackMessage(held)); }} />
+            </details>
+          )}
+          {isSatisfaction(c) && !open && c.satisfaction_next_due_at && <p className="lf-note">Next satisfaction review: {longDate(c.satisfaction_next_due_at)}</p>}
+
+          <details className="lf-more">
+            <summary>Call guide</summary>
+            <ol className="ec-script">{shortGuide(c, session.name).map(line => <li key={line}>{line}</li>)}</ol>
+          </details>
+          <details className="lf-more">
+            <summary>{canClose ? 'Resolve, record by hand or add a note' : 'Record an outcome by hand or add a note'}</summary>
+            <NextStepForm compact detail={detail} session={session} onSaved={message => { refresh(); onSaved(message); }} onError={message => notify(message, true)} />
+          </details>
         </div>
-      )}
-
-      {open && (
-        <div className="lf-actions">
-          {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={changed} />}
-          <BookingPage c={c} />
-          {c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
-          {isSatisfaction(c) && <button type="button" disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}
-            onClick={() => setEmailOpen(true)}>Satisfaction email</button>}
-          {!employer && c.source_type !== 'tech_support' && <TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={changed} />}
-        </div>
-      )}
-
-      {epa && (
-        <details className="lf-more" open>
-          <summary>EPA readiness</summary>
-          <p className="ec-muted">From the last Aptem sync: check the learner’s current position before agreeing the next step.</p>
-          <dl className="ec-dl">
-            {EPA_ROWS.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{`${value(epa) ?? ''}`.trim() || 'Not recorded'}</dd></div>)}
-          </dl>
-        </details>
-      )}
-      {isSatisfaction(c) && open && (
-        <details className="lf-more" open={!!detail.held_feedback}>
-          <summary>Satisfaction feedback</summary>
-          <SatisfactionFeedback key={c.id} caseId={c.id} name={c.learner_name} employer={employer} session={session}
-            held={detail.held_feedback} onSaved={held => { refresh(); onSaved(feedbackMessage(held)); }} />
-        </details>
-      )}
-      {isSatisfaction(c) && !open && c.satisfaction_next_due_at && <p className="lf-note">Next satisfaction review: {longDate(c.satisfaction_next_due_at)}</p>}
-
-      <details className="lf-more">
-        <summary>Call guide</summary>
-        <ol className="ec-script">{shortGuide(c, session.name).map(line => <li key={line}>{line}</li>)}</ol>
-      </details>
-      <details className="lf-more">
-        <summary>{canClose ? 'Resolve, record by hand or add a note' : 'Record an outcome by hand or add a note'}</summary>
-        <NextStepForm compact detail={detail} session={session} onSaved={message => { refresh(); onSaved(message); }} onError={message => notify(message, true)} />
-      </details>
+        {attendance && <AttendancePanel caseId={c.id} open={open} session={session} notify={notify} onChanged={changed} />}
+      </div>
 
       <Dialog open={bookingEmailOpen} onClose={() => setBookingEmailOpen(false)}>
         {bookingEmailOpen && <BookingEmail key={c.id} caseId={c.id} session={session} />}

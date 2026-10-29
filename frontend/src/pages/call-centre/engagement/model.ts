@@ -64,10 +64,15 @@ export function helpdeskStatus(helpdesk: NonNullable<Case['helpdesk']>) {
 const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No answer'], ['wrong_number', 'Wrong number'], ['callback', 'Callback requested'], ['refused', 'Refused or problem']];
 const PROMISE_LABELS: Record<string, string> = {
   catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording', other_group_session: 'Attend this lecture with another group',
+  attended_other_group: 'Attended this lecture with another group (covering lecture)',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
   epa_step: 'Complete the EPA step', sign_review: 'Sign the review', other: 'Other',
 };
 export const promiseLabel = (option: string) => PROMISE_LABELS[option] || human(option);
+/** A lecture's day from the register (an ISO date, no time): "Tue, 6 Oct 2026". */
+export const lectureDay = (date: string | null) => date
+  ? new Date(`${date}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+  : 'Date not recorded';
 export const outcomeLabel = (outcome: string) => OUTCOMES.find(([key]) => key === outcome)?.[1] || human(outcome);
 
 /** The other group's session for a missed lecture, in words: "Group B on Thu 6 Nov at 14:00". */

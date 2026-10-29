@@ -43,5 +43,6 @@ class DoNotCallTests(SimpleTestCase):
                                  learner_email='resting@example.com', learner_phone='07700 900123')
         with patch('callcentre.services.CaseTicket.objects.get', return_value=ticket), \
                 patch('callcentre.services.do_not_call_emails', return_value=frozenset({'resting@example.com'})), \
+                patch('callcentre.inbound.waiting_for_callback', return_value=False), \
                 self.assertRaisesMessage(Conflict, 'do-not-call list'):
             create_intent.__wrapped__(1, SimpleNamespace())   # without its transaction: no database in these tests

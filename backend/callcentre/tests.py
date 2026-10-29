@@ -92,7 +92,8 @@ class PromiseTests(SimpleTestCase):
         self.assertEqual(promise_deadline('epa', 'epa_step', now), datetime(2026, 10, 9, 17, tzinfo=LONDON))
 
     def test_catchup_waits_for_evidence_while_legacy_review_promises_are_unchanged(self):
-        self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7, 'other_group_session': None})
+        self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7, 'other_group_session': None,
+                                                'attended_other_group': None})
         self.assertIsNone(PROMISES['pr']['book_pr'])
         self.assertIsNone(PROMISES['mcm']['book_mcm'])
 

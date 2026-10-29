@@ -5,6 +5,7 @@ import { useCallCentre } from './api';
 import type { Config, Overview, OverviewCase } from './api';
 import type { Session } from './engagement/actions';
 import Allocation from './engagement/Allocation';
+import AttendanceEdits from './engagement/AttendanceEdits';
 import BookingLinksView from './engagement/BookingLinksView';
 import CoachPages from './engagement/CoachPages';
 import LearnerWorkspace from './engagement/LearnerWorkspace';
@@ -37,7 +38,8 @@ import './styles/full-case.css';
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
   ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart'],
     ['meetings', 'Review meetings', 'calendar']]],
-  ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['delegation', 'Task delegation', 'people'],
+  ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
+    ['delegation', 'Task delegation', 'people'],
     ['operator', 'Calling desk', 'phone']]],
   ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
     ['settings', 'Settings', 'check']]],
@@ -46,7 +48,7 @@ const TITLES: Record<string, string> = {
   director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
   bookings: 'Coach booking links', allocations: 'Learner allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
-  delegation: 'Task delegation',
+  delegation: 'Task delegation', attendance: 'Attendance edits',
 };
 // Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
 const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
@@ -250,6 +252,7 @@ export default function CallCentrePage() {
                   : view === 'meetings' ? <ReviewMeetings today={overview.today} />
                   : view === 'delegation' ? <TaskDelegation overview={overview} csrf={config.data?.csrf_token || ''} onChanged={refresh} notify={notify} />
                   : view === 'missed' ? <MissedCalls session={session} revision={overview.generated_at} onOpenCase={openCase} />
+                  : view === 'attendance' ? <AttendanceEdits session={session} notify={notify} onOpenCase={openCase} />
                   : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
                     : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}
         </div>

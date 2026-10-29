@@ -18,7 +18,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import contact_history, delegation, email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
+from . import attendance_edits, contact_history, delegation, email_settings, employer_check, helpdesk, lms_booking, optional_calls, review_meetings, satisfaction_email
 from .aptem_summaries import parse_date_safe
 from .learner_satisfaction import close_without_feedback, complete as complete_learner_feedback, held_feedback
 from .access import is_director, refused
@@ -697,6 +697,28 @@ def booked_response(request, pk, data, agent, booked):
                         'error': 'Something went wrong while sending it.'}
     return JsonResponse({'booking': record, 'warning': booked['link_warning'] or booked.get('option_warning', ''),
                          'confirmation': confirmation}, status=201)
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def ticket_attendance(request, pk):
+    """A missed-lecture case's attendance panel: the learner's lectures around the missed one (GET), and a correction
+    made on the call, written to the LMS register (POST)."""
+    ticket = CaseTicket.objects.get(pk=pk)
+    if ticket.source_type != 'attendance':
+        raise ValueError('Attendance is shown for missed-lecture cases only.')
+    if request.method == 'POST':
+        data = body(request)
+        agent = operating_agent(request.user, int(data['agent_id']) if data.get('agent_id') else None)
+        can_work(ticket, request.user, acting_agent=agent)
+        changes = data.get('changes')
+        if not isinstance(changes, list) or not all(isinstance(item, dict) for item in changes):
+            raise ValueError('Choose the lectures to correct.')
+        attendance_edits.apply_edits(ticket, request.user, agent, [(str(item.get('ref', '')), str(item.get('action', '')))
+                                                                    for item in changes],
+                                     str(data.get('reason', '')), data.get('note', ''))
+    return JsonResponse(attendance_edits.panel(ticket))
 
 
 @authenticated

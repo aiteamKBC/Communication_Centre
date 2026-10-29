@@ -77,6 +77,33 @@
 .kbc-portals .ec details.lf-more { margin: 0; border-top: 1px solid var(--dd-line); padding-top: .5rem; }
 .kbc-portals .lf-more > summary { font-size: .9rem; color: var(--dd-purple); }
 
+/* ---- A missed lecture's register, beside its case ---- */
+.kbc-portals .lf-case-body { display: grid; gap: .6rem; align-content: start; min-width: 0; }
+.kbc-portals .lf-case-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 1rem; align-items: start; }
+.kbc-portals .lf-attendance { display: grid; gap: .6rem; padding: .8rem .9rem; border: 1px solid var(--dd-line); border-radius: 12px; background: var(--dd-soft); min-width: 0; }
+.kbc-portals .lf-attendance > header { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+.kbc-portals .workspace-app .ec .lf-attendance h4 { margin: 0; font-size: .76rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dd-purple); }
+.kbc-portals .lf-attendance > header small { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .lf-attendance-hint { display: grid; gap: .5rem; padding: .6rem .7rem; border-radius: 10px; background: #fff3e0; color: #5e3a0c; font-size: .86rem; }
+.kbc-portals .ec .lf-attendance-hint p { margin: 0; }
+.kbc-portals .ec .lf-attendance-hint button { justify-self: start; }
+.kbc-portals .lf-attendance-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.kbc-portals .lf-attendance-list > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem .6rem; padding: .5rem .6rem; border: 1px solid var(--dd-line); border-radius: 9px; background: #fff; }
+.kbc-portals .lf-attendance-list > li.missed { border-color: var(--dd-bad); border-left-width: 4px; }
+.kbc-portals .lf-attendance-list > li.covering { border-color: #4c8e6c; border-left-width: 4px; }
+.kbc-portals .lf-attendance-list > li > div:first-child { display: grid; min-width: 0; }
+.kbc-portals .lf-attendance-list strong { font-size: .9rem; }
+.kbc-portals .lf-attendance-list span:not(.ec-tag), .kbc-portals .lf-attendance-list small { font-size: .8rem; color: var(--dd-muted); overflow-wrap: anywhere; }
+.kbc-portals .lf-attendance-list .ec-tag { align-self: start; }
+.kbc-portals .lf-attendance-actions, .kbc-portals .lf-attendance-form { grid-column: 1 / -1; }
+.kbc-portals .lf-attendance-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
+.kbc-portals .ec .lf-attendance-actions button { padding: .25rem .55rem; min-height: 0; font-size: .8rem; }
+.kbc-portals .ec .lf-attendance-form { border: 0; padding: .5rem 0 0; margin: 0; display: grid; gap: .5rem; min-width: 0; }
+.kbc-portals .ec .lf-attendance-form p { margin: 0; font-size: .85rem; }
+.kbc-portals .ec .lf-attendance-form textarea { min-height: 60px; }
+.kbc-portals .lf-attendance-edits { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; font-size: .85rem; }
+.kbc-portals .lf-attendance-edits small { display: block; color: var(--dd-muted); }
+
 /* ---- History ---- */
 .kbc-portals .lf-history { padding: 1rem 1.2rem; border: 1px solid var(--dd-line); border-radius: 14px; background: #fff; }
 .kbc-portals .lf-history > header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
@@ -100,6 +127,7 @@
 .kbc-portals .lf-emails { display: grid; gap: .5rem; }
 
 @media (max-width: 900px) {
+  .kbc-portals .lf-case-split { grid-template-columns: minmax(0, 1fr); }
   .kbc-portals .lf-grid { grid-template-columns: minmax(0, 1fr); }
   .kbc-portals .lf-rail { position: static; max-height: none; }
 }

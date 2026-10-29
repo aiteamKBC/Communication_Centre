@@ -621,3 +621,37 @@ class DoNotCall(Retained):
     class Meta:
         db_table = 'callcenter_do_not_call'
         managed = False
+
+
+class AttendanceEdit(Retained):
+    """A correction to a learner's lecture attendance made on a missed-lecture call (``attendance_edits``). The change
+    is written to the LMS's own tables; this row keeps who made it, why, what it replaced and the AI's check."""
+    ticket = models.ForeignKey(CaseTicket, on_delete=models.PROTECT, related_name='attendance_edits')
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    actor = models.CharField(max_length=255)
+    actor_email = models.EmailField()
+    learner_email = models.EmailField()
+    learner_name = models.CharField(max_length=255, blank=True)
+    record_ref = models.CharField(max_length=160)
+    session_date = models.DateField(null=True, blank=True)
+    module = models.CharField(max_length=255, blank=True)
+    lecture = models.CharField(max_length=255, blank=True)
+    action = models.CharField(max_length=10)
+    reason = models.CharField(max_length=20)
+    note = models.TextField(blank=True)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    state = models.CharField(max_length=10, default='applying')
+    error = models.TextField(blank=True)
+    intent_id = models.BigIntegerField(null=True, blank=True)
+    ai_state = models.CharField(max_length=16, default='pending')
+    ai_evidence = models.TextField(blank=True)
+    ai_checked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    undone_by = models.CharField(max_length=255, blank=True)
+    undone_at = models.DateTimeField(null=True, blank=True)
+    undone_note = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'callcenter_attendance_edit'
+        managed = False

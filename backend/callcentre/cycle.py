@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .ai import process_ai
+from .attendance_edits import verify_pending as verify_attendance_edits
 from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
 from .call_scope import system_calls
@@ -207,6 +208,7 @@ def run_recording_sync():
         step(result, 'matched', match_calls)
         step(result, 'inbound', inbound_sync)
         step(result, 'analyses', process_ai)
+        step(result, 'attendance_checks', verify_attendance_edits)
         return result
 
 
@@ -268,6 +270,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'presence', poll)
         if not skip_ai:
             step(result, 'analyses', process_ai)
+            step(result, 'attendance_checks', verify_attendance_edits)
         if not skip_emails and people is not None and people.sources_complete:
             step(result, 'emails_processed', process_emails)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)

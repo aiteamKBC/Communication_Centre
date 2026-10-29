@@ -25,7 +25,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import booking_links, delegation, do_not_call, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
+from . import attendance_edits, booking_links, delegation, do_not_call, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
@@ -340,6 +340,25 @@ def do_not_call_view(request):
         else:
             raise ValueError('Unknown action.')
     return JsonResponse(do_not_call.listing())
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def attendance_edits_view(request):
+    """Director page: every attendance correction made on missed-lecture calls, with the AI's check, and undo."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        if data.get('action') != 'undo':
+            raise ValueError('Unknown action.')
+        attendance_edits.undo(data.get('id'), request.user, data.get('note'))
+        days, ai_state = int(data.get('days') or 30), str(data.get('ai_state') or '')
+    else:
+        days, ai_state = int(request.GET.get('days') or 30), request.GET.get('ai_state', '')
+    if not 1 <= days <= 365:
+        raise ValueError('Choose a period of 1 to 365 days.')
+    return JsonResponse(attendance_edits.listing(days, ai_state))
 
 
 @authenticated

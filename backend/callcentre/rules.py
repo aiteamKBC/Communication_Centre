@@ -69,8 +69,11 @@ WAITING = {'pending_learner', 'pending_verification', 'ai_suggested_close', 'unr
 # A missed lecture the learner says they will attend with another group of their cohort: their word closes the case.
 # The other group's session, when the LMS has one, is kept on the case (alternative_sessions.py).
 OTHER_GROUP = 'other_group_session'
+# A missed lecture the learner confirms they already attended with another group (a covering lecture): the register is
+# corrected on the call (attendance_edits.py) and the case closes.
+ATTENDED_OTHER_GROUP = 'attended_other_group'
 PROMISES = {
-    'attendance': {'catch_up_session': 7, OTHER_GROUP: None},
+    'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None},
     'pr': {'book_pr': None},
     'mcm': {'book_mcm': None},
     'pr_missed': {'book_pr': None},
