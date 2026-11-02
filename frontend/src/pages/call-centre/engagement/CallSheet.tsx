@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { callDisabledReason, caseAction, recallFor, requestCallSync, saveOutcome } from './actions';
+import { callDisabledReason, caseAction, recallFor, recallHint, requestCallSync, saveOutcome } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
@@ -13,6 +13,7 @@ import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
 import TechIssue from './TechIssue';
 import CaseDates from './CaseDates';
+import RecallTries from './Recall';
 import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
 import { matchesTicketDate, orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
 import type { CallTab } from './model';
@@ -322,21 +323,14 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                             {session.preview ? 'Preview' : 'Call'}
                           </button>
                         )}
-                        {recall && (
-                          <span className="ed-recall-tries" title={`${recall.used} of ${recall.max} recall tries used`}>
-                            <span aria-hidden="true">{Array.from({ length: recall.max }, (_, index) => <i key={index} className={index < recall.used ? 'used' : undefined} />)}</span>
-                            {recall.used}/{recall.max} tries
-                          </span>
-                        )}
+                        {recall && <RecallTries recall={recall} />}
                         {(isSatisfaction(c) || c.employer_signature_missing) && <button type="button" className="ed-call-action"
                           disabled={disabled || !(c.employer_signature_missing ? (signatureEmailRole === 'employer' ? c.manager_email : c.learner_email) : satisfactionRecipient(c))}
                           title="Review and send an email via Microsoft 365" onClick={() => c.employer_signature_missing ? setEmailCase({ id: c.id, role: signatureEmailRole }) : setSatisfactionEmail(c)}>Email</button>}
                       </div>
                       {onCall.has(c.id) ? <span className="ed-call-reason">On the call: press End call when you hang up</span>
                         : ended.has(c.id) ? <span className="ed-call-reason">Call ended: choose the outcome and Save</span>
-                          : recall && !callReason ? <span className="ed-call-reason">{recall.left
-                            ? `Not answered: back on the list ${shortDate(c.next_followup_at)}. Recall to try again now.`
-                            : `All ${recall.max} recalls used: back on the list ${shortDate(c.next_followup_at)}.`}</span>
+                          : recall && !callReason ? <span className="ed-call-reason">{recallHint(recall, c.next_followup_at)}</span>
                             : callReason && <span className="ed-call-reason">{callReason}</span>}
                     </td>
                     <td className="ed-booking-cell">

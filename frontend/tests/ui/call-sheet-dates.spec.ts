@@ -78,7 +78,8 @@ async function openSheet(page: Page, cases: OverviewCase[], section = 'missed', 
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`/dashboard/call-centre?view=operator&section=${section}`);
   // Today shows the next call; a list shows its sheet.
-  await expect(['next', 'today'].includes(section) ? page.locator('.ed-next') : page.getByLabel('Ticket order', { exact: true }),
+  await expect(['next', 'today'].includes(section) ? page.locator('.ed-next')
+    : section === 'followups' ? page.locator('#ed-queue-list') : page.getByLabel('Ticket order', { exact: true }),
     `Browser errors: ${errors.join('; ')}`).toBeVisible();
   return writes;
 }
@@ -1128,4 +1129,48 @@ test('recall: a held case never comes back to Call next on Today', async ({ page
   const later = new Date(Date.now() + 20 * 3600_000).toISOString();
   await openSheet(page, [ticket(1, { learner_phone: '+447700900001', next_followup_at: later, missed_call: true, recall: { used: 0, max: 3 } })], 'today');
   await expect(page.locator('.ed-next')).toContainText('Nobody else to call right now');
+});
+
+test('recall: Full case recalls every case held after the same unanswered call', async ({ page }) => {
+  const later = new Date(Date.now() + 20 * 3600_000).toISOString();
+  // EPA cases: a missed lecture's Full case also loads its register, which this mock does not serve.
+  const held = { source_type: 'epa', promises: {}, learner_email: 'ann@example.org', learner_phone: '+447700900001',
+    next_followup_at: later, missed_call: true, recall: { used: 1, max: 3 } };
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  await openSheet(page, [ticket(1, { ...held, learner_name: 'Ann Learner' }), ticket(2, { ...held, learner_name: 'Ann Learner', issue_date: '2026-09-22' })],
+    'due', null, {}, (path, body) => {
+      if (path.endsWith('/call/')) { requests.push({ path, body }); return { ok: true, ticket_ids: [1, 2] }; }
+    });
+  await page.locator('[data-sheet-row]').first().getByRole('button', { name: 'Full case', exact: true }).click();
+  const band = page.locator('.lf-band');
+  const recall = band.getByRole('button', { name: '↻ Recall · 2 cases', exact: true });
+  await expect(recall).toBeEnabled();
+  await expect(band.locator('.ed-recall-tries')).toHaveText('1/3 tries');
+  await expect(band).toContainText('Recall to try again now.');
+  await band.screenshot({ path: process.env.RECALL_FULL_CASE || 'test-results/recall-full-case.png' });
+  await recall.click();
+  await expect(page.getByRole('heading', { name: 'Record this call · 2 cases' })).toBeVisible();
+  expect(requests[0]).toEqual({ path: expect.stringMatching(/^\/api\/callcentre\/tickets\/[12]\/call\/$/), body: { recall: true, agent_id: 1 } });
+});
+
+test('recall: Follow-ups recalls a held learner, and stops after three tries', async ({ page }) => {
+  const later = new Date(Date.now() + 20 * 3600_000).toISOString();
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  await openSheet(page, [
+    ticket(1, { learner_phone: '+447700900001', next_followup_at: later, missed_call: true, followup_agent_id: 1, recall: { used: 0, max: 3 } }),
+    ticket(2, { learner_phone: '+447700900002', next_followup_at: later, missed_call: true, followup_agent_id: 1, recall: { used: 3, max: 3 } }),
+  ], 'followups', null, {}, (path, body) => {
+    if (path.endsWith('/call/')) { requests.push({ path, body }); return { ok: true, ticket_ids: [1] }; }
+  });
+  await page.locator('.ed-person', { hasText: 'Learner 2' }).click();
+  const used = page.locator('article.ed-learner:not([hidden])');
+  await expect(used.getByRole('button', { name: 'Recall learner', exact: true })).toBeDisabled();
+  await expect(used).toContainText('All 3 recalls used');
+  await page.locator('.ed-person', { hasText: 'Learner 1' }).click();
+  const panel = page.locator('article.ed-learner:not([hidden])');
+  await expect(panel.locator('.ed-recall-tries')).toHaveText('0/3 tries');
+  await panel.screenshot({ path: process.env.RECALL_FOLLOW_UPS || 'test-results/recall-follow-ups.png' });
+  await panel.getByRole('button', { name: 'Recall learner', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'Record this call' })).toBeVisible();
+  expect(requests[0]).toEqual({ path: '/api/callcentre/tickets/1/call/', body: { recall: true, agent_id: 1 } });
 });

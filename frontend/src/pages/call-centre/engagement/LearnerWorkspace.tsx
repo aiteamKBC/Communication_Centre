@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { callDisabledReason, caseAction } from './actions';
+import { callDisabledReason, caseAction, recallFor, recallHint } from './actions';
 import type { Session } from './actions';
 import CallOutcome from './CallOutcome';
 import CaseCard from './CaseCard';
 import CaseHistory from './CaseHistory';
+import RecallTries from './Recall';
 import { STATUS_NAMES, caseWhen, dueText } from './caseWords';
 import { activeCase, contactKey, dueForCall, human, issueLabel, when } from './model';
 import { useCase } from './useCase';
@@ -34,8 +35,13 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
   const listed = person ? overview.cases.filter(c => activeCase(c) && contactKey(c) === contactKey(known || person)) : [];
   const caseIds = [...new Set([...listed.map(c => c.id), ...(detail?.issues || []).filter(activeCase).map(c => c.id)])];
   const due = listed.filter(c => dueForCall(c));
-  const callFrom = due.find(c => c.id === id) || due[0];
-  const reason = callFrom ? callDisabledReason(callFrom, session) : '';
+  // Nothing due: the cases held after an unanswered call can be recalled now, all on one call (the one opened first).
+  const recallable = due.length ? [] : listed.filter(c => recallFor(c));
+  const callFrom = due.find(c => c.id === id) || due[0]
+    || recallable.find(c => c.id === id && recallFor(c)?.left) || recallable.find(c => recallFor(c)?.left) || recallable[0];
+  const recall = !due.length && callFrom ? recallFor(callFrom) : null;
+  const calling = recall ? recallable.filter(c => recallFor(c)?.left).length || recallable.length : due.length;
+  const reason = callFrom ? callDisabledReason(callFrom, session, Date.now(), !!recall) : '';
   const callIds = called || detail?.open_call?.ticket_ids || null;
   const callCases = callIds && callIds.join() !== recorded ? overview.cases.filter(c => callIds.includes(c.id)) : [];
   const employer = person?.source_type === 'employer_feedback';
@@ -44,10 +50,10 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
     if (!callFrom) return;
     setBusy(true);
     try {
-      const result = await caseAction(session, callFrom.id, 'call');
+      const result = await caseAction(session, callFrom.id, 'call', recall ? { recall: true } : {});
       setRecorded('');
       setCalled(result.ticket_ids || [callFrom.id]);
-      notify('Zoom Phone opened. When you hang up, record the call for every case just below.');
+      notify(`Zoom Phone opened${recall ? ` (recall ${recall.used + 1} of ${recall.max})` : ''}. When you hang up, record the call for every case just below.`);
       refresh();
       onRefresh();
     } catch (failure) {
@@ -89,10 +95,13 @@ export default function LearnerWorkspace({ id, overview, session, onSaved, notif
           <strong className="lf-phone">{phone || 'No phone number'}</strong>
           {callCases.length > 0 ? <p>On the call: record it below</p> : callFrom ? (
             <>
-              <button type="button" className="lf-call-button" disabled={busy || !!reason} title={reason || undefined} onClick={() => void call()}>
-                {busy ? 'Opening Zoom…' : `📞 Call · ${due.length} ${due.length === 1 ? 'case' : 'cases'}`}
+              <button type="button" className={`lf-call-button${recall ? ' ed-recall' : ''}`} disabled={busy || !!reason || (!!recall && !recall.left)}
+                title={reason || (recall ? (recall.left ? `Call again now: try ${recall.used + 1} of ${recall.max}` : `All ${recall.max} recalls used`) : undefined)}
+                onClick={() => void call()}>
+                {busy ? 'Opening Zoom…' : `${recall ? '↻ Recall' : '📞 Call'} · ${calling} ${calling === 1 ? 'case' : 'cases'}`}
               </button>
-              {reason && <p>{reason}</p>}
+              {recall && <RecallTries recall={recall} />}
+              {reason ? <p>{reason}</p> : recall && <p>{recallHint(recall, callFrom.next_followup_at)}</p>}
             </>
           ) : <p>No case is due for a call now.</p>}
         </div>

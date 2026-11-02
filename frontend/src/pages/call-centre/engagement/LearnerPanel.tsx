@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Overview } from '../api';
-import { callDisabledReason, caseAction } from './actions';
+import { callDisabledReason, caseAction, recallFor, recallHint } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
@@ -14,6 +14,7 @@ import CaseDates from './CaseDates';
 import LearnerCases from './LearnerCases';
 import { CallEvidence, NextStepForm, Timeline } from './CaseParts';
 import { callResult, casePurpose, feedbackMessage, helpdeskStatus, human, isSatisfaction, issueLabel, longDate, satisfactionRecipient, shortGuide } from './model';
+import RecallTries from './Recall';
 import RecordingDialog from './Recordings';
 import { useCase } from './useCase';
 
@@ -44,7 +45,9 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
   const c = detail.ticket;
   const employer = c.source_type === 'employer_feedback';
   const listed = overview.cases.find(item => item.id === c.id);
-  const callReason = listed ? callDisabledReason(listed, session) : 'Case is not active';
+  // Held after an unanswered call: Recall it now (up to its tries) instead of waiting for the follow-up.
+  const recall = listed ? recallFor(listed) : null;
+  const callReason = listed ? callDisabledReason(listed, session, Date.now(), !!recall) : 'Case is not active';
   const related = detail.issues.filter(issue => issue.id !== c.id);
   const lastCall = detail.calls[0];
   const callIds = called || detail.open_call?.ticket_ids || null;
@@ -60,9 +63,9 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
   async function call() {
     setBusy(true);
     try {
-      const result = await caseAction(session, c.id, 'call');
+      const result = await caseAction(session, c.id, 'call', recall ? { recall: true } : {});
       const ids = result.ticket_ids || [c.id];
-      notify('Zoom Phone opened. When you hang up, record the call for every case in “Record this call”.');
+      notify(`Zoom Phone opened${recall ? ` (recall ${recall.used + 1} of ${recall.max})` : ''}. When you hang up, record the call for every case in “Record this call”.`);
       setRecorded('');
       setCalled(ids);
       refresh();
@@ -96,7 +99,10 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
           {c.helpdesk.helpdesk_error ? ` · Last status check failed: ${c.helpdesk.helpdesk_error}` : ''}</p>
       )}
       <div className="ec-buttons">
-        <button type="button" className="primary" disabled={busy || !!callReason} title={callReason || undefined} onClick={() => void call()}>{employer ? 'Call employer' : 'Call learner'}</button>
+        <button type="button" className={`primary${recall ? ' ed-recall' : ''}`} disabled={busy || !!callReason || (!!recall && !recall.left)}
+          title={callReason || (recall ? (recall.left ? `Call again now: try ${recall.used + 1} of ${recall.max}` : `All ${recall.max} recalls used`) : undefined)}
+          onClick={() => void call()}>{recall ? (employer ? 'Recall employer' : 'Recall learner') : employer ? 'Call employer' : 'Call learner'}</button>
+        {recall && <RecallTries recall={recall} />}
         {c.status !== 'resolved' && !!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={() => { refresh(); onRefresh?.(); }} />}
         {c.status !== 'resolved' && <BookingPage c={c} />}
         {c.status !== 'resolved' && c.booking_email && <button type="button" disabled={session.preview} onClick={() => setBookingEmailOpen(true)}>Booking email</button>}
@@ -105,6 +111,7 @@ export default function LearnerPanel({ id, overview, session, hidden, onOpen, on
           disabled={session.preview || !session.canAct || !satisfactionRecipient(c)}
           onClick={() => setEmailOpen(true)}>Email</button>}
       </div>
+      {recall && !callReason && <p className="ec-muted ed-call-note">{recallHint(recall, c.next_followup_at)}</p>}
       {callReason && <p className="ec-muted ed-call-note">{session.preview ? `Calls are disabled in this director preview. ${session.name} must sign in to call.` : `${callReason}.`}</p>}
       {c.sla_breached
         ? <p className="ed-verification">This call is {c.sla_days_overdue} {c.sla_days_overdue === 1 ? 'day' : 'days'} past its due date. First confirm the learner’s current position.</p>

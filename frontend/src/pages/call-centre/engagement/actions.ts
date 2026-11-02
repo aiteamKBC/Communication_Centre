@@ -1,5 +1,6 @@
 import { api, post } from '../api';
 import type { CaseDetail, OverviewCase } from '../api';
+import { shortDate } from './model';
 
 /** Who is working: `name` is the specialist whose desk is shown (the signed-in user outside a preview). */
 export type Session = { csrf: string; agentId: number | null; canAct: boolean; isManager: boolean; preview: boolean; name: string;
@@ -57,6 +58,12 @@ export function recallFor(c: OverviewCase, now = Date.now()) {
   if (!c.recall || c.status === 'resolved' || !c.next_followup_at || Date.parse(c.next_followup_at) <= now) return null;
   return { ...c.recall, left: Math.max(0, c.recall.max - c.recall.used) };
 }
+export type RecallState = NonNullable<ReturnType<typeof recallFor>>;
+
+/** Beside a Recall button: when the case comes back by itself, and whether it can be recalled now. */
+export const recallHint = (recall: RecallState, followUp: string | null) => (recall.left
+  ? `Not answered: back on the list ${shortDate(followUp)}. Recall to try again now.`
+  : `All ${recall.max} recalls used: back on the list ${shortDate(followUp)}.`);
 
 /** Saves a case's outcome. The server attaches it to the case's last call (never an earlier one): held while Zoom may
  * still report that call (`applied: false`), saved without a call when Zoom has none, so a save is never refused for want of one. */
