@@ -2,46 +2,16 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { LmsReferenceError, requestLmsReference, type LmsReference as Reference } from '../lmsReference';
 import LmsReferenceTimeline from './LmsReferenceTimeline';
 import TimelineZoomControls from './TimelineZoomControls';
-import type { ProgrammeGroup, ZoomLevel } from '../types';
+import PlanDifferences from './PlanDifferences';
+import { presentLmsRows } from '../lmsComparison';
+import type { CustomModule, Holiday, ProgrammeGroup, ZoomLevel } from '../types';
 
-const displayedLmsProgrammes = [
-  { sourceName: 'marketing executive level 4', planId: 'me-lvl4', shortName: 'ME L4' },
-  { sourceName: 'marketing manager level 6', planId: 'mm-lvl6', shortName: 'MM LVL6' },
-  { sourceName: 'associate project manager level 4', planId: 'apm', shortName: 'APM lv4' },
-  { sourceName: 'project controls professional level 6', planId: 'pcp', shortName: 'PCP' },
-  { sourceName: 'mba', planId: 'mba', shortName: 'MBA' },
-];
-const normalizeProgrammeName = (name: string | null) => (name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-
-function ReferenceView({ reference, currentProgrammes, comparisonZoom }: {
-  reference: Reference;
-  currentProgrammes: ProgrammeGroup[];
-  comparisonZoom?: ZoomLevel;
-}) {
-  const records = useMemo(() => {
-    const presentation = displayedLmsProgrammes.map((programme, fallbackOrder) => {
-      const currentOrder = currentProgrammes.findIndex(group => (
-        group.id === programme.planId
-        || normalizeProgrammeName(group.name) === normalizeProgrammeName(programme.shortName)
-        || normalizeProgrammeName(group.name) === programme.sourceName
-      ));
-      return {
-        ...programme,
-        name: currentProgrammes[currentOrder]?.name ?? programme.shortName,
-        order: currentOrder < 0 ? currentProgrammes.length + fallbackOrder : currentOrder,
-      };
-    }).sort((left, right) => left.order - right.order);
-    // Presentation copies keep captured source records and identifiers intact.
-    return presentation.flatMap(programme => reference.records
-      .filter(row => normalizeProgrammeName(row.programme) === programme.sourceName)
-      .map(row => ({ ...row, programme: programme.name })));
-  }, [reference, currentProgrammes]);
-  return <LmsReferenceTimeline rows={records} comparisonZoom={comparisonZoom} />;
-}
-
-export default function LmsReference({ canCapture, currentProgrammes, zoom, onZoomChange, children }: {
+export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, currentLoading, zoom, onZoomChange, children }: {
   canCapture: boolean;
   currentProgrammes: ProgrammeGroup[];
+  customModules: CustomModule[];
+  holidays: Holiday[];
+  currentLoading: boolean;
   zoom: ZoomLevel;
   onZoomChange: (zoom: ZoomLevel) => void;
   children: (comparing: boolean) => ReactNode;
@@ -53,6 +23,7 @@ export default function LmsReference({ canCapture, currentProgrammes, zoom, onZo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const records = useMemo(() => presentLmsRows(reference?.records ?? [], currentProgrammes), [reference, currentProgrammes]);
 
   const load = async () => {
     setBusy(true);
@@ -93,7 +64,7 @@ export default function LmsReference({ canCapture, currentProgrammes, zoom, onZo
           onClick={() => { if (!loaded && !busy) void load(); setComparing(false); setVisible(true); }}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${!comparing && visible ? 'bg-teal-800 text-white' : 'text-teal-900 hover:bg-teal-50'}`}>LMS Training Plan</button>
       </div>
-      <button type="button" aria-pressed={comparing} aria-controls="training-plan-comparison"
+      <button type="button" aria-pressed={comparing} aria-controls="training-plan-comparison training-plan-differences"
         onClick={() => { if (!comparing && !loaded && !busy) void load(); setComparing(value => !value); }}
         className={`ml-auto inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-bold ${comparing ? 'border-kbc-navy bg-kbc-navy text-white' : 'border-slate-200 text-kbc-navy hover:bg-slate-50'}`}>
         <i className="ri-layout-column-line" aria-hidden="true" />{comparing ? 'Exit comparison' : 'Compare plans'}
@@ -121,6 +92,14 @@ export default function LmsReference({ canCapture, currentProgrammes, zoom, onZo
           </div>
           {reference && <p className="text-xs text-gray-500">Captured {new Date(reference.createdAt).toLocaleString()} · Read only</p>}
         </div>
+        {reference && <LmsReferenceTimeline rows={records} comparisonZoom={comparing ? zoom : undefined} />}
+      </section>
+      </div>
+      <div id="training-plan-differences" hidden={!comparing} className="min-w-0 space-y-4">
+        {comparing && !busy && !currentLoading && reference && <PlanDifferences currentProgrammes={currentProgrammes} records={records} customModules={customModules} holidays={holidays} />}
+        {comparing && currentLoading && <p role="status" className="px-4 py-6 text-sm text-gray-500">Loading current plan…</p>}
+      </div>
+      {(visible || comparing) && <>
         {notice && <p role="status" className="m-4 rounded-lg bg-blue-50 p-3 text-xs text-blue-800">{notice}</p>}
         {error && <div role="alert" className="m-4 rounded-lg border border-red-100 bg-red-50 p-3 text-xs text-red-700">
           <p>{error}</p><button type="button" disabled={busy} onClick={() => void load()} className="mt-2 font-bold underline">Retry loading reference</button>
@@ -132,9 +111,7 @@ export default function LmsReference({ canCapture, currentProgrammes, zoom, onZo
           {canCapture ? <button type="button" onClick={() => void capture()} className="mt-4 rounded-lg bg-kbc-navy px-4 py-2 text-xs font-bold text-white hover:opacity-90">Capture LMS Reference</button>
             : <p className="mt-3 text-xs text-gray-500">A Training Plan manager can create the initial capture.</p>}
         </div>}
-        {reference && <ReferenceView reference={reference} currentProgrammes={currentProgrammes} comparisonZoom={comparing ? zoom : undefined} />}
-      </section>
-      </div>
+      </>}
     </>
   );
 }

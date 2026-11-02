@@ -6901,7 +6901,7 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} zoom={zoom} onZoomChange={setZoom}>
+          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules} holidays={holidays} currentLoading={isInitialProgrammesLoading} zoom={zoom} onZoomChange={setZoom}>
           {comparing => isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
