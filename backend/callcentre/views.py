@@ -41,6 +41,7 @@ from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, days_late, email_key, holidays_from,
                     is_late, late_cutoff, missed_call, next_workday, normalize_phone, parse_moment, priority, promise_missed, same_contact)
+from .recall import states as recall_states
 from .services import NOT_DISCUSSED, Conflict, agent_for, call_contact, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
 logger = logging.getLogger(__name__)
@@ -354,6 +355,8 @@ def overview(request):
     # The director's tasks: which cases another specialist covers for now.
     coverage = delegation.Coverage(today=today)
     covers = coverage.resolve(tickets, {ticket.pk: ticket.followup_agent_id for ticket in tickets})
+    # Cases held after an unanswered call, which their list can recall now, with the tries used.
+    recalls = recall_states(listed, now)
     for ticket in listed:
         item = ticket_json(ticket)
         item['contact_key'] = keys[ticket.pk]
@@ -371,6 +374,7 @@ def overview(request):
             owner = learner_owner(ticket.learner_email, allocated)
         item['allocated_agent_id'] = owner if item['optional'] or owner not in team else None
         item['cover'] = delegation.cover_json(covers[ticket.pk]) if ticket.pk in covers else None
+        item['recall'] = recalls.get(ticket.pk)
         cases.append(item)
 
     add_lecture_times(cases)
@@ -563,7 +567,8 @@ def action(request, pk, command):
         if command == 'claim':
             ticket = claim(pk, agent, actor=request.user.get_username())
             return JsonResponse({'ticket': ticket_json(ticket)})
-        intent = create_intent(pk, agent, actor=request.user.get_username(), contact_role=str(data.get('call_role') or ''))
+        intent = create_intent(pk, agent, actor=request.user.get_username(), contact_role=str(data.get('call_role') or ''),
+                               recall=data.get('recall') is True)
         return JsonResponse(dial_json(intent, agent))
     if command == 'complete_feedback':
         completed = complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),

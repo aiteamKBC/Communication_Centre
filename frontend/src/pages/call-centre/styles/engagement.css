@@ -198,3 +198,5 @@
 .ec .ed-zoom-numbers h4{margin:0 0 .2rem;font-size:1rem}
 .ec .ed-zoom-numbers input[type=search]{width:16rem}
 .ec audio.ed-recording-audio{display:block;width:100%;min-width:16rem;margin-top:.5rem}
+/* Recall: a held case's call again now, with its tries as dots (CallSheet). */
+.kbc-portals .workspace-app .ec.ed .ed-call-actions button.ed-recall{background:#268a8b;border-color:#268a8b;color:#fff}.kbc-portals .workspace-app .ec.ed .ed-call-actions button.ed-recall:hover:not(:disabled){background:#1f6f70}.ed .ed-recall-tries{display:flex;flex-direction:column;align-items:center;gap:.2rem;font-size:.75rem;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums}.ed .ed-recall-tries>span{display:flex;gap:.25rem}.ed .ed-recall-tries i{width:.55rem;height:.55rem;border-radius:50%;border:1.5px solid #268a8b}.ed .ed-recall-tries i.used{background:#268a8b}

@@ -33,13 +33,14 @@ export const loadCase = (id: number, agentId?: number | null, history = false) =
   return api<CaseDetail>(`tickets/${id}/${query ? `?${query}` : ''}`);
 };
 
-/** Why the Call button is unavailable for a case, or '' when the session can call. */
-export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now()) {
+/** Why the Call button is unavailable for a case, or '' when the session can call. A `recall` calls a held case now,
+ * so its follow-up date is no reason to wait. */
+export function callDisabledReason(c: OverviewCase, session: Session, now = Date.now(), recall = false) {
   if (session.preview) return 'Read-only preview';
   if (c.status === 'resolved') return 'Case is not active';
   // A director's task: only its receiver calls the learner (a director still can).
   if (c.cover?.direct && c.cover.to_agent_id !== session.agentId && !session.isManager) return `Covered by ${c.cover.to_name}`;
-  if (c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
+  if (!recall && c.next_followup_at && Date.parse(c.next_followup_at) > now) return 'Follow-up not due yet';
   if (c.claimed_agent_id && c.claimed_agent_id !== session.agentId) return `In progress with ${c.claimed_by}`;
   const phone = c.employer_signature_missing && session.employerDesk ? c.call_phone : c.learner_phone;
   if (!phone?.trim()) return 'No number recorded';
@@ -48,6 +49,13 @@ export function callDisabledReason(c: OverviewCase, session: Session, now = Date
   // Remove `!session.isManager` once they do.
   if (session.ownDesk === false && !session.isManager) return 'Calls go out from your own Zoom account: call from your own desk';
   return '';
+}
+
+/** A case held after an unanswered call that its list can call again now (Recall): the tries used and left. Null for a
+ * case that is due (it is simply called) or held for any other reason. */
+export function recallFor(c: OverviewCase, now = Date.now()) {
+  if (!c.recall || c.status === 'resolved' || !c.next_followup_at || Date.parse(c.next_followup_at) <= now) return null;
+  return { ...c.recall, left: Math.max(0, c.recall.max - c.recall.used) };
 }
 
 /** Saves a case's outcome. The server attaches it to the case's last call (never an earlier one): held while Zoom may

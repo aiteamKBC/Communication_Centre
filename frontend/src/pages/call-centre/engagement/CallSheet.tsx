@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { callDisabledReason, caseAction, requestCallSync, saveOutcome } from './actions';
+import { callDisabledReason, caseAction, recallFor, requestCallSync, saveOutcome } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
@@ -131,14 +131,16 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     }
   }
 
-  async function call(c: OverviewCase) {
+  /** Call, or with `recall` call again now a case held after an unanswered call (one of its tries). */
+  async function call(c: OverviewCase, recall = false) {
     if (dialling !== null) return;
     setDialling(c.id);
     try {
       const role = c.employer_signature_missing && session.employerDesk ? 'employer' : 'learner';
-      await caseAction(session, c.id, 'call', { call_role: role });
+      await caseAction(session, c.id, 'call', { call_role: role, ...(recall ? { recall: true } : {}) });
       setOnCall(current => new Set(current).add(c.id));
-      notify(`Zoom opened for ${c.call_name || c.learner_name}. When you hang up, press End call, then choose the outcome and Save.`);
+      const tries = recall && c.recall ? ` (recall ${c.recall.used + 1} of ${c.recall.max})` : '';
+      notify(`Zoom opened for ${c.call_name || c.learner_name}${tries}. When you hang up, press End call, then choose the outcome and Save.`);
       onSaved();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
@@ -235,7 +237,9 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
             <tbody>
               {visibleRows.map(c => {
                 const d = drafts.get(c.id);
-                const callReason = callDisabledReason(c, session);
+                // Held after an unanswered call: Recall (up to its tries) instead of a Call that must wait for the follow-up.
+                const recall = recallFor(c);
+                const callReason = callDisabledReason(c, session, Date.now(), !!recall);
                 const disabled = session.preview || !session.canAct;
                 const employer = c.source_type === 'employer_feedback';
                 const employerContact = !!c.employer_signature_missing && !!session.employerDesk;
@@ -305,10 +309,24 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                           <button type="button" className="primary ed-call-action ed-end-call" aria-label={`End call with ${contactName}`} onClick={() => endCall(c)}>
                             End call
                           </button>
+                        ) : recall ? (
+                          <button type="button" className="primary ed-call-action ed-recall"
+                            aria-label={`${session.preview ? 'Preview only: ' : 'Recall '}${contactName}, ${recall.used} of ${recall.max} tries used`}
+                            disabled={!!callReason || !recall.left || dialling !== null}
+                            title={callReason || (recall.left ? `Call again now: try ${recall.used + 1} of ${recall.max}` : `All ${recall.max} recalls used`)}
+                            onClick={() => void call(c, true)}>
+                            {session.preview ? 'Preview' : 'Recall'}
+                          </button>
                         ) : (
                           <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${contactName}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
                             {session.preview ? 'Preview' : 'Call'}
                           </button>
+                        )}
+                        {recall && (
+                          <span className="ed-recall-tries" title={`${recall.used} of ${recall.max} recall tries used`}>
+                            <span aria-hidden="true">{Array.from({ length: recall.max }, (_, index) => <i key={index} className={index < recall.used ? 'used' : undefined} />)}</span>
+                            {recall.used}/{recall.max} tries
+                          </span>
                         )}
                         {(isSatisfaction(c) || c.employer_signature_missing) && <button type="button" className="ed-call-action"
                           disabled={disabled || !(c.employer_signature_missing ? (signatureEmailRole === 'employer' ? c.manager_email : c.learner_email) : satisfactionRecipient(c))}
@@ -316,7 +334,10 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                       </div>
                       {onCall.has(c.id) ? <span className="ed-call-reason">On the call: press End call when you hang up</span>
                         : ended.has(c.id) ? <span className="ed-call-reason">Call ended: choose the outcome and Save</span>
-                          : callReason && <span className="ed-call-reason">{callReason}</span>}
+                          : recall && !callReason ? <span className="ed-call-reason">{recall.left
+                            ? `Not answered: back on the list ${shortDate(c.next_followup_at)}. Recall to try again now.`
+                            : `All ${recall.max} recalls used: back on the list ${shortDate(c.next_followup_at)}.`}</span>
+                            : callReason && <span className="ed-call-reason">{callReason}</span>}
                     </td>
                     <td className="ed-booking-cell">
                       {employer ? <small>No coach booking for employer calls</small> : <>

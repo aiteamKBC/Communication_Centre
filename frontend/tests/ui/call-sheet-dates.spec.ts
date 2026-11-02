@@ -1100,3 +1100,32 @@ test('End call asks the worker to fetch the call from Zoom straight away', async
   await page.getByRole('button', { name: 'End call', exact: true }).click();
   await expect.poll(() => writes.filter(path => path === '/api/callcentre/call-sync/').length).toBe(2);
 });
+
+test('recall: a case held after no answer is called again from its list, up to three tries', async ({ page }) => {
+  const later = new Date(Date.now() + 20 * 3600_000).toISOString();
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  await openSheet(page, [
+    ticket(1, { learner_phone: '+447700900001', next_followup_at: later, missed_call: true, attempts: 2, recall: { used: 1, max: 3 } }),
+    ticket(2, { learner_phone: '+447700900002', next_followup_at: later, missed_call: true, recall: { used: 3, max: 3 } }),
+    // Held for another reason (a callback): the ordinary Call, waiting for its follow-up.
+    ticket(3, { learner_phone: '+447700900003', next_followup_at: later, status: 'pending_learner' }),
+  ], 'missed', null, {}, (path, body) => {
+    if (path.endsWith('/call/') || path.endsWith('/call-sync/')) { requests.push({ path, body }); return { ok: true }; }
+  });
+  const first = page.locator('[data-sheet-row="1"]');
+  await expect(first.locator('.ed-recall-tries')).toHaveText('1/3 tries');
+  await expect(first).toContainText('Recall to try again now.');
+  await expect(page.locator('[data-sheet-row="2"]').getByRole('button', { name: 'Recall Learner 2, 3 of 3 tries used', exact: true })).toBeDisabled();
+  await expect(page.locator('[data-sheet-row="2"]')).toContainText('All 3 recalls used');
+  await expect(page.getByRole('button', { name: 'Call Learner 3', exact: true })).toBeDisabled();
+  await page.locator('.ed-sheet').screenshot({ path: process.env.RECALL_SCREENSHOT || 'test-results/recall-sheet.png' });
+  await first.getByRole('button', { name: 'Recall Learner 1, 1 of 3 tries used', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'End call with Learner 1', exact: true })).toBeVisible();
+  expect(requests[0]).toEqual({ path: '/api/callcentre/tickets/1/call/', body: { call_role: 'learner', recall: true, agent_id: 1 } });
+});
+
+test('recall: a held case never comes back to Call next on Today', async ({ page }) => {
+  const later = new Date(Date.now() + 20 * 3600_000).toISOString();
+  await openSheet(page, [ticket(1, { learner_phone: '+447700900001', next_followup_at: later, missed_call: true, recall: { used: 0, max: 3 } })], 'today');
+  await expect(page.locator('.ed-next')).toContainText('Nobody else to call right now');
+});

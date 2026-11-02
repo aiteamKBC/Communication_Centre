@@ -68,6 +68,8 @@ export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { bookin
   followup_agent_id: number | null; contact_sources?: Record<string, string>;
   /** A director's task covering this case: on the task's list (`direct`), or another case of a learner it covers. */
   cover?: CaseCover | null;
+  /** Held after an unanswered call (no answer, voicemail, or no call in Zoom): recallable from its list, `used` of `max` tries. */
+  recall?: { used: number; max: number } | null;
   /** Where the case sits on the desk being shown (set by the page, not the server): its own list; a task given to
    * this specialist; another specialist covers it (read-only); or it only comes along on a covered learner's call. */
   desk?: 'own' | 'task' | 'covered' | 'call' };
