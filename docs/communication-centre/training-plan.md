@@ -2222,3 +2222,64 @@ Use this checklist before approving, publishing, or relying on a Training Plan:
 - Any access issue or unresolved save warning has been escalated.
 - Any developer/support issue has been reported with programme, cohort, module, expected result, actual result, and impact.
 - Save completed successfully.
+
+## 22. LMS Reference — Read only
+
+The Training Plan has two independent source tabs: **Current Training Plan** opens by default with the existing Monthly Breakdown, timeline and editing controls; **LMS Training Plan** shows the saved LMS capture. Both timelines stay mounted when switching tabs, preserving their separate zoom, collapse and scroll state. Switching tabs only reads data. The Session Schedule and other existing plan tools continue to use the live Training Plan.
+
+**Compare plans** displays both existing timelines in two equal columns on desktop, with a clearly labelled source above each. Each pane scrolls and zooms independently. Smaller screens stack the two panes. Comparison temporarily hides the current plan's Monthly Breakdown and limits each chart's height, keeping the date grids aligned and both scrollbars accessible. **Exit comparison** returns to the previously selected source; selecting either source tab also exits comparison. Entering comparison loads the existing LMS reference if needed but never creates or replaces a capture. Both timeline instances retain their state across comparison changes.
+
+Both views use the same `GanttTimeline` shell, bar renderer, dimensions, responsive scrolling, zoom toolbar, date grid, programme collapse, hover details and Excel button. The LMS version uses teal/blue colours and a source badge. Its navigation popup lists **Modules**, since the current capture contains no cohorts, groups, tutors or sessions. The normal bar progress area identifies unavailable LMS session data instead of inventing completion figures. LMS source dates and IDs appear in hover details; the Excel download includes all captured rows, including missing dates. The reference remains read only. Records without a complete valid date range remain in the saved capture and Excel export; missing or reversed source dates are never estimated. The timeline fits the captured date range, including dates before 2025.
+
+The LMS reference is displayed in the timeline without a separate source-record table.
+
+Before a reference exists, a user with the existing **Operations Access** or **Admin Access** permission can choose **Capture LMS Reference**. This explicitly saves every row available to the configured LMS reader in one consistent capture. Signed-in Training Plan viewers can read the saved result but cannot capture it. The existing application currently grants those viewers the same Training Plan scope; this feature adds no roles or programme permissions.
+
+The capture retains these four source fields:
+
+| Capture field | Verified source field |
+|---|---|
+| Programme | `curriculum.modules.programme_name` |
+| Module | `curriculum.modules.title` |
+| Start Date | `curriculum.modules.start_date` |
+| End Date | `curriculum.modules.end_date` |
+
+The primary key `module_catalogue_id` and related `programme_id` are retained for traceability without adding visible columns. Programme is already present in `modules`, so no join is needed. Dates display as `YYYY-MM-DD` without timezone conversion. Missing values display **Not provided**; group dates, session dates and creation timestamps are never substituted. The verified 332-row source has 134 missing start dates and 144 missing end dates.
+
+The capture timestamp appears above the LMS timeline; the stored creator remains in the reference metadata.
+
+The capture persists in `training_plan_lms_reference`, separate from live records and without foreign keys to them. It has one fixed primary key, a content checksum, and an atomic create-only operation. Concurrent captures produce one saved result and a `409` for the other request. PostgreSQL also blocks row updates and deletes. There is no edit, replace, refresh, restore, import, assignment or coverage workflow for the reference. Later changes or deletions in either system do not change it. It is a comparison aid, not a complete Training Plan backup.
+
+### Developer configuration and isolated verification
+
+`GET /api/training-plan/lms-reference/` reads only stored data and returns `reference: null` before capture. A manager can send an empty JSON object with `POST` once. Client records, capture filters and other mutation methods are rejected. Normal session authentication and CSRF protection apply. Source/storage failures leave no partial capture and return a controlled error without connection details.
+
+For a future approved deployment, configure `TRAINING_PLAN_LMS_REFERENCE_DATABASE_URL` on the server with a dedicated reader that has `SELECT` and no `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` permission on `curriculum.modules`. Capture opens a repeatable-read, read-only transaction and verifies the required schema. The supplied original owner connection is used only by the explicit read-only copy preparation tool, never as runtime configuration. No production environment file or database was changed for this implementation.
+
+Development uses `backend/training_plan_lms_reference_dev/settings.py`, which does not load the normal backend settings or `.env`. Before feature migrations or tests, consistent read-only backups of the required Training Plan tables and authentication data were restored to local PostgreSQL on `127.0.0.1:55432`. Names, contacts, passwords and free text were sanitised in the copies. The selected six-column LMS projection was independently backed up and restored.
+
+| Purpose | Local database | Runtime access |
+|---|---|---|
+| Training Plan | `tp_lms_reference_app` | Separate local application account |
+| Authentication | `tp_lms_reference_auth` | Separate local application account |
+| LMS source fixture | `tp_lms_reference_source` | Separate SELECT-only reader |
+
+These are scoped development copies, not a full operational disaster-recovery backup. Original database access was explicitly read only. Migration `0026_training_plan_lms_reference` was applied only to the isolated application copy. Local settings reject unexpected destinations, disable outgoing email/reminders/AI and block external Python socket connections. The isolated frontend proxies to the test backend and serves files only from the frontend directory. Raw backups, credentials, receipts, logs, PostgreSQL binaries and screenshots are ignored by Git.
+
+The preview runs at `http://127.0.0.1:3100/training-plan` with the backend at `127.0.0.1:8101`. Local manager credentials are in the ignored `backend/training_plan_lms_reference_dev/private/preview-access.json`; original passwords are not valid in the sanitised copy. From `backend`, with the local PostgreSQL cluster running:
+
+```powershell
+.\venv\Scripts\python.exe manage.py runserver 127.0.0.1:8101 --noreload --settings=training_plan_lms_reference_dev.settings
+```
+
+Start the isolated frontend from the same directory with `node training_plan_lms_reference_dev/frontend.mjs`. Run `.\venv\Scripts\python.exe -m training_plan_lms_reference_dev.verify --api` to verify the effective database destinations and the records returned by the running backend.
+
+Backend integration checks in `test_reference.py` cover exact mapping, missing dates, permissions, forbidden mutations, source/storage failure, immutable storage, concurrent capture, persistence after source/live changes, and existing partial saves with stale-version protection. They require a fresh uncaptured local reference table and refuse an existing capture. Browser checks in `verify_ui.mjs` exercise the real isolated page and two user sessions; temporary live/LMS fixture edits are restored in a `finally` block. Do not point either test tool at an original database. No deployment, merge, production migration or original password reset is part of this work.
+
+Validation completed: 12 backend integration checks passed; real-browser search/filter/sort/scroll, hidden default, viewer permissions, persistence across reloads and sessions, zero-write toggles, source/live deletion independence, and the existing Session Schedule rendered successfully. TypeScript checking, Django system checks, effective running-API isolation and private-path HTTP 403 checks passed. After restoring fixtures, the local plan has 336 rows (204 active), and both the LMS copy and the 332 captured records exactly match the initial read-only projection and checksum. An existing unrelated model/migration drift check still proposes changes outside this feature; those changes were not generated or applied.
+
+Timeline verification also passed against the existing capture: 187 bars with exact source dates and 145 records listed separately; all five zoom levels; switching views; search and programme filtering; desktop/mobile scrolling and initial positioning; no Training Plan writes or browser errors. Browser-only fixtures verified dates before 2025 and through 2028, repeated names with distinct source IDs, preservation of module titles that match built-in aliases, and missing, invalid or reversed dates. TypeScript checking passed after the timeline changes.
+
+The separate source tabs were verified with matching computed shell/bar styles and the original desktop scrolling dimensions. Switching back preserves the current plan's records and zoom. LMS Excel export contains all 332 source rows and source labels. LMS blocks carry an in-memory source marker so the shared session summary cannot infer completion from absent session data; source dates remain date-only strings in labels and tooltips.
+
+Application changes are confined to `api/models.py`, `api/urls.py`, the new `api/training_plan_lms_reference.py` and migration `0026_training_plan_lms_reference.py`, plus the timeline's `page.tsx`, `types.ts`, new `lmsReference.ts`, `components/LmsReference.tsx` and `components/LmsReferenceTimeline.tsx`. The existing `components/GanttTimeline.tsx` supports an optional read-only LMS source mode using its standard renderer. Popup navigation is scoped to each timeline instance, and hidden-instance popups close on tab changes. Preparation, isolated settings, preview launchers, validation tools and the source mapping receipt live under `backend/training_plan_lms_reference_dev/`. This section documents the feature and its limits.

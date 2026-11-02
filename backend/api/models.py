@@ -70,6 +70,19 @@ class TrainingPlan(models.Model):
 		managed = False
 
 
+class TrainingPlanLmsReference(models.Model):
+	"""Create-once LMS comparison data, independent of all live planning records."""
+	id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+	created_by = models.JSONField()
+	records = models.JSONField()
+	content_sha256 = models.CharField(max_length=64)
+
+	class Meta:
+		db_table = 'training_plan_lms_reference'
+		constraints = [models.CheckConstraint(condition=models.Q(id=1), name='tp_lms_reference_singleton')]
+
+
 class TutorProfile(models.Model):
 	id = models.BigAutoField(primary_key=True)
 	name = models.CharField(max_length=255)

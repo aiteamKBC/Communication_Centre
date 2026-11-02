@@ -6,6 +6,7 @@ import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, CoachProfile, ModuleBlock } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
+import LmsReference from './components/LmsReference';
 import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
@@ -6900,11 +6901,12 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          isInitialProgrammesLoading ? (
+          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} zoom={zoom} onZoomChange={setZoom}>
+          {comparing => isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
             <>
-              <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
+              <div data-training-plan-overview><MonthlyModuleBreakdown summaries={monthlyModuleSummaries} /></div>
               <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200">
                 <GanttTimeline
                   groups={groups}
@@ -6914,6 +6916,7 @@ export default function ApprenticeshipTimeline() {
                   tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
                   zoom={zoom}
                   onZoomChange={setZoom}
+                  showZoomControls={!comparing}
                   onManageHolidays={() => setShowHolidayMgr(true)}
                   onAddRow={(gi) => {
                     if (!canManageCohorts) {
@@ -6964,7 +6967,8 @@ export default function ApprenticeshipTimeline() {
                 </button>
               )}
             </div>
-          )
+          )}
+          </LmsReference>
         )}
 
         {/* SESSION SCHEDULE */}
