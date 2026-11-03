@@ -1,8 +1,13 @@
 from django.urls import path
 
-from . import manage_views, views
+from . import events_views, manage_views, views
 
 urlpatterns = [
+    path('events/open/', events_views.events_open),
+    path('events/my-calls/', events_views.events_my_calls),
+    path('events/summary/', events_views.events_summary),
+    path('events/allocations/', events_views.events_allocations),
+    path('events/recordings/<str:token>/audio/', events_views.events_recording_audio),
     path('config/', views.config),
     path('call-sync/', views.call_sync),
     path('overview/', views.overview),

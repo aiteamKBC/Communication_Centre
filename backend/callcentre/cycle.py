@@ -13,6 +13,7 @@ from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
 from .call_scope import system_calls
 from .emails import process_emails
+from .events_hub import sync as sync_events_hub
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
@@ -273,5 +274,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'attendance_checks', verify_attendance_edits)
         if not skip_emails and people is not None and people.sources_complete:
             step(result, 'emails_processed', process_emails)
+        # The Events hub has no worker: this cycle sends it the specialists and runs its Eventbrite import.
+        step(result, 'events_hub', sync_events_hub)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result

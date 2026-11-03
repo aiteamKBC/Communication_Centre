@@ -13,7 +13,7 @@ import { liveSeconds } from './live';
 import { duration, when } from './model';
 import type { DeskWork } from './model';
 import { Scorecard } from './Scorecard';
-import Switchboard from './Switchboard';
+import Switchboard, { TalkMeter } from './Switchboard';
 
 /** Every specialist at a glance: today against target and the month so far. Each card opens their page. */
 export function SpecialistIndex({ overview, live, now, go }: { overview: Overview; live: Live | null; now: number; go: Go }) {
@@ -25,7 +25,6 @@ export function SpecialistIndex({ overview, live, now, go }: { overview: Overvie
       <div className="dd-people">
         {ranked(overview.agents).map(agent => {
           const today = agent.today.seconds + liveSeconds(live?.calls, agent.id, now);
-          const share = agent.target_seconds ? Math.min(1, today / agent.target_seconds) : 0;
           const mine = caseload(overview.cases.filter(c => c.allocated_agent_id === agent.id));
           const presence = live?.presence?.agents[String(agent.id)];
           return (
@@ -35,8 +34,9 @@ export function SpecialistIndex({ overview, live, now, go }: { overview: Overvie
                 <span>{presence?.label || 'Status unknown'}</span>
               </span>
               <span className="dd-person-today">
-                <span className="dd-meter light" aria-hidden="true"><span className={`dd-meter-fill${share >= 1 ? ' met' : ''}`} style={{ width: `${share * 100}%` }} /></span>
-                <small>{duration(today)} of {duration(agent.target_seconds)} today</small>
+                <TalkMeter light seconds={today} eventSeconds={agent.today.event_seconds} target={agent.target_seconds}
+                  label={`${agent.display_name}: talk time today`} />
+                <small>{duration(today)} of {duration(agent.target_seconds)} today{agent.today.event_seconds ? ` · ${duration(agent.today.event_seconds)} event calls` : ''}</small>
               </span>
               <NowOn overview={overview} agentId={agent.id} worked={progress.data?.worked} />
               <span className="dd-person-figures">
@@ -117,7 +117,8 @@ export function SpecialistPage({ overview, agentId, live, now, go, onOpenCase, o
         <div className="dd-figures">
           <Figure label="Calls made" value={totals.attempts} hint={`${totals.connected} answered`} />
           <Figure label="Answer rate" value={totals.answerRate === null ? '—' : `${totals.answerRate}%`} hint="Answered of calls made" />
-          <Figure label="Talk time" value={duration(totals.seconds)} hint={`Target ${duration(agent.target_seconds)} a day`} />
+          <Figure label="Talk time" value={duration(totals.seconds)}
+            hint={`Target ${duration(agent.target_seconds)} a day${agent.month.event_seconds ? ` · ${duration(agent.month.event_seconds)} event calls` : ''}`} />
           <Figure label="Learners reached" value={totals.learners} />
           <Figure label="Cases resolved" value={totals.resolved} hint={`${agent.month.pending} worked, still open`} />
         </div>

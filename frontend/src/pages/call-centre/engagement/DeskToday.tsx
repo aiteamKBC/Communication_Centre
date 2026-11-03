@@ -1,11 +1,14 @@
 import { useState } from 'react';
+import { useCallCentre } from '../api';
 import type { AgentStats, Overview } from '../api';
 import type { Session } from './actions';
+import { eventPath, eventsLink } from './events';
+import type { EventCalls, EventNumbers } from './events';
 import { ROLES, waited } from './inbound';
 import type { InboundItem, InboundListing } from './inbound';
 import type { Live } from './live';
 import { liveSeconds } from './live';
-import { TASK, listCount, listLabel, points, ratedCalls, taskKey, taskLabel, when } from './model';
+import { TASK, duration, listCount, listLabel, points, ratedCalls, taskKey, taskLabel, when } from './model';
 import NextCall from './NextCall';
 import { Line } from './Switchboard';
 
@@ -62,7 +65,76 @@ function RangCard({ item, onOpen, onAll }: { item: InboundItem; onOpen: (id: num
   );
 }
 
-/** The desk's home page: your line, who rang and is waiting for you, the next person to call, and your lists. */
+const eventTime = (value: string) => new Date(value).toLocaleString('en-GB', {
+  weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
+});
+
+/** Event calls from the Events hub, the first task of the day: confirmations for the events allocated to this
+ * specialist that start within two days, then optional feedback calls after an event. Hidden when there are none. */
+const worked = (figures?: EventNumbers) => !!figures && figures.dialled + figures.contacted + figures.feedback > 0;
+
+/** This specialist's own event calls: today, this week and last week. */
+function EventNumbersStrip({ numbers }: { numbers: NonNullable<EventCalls['numbers']> }) {
+  const periods: [string, EventNumbers][] = [['Today', numbers.today], ['This week', numbers.this_week], ['Last week', numbers.last_week]];
+  return (
+    <dl className="dk-events-numbers" aria-label="Your event calls">
+      {periods.map(([label, figures]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd><b>{figures.dialled}</b> {figures.dialled === 1 ? 'call' : 'calls'} · {figures.answered} answered · {duration(figures.talk_seconds)}</dd>
+          <dd>{figures.confirmed} confirmed of {figures.contacted} · {figures.feedback} feedback{figures.average_rating !== null ? ` (${figures.average_rating.toFixed(1)}★)` : ''}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EventCallsSection() {
+  const { data } = useCallCentre<EventCalls>('events/my-calls/');
+  if (!data?.enabled) return null;
+  const confirmations = data.tasks.filter(task => task.phase === 'confirmation');
+  const feedback = data.tasks.filter(task => task.phase === 'feedback' && task.feedback_open);
+  const numbers = data.numbers;
+  const hasNumbers = !!numbers && (worked(numbers.today) || worked(numbers.this_week) || worked(numbers.last_week));
+  if (!confirmations.length && !feedback.length && !data.error && !hasNumbers) return null;
+  const toCall = confirmations.reduce((sum, task) => sum + task.to_call, 0);
+  return (
+    <section className="dk-section" aria-labelledby="dk-events">
+      <header className="dk-section-head">
+        <div>
+          <p className="dd-eyebrow">Events hub{toCall ? ` · ${toCall} to call` : ''}</p>
+          <h2 id="dk-events">{confirmations.length ? 'Event calls first' : feedback.length ? 'Event feedback calls' : 'Your event calls'}</h2>
+        </div>
+        {data.can_open && <a className="ec-button" href={eventsLink('/my-calls')} target="_blank" rel="noopener">All event calls</a>}
+      </header>
+      {data.error && <p className="dk-events-error">{data.error}</p>}
+      {hasNumbers && numbers && <EventNumbersStrip numbers={numbers} />}
+      {confirmations.length > 0 && (
+        <div className="dk-events">
+          {confirmations.map(task => (
+            <article key={task.event_id} className={`dk-event-card${task.to_call ? '' : ' done'}`}>
+              <header><strong>{task.event_name}</strong><span>{eventTime(task.start_at)}</span></header>
+              <p>{task.to_call ? <><b>{task.to_call}</b> of {task.booked} still to call</> : <>All {task.booked} called</>} · {task.confirmed} confirmed</p>
+              {data.can_open && <a className={`ec-button${task.to_call ? ' primary' : ''}`} href={eventsLink(eventPath(task.event_id))} target="_blank" rel="noopener">Open event calls</a>}
+            </article>
+          ))}
+        </div>
+      )}
+      {feedback.length > 0 && (
+        <ul className="dk-events-feedback">
+          {feedback.map(task => (
+            <li key={task.event_id}>
+              <span>Optional · feedback for <strong>{task.event_name}</strong>: {task.feedback_recorded} of {task.booked} recorded</span>
+              {data.can_open && <a className="ec-button" href={eventsLink(eventPath(task.event_id))} target="_blank" rel="noopener">Feedback calls</a>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** The desk's home page: event calls, your line, who rang and is waiting for you, the next person to call, and your lists. */
 export default function DeskToday({ overview, agent, session, live, now, rang, lists, onSection, onOpen, onRefresh, notify }: Props) {
   const waiting = (rang?.items || []).filter(item => item.status === 'open');
   const open = rang?.summary?.open ?? waiting.length;
@@ -82,6 +154,7 @@ export default function DeskToday({ overview, agent, session, live, now, rang, l
           ))}
         </section>
       )}
+      <EventCallsSection />
       {agent && <MyLine agent={agent} overview={overview} live={live} now={now} agentId={session.agentId} />}
 
       {rang && (

@@ -55,11 +55,17 @@
 @keyframes dd-ring { 50% { opacity: .35; } }
 
 /* Talk time against target: lilac filling up, gold once the target is met. */
-.kbc-portals .dd-meter { display: block; position: relative; height: 8px; border-radius: 99px; background: rgba(206, 179, 235, .16); overflow: hidden; }
+.kbc-portals .dd-meter { display: flex; position: relative; height: 8px; border-radius: 99px; background: rgba(206, 179, 235, .16); overflow: hidden; }
 .kbc-portals .dd-meter-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #a77fd8, var(--dd-lilac)); transition: width .6s ease; }
 .kbc-portals .dd-meter-fill.met { background: linear-gradient(90deg, #c99a3f, #ecc777); }
 .kbc-portals .dd-meter.light { background: #eeeaf6; }
 .kbc-portals .dd-meter.light .dd-meter-fill:not(.met) { background: linear-gradient(90deg, var(--dd-deep), var(--dd-purple)); }
+/* Events hub calls: the second colour of the same bar; both count towards the target. */
+.kbc-portals .dd-meter .dd-meter-fill.event, .kbc-portals .dd-meter.light .dd-meter-fill.event { background: linear-gradient(90deg, #2f9e8f, #6fcdbf); }
+.kbc-portals .dd-meter-fill:has(+ .dd-meter-fill.event) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.kbc-portals .dd-meter-fill + .dd-meter-fill.event { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.kbc-portals .dd-key-bar { display: inline-block; width: 14px; height: 6px; border-radius: 99px; background: linear-gradient(90deg, #a77fd8, var(--dd-lilac)); }
+.kbc-portals .dd-key-bar.event { background: linear-gradient(90deg, #2f9e8f, #6fcdbf); }
 
 /* ---- Needs you ---- */
 .kbc-portals .dd-needs { display: flex; align-items: center; gap: .8rem 1.2rem; flex-wrap: wrap; }
@@ -259,3 +265,11 @@
 @media (max-width: 760px) {
   .kbc-portals .td-step label { min-width: 0; width: 100%; }
 }
+
+/* The Events hub panel: events whose calls are open, and any nobody is allocated to. */
+.kbc-portals .dd-events { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-events li {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .8rem; padding: .65rem 1rem;
+  background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; font-size: .92rem;
+}
+.kbc-portals .dd-events li.bad { border-color: #efd3d6; border-left: 4px solid var(--dd-bad); }

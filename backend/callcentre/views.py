@@ -385,13 +385,18 @@ def overview(request):
         agents.append({
             'id': row['id'], 'display_name': row['name'], 'zoom_account': row['account'],
             'zoom_phone_number': row['zoom_phone_number'], 'target_seconds': row['daily_target_minutes'] * 60,
-            'today': {'attempts': current['calls'], 'connected': current['answered'], 'seconds': current['seconds']} if current
-            else {'attempts': 0, 'connected': 0, 'seconds': 0},
+            # Calls, answered and seconds include calls made from the Events hub; event_* is that part of them.
+            'today': {'attempts': current['calls'], 'connected': current['answered'], 'seconds': current['seconds'],
+                      'event_attempts': current['event_calls'], 'event_connected': current['event_answered'],
+                      'event_seconds': current['event_seconds']} if current
+            else {'attempts': 0, 'connected': 0, 'seconds': 0, 'event_attempts': 0, 'event_connected': 0, 'event_seconds': 0},
             'month': {'attempts': row['calls'], 'connected': row['answered'], 'seconds': row['seconds'],
+                      'event_attempts': row['event_calls'], 'event_connected': row['event_answered'],
+                      'event_seconds': row['event_seconds'],
                       'resolved': row['resolved'], 'pending': row['pending'], 'sla_breaches': row['sla_breaches'],
                       'unique_learners': row['unique_learners'], 'emails': row['emails'],
                       'daily': [{'day': day['date'], 'attempts': day['calls'], 'connected': day['answered'],
-                                 'seconds': day['seconds']} for day in row['daily']]},
+                                 'seconds': day['seconds'], 'event_seconds': day['event_seconds']} for day in row['daily']]},
             'sync': row['sync'],
         })
 

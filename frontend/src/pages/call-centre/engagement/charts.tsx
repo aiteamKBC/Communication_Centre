@@ -17,12 +17,21 @@ const tooltip = {
   cursor: { fill: 'rgba(96,53,154,.06)' },
 };
 
-/** Talk time each working day, one stacked colour per specialist, against the team's (or one specialist's) daily target. */
+// The Events hub's calls, stacked on top of the learner calls: they count towards the same target.
+const EVENTS = 'events';
+const EVENT_COLOUR = '#2f9e8f';
+
+/** Talk time each working day, one stacked colour per specialist (learner calls) and one for the Events hub's calls,
+ * against the team's (or one specialist's) daily target. */
 export function TalkByDay({ agents, height = 260 }: { agents: AgentStats[]; height?: number }) {
   const days = workingDays(agents);
   const target = agents.reduce((total, agent) => total + agent.target_seconds, 0);
-  const rows = days.map(day => Object.fromEntries([['day', dayLabel(day)], ...agents.map(agent => [String(agent.id), hours(find(agent, day)?.seconds || 0)])]));
-  if (!rows.some(row => agents.some(agent => Number(row[String(agent.id)]) > 0))) {
+  const rows = days.map(day => Object.fromEntries([['day', dayLabel(day)],
+    ...agents.map(agent => [String(agent.id), hours((find(agent, day)?.seconds || 0) - (find(agent, day)?.event_seconds || 0))]),
+    [EVENTS, hours(agents.reduce((total, agent) => total + (find(agent, day)?.event_seconds || 0), 0))]]));
+  const events = rows.some(row => Number(row[EVENTS]) > 0);
+  const nameOf = (key: unknown) => (key === EVENTS ? 'Event calls' : agents.find(agent => String(agent.id) === key)?.display_name || String(key));
+  if (!rows.some(row => events || agents.some(agent => Number(row[String(agent.id)]) > 0))) {
     return <p className="dd-empty">Talk time appears here as Zoom confirms the month’s calls.</p>;
   }
   return (
@@ -33,14 +42,15 @@ export function TalkByDay({ agents, height = 260 }: { agents: AgentStats[]; heig
           <XAxis dataKey="day" {...axis} interval="preserveStartEnd" minTickGap={18} />
           <YAxis {...axis} width={44} allowDecimals={false} tickFormatter={value => `${value}h`}
             domain={[0, (most: number) => Math.ceil(Math.max(most, hours(target)))]} />
-          <Tooltip {...tooltip} formatter={(value, name) => [`${value} h`, agents.find(agent => String(agent.id) === name)?.display_name || name]} />
+          <Tooltip {...tooltip} formatter={(value, name) => [`${value} h`, nameOf(name)]} />
           {target > 0 && <ReferenceLine y={hours(target)} stroke="#bb8a32" strokeDasharray="5 4" strokeWidth={1.5}
             label={{ value: `Target ${duration(target)}`, position: 'insideTopRight', fill: '#8a6420', fontSize: 12 }} />}
           {agents.map((agent, index) => (
             <Bar key={agent.id} dataKey={String(agent.id)} stackId="talk" fill={agents.length === 1 ? '#60359a' : seriesColour(index)}
-              radius={index === agents.length - 1 ? [3, 3, 0, 0] : 0} isAnimationActive={false} />
+              radius={index === agents.length - 1 && !events ? [3, 3, 0, 0] : 0} isAnimationActive={false} />
           ))}
-          {agents.length > 1 && <Legend formatter={name => agents.find(agent => String(agent.id) === name)?.display_name || name}
+          {events && <Bar dataKey={EVENTS} stackId="talk" fill={EVENT_COLOUR} radius={[3, 3, 0, 0]} isAnimationActive={false} />}
+          {(agents.length > 1 || events) && <Legend formatter={name => (agents.length === 1 && name !== EVENTS ? 'Learner calls' : nameOf(name))}
             iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 13, paddingTop: 6 }} />}
         </BarChart>
       </ResponsiveContainer>

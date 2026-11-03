@@ -145,3 +145,29 @@
 .kbc-portals .ed-cover-tag.task { background: #fbf3dc; color: #7a5c12; }
 .kbc-portals .ed-sheet tr.ed-covered > * { opacity: .55; }
 .kbc-portals .ed-task-note { margin: 0 0 .8rem; padding: .6rem .9rem; border-left: 3px solid var(--dd-gold); background: #fffdf8; border-radius: 8px; }
+
+/* Event calls from the Events hub: one card per event two days away, then optional feedback calls. */
+.kbc-portals .dk-events { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .8rem; }
+.kbc-portals .dk-event-card {
+  display: grid; gap: .5rem; align-content: start; padding: 1rem 1.1rem; background: #fff; border: 1px solid var(--dd-line);
+  border-left: 4px solid var(--dd-purple); border-radius: 12px;
+}
+.kbc-portals .dk-event-card.done { border-left-color: var(--dd-good); }
+.kbc-portals .dk-event-card header { display: grid; gap: .1rem; }
+.kbc-portals .dk-event-card header strong { font-size: 1.05rem; }
+.kbc-portals .dk-event-card header span { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dk-event-card p { margin: 0; font-size: .92rem; }
+.kbc-portals .dk-event-card p b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.35rem; color: var(--dd-purple); }
+.kbc-portals .dk-event-card > a { justify-self: start; }
+.kbc-portals .dk-events-feedback { display: grid; gap: .5rem; list-style: none; margin: .8rem 0 0; padding: 0; }
+.kbc-portals .dk-events-feedback li {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .8rem; padding: .6rem .9rem;
+  background: var(--dd-soft); border-radius: 10px; font-size: .9rem;
+}
+.kbc-portals .dk-events-error { margin: 0 0 .6rem; color: var(--dd-muted); font-size: .9rem; }
+.kbc-portals .dk-events-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; margin: 0 0 .9rem; }
+.kbc-portals .dk-events-numbers > div { padding: .6rem .9rem; background: var(--dd-soft); border-radius: 10px; min-width: 0; }
+.kbc-portals .dk-events-numbers dt { font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--dd-muted); }
+.kbc-portals .dk-events-numbers dd { margin: .15rem 0 0; font-size: .88rem; }
+.kbc-portals .dk-events-numbers dd b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.25rem; color: var(--dd-purple); }
+@media (max-width: 700px) { .kbc-portals .dk-events-numbers { grid-template-columns: 1fr; } }

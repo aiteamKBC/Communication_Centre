@@ -15,6 +15,7 @@ import { CallsPage, ScorecardsPage } from './engagement/Director';
 import DirectorHome from './engagement/DirectorHome';
 import DoNotCall from './engagement/DoNotCall';
 import EmployerSpecialists from './engagement/EmployerSpecialists';
+import EventAllocation from './engagement/EventAllocation';
 import Imports from './engagement/Imports';
 import { useLive } from './engagement/live';
 import type { InboundListing } from './engagement/inbound';
@@ -41,12 +42,12 @@ const DIRECTOR_NAV: [string, [string, string, string][]][] = [
   ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
     ['delegation', 'Task delegation', 'people'],
     ['operator', 'Calling desk', 'phone']]],
-  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
+  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['event-allocation', 'Event allocation', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
     ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
   director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
-  bookings: 'Coach booking links', allocations: 'Learner allocation',
+  bookings: 'Coach booking links', allocations: 'Learner allocation', 'event-allocation': 'Event allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
   delegation: 'Task delegation', attendance: 'Attendance edits',
 };
@@ -231,6 +232,8 @@ export default function CallCentrePage() {
               <DoNotCall session={session} onChanged={refresh} notify={notify} />
               <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             </>
+          ) : view === 'event-allocation' ? (
+            <EventAllocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
           ) : view === 'phone' ? (
             <>
               <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />

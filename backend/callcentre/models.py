@@ -269,6 +269,20 @@ class CallMatch(Retained):
         managed = False
 
 
+class EventsHubCall(Retained):
+    """A Zoom call a specialist made from the Events hub, matched to its press of Call there (events_hub.match_dials).
+    It counts towards their talk time and daily target as event calls (call_scope.event_call_list).
+    See docs/callcentre-port/event_calls.sql."""
+    call = models.OneToOneField(ZoomPhoneCall, on_delete=models.PROTECT, related_name='events_hub_call')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT)
+    events_dial_id = models.UUIDField(unique=True)
+    matched_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_event_call'
+        managed = False
+
+
 class CaseCall(Retained):
     ticket = models.ForeignKey(CaseTicket, on_delete=models.PROTECT, related_name='calls')
     match = models.ForeignKey(CallMatch, on_delete=models.PROTECT, related_name='cases')
