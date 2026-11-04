@@ -40,7 +40,7 @@ export const ISSUE_LABELS: Record<string, string> = {
 };
 
 export const ISSUE_ACTIONS: Record<string, string> = {
-  attendance: 'The register shows the learner absent from this lecture. Find out why, then agree they attend the same lecture with another group (this closes the case), book a catch-up session with their coach (Book with coach) or send the booking email.',
+  attendance: 'The register shows the learner absent from this lecture. Find out why, then agree they attend the same lecture with another group (this closes the case), book a catch-up session with their coach (Book with coach) or send the booking email. If they already had a catch-up session with their coach for it, record that: it closes the case.',
   pr: 'The progress review is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s progress review link.',
   mcm: 'The monthly coaching meeting is due and not booked yet. Agree when the learner will book it and send the booking email with their coach’s coaching link.',
   pr_missed: 'The progress review was booked but is not completed in the LMS. Check whether it went ahead; if not, send the booking email so the learner can rebook it.',
@@ -65,6 +65,7 @@ const OUTCOMES: [string, string][] = [['reached', 'Reached'], ['no_answer', 'No 
 const PROMISE_LABELS: Record<string, string> = {
   catch_up_session: 'Book a catch-up session', watch_recording: 'Watch the recording', other_group_session: 'Attend this lecture with another group',
   attended_other_group: 'Attended this lecture with another group (covering lecture)',
+  caught_up_with_coach: 'Already caught up in a catch-up session with their coach',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
   epa_step: 'Complete the EPA step', sign_review: 'Sign the review', other: 'Other',
 };

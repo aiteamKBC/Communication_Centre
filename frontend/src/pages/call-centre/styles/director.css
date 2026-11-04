@@ -183,10 +183,10 @@
 }
 
 /* ---- A specialist's lists today (DeskProgress) ---- */
-.kbc-portals .dd-lists { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: .6rem; }
+.kbc-portals .dd-lists { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: .6rem; list-style: none; margin: 0; padding: 0; }
 .kbc-portals .workspace-app .ec .dd-lists .dd-list {
   display: grid; align-content: start; gap: .15rem; text-align: left; padding: .75rem .9rem; background: #fff;
-  border: 1px solid var(--dd-line); border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--dd-line); border-radius: 12px;
 }
 .kbc-portals .dd-list > span { font-size: .85rem; font-weight: 600; color: var(--dd-muted); display: flex; justify-content: space-between; gap: .4rem; }
 .kbc-portals .dd-list em { font-style: normal; font-size: .72rem; padding: 0 .45rem; border-radius: 99px; background: var(--dd-purple); color: #fff; }
@@ -194,11 +194,7 @@
 .kbc-portals .dd-list strong small { font-family: inherit; font-size: .85rem; color: var(--dd-muted); }
 .kbc-portals .dd-list > small { font-size: .78rem; color: var(--dd-muted); }
 .kbc-portals .workspace-app .ec .dd-lists .dd-list.now { border-color: var(--dd-purple); }
-.kbc-portals .workspace-app .ec .dd-lists .dd-list[aria-selected='true'] { box-shadow: 0 0 0 2px var(--dd-lilac); }
 .kbc-portals .dd-list.empty { opacity: .6; }
-.kbc-portals .dd-list-people { list-style: none; margin: .6rem 0 0; padding: 0; display: grid; gap: .45rem; }
-.kbc-portals .dd-list-people li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .6rem; }
-.kbc-portals .dd-list-people span, .kbc-portals .dd-list-people small { font-size: .82rem; color: var(--dd-muted); }
 .kbc-portals .dd-now-on { display: block; font-size: .8rem; color: var(--dd-muted); }
 
 /* ---- Review meetings (the Outlook audit) ---- */

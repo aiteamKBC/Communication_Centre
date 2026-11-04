@@ -116,35 +116,43 @@ def epa_dates(ticket):
     }
 
 
-def authenticated(fn):
-    @wraps(fn)
-    def wrapper(request, *args, **kwargs):
-        if not request.user.is_authenticated or not request.user.is_active:
-            return JsonResponse({'detail': 'An active signed-in account is required.'}, status=401)
-        denied = refused(request.user)
-        if denied:
-            return denied
-        try:
-            return fn(request, *args, **kwargs)
-        except ObjectDoesNotExist:
-            return JsonResponse({'detail': 'Record not found.'}, status=404)
-        except PermissionDenied as exc:
-            return JsonResponse({'detail': str(exc)}, status=403)
-        except Conflict as exc:
-            return JsonResponse({'detail': str(exc)}, status=409)
-        except (ValueError, TypeError, KeyError) as exc:
-            # A FieldError names the form field to fix; the page shows the message next to it.
-            field = getattr(exc, 'field', '')
-            return JsonResponse({'detail': str(exc) or 'Invalid request.', **({'field': field} if field else {})}, status=400)
-        except ZoomError as exc:
-            return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
-        except DatabaseError:
-            return JsonResponse({'detail': 'Call Centre is temporarily unavailable. Check database connectivity.'}, status=503)
-        except (Http404, SuspiciousOperation):
-            raise   # Django answers these itself
-        except Exception as exc:  # noqa: BLE001 - always answer the page in JSON, with a reference to find it in the log
-            return server_error(request, exc)
-    return never_cache(wrapper)
+def guarded(refuse):
+    """A view for active signed-in accounts that ``refuse`` lets in (it answers None for them, else the response),
+    answering every error in JSON."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(request, *args, **kwargs):
+            if not request.user.is_authenticated or not request.user.is_active:
+                return JsonResponse({'detail': 'An active signed-in account is required.'}, status=401)
+            denied = refuse(request.user)
+            if denied:
+                return denied
+            try:
+                return fn(request, *args, **kwargs)
+            except ObjectDoesNotExist:
+                return JsonResponse({'detail': 'Record not found.'}, status=404)
+            except PermissionDenied as exc:
+                return JsonResponse({'detail': str(exc)}, status=403)
+            except Conflict as exc:
+                return JsonResponse({'detail': str(exc)}, status=409)
+            except (ValueError, TypeError, KeyError) as exc:
+                # A FieldError names the form field to fix; the page shows the message next to it.
+                field = getattr(exc, 'field', '')
+                return JsonResponse({'detail': str(exc) or 'Invalid request.', **({'field': field} if field else {})}, status=400)
+            except ZoomError as exc:
+                return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
+            except DatabaseError:
+                return JsonResponse({'detail': 'Call Centre is temporarily unavailable. Check database connectivity.'}, status=503)
+            except (Http404, SuspiciousOperation):
+                raise   # Django answers these itself
+            except Exception as exc:  # noqa: BLE001 - always answer the page in JSON, with a reference to find it in the log
+                return server_error(request, exc)
+        return never_cache(wrapper)
+    return decorator
+
+
+# Engagement Centre directors and specialists. ``refused`` is looked up on each request, so tests can replace it.
+authenticated = guarded(lambda user: refused(user))
 
 
 def server_error(request, exc):

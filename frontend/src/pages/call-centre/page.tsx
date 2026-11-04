@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
+import { readStoredAuthUser } from '../../utils/authStorage';
 import { useCallCentre } from './api';
 import type { Config, Overview, OverviewCase } from './api';
 import type { Session } from './engagement/actions';
@@ -30,6 +30,7 @@ import type { NavGroup } from './engagement/Shell';
 import { MissingRecordings } from './engagement/Scorecard';
 import { SpecialistIndex, SpecialistPage } from './engagement/Specialists';
 import ZoomPhone from './engagement/ZoomPhone';
+import { signOut } from './signOut';
 import './styles/engagement.css';
 import './styles/director.css';
 import './styles/desk.css';
@@ -54,17 +55,6 @@ const TITLES: Record<string, string> = {
 // Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
 const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
 const LIVE_VIEWS = new Set(['director', 'specialists', 'specialist']);
-
-function signOut(navigate: ReturnType<typeof useNavigate>) {
-  const user = readStoredAuthUser();
-  const body = JSON.stringify({
-    trackingSessionId: String(user?.trackingSessionId || ''), userId: String(user?.id || ''),
-    email: String(user?.email || ''), username: String(user?.username || ''), reason: 'logout_button',
-  });
-  void fetch('/api/auth/logout/', { method: 'POST', keepalive: true, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body }).catch(() => undefined);
-  clearAuthStorage();
-  navigate('/login', { replace: true });
-}
 
 /** The Engagement Centre: the director workspace and each specialist's calling desk. */
 export default function CallCentrePage() {

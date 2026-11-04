@@ -108,7 +108,7 @@ export function SpecialistPage({ overview, agentId, live, now, go, onOpenCase, o
       )}
 
       <Switchboard agents={[agent]} live={live} now={now} title="Now" />
-      <DeskProgress overview={overview} agentId={agent.id} name={name} worked={progress.data?.worked} error={progress.error} onOpenCase={onOpenCase} />
+      <DeskProgress overview={overview} agentId={agent.id} name={name} worked={progress.data?.worked} error={progress.error} />
 
       <section className="dd-section" aria-labelledby="dd-their-month">
         <header className="dd-section-head">

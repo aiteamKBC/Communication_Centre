@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import events_views, manage_views, views
+from . import coach_views, events_views, manage_views, views
 
 urlpatterns = [
     path('events/open/', events_views.events_open),
@@ -53,4 +53,7 @@ urlpatterns = [
     path('zoom-accounts/', manage_views.zoom_account_list),
     path('delegation/', manage_views.task_delegation),
     path('delegation/seen/', views.delegation_seen),
+    path('coach/', coach_views.coach_home),
+    path('coach/caught-up/', coach_views.coach_caught_up),
+    path('coach/do-not-call/', coach_views.coach_do_not_call),
 ]

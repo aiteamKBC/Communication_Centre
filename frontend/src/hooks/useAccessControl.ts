@@ -17,6 +17,8 @@ export interface AccessControl {
   callCentreDirector: boolean;
   /** Either Engagement Centre role: opens the Engagement Centre and every dashboard. */
   callCentreAccess: boolean;
+  /** The coaches' screen of the Engagement Centre ("Engagement Centre coach" in Django admin); nothing else. */
+  callCentreCoach: boolean;
   /** Django super admin. */
   superuser: boolean;
   sessionInvalid: boolean;
@@ -34,6 +36,7 @@ const EMPTY_ACCESS: AccessControl = {
   callCentreAgent: false,
   callCentreDirector: false,
   callCentreAccess: false,
+  callCentreCoach: false,
   superuser: false,
   sessionInvalid: false,
 };
@@ -81,6 +84,7 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
   const callCentreAgent = hasGroupData ? groups.has('Call Centre Agent Access') : Boolean(access.callCentreAgentAccess);
   const callCentreDirector = superuser
     || (hasGroupData ? groups.has('Call Centre Director Access') : Boolean(access.callCentreDirectorAccess));
+  const callCentreCoach = hasGroupData ? groups.has('Call Centre Coach Access') : Boolean(access.callCentreCoachAccess);
 
   return {
     adminAccess,
@@ -94,6 +98,7 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
     callCentreAgent,
     callCentreDirector,
     callCentreAccess: callCentreAgent || callCentreDirector,
+    callCentreCoach,
     superuser,
     sessionInvalid: false,
   };

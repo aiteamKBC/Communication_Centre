@@ -23,6 +23,8 @@ type DashboardLink = {
   callCentre?: boolean;
   /** The Engagement Centre itself: only call-centre agents and directors can use it. */
   engagementCentre?: boolean;
+  /** The coaches' screen of the Engagement Centre: only accounts with Engagement Centre coach. */
+  coachCentre?: boolean;
 };
 
 const dashboardLinks: DashboardLink[] = [
@@ -37,6 +39,17 @@ const dashboardLinks: DashboardLink[] = [
     text: 'text-[#2E4482]',
     callCentre: true,
     engagementCentre: true,
+  },
+  {
+    title: 'Coach Engagement Centre',
+    internalPath: '/dashboard/coach-centre',
+    description: 'Your learners’ missed lectures: mark catch-ups done and pause their calls.',
+    label: 'Engagement Centre',
+    icon: 'ri-user-heart-line',
+    accent: 'from-[#4f2d7f] to-[#29163d]',
+    soft: 'bg-[#f3eff8]',
+    text: 'text-[#4f2d7f]',
+    coachCentre: true,
   },
   {
     title: 'Tutor Dashboard',
@@ -187,9 +200,10 @@ const dashboardLinks: DashboardLink[] = [
 ];
 
 export default function DashboardPage() {
-  const { adminAccess, callCentreAccess } = useAccessControl();
+  const { adminAccess, callCentreAccess, callCentreCoach } = useAccessControl();
   const visibleDashboardLinks = dashboardLinks.filter(link => {
     if (link.engagementCentre) return callCentreAccess;
+    if (link.coachCentre) return callCentreCoach;
     return !link.adminOnly || adminAccess || (!!link.callCentre && callCentreAccess);
   });
 

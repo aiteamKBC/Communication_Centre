@@ -72,8 +72,11 @@ OTHER_GROUP = 'other_group_session'
 # A missed lecture the learner confirms they already attended with another group (a covering lecture): the register is
 # corrected on the call (attendance_edits.py) and the case closes.
 ATTENDED_OTHER_GROUP = 'attended_other_group'
+# A missed lecture already caught up in a catch-up session with the coach: said by the learner on the call, or marked by
+# the coach on the coaches' screen (coach_centre.py). Either closes the case.
+CAUGHT_UP_WITH_COACH = 'caught_up_with_coach'
 PROMISES = {
-    'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None},
+    'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None, CAUGHT_UP_WITH_COACH: None},
     'pr': {'book_pr': None},
     'mcm': {'book_mcm': None},
     'pr_missed': {'book_pr': None},

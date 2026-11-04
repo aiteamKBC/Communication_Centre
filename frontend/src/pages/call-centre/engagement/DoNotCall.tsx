@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, post } from '../api';
 import type { Session } from './actions';
-import { when } from './model';
+import { lectureDay, when } from './model';
 
 type Entry = {
   id: number; learner_email: string; learner_name: string; reason: string; reason_label: string; note: string;
+  until: string | null; added_role: 'director' | 'coach';
   added_by: string; added_at: string; removed_by: string; removed_at: string | null; removed_note: string;
 };
 type Data = { set_up: boolean; not_set_up: string; reasons: Record<string, string>; current: Entry[]; history: Entry[] };
 type Learner = { email: string; name: string; programme: string; coach: string };
+
+/** Who added an entry, and for how long it lasts. */
+const entryPeriod = (entry: Pick<Entry, 'until'>) => (entry.until ? `Not called until the end of ${lectureDay(entry.until)}` : 'Until lifted');
+const addedBy = (entry: Entry) => `${entry.added_by}${entry.added_role === 'coach' ? ' (coach)' : ''}`;
 
 /** Director card: learners taken off every call list while they stay active learners. No calls; emails still allowed. */
 export default function DoNotCall({ session, onChanged, notify }: {
@@ -100,7 +105,7 @@ export default function DoNotCall({ session, onChanged, notify }: {
                 <li key={entry.id}>
                   <strong>{entry.learner_name || entry.learner_email}</strong> · {entry.reason_label}
                   <div className="ec-muted">{entry.note}</div>
-                  <div className="ec-muted">Added by {entry.added_by} · {when(entry.added_at)}</div>
+                  <div className="ec-muted">{entryPeriod(entry)} · added by {addedBy(entry)} · {when(entry.added_at)}</div>
                   {removing?.id === entry.id ? (
                     <fieldset disabled={busy}>
                       <label>Why can they be called again?
@@ -153,7 +158,7 @@ export default function DoNotCall({ session, onChanged, notify }: {
               <ul className="ec-settings-history">
                 {data.history.map(entry => (
                   <li key={entry.id}>
-                    <strong>{entry.learner_name || entry.learner_email}</strong> · {entry.reason_label} · added by {entry.added_by} {when(entry.added_at)}
+                    <strong>{entry.learner_name || entry.learner_email}</strong> · {entry.reason_label} · added by {addedBy(entry)} {when(entry.added_at)}
                     <div className="ec-muted">Removed by {entry.removed_by} · {when(entry.removed_at)}: {entry.removed_note}</div>
                   </li>
                 ))}

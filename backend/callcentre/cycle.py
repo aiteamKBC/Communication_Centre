@@ -1,4 +1,7 @@
+import hashlib
 import logging
+import os
+import socket
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
@@ -142,14 +145,45 @@ def match_calls():
     return matched
 
 
+HOST = hashlib.sha1(socket.gethostname().encode()).hexdigest()[:8]
+
+
+def lock_token():
+    """A new lock token naming this process: '<pid>:<host>:<random>' (fits the 36-character column)."""
+    return f'{os.getpid()}:{HOST}:{uuid.uuid4().hex[:16]}'
+
+
+def abandoned(token):
+    """Whether the lock holder was a process on this server that no longer exists. A worker killed mid-cycle (SIGKILL
+    after a stop timeout, out of memory) never releases the lock; without this every cycle skips until it expires."""
+    pid, _, rest = token.partition(':')
+    if os.name != 'posix' or not pid.isdigit() or rest.partition(':')[0] != HOST or int(pid) == os.getpid():
+        # Tokens from before this change, another server, or Windows (where os.kill would end the process): wait for
+        # the expiry as before.
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # It exists under another user.
+        return False
+    # Alive, or its pid was reused: wait for the expiry.
+    return False
+
+
 @contextmanager
 def cycle_lock(duration):
     """The cycle's database lock: yields its token, or None when another cycle holds it."""
-    token = str(uuid.uuid4())
+    token = lock_token()
     now = timezone.now()
-    CycleState.objects.get_or_create(name='cycle')
-    held = CycleState.objects.filter(Q(locked_until__isnull=True) | Q(locked_until__lt=now), name='cycle').update(
-        token=token, locked_until=now + duration)
+    state, _ = CycleState.objects.get_or_create(name='cycle')
+    free = Q(locked_until__isnull=True) | Q(locked_until__lt=now)
+    if state.token and state.locked_until and state.locked_until >= now and abandoned(state.token):
+        logger.warning('Taking over the Call Centre cycle lock of process %s, which no longer exists.', state.token.partition(':')[0])
+        # Only that token: if a live cycle took the lock meanwhile, this matches nothing.
+        free |= Q(token=state.token)
+    held = CycleState.objects.filter(free, name='cycle').update(token=token, locked_until=now + duration)
     try:
         yield token if held else None
     finally:

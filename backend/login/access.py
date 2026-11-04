@@ -13,6 +13,8 @@ ACCESS_GROUPS: dict[str, str] = {
     # Engagement Centre roles; see callcentre/access.py.
     'access_call_centre_agent': 'Call Centre Agent Access',
     'access_call_centre_director': 'Call Centre Director Access',
+    # The coaches' screen of the Engagement Centre (callcentre/coach_centre.py): not implied by any other access.
+    'access_call_centre_coach': 'Call Centre Coach Access',
 }
 # The single "Call Centre Access" group became the agent group; renaming it keeps its members.
 LEGACY_CALL_CENTRE_GROUP = 'Call Centre Access'
@@ -55,6 +57,7 @@ def get_user_access_payload(user) -> dict:
     # Not implied by admin access: Engagement Centre roles are specific jobs. A super admin is always a director.
     call_centre_director_access = bool(user.is_superuser) or ACCESS_GROUPS['access_call_centre_director'] in group_names
     call_centre_agent_access = ACCESS_GROUPS['access_call_centre_agent'] in group_names
+    call_centre_coach_access = ACCESS_GROUPS['access_call_centre_coach'] in group_names
 
     return {
         'adminAccess': admin_access,
@@ -67,6 +70,7 @@ def get_user_access_payload(user) -> dict:
         'callCentreAccess': call_centre_agent_access or call_centre_director_access,
         'callCentreAgentAccess': call_centre_agent_access,
         'callCentreDirectorAccess': call_centre_director_access,
+        'callCentreCoachAccess': call_centre_coach_access,
         'isSuperuser': bool(user.is_superuser),
         'canManageEvents': event_manager_access,
         'canManageCohorts': operations_access,

@@ -93,7 +93,7 @@ class PromiseTests(SimpleTestCase):
 
     def test_catchup_waits_for_evidence_while_legacy_review_promises_are_unchanged(self):
         self.assertEqual(PROMISES['attendance'], {'catch_up_session': 7, 'other_group_session': None,
-                                                'attended_other_group': None})
+                                                'attended_other_group': None, 'caught_up_with_coach': None})
         self.assertIsNone(PROMISES['pr']['book_pr'])
         self.assertIsNone(PROMISES['mcm']['book_mcm'])
 

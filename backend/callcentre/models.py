@@ -620,14 +620,18 @@ class DelegationHistory(Retained):
 
 
 class DoNotCall(Retained):
-    """A learner a director took off every call list (``do_not_call``): no calls, emails still allowed. Removing them
-    ends the entry instead of deleting it, so the history is kept."""
+    """A learner a director or their coach took off every call list (``do_not_call``): no calls, emails still allowed.
+    Removing them ends the entry instead of deleting it, so the history is kept."""
     learner_email = models.EmailField()
     learner_name = models.CharField(max_length=255, blank=True)
     reason = models.CharField(max_length=20)
     note = models.TextField()
     added_by = models.CharField(max_length=255)
     added_at = models.DateTimeField(auto_now_add=True)
+    # The last day the learner is not called (London); null: until someone removes the entry.
+    until = models.DateField(null=True, blank=True)
+    # director or coach (coach_centre.py).
+    added_role = models.CharField(max_length=10, default='director')
     removed_by = models.CharField(max_length=255, blank=True)
     removed_at = models.DateTimeField(null=True, blank=True)
     removed_note = models.TextField(blank=True)
