@@ -166,5 +166,55 @@ class CoachAccessTests(SimpleTestCase):
             response = coach_views.coach_caught_up(request)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {'learners': [], 'closed': 1})
-        mark.assert_called_once_with('sara@kbc.uk', 'Sara Coach', [4], '')
+        mark.assert_called_once_with('sara@kbc.uk', 'Sara Coach', [4], '', 'coach')
         overview.assert_called_once_with('sara@kbc.uk', 'Sara Coach')
+
+
+class DirectorCoachesTests(SimpleTestCase):
+    def test_every_coach_with_their_numbers(self):
+        people = directory()
+        people.aliases['amy.old@aptem.uk'] = 'amy@learners.uk'
+        lectures = MagicMock()
+        lectures.values_list.return_value = ['amy@learners.uk', 'amy.old@aptem.uk', 'ben@learners.uk']
+        users = MagicMock()
+        users.using.return_value.filter.return_value.values_list.return_value = ['Sara@kbc.uk']
+        with patch('callcentre.coach_centre.cached_directory', return_value=people),                 patch('callcentre.coach_centre.open_lectures', return_value=lectures),                 patch('callcentre.coach_centre.do_not_call.current',
+                      return_value=[SimpleNamespace(learner_email='ben@learners.uk')]),                 patch('callcentre.coach_centre.get_user_model', return_value=SimpleNamespace(objects=users)):
+            found = coach_centre.coaches()
+        self.assertEqual(found['unmatched_learners'], 1)   # Cal: their coach has no known email
+        self.assertEqual(found['coaches'], [
+            {'email': 'other@kbc.uk', 'name': 'Other Coach', 'learners': 1, 'missed_lectures': 1,
+             'learners_with_missed': 1, 'not_called': 1, 'has_access': False},
+            {'email': 'sara@kbc.uk', 'name': 'Sara Coach', 'learners': 1, 'missed_lectures': 2,
+             'learners_with_missed': 1, 'not_called': 0, 'has_access': True},
+        ])
+
+    def request(self, director, payload):
+        import json
+        request = RequestFactory().post('/api/callcentre/coaches/desk/caught-up/', json.dumps(payload),
+                                        content_type='application/json')
+        request.user = SimpleNamespace(is_authenticated=True, is_active=True, first_name='Dee', last_name='Rector',
+                                       email='dee@kbc.uk', get_username=lambda: 'dee')
+        request._dont_enforce_csrf_checks = True
+        return request
+
+    def test_only_directors_open_a_coachs_desk_and_act_as_the_director(self):
+        from . import coach_views
+        payload = {'coach': 'Sara@kbc.uk', 'ids': [4], 'note': ''}
+        with patch('callcentre.views.refused', return_value=None),                 patch('callcentre.coach_views.require_manager', side_effect=PermissionDenied('Only managers.')):
+            self.assertEqual(coach_views.coach_desk_caught_up(self.request(False, payload)).status_code, 403)
+        with patch('callcentre.views.refused', return_value=None),                 patch('callcentre.coach_views.require_manager'),                 patch('callcentre.coach_views.coach_centre.coach_name', return_value='Sara Coach'),                 patch('callcentre.coach_views.coach_centre.mark_caught_up', return_value=1) as mark,                 patch('callcentre.coach_views.coach_centre.overview', return_value={'learners': []}) as overview:
+            response = coach_views.coach_desk_caught_up(self.request(True, payload))
+        self.assertEqual(response.status_code, 200)
+        mark.assert_called_once_with('sara@kbc.uk', 'Dee Rector', [4], '', 'director')
+        overview.assert_called_once_with('sara@kbc.uk', 'Sara Coach')
+
+    def test_a_director_lifts_any_entry_on_the_coachs_learners(self):
+        entry = SimpleNamespace(learner_email='amy@learners.uk')
+        with patch('callcentre.coach_centre.cached_directory', return_value=directory()),                 patch('callcentre.coach_centre.do_not_call.in_force') as in_force,                 patch('callcentre.coach_centre.do_not_call.remove') as remove:
+            in_force.return_value.filter.return_value.first.return_value = entry
+            coach_centre.lift('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')
+            remove.assert_called_once_with(5, 'Fine again', 'Dee')
+            entry.learner_email = 'ben@learners.uk'
+            with self.assertRaisesMessage(ValueError, 'no longer on the list'):
+                coach_centre.lift('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')

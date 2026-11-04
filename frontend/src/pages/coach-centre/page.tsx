@@ -1,159 +1,21 @@
-import { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { readStoredAuthUser } from '../../utils/authStorage';
-import { useCallCentre } from '../call-centre/api';
 import Shell from '../call-centre/engagement/Shell';
 import { signOut } from '../call-centre/signOut';
-import CallPause from './CallPause';
-import MissedLectures from './MissedLectures';
-import type { CoachLearner, CoachOverview } from './types';
-import '../call-centre/styles/engagement.css';
-import './coach.css';
+import CoachDesk from './CoachDesk';
 
-type Show = 'all' | 'missed' | 'paused';
-const SHOW: [Show, string][] = [['all', 'All my learners'], ['missed', 'With missed lectures'], ['paused', 'Not being called']];
 const GROUPS = [{ title: 'Coach', items: [{ key: 'learners', label: 'My learners', icon: 'people' }] }];
-
-const matches = (learner: CoachLearner, show: Show, query: string) =>
-  (show === 'all' || (show === 'missed' ? learner.lectures.length > 0 : !!learner.do_not_call))
-  && (!query || [learner.name, learner.email, learner.programme, learner.organisation].join(' ').toLowerCase().includes(query));
+const OWN_DESK = {};
 
 /** The coaches' screen of the Engagement Centre: the coach's own learners, their missed lectures and their calls. */
 export default function CoachCentrePage() {
   const navigate = useNavigate();
-  const [params, setParams] = useSearchParams();
-  const state = useCallCentre<CoachOverview>('coach/');
-  // A save answers with the whole screen; the next load replaces it.
-  const [saved, setSaved] = useState<{ after: CoachOverview | null; data: CoachOverview } | null>(null);
-  const [message, setMessage] = useState('');
-  const [search, setSearch] = useState('');
-  const [show, setShow] = useState<Show>('all');
-  const data = saved && saved.after === state.data ? saved.data : state.data;
-
-  const learners = useMemo(() => data?.learners || [], [data]);
-  const shown = useMemo(() => learners.filter(learner => matches(learner, show, search.trim().toLowerCase())), [learners, show, search]);
-  const selectedEmail = params.get('learner') || '';
-  const selected = learners.find(learner => learner.email === selectedEmail) || null;
-  const select = useCallback((email: string) => setParams(current => {
-    const next = new URLSearchParams(current);
-    next.set('learner', email);
-    return next;
-  }), [setParams]);
-
-  const loaded = state.data;
-  const onSaved = useCallback((next: CoachOverview, text: string) => {
-    setSaved({ after: loaded, data: next });
-    setMessage(text);
-  }, [loaded]);
-
-  const openLectures = learners.reduce((total, learner) => total + learner.lectures.length, 0);
-  const email = data?.coach.email || String(readStoredAuthUser()?.email || '');
-
-  let content;
-  if (state.status === 401) {
-    content = (
-      <div className="staff-empty">
-        <h2>Please sign in again</h2>
-        <p>The Engagement Centre needs a fresh sign-in to confirm who you are.</p>
-        <button type="button" className="staff-button" onClick={() => signOut(navigate)}>Sign in</button>
-      </div>
-    );
-  } else if (state.status === 403) {
-    content = <div className="staff-empty"><h2>No access</h2><p>{state.error}</p></div>;
-  } else if (!data) {
-    content = state.error
-      ? <div role="alert"><p>{state.error}</p><button type="button" onClick={state.refresh}>Try again</button></div>
-      : <p>Loading your learners…</p>;
-  } else {
-    content = (
-      <div className="ec ed cc">
-        <div className="ec-head">
-          <div>
-            <div className="ec-eyebrow">Kent Business College · Engagement · Coach</div>
-            <h1>My learners</h1>
-            <div className="ec-muted">{data.coach.name} · learners whose coach email in the LMS is {data.coach.email || 'not set on your account'}</div>
-          </div>
-          <button type="button" onClick={() => { setMessage(''); state.refresh(); }} disabled={state.loading}>
-            {state.loading ? 'Refreshing…' : 'Refresh'}
-          </button>
-        </div>
-        {!data.complete && <p className="ec-alert" role="alert">Not every learner source could be read just now, so this list may be short. Refresh in a few minutes.</p>}
-        {state.error && <p className="ec-alert" role="alert">Could not refresh: {state.error} Showing the last loaded list.</p>}
-        <div className="ec-status" role="status" aria-live="polite">{message}</div>
-
-        <div className="ec-grid cc-stats">
-          <div className="ec-card ec-stat"><span>My learners</span><strong>{learners.length}</strong></div>
-          <div className="ec-card ec-stat"><span>Missed lectures open</span><strong>{openLectures}</strong></div>
-          <div className="ec-card ec-stat"><span>Learners with missed lectures</span><strong>{learners.filter(l => l.lectures.length).length}</strong></div>
-          <div className="ec-card ec-stat"><span>Not being called</span><strong>{learners.filter(l => l.do_not_call).length}</strong></div>
-        </div>
-
-        {learners.length === 0 ? (
-          <div className="ec-card ec-empty">
-            <h2>No learners found for {data.coach.email || 'your account'}</h2>
-            <p>
-              Your learners are the active learners whose coach in the LMS has this email. If they are missing, check that the
-              email on your account matches the coach email on their LMS records.
-            </p>
-          </div>
-        ) : (
-          <div className="ed-desk">
-            <aside className="ec-card ed-queue" aria-label="My learners">
-              <div className="ed-filters">
-                <input type="search" value={search} placeholder="Name, email, programme or employer" aria-label="Find a learner"
-                  onChange={event => setSearch(event.target.value)} />
-                <select value={show} aria-label="Show" onChange={event => setShow(event.target.value as Show)}>
-                  {SHOW.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                </select>
-              </div>
-              <div className="ed-queue-heading"><strong>Learners</strong><span>{shown.length} of {learners.length}</span></div>
-              <div className="cc-roster">
-                {shown.length === 0 && <p className="ec-muted cc-roster-empty">No learner matches.</p>}
-                {shown.map(learner => (
-                  <button type="button" key={learner.email} aria-current={learner.email === selectedEmail ? 'true' : undefined}
-                    className={`ed-person${learner.email === selectedEmail ? ' selected' : ''}`} onClick={() => select(learner.email)}>
-                    <span className="ed-person-name">{learner.name || learner.email}</span>
-                    <small>{learner.programme || 'Programme not recorded'}</small>
-                    <span className="cc-badges">
-                      {learner.lectures.length > 0 && <span className="ec-tag amber">{learner.lectures.length} missed</span>}
-                      {learner.do_not_call && <span className="ec-tag red">Not called</span>}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <div className="ed-work">
-              {!selected ? (
-                <div className="ec-card ed-start">
-                  <h2>Choose a learner</h2>
-                  <p>
-                    Pick one of your learners to see the missed lectures the Engagement Centre has open for them. Mark the ones
-                    they have caught up with you, or stop the calls for a while, with a reason.
-                  </p>
-                </div>
-              ) : (
-                <div className="ec-stack">
-                  <section className="ec-card ed-learner">
-                    <h2>{selected.name || selected.email}</h2>
-                    <p className="ec-muted">{[selected.programme, selected.organisation, selected.email].filter(Boolean).join(' · ')}</p>
-                  </section>
-                  <MissedLectures key={`lectures:${selected.email}`} learner={selected} onSaved={onSaved} />
-                  <CallPause key={`calls:${selected.email}`} learner={selected} setUp={data.do_not_call.set_up}
-                    notSetUp={data.do_not_call.not_set_up} reasons={data.do_not_call.reasons} onSaved={onSaved} />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
+  const [, setParams] = useSearchParams();
   return (
     <div className="kbc-portals">
-      <Shell title="Coach Engagement Centre" email={email} groups={GROUPS} active="learners"
+      <Shell title="Coach Engagement Centre" email={String(readStoredAuthUser()?.email || '')} groups={GROUPS} active="learners"
         onNavigate={() => setParams({})} onSignOut={() => signOut(navigate)}>
-        {content}
+        <CoachDesk target={OWN_DESK} />
       </Shell>
     </div>
   );

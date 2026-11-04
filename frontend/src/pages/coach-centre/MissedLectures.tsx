@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { post } from '../call-centre/api';
 import Dialog from '../call-centre/engagement/Dialog';
 import ErrorNotice from '../call-centre/engagement/ErrorNotice';
 import type { Problem } from '../call-centre/engagement/formErrors';
 import { appointmentTime, lectureDay, longDate, when } from '../call-centre/engagement/model';
-import type { CoachLearner, CoachOverview, Lecture } from './types';
+import { saveOnDesk } from './desk';
+import type { CoachLearner, CoachOverview, DeskTarget, Lecture } from './types';
 
 /** Where the Engagement Centre is with a missed lecture, in words, and its tag colour. */
 function progress(lecture: Lecture, paused: boolean): [string, string] {
@@ -16,13 +16,17 @@ function progress(lecture: Lecture, paused: boolean): [string, string] {
   return ['', lecture.attempts ? `On the call list · ${lecture.attempts} unanswered call${lecture.attempts === 1 ? '' : 's'}` : 'On the call list'];
 }
 
+const MARKED_BY: Record<string, string> = { coach: 'marked by the coach', director: 'marked by the director' };
+
 const lectureName = (lecture: Pick<Lecture, 'module' | 'missed_catch_up'>) =>
   `${lecture.missed_catch_up ? 'Missed catch-up · ' : ''}${lecture.module || 'Lecture'}`;
 
-/** The learner's open missed lectures: the coach ticks those caught up in a catch-up session with them. */
-export default function MissedLectures({ learner, onSaved }: {
-  learner: CoachLearner; onSaved: (data: CoachOverview, message: string) => void;
+/** The learner's open missed lectures: the coach (or a director on their desk) ticks those caught up in a catch-up
+ * session with the coach. */
+export default function MissedLectures({ learner, target, coachName, onSaved }: {
+  learner: CoachLearner; target: DeskTarget; coachName: string; onSaved: (data: CoachOverview, message: string) => void;
 }) {
+  const withCoach = target.coach ? coachName : 'you';
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [note, setNote] = useState('');
@@ -46,7 +50,7 @@ export default function MissedLectures({ learner, onSaved }: {
     setBusy(true);
     setProblem(null);
     try {
-      const data = await post<CoachOverview & { closed: number }>('coach/caught-up/', '', { ids: picked.map(lecture => lecture.id), note });
+      const data = await saveOnDesk<CoachOverview & { closed: number }>(target, 'caught-up', { ids: picked.map(lecture => lecture.id), note });
       const { closed } = data;
       setConfirming(false);
       setChosen(new Set());
@@ -68,7 +72,7 @@ export default function MissedLectures({ learner, onSaved }: {
           <h3 id="cc-lectures-title">Missed lectures</h3>
           <p className="ec-muted">
             The lectures the Engagement Centre has open for {learner.name || 'this learner'}. Tick the ones they have caught up
-            in a catch-up session with you: those cases close and nobody calls about them.
+            in a catch-up session with {withCoach}: those cases close and nobody calls about them.
           </p>
         </div>
       </div>
@@ -109,7 +113,7 @@ export default function MissedLectures({ learner, onSaved }: {
             {learner.caught_up.map(item => (
               <li key={item.id}>
                 <strong>{lectureDay(item.date)}</strong> · {lectureName({ module: item.module, missed_catch_up: false })}
-                <span className="ec-muted"> · {item.by_coach ? 'marked by the coach' : 'said by the learner on a call'} {when(item.marked_at)}</span>
+                <span className="ec-muted"> · {MARKED_BY[item.marked_by] || 'said by the learner on a call'} {when(item.marked_at)}</span>
               </li>
             ))}
           </ul>
@@ -119,7 +123,7 @@ export default function MissedLectures({ learner, onSaved }: {
       <Dialog open={confirming} onClose={() => setConfirming(false)} title="Mark as caught up" preservePosition>
         <p>
           {picked.length === 1 ? 'This missed lecture closes' : `These ${picked.length} missed lectures close`} as caught up in
-          a catch-up session with you. The Engagement Centre stops calling {learner.name || 'the learner'} about {picked.length === 1 ? 'it' : 'them'}.
+          a catch-up session with {withCoach}. The Engagement Centre stops calling {learner.name || 'the learner'} about {picked.length === 1 ? 'it' : 'them'}.
           The LMS register is not changed.
         </p>
         <ul className="cc-confirm-list">

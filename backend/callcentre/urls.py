@@ -56,4 +56,8 @@ urlpatterns = [
     path('coach/', coach_views.coach_home),
     path('coach/caught-up/', coach_views.coach_caught_up),
     path('coach/do-not-call/', coach_views.coach_do_not_call),
+    path('coaches/', coach_views.coaches),
+    path('coaches/desk/', coach_views.coach_desk),
+    path('coaches/desk/caught-up/', coach_views.coach_desk_caught_up),
+    path('coaches/desk/do-not-call/', coach_views.coach_desk_do_not_call),
 ]

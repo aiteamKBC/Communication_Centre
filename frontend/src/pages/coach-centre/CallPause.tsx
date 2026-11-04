@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { londonDay, post } from '../call-centre/api';
+import { londonDay } from '../call-centre/api';
 import ErrorNotice from '../call-centre/engagement/ErrorNotice';
 import type { Problem } from '../call-centre/engagement/formErrors';
 import { lectureDay, when } from '../call-centre/engagement/model';
-import type { CoachLearner, CoachOverview } from './types';
+import { saveOnDesk } from './desk';
+import type { CoachLearner, CoachOverview, DeskTarget } from './types';
 
 type Period = '' | 'date' | 'lifted';
 
@@ -15,11 +16,12 @@ function latestDay() {
 }
 
 /** Whether the Engagement Centre may phone the learner: the coach takes them off every call list, with a reason and a
- * note, through a last day or until lifted, and lifts what a coach added. */
-export default function CallPause({ learner, setUp, notSetUp, reasons, onSaved }: {
-  learner: CoachLearner; setUp: boolean; notSetUp: string; reasons: Record<string, string>;
+ * note, through a last day or until lifted, and lifts what a coach added. A director on the coach's desk lifts any. */
+export default function CallPause({ learner, target, setUp, notSetUp, reasons, onSaved }: {
+  learner: CoachLearner; target: DeskTarget; setUp: boolean; notSetUp: string; reasons: Record<string, string>;
   onSaved: (data: CoachOverview, message: string) => void;
 }) {
+  const director = !!target.coach;
   const [adding, setAdding] = useState(false);
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
@@ -37,7 +39,7 @@ export default function CallPause({ learner, setUp, notSetUp, reasons, onSaved }
     setBusy(true);
     setProblem(null);
     try {
-      onSaved(await post<CoachOverview>('coach/do-not-call/', '', payload), message);
+      onSaved(await saveOnDesk<CoachOverview>(target, 'do-not-call', payload), message);
       return true;
     } catch (error) {
       setProblem({ action, error });
@@ -49,7 +51,7 @@ export default function CallPause({ learner, setUp, notSetUp, reasons, onSaved }
 
   async function add() {
     const done = await send({ action: 'add', learner_email: learner.email, reason, note, until: period === 'date' ? until : null },
-      'Stopping the calls', period === 'date' ? `${who} will not be called until the end of ${lectureDay(until)}.` : `${who} will not be called until you lift it.`);
+      'Stopping the calls', period === 'date' ? `${who} will not be called until the end of ${lectureDay(until)}.` : `${who} will not be called until it is lifted.`);
     if (done) {
       setAdding(false);
       setReason('');
@@ -82,7 +84,7 @@ export default function CallPause({ learner, setUp, notSetUp, reasons, onSaved }
             <div className="wide"><dt>Note</dt><dd>{entry.note}</dd></div>
           </dl>
           <p className="ec-muted">Nobody phones {who} and their cases are on no call list. They can still be emailed.</p>
-          {entry.added_role !== 'coach' ? (
+          {!director && entry.added_role !== 'coach' ? (
             <p className="ec-muted">The Engagement Centre director added this. Ask them if {who} can be called again.</p>
           ) : lifting ? (
             <fieldset disabled={busy} className="cc-form">
@@ -130,7 +132,7 @@ export default function CallPause({ learner, setUp, notSetUp, reasons, onSaved }
             )}
             <label className="cc-check">
               <input type="radio" name="cc-period" checked={period === 'lifted'} onChange={() => setPeriod('lifted')} />
-              Until I lift it (I don’t know for how long)
+              {director ? 'Until lifted' : 'Until I lift it'} (not known for how long)
             </label>
           </fieldset>
           <ErrorNotice problem={problem} />

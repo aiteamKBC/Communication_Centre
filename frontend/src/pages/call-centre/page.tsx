@@ -8,6 +8,7 @@ import Allocation from './engagement/Allocation';
 import AttendanceEdits from './engagement/AttendanceEdits';
 import BookingLinksView from './engagement/BookingLinksView';
 import CoachPages from './engagement/CoachPages';
+import Coaches from './engagement/Coaches';
 import LearnerWorkspace from './engagement/LearnerWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
@@ -38,7 +39,8 @@ import './styles/full-case.css';
 
 // The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
-  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart'],
+  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['coaches', 'Coaches', 'people'],
+    ['scorecards', 'Scorecards', 'chart'],
     ['meetings', 'Review meetings', 'calendar']]],
   ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
     ['delegation', 'Task delegation', 'people'],
@@ -47,7 +49,7 @@ const DIRECTOR_NAV: [string, [string, string, string][]][] = [
     ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
+  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', coaches: 'Coaches', scorecards: 'Scorecards', calls: 'Calls',
   bookings: 'Coach booking links', allocations: 'Learner allocation', 'event-allocation': 'Event allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
   delegation: 'Task delegation', attendance: 'Attendance edits',
@@ -154,7 +156,7 @@ export default function CallCentrePage() {
   }
 
   function go(next: string, extra: Record<string, string> = {}) {
-    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null });
+    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null, coach: null, learner: null });
     window.scrollTo({ top: 0 });
   }
 
@@ -238,6 +240,10 @@ export default function CallCentrePage() {
                   <Imports overview={overview} onAllocate={() => go('allocations')} />
                 </>
               ) : view === 'specialists' ? <SpecialistIndex overview={overview} live={live} now={now} go={go} />
+                : view === 'coaches' ? (
+                  <Coaches coach={params.get('coach')} onOpen={email => setParam({ coach: email, learner: null })}
+                    onBack={() => setParam({ coach: null, learner: null })} />
+                )
                 : view === 'specialist' && specialistId ? (
                   <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go}
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />

@@ -9,8 +9,9 @@ export type Lecture = {
   state: LectureState; at: string | null;
 };
 
-/** A missed lecture closed as caught up with the coach in the last 30 days. */
-export type CaughtUp = { id: number; date: string | null; module: string; marked_at: string; by_coach: boolean };
+/** A missed lecture closed as caught up with the coach in the last 30 days: marked by the coach, by the director on the
+ * coach's desk, or said by the learner on a call (``agent``). */
+export type CaughtUp = { id: number; date: string | null; module: string; marked_at: string; marked_by: string };
 
 /** The learner's entry on the do-not-call list. */
 export type DoNotCallEntry = {
@@ -29,3 +30,6 @@ export type CoachOverview = {
   do_not_call: { set_up: boolean; not_set_up: string; reasons: Record<string, string> };
   learners: CoachLearner[];
 };
+
+/** Whose desk: the signed-in coach's own (no ``coach``), or the coach a director opened. */
+export type DeskTarget = { coach?: string };
