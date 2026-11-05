@@ -2803,6 +2803,7 @@ export default function GanttTimeline({
     topPx: number,
     heightPx: number,
   ) => {
+    const barReferenceSource = blk.source ?? referenceSource;
     const rowTargetKey = `${groupIdx}-${rowIdx}`;
     const isFocusedModule = focusedTimelineTarget?.rowKey === rowTargetKey && focusedTimelineTarget.blockId === blk.id;
     const activeDateDrag = moduleDateDrag?.groupIdx === groupIdx && moduleDateDrag.rowIdx === rowIdx && moduleDateDrag.blockId === blk.id ? moduleDateDrag : null;
@@ -2815,7 +2816,7 @@ export default function GanttTimeline({
       : blk;
     const holidayPlan = getHolidayPlan(renderBlk, activeHolidays);
     const sessionSummary = getCurrentSessionSummary(renderBlk, customModules, catalogModules, activeHolidays, holidayPlan);
-    const displayEndDate = referenceSource ? renderBlk.endDate : sessionSummary.effectiveEndDate || renderBlk.endDate;
+    const displayEndDate = barReferenceSource ? renderBlk.endDate : sessionSummary.effectiveEndDate || renderBlk.endDate;
     const pos = getBlockPosition(renderBlk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
@@ -2859,8 +2860,8 @@ export default function GanttTimeline({
         left: clampMarkerCenter(left, pos.width),
       };
     });
-    const personLabel = tutorLabel || (referenceSource ? 'Tutor not assigned' : coachLabel);
-    const personRole = tutorLabel || referenceSource ? 'Tutor' : coachLabel ? 'Coach' : '';
+    const personLabel = tutorLabel || (barReferenceSource ? 'Tutor not assigned' : coachLabel);
+    const personRole = tutorLabel || barReferenceSource ? 'Tutor' : coachLabel ? 'Coach' : '';
     const showPerson = pos.width > 78 && Boolean(personLabel);
     const expiryWarning = sessionSummary.isFinished ? null : getModuleExpiryWarning(displayEndDate, currentDate);
     const sessionLabel = sessionSummary.isFinished
@@ -2870,7 +2871,7 @@ export default function GanttTimeline({
       : sessionSummary.hasRealName
       ? `S${sessionSummary.number}: ${sessionSummary.name}`
       : `S${sessionSummary.number}: no saved name`;
-    const sessionProgressLabel = referenceSource ? `Tutor: ${tutorLabel || 'Not assigned'}` : sessionSummary.total === 0
+    const sessionProgressLabel = barReferenceSource ? `Tutor: ${tutorLabel || 'Not assigned'}` : sessionSummary.total === 0
       ? 'No sessions'
       : sessionSummary.isFinished
       ? `${sessionSummary.total}/${sessionSummary.total} sessions complete`
@@ -2957,8 +2958,8 @@ export default function GanttTimeline({
       <div
         key={blk.id}
         data-timeline-block-id={blk.id}
-        data-source={referenceSource}
-        title={referenceSource ? `LMS: ${mod.lbl}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${tutorLabel || 'Not assigned'}.${blk.startDateSource === 'created_at' ? ' From created_at (start_date missing).' : ''}` : undefined}
+        data-source={barReferenceSource ?? (mergedSources ? 'Current' : undefined)}
+        title={barReferenceSource ? `LMS: ${mod.lbl}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${tutorLabel || 'Not assigned'}.${blk.startDateSource === 'created_at' ? ' From created_at (start_date missing).' : ''}` : undefined}
         className={`absolute z-10 cursor-grab transition-all active:cursor-grabbing ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
         style={{
           left: pos.left,
@@ -2967,9 +2968,9 @@ export default function GanttTimeline({
           height: heightPx,
           background: mod.bg,
           borderRadius: 3,
-          outline: isFocusedModule ? '3px solid #DC2626' : hasTutorConflict ? '2px solid #F7A800' : 'none',
-          outlineOffset: isFocusedModule ? '2px' : hasTutorConflict ? '1px' : '0',
-          boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : undefined,
+          outline: isFocusedModule ? '3px solid #DC2626' : hasTutorConflict ? '2px solid #F7A800' : barReferenceSource === 'LMS' ? '2px solid #115e59' : 'none',
+          outlineOffset: isFocusedModule ? '2px' : hasTutorConflict || barReferenceSource === 'LMS' ? '1px' : '0',
+          boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : barReferenceSource === 'LMS' ? '0 0 0 1px #FFFFFF' : undefined,
           display: 'flex',
           alignItems: 'center',
           opacity: activeDateDrag ? 0.9 : 1,
@@ -2979,7 +2980,7 @@ export default function GanttTimeline({
           if (moduleDateDrag) return;
           setClashTip(null);
           setExtensionTip(null);
-          setTooltip({ referenceSource, blk: renderBlk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, holidayPlan, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
+          setTooltip({ referenceSource: barReferenceSource, blk: renderBlk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, holidayPlan, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
         }}
         onMouseLeave={() => {
           setTooltip(null);
@@ -2991,7 +2992,7 @@ export default function GanttTimeline({
             return;
           }
           if (!canManageCohorts) {
-            if (referenceSource && onViewMonthlyBreakdown) {
+            if (barReferenceSource && onViewMonthlyBreakdown) {
               setTooltip(null);
               onViewMonthlyBreakdown(groupIdx, rowIdx, blk.id);
             }
@@ -3060,7 +3061,7 @@ export default function GanttTimeline({
             </span>
 
             {/* Tutor/coach */}
-            {showPerson && !referenceSource && (
+            {showPerson && !barReferenceSource && (
               <span
                 title={`${personRole}: ${personLabel}`}
                 style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 28, maxWidth: '46%', flexShrink: 1 }}
@@ -3070,9 +3071,9 @@ export default function GanttTimeline({
             )}
 
               </div>
-              {(showStackedSessionProgress || referenceSource) && (
+              {(showStackedSessionProgress || barReferenceSource) && (
                 <span
-                  title={referenceSource ? sessionProgressLabel : `${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                  title={barReferenceSource ? sessionProgressLabel : `${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                   style={{
                     color: mod.tx,
                     fontSize: '9px',
@@ -3106,7 +3107,7 @@ export default function GanttTimeline({
                   marginLeft: 2,
                 }}
               >
-                {referenceSource ? renderBlk.startDate : formatDateShort(renderBlk.startDate)}{referenceSource && renderBlk.startDateSource === 'created_at' ? ' (From created_at)' : ''} → {referenceSource ? displayEndDate : formatDateShort(displayEndDate)}
+                {barReferenceSource ? renderBlk.startDate : formatDateShort(renderBlk.startDate)}{barReferenceSource && renderBlk.startDateSource === 'created_at' ? ' (From created_at)' : ''} → {barReferenceSource ? displayEndDate : formatDateShort(displayEndDate)}
               </span>
             )}
 
@@ -3725,17 +3726,17 @@ export default function GanttTimeline({
             const isGroupDragOver = dragOver?.type === 'group' && dragOver.groupIdx === gi;
             const isFocusedProgramme = focusedTimelineTarget?.groupIdx === gi && !focusedTimelineTarget.rowKey;
             const programmeMetrics = virtualProgrammeMetrics[gi];
+            const programmeSources = Array.from(new Set(grp.rows.map(row => row.planSource ?? 'Current')));
             return (
             <div
               key={grp.id}
               data-programme-target={gi}
-              data-plan-source={grp.planSource}
               className="relative"
               onDragOver={canManageCohorts ? (e) => { if (dragItem.current?.type === 'group') handleDragOver(e, { type: 'group', groupIdx: gi }); } : undefined}
               onDragLeave={canManageCohorts ? handleDragLeave : undefined}
               onDrop={canManageCohorts ? (e) => handleGroupDrop(e, gi) : undefined}
               style={{
-                ...(mergedSources ? { borderTop: `4px solid ${grp.color}` } : {}),
+                ...(mergedSources ? { outline: `2px solid ${grp.color}`, outlineOffset: '-2px' } : {}),
                 ...(isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : {}),
                 ...(isFocusedProgramme ? { boxShadow: 'inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)' } : {}),
               }}
@@ -3790,8 +3791,8 @@ export default function GanttTimeline({
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
                         <i className="ri-book-open-line text-white" style={{ fontSize: '11px' }} />
                       </div>
-                      <p className={grp.planSource ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: grp.planSource ? '10px' : '8.5px' }}>
-                        {grp.planSource ? `${grp.planSource} Training Plan` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
+                      <p className={mergedSources ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: '8.5px' }}>
+                        {mergedSources ? `${programmeSources.length ? programmeSources.join(' + ') : 'Current'} Training Plan${programmeSources.length > 1 ? 's' : ''}` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
                       </p>
                     </div>
                     {canManageCohorts && (
@@ -3836,8 +3837,8 @@ export default function GanttTimeline({
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
               {!isCollapsed && grp.rows.map((row, ri) => {
-                const rowColor = row.color || grp.color;
-                const tunnelBg = `${grp.color}0D`;
+                const rowColor = mergedSources && row.planSource ? (row.planSource === 'LMS' ? '#115E59' : '#1B2A4A') : row.color || grp.color;
+                const tunnelBg = `${rowColor}0D`;
                 const rowTargetKey = `${gi}-${ri}`;
                 const rowMetrics = programmeMetrics?.rows[ri];
                 const rowHolidays = rowMetrics?.rowHolidays || [];
@@ -3975,6 +3976,7 @@ export default function GanttTimeline({
                   <div
                     key={row.id}
                     data-row-target={rowTargetKey}
+                    data-plan-source={row.planSource}
                     data-lms-cohort={referenceSource ? row.label : undefined}
                     data-lms-cohort-date={referenceSource ? row.dateLbl : undefined}
                     style={{
@@ -4000,7 +4002,7 @@ export default function GanttTimeline({
                       >
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
-                        <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1"
+                        <div className={`pl-2.5 flex min-w-0 flex-1 ${row.planSource ? 'flex-col items-start gap-0.5' : 'items-center gap-2'}`}
                           draggable={canManageCohorts}
                           onDragStart={canManageCohorts ? (e) => handleCohortDragStart(e, gi, ri) : undefined}
                           onDragEnd={handleDragEnd}
@@ -4015,12 +4017,15 @@ export default function GanttTimeline({
                               <i className="ri-draggable" style={{ fontSize: '12px' }} />
                             </span>
                           )}
-                          <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }} title={row.label}>
-                            {row.label}
-                          </p>
-                          <span className="text-gray-400 whitespace-nowrap shrink-0" style={{ fontSize: '7.5px' }}>
-                            {row.dateLbl}
-                          </span>
+                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan</span>}
+                          <div className="flex min-w-0 items-center gap-2">
+                            <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }} title={row.label}>
+                              {row.label}
+                            </p>
+                            <span className="text-gray-400 whitespace-nowrap shrink-0" style={{ fontSize: '7.5px' }}>
+                              {row.dateLbl}
+                            </span>
+                          </div>
                         </div>
                         {canManageCohorts && (
                           <div className="flex items-center gap-1 ml-1 shrink-0">

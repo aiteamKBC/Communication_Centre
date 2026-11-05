@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import * as XLSX from 'xlsx';
 import { compareLmsPlans, lmsCohortDisplayName, lmsGroupDisplayName, matchLmsPlans, presentLmsRows } from '../../src/pages/apprenticeships-timeline/lmsComparison';
-import { buildLmsTimelineLayout, lmsRecordGroup } from '../../src/pages/apprenticeships-timeline/lmsTimelineLayout';
+import { buildLmsTimelineLayout, buildMergedTimelineLayout, lmsRecordGroup } from '../../src/pages/apprenticeships-timeline/lmsTimelineLayout';
 import type { LmsReferenceRow } from '../../src/pages/apprenticeships-timeline/lmsReference';
 import type { ModuleBlock, ProgrammeGroup } from '../../src/pages/apprenticeships-timeline/types';
 
@@ -605,7 +605,63 @@ test('LMS layout sorts start and creation dates together, preserves provenance a
   expect(result.groups[0].rows[1].blks[1].startDateSource).toBe('created_at');
 });
 
-test('source tabs browse one timeline at a time and keep comparison inside module editing', async ({ page }) => {
+test('merged timeline groups both sources under one programme and preserves unpaired programmes and saved records', () => {
+  const groups = [group([block('a', 'social')]), group([block('b', 'Current only')], 'mm-lvl6')];
+  const modules = [{ id: 'current-custom', name: 'Current custom module', defaultSessions: 2, bg: '#123456', tx: '#fff' }];
+  const records = presentLmsRows([
+    source('a', 'Social Media', { startDate: '2024-01-01', endDate: '2024-02-01' }),
+    source('missing', 'Undated module', { endDate: null }),
+    source('mba', 'LMS only', { programme: 'MBA' }),
+  ], groups, modules);
+  const before = JSON.stringify({ groups, modules, records });
+  const merged = buildMergedTimelineLayout(records, groups, modules);
+  expect(merged.groups.map(group => [group.name, group.rows.map(row => row.planSource)])).toEqual([
+    ['ME L4', ['Current', 'LMS']], ['MM LVL6', ['Current']], ['MBA', ['LMS']],
+  ]);
+  expect(new Set(merged.groups.map(group => group.id)).size).toBe(merged.groups.length);
+  for (const programme of merged.groups) {
+    expect(new Set(programme.rows.map(row => row.id)).size).toBe(programme.rows.length);
+  }
+  const blocks = merged.groups.flatMap(group => group.rows.flatMap(row => row.blks));
+  expect(blocks).toHaveLength(4);
+  expect(blocks.filter(block => block.source === 'LMS')).toHaveLength(2);
+  expect(blocks.find(block => block.moduleCatalogueId === 'a')).toMatchObject({
+    source: 'LMS', startDate: '2024-01-01', endDate: '2024-02-01', sessions: 0,
+  });
+  expect(merged.customModules).toContainEqual(modules[0]);
+  expect(merged.undrawableCount).toBe(1);
+  expect(JSON.stringify({ groups, modules, records })).toBe(before);
+});
+
+test('merged timeline interleaves sources by first module date, newest first, with undated rows last', () => {
+  const programme = group([block('current-old', 'Old current', { startDate: '2025-01-05' })]);
+  programme.rows[0].dateLbl = '2028-01-01'; // Display labels must not override module dates.
+  programme.rows.push(
+    { ...programme.rows[0], id: 'new', label: 'New current', dateLbl: '', blks: [
+      block('current-later', 'Later module', { startDate: '2027-01-05' }),
+      block('current-new', 'New current', { startDate: '2026-01-05' }),
+    ] },
+    { ...programme.rows[0], id: 'empty', label: 'Undated', dateLbl: '', blks: [] },
+    { ...programme.rows[0], id: 'fallback', label: 'Date only', dateLbl: '2023-01-01', blks: [] },
+    { ...programme.rows[0], id: 'invalid', label: 'Invalid dates', dateLbl: '2026-02-30',
+      blks: [block('invalid', 'Invalid', { startDate: 'invalid' })] },
+  );
+  const records = presentLmsRows([
+    source('newest', 'Newest LMS', { cohortName: 'Newest LMS', startDate: '2027-01-05', endDate: '2027-01-19' }),
+    source('middle', 'Middle LMS', { cohortName: 'Middle LMS', startDate: '2025-07-05', endDate: '2025-07-19' }),
+    source('oldest', 'Oldest LMS', { cohortName: 'Oldest LMS', startDate: '2024-01-05', endDate: '2024-01-19' }),
+  ], [programme]);
+  const before = JSON.stringify({ programme, records });
+  const rows = buildMergedTimelineLayout(records, [programme]).groups[0].rows;
+  expect(rows.map(row => [row.label, row.planSource])).toEqual([
+    ['Newest LMS', 'LMS'], ['New current', 'Current'], ['Middle LMS', 'LMS'],
+    ['January cohort', 'Current'], ['Oldest LMS', 'LMS'], ['Date only', 'Current'],
+    ['Undated', 'Current'], ['Invalid dates', 'Current'],
+  ]);
+  expect(JSON.stringify({ programme, records })).toBe(before);
+});
+
+test('source tabs merge both timelines on one date axis and keep comparison inside module editing', async ({ page }) => {
   test.setTimeout(90_000);
   const user = { id: 1, email: 'comparison@example.com', username: 'comparison', displayName: 'Comparison',
     groups: ['Admin Access'], access: { adminAccess: true, operationsAccess: true, canManageCohorts: true } };
@@ -620,7 +676,9 @@ test('source tabs browse one timeline at a time and keep comparison inside modul
     notes: `__program_id:me-lvl4\n__cohort_id:${index === 4 ? 'c2' : 'c1'}\n__group_id:${index === 2 ? 'g2' : 'g1'}\n__block_id:b${index}\n__module_color:${index === 0 ? '#20869B' : '#B2686D'}`,
   }));
   const records = [source('1', names[0], { groupName: 'Group 1' }), source('2', names[1], { groupName: 'Group 1', startDate: '2026-01-12', endDate: '2026-02-02', startDateSource: 'created_at' }),
-    source('3', names[2], { groupName: 'Group 2', endDate: null }), source('4', names[4]), source('5', names[4]),
+    source('3', names[2], { groupName: 'Group 2', endDate: null }),
+    source('4', names[4], { startDate: '2026-02-05', endDate: '2026-02-19' }),
+    source('5', names[4], { startDate: '2026-02-05', endDate: '2026-02-19' }),
     source('6', 'LMS module', { startDate: '2024-03-01', endDate: '2024-03-15' }), source('7', names[5], { groupName: 'Group 1' }),
     source('excluded', 'Excluded programme module', { programme: 'Other programme' })];
   const writes: string[] = [];
@@ -673,6 +731,39 @@ test('source tabs browse one timeline at a time and keep comparison inside modul
   await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(0);
   await current.getByTitle('Expand programme', { exact: true }).click();
   const sourceColour = await current.locator('[data-timeline-block-id="b0"]').evaluate(bar => getComputedStyle(bar).backgroundColor);
+  // Merge must load the reference directly, without opening the LMS tab first.
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+  await expect(merged.getByRole('heading', { name: 'Merged Training Plans', exact: true })).toBeVisible();
+  await expect(current).toBeHidden();
+  await expect(page.locator('#training-plan-lms-reference')).toBeHidden();
+  await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+  await expect(merged.locator('[data-programme-target]')).toHaveCount(1);
+  await expect(merged.getByTitle('ME L4', { exact: true })).toHaveCount(1);
+  await expect(merged.getByTitle('Collapse programme', { exact: true })).toHaveCount(1);
+  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(2);
+  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(3);
+  expect(await merged.locator('[data-plan-source]').evaluateAll(rows => rows.map(row => row.getAttribute('data-plan-source'))))
+    .toEqual(['LMS', 'Current', 'Current', 'LMS', 'LMS']);
+  const mergedCurrent = merged.locator('[data-source="Current"][data-timeline-block-id="b0"]');
+  const mergedLms = merged.locator('[data-source="LMS"][title^="LMS: Same module."]');
+  await expect(mergedCurrent).toHaveCount(1);
+  await expect(mergedLms).toHaveCount(1);
+  expect(await mergedCurrent.evaluate(element => element.style.left)).toBe(await mergedLms.evaluate(element => element.style.left));
+  await expect(mergedLms).toHaveCSS('background-color', sourceColour);
+  await expect(merged.locator('[data-source="LMS"][title*="2024-03-01"]')).toHaveCount(1);
+  await expect(merged.getByRole('status')).toContainText('1 LMS module has missing or invalid dates');
+  await expect(merged.getByTitle('Edit cohort', { exact: true })).toHaveCount(0);
+  await merged.getByTitle('Collapse programme', { exact: true }).click();
+  await expect(mergedCurrent).toHaveCount(0);
+  await expect(mergedLms).toHaveCount(0);
+  await expect(merged.locator('[data-plan-source]')).toHaveCount(0);
+  await expect(merged.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
+  await merged.getByTitle('Expand programme', { exact: true }).click();
+  await expect(mergedCurrent).toHaveCount(1);
+  await expect(mergedLms).toHaveCount(1);
+  await merged.getByRole('group', { name: 'Timeline zoom', exact: true }).getByRole('button', { name: 'Week', exact: true }).click();
+  await expect(merged.getByRole('button', { name: 'Week', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
   await expect(current).toBeHidden();
   const lms = page.getByRole('region', { name: 'LMS reference timeline', exact: true });
@@ -707,6 +798,14 @@ test('source tabs browse one timeline at a time and keep comparison inside modul
   await expect(lms.getByTitle('Edit cohort', { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(lms).toBeVisible();
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  await expect(merged).toBeVisible();
+  await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+  await expect(merged.locator('[data-programme-target]')).toHaveCount(1);
+  await expect(merged.getByTitle('Collapse programme', { exact: true })).toHaveCount(1);
+  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(2);
+  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(3);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('tab', { name: 'Current Training Plan', exact: true }).click();
   await expect(current).toBeVisible();
   await expect(lms).toBeHidden();

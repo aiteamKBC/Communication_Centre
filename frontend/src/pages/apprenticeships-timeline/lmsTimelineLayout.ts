@@ -72,21 +72,38 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
   return { groups, customModules, undrawableCount: records.length - validRecords.length };
 }
 
-// Keep the two sources in adjacent programme sections on one date axis.
+function sortMergedRows(rows: CohortRow[]): CohortRow[] {
+  const datedRows = rows.map(row => ({
+    row,
+    start: row.blks.map(block => block.startDate).filter(isComparisonDate).sort()[0]
+      || (isComparisonDate(row.dateLbl) ? row.dateLbl : ''),
+  }));
+  // Interleave both sources by their first module date, newest first. Undated
+  // rows stay at the bottom; equal dates retain their existing relative order.
+  return datedRows.sort((left, right) => right.start.localeCompare(left.start)).map(item => item.row);
+}
+
+// Keep both sources inside one expandable programme on a shared date axis.
 // Source records and saved programme/cohort identities remain untouched.
 export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = []) {
   const lms = buildLmsTimelineLayout(records, currentProgrammes, currentModules);
   const remaining = new Map(lms.groups.map(group => [group.id, group]));
   const groups: ProgrammeGroup[] = [];
-  const appendLms = (group: ProgrammeGroup) => {
-    groups.push({ ...group, planSource: 'LMS', color: '#115E59' });
-    remaining.delete(group.id);
-  };
   for (const programme of currentProgrammes) {
-    groups.push({ ...programme, id: `merged-current:${programme.id}`, planSource: 'Current', color: '#1B2A4A' });
     const reference = remaining.get(`lms-programme:${programme.id}`);
-    if (reference) appendLms(reference);
+    groups.push({
+      ...programme,
+      id: `merged-programme:${programme.id}`,
+      rows: sortMergedRows([
+        ...programme.rows.map(row => ({ ...row, id: `merged-current:${row.id}`, planSource: 'Current' as const })),
+        ...(reference?.rows ?? []).map(row => ({ ...row, planSource: 'LMS' as const })),
+      ]),
+    });
+    if (reference) remaining.delete(reference.id);
   }
-  for (const reference of remaining.values()) appendLms(reference);
+  for (const reference of remaining.values()) {
+    groups.push({ ...reference, id: `merged:${reference.id}`,
+      rows: sortMergedRows(reference.rows.map(row => ({ ...row, planSource: 'LMS' as const }))) });
+  }
   return { groups, customModules: [...currentModules, ...lms.customModules], undrawableCount: lms.undrawableCount };
 }

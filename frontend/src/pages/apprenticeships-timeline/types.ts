@@ -63,6 +63,7 @@ export interface ModuleBlock {
 
 export interface CohortRow {
   id: string;
+  planSource?: 'Current' | 'LMS';
   label: string;
   dateLbl: string;
   endDateLbl?: string;
@@ -78,7 +79,6 @@ export interface CohortRow {
 
 export interface ProgrammeGroup {
   id: string;
-  planSource?: 'Current' | 'LMS';
   name: string;
   sub: string;
   color: string;
