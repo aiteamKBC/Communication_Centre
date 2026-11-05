@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { LmsReferenceRow } from '../../src/pages/apprenticeships-timeline/lmsReference';
 
 test.use({ channel: 'chrome' });
 
-async function setup(page: Page, automatic = false, additionalModules: { sourceModuleId: string; module: string; programme?: string }[] = []) {
+async function setup(page: Page, automatic = false, additionalModules: (Partial<LmsReferenceRow> & Pick<LmsReferenceRow, 'sourceModuleId' | 'module'>)[] = []) {
   const user = { id: 1, username: 'matcher', displayName: 'Matcher', groups: ['Admin Access'], access: { adminAccess: true, operationsAccess: true, canManageCohorts: true } };
   await page.addInitScript(value => localStorage.setItem('kbc-auth-user', JSON.stringify(value)), user);
   let version = 'v1';
@@ -96,6 +97,175 @@ test('LMS recommendations include a single shared word and keep unrelated module
   await expect(options).toHaveCount(1);
   await expect(options.first()).toContainText('AAA Finance');
   expect(api.writes).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+test('Compare filters current modules by group and inclusive overlapping dates while keeping the selected module', async ({ page }) => {
+  const api = await setup(page);
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+  await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  const options = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
+  await expect(page.getByLabel('Current modules Cohort filter', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('Current modules Group filter', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('Current modules Tutor filter', { exact: true })).toBeDisabled();
+  await page.getByLabel('Current modules Programme filter', { exact: true }).selectOption({ label: 'ME L4' });
+  await expect(page.getByLabel('Current modules Cohort filter', { exact: true })).toBeEnabled();
+  await expect(page.getByLabel('Current modules Group filter', { exact: true })).toBeDisabled();
+  await page.getByLabel('Current modules Cohort filter', { exact: true }).selectOption({ label: 'January cohort' });
+  await page.getByLabel('Current modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-19');
+  await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-19');
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText('Group 2');
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-20');
+  await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-21');
+  await expect(options).toHaveCount(0);
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-10');
+  await expect(options).toHaveCount(1);
+  await options.first().click();
+  const trigger = page.getByRole('button', { name: 'Current module to compare', exact: true });
+  await expect(trigger).toContainText('Marketing');
+  await trigger.click();
+  await page.getByLabel('Current modules Group filter', { exact: true }).selectOption({ label: 'Group 3' });
+  await page.getByRole('combobox', { name: 'Search current comparison modules', exact: true }).press('Escape');
+  await expect(trigger).toContainText('Marketing');
+  await trigger.click();
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await expect(options).toHaveCount(3);
+  await expect(page.getByLabel('Current modules From', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('Current modules To', { exact: true })).toHaveValue('');
+  await expect(page.getByRole('combobox', { name: 'Search current comparison modules', exact: true })).toBeFocused();
+  expect(api.writes).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+test('LMS search combines programme, cohort, group, tutor and dates and resets on mobile', async ({ page }, testInfo) => {
+  const api = await setup(page, false, [
+    { sourceModuleId: 'target', module: 'Marketing February', groupName: 'Group 2', cohortName: 'Spring cohort', tutorName: 'Second Tutor', startDate: '2026-02-05', endDate: '2026-02-20' },
+    { sourceModuleId: 'other', module: 'Marketing March', programme: 'Marketing Manager Level 6', groupName: 'Group 3', cohortName: 'Later cohort', tutorName: 'Other Tutor', startDate: '2026-03-01', endDate: '2026-03-20' },
+    { sourceModuleId: 'same-cohort', module: 'Marketing alternative', groupName: 'Group 5', cohortName: 'Spring cohort', tutorName: 'Third Tutor' },
+    { sourceModuleId: 'other-cohort', module: 'Marketing autumn', groupName: 'Group 4', cohortName: 'Autumn cohort', tutorName: 'Autumn Tutor' },
+    { sourceModuleId: 'undated', module: 'Undated module', startDate: null, endDate: null },
+    { sourceModuleId: 'invalid', module: 'Invalid date module', startDate: '2026-02-30', endDate: '2026-03-10' },
+  ]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+  await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
+  await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+  const options = page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option');
+  const search = page.getByRole('combobox', { name: 'Search LMS match modules', exact: true });
+  await expect(options).toHaveCount(7);
+  await search.press('Tab');
+  await expect(page.getByLabel('LMS modules Programme filter', { exact: true })).toBeFocused();
+  await page.getByLabel('LMS modules Programme filter', { exact: true }).selectOption({ label: 'ME L4' });
+  await expect(options).toHaveCount(6);
+  const cohort = page.getByLabel('LMS modules Cohort filter', { exact: true });
+  const group = page.getByLabel('LMS modules Group filter', { exact: true });
+  const tutor = page.getByLabel('LMS modules Tutor filter', { exact: true });
+  await expect(cohort.locator('option').filter({ hasText: 'Later cohort' })).toHaveCount(0);
+  await expect(group).toBeDisabled();
+  await expect(tutor).toBeDisabled();
+  await page.getByLabel('LMS modules Cohort filter', { exact: true }).selectOption({ label: 'Spring cohort' });
+  await expect(options).toHaveCount(2);
+  await expect(group.locator('option')).toHaveText(['All', 'Group 2', 'Group 5']);
+  await expect(tutor.locator('option')).toHaveText(['All', 'Second Tutor', 'Third Tutor']);
+  await page.getByLabel('LMS modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
+  await expect(tutor.locator('option')).toHaveText(['All', 'Second Tutor']);
+  await page.getByLabel('LMS modules Tutor filter', { exact: true }).selectOption({ label: 'Second Tutor' });
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-20');
+  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-02-20');
+  await search.fill('February');
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText('Marketing February');
+  await expect(options.first()).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('module-search-filters-mobile.png') });
+  await search.fill('no match');
+  await expect(options).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await expect(options).toHaveCount(7);
+  await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
+  await expect(page.getByLabel('LMS modules From', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('LMS modules To', { exact: true })).toHaveValue('');
+  await expect(cohort).toBeDisabled();
+  await page.getByLabel('LMS modules Programme filter', { exact: true }).selectOption({ label: 'ME L4' });
+  await cohort.selectOption({ label: 'Spring cohort' });
+  await tutor.selectOption({ label: 'Third Tutor' });
+  await expect(group.locator('option')).toHaveText(['All', 'Group 5']);
+  await group.selectOption({ label: 'Group 5' });
+  await cohort.selectOption({ label: 'Autumn cohort' });
+  await expect(group).toHaveValue('');
+  await expect(tutor).toHaveValue('');
+  await expect(group.locator('option')).toHaveText(['All', 'Group 4']);
+  await expect(options).toHaveCount(1);
+  await page.getByLabel('LMS modules Programme filter', { exact: true }).selectOption({ label: 'MM LVL6' });
+  await expect(cohort).toHaveValue('');
+  await expect(group).toBeDisabled();
+  await expect(tutor).toBeDisabled();
+  await expect(cohort.locator('option')).toHaveText(['All', 'Later cohort']);
+  await expect(options).toHaveCount(1);
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-01');
+  await expect(options).toHaveCount(5);
+  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-01-01');
+  await expect(page.getByRole('alert')).toHaveText('From must be on or before To.');
+  await expect(options).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await expect(options).toHaveCount(7);
+  expect(api.writes).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+test('standalone Compare browses all assignments and LMS programmes without saving on desktop and mobile', async ({ page }, testInfo) => {
+  const api = await setup(page, false, [{ sourceModuleId: 'cross', module: 'Cross programme module', programme: 'Marketing Manager Level 6' }]);
+  api.items[1].notes += '\n__lms_source_module_id:chosen';
+  const originalItems = JSON.stringify(api.items);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/training-plan');
+  const trigger = page.getByRole('button', { name: 'Compare', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  const currentOptions = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
+  await expect(currentOptions).toHaveCount(3);
+  await expect(currentOptions.filter({ hasText: 'Group 2' })).toContainText('January cohort');
+  await page.getByRole('combobox', { name: 'Search current comparison modules', exact: true }).fill('Other workshop');
+  await currentOptions.first().click();
+  await dialog.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+  const lmsOptions = page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option');
+  const claimed = lmsOptions.filter({ hasText: 'LMS Marketing Workshop' });
+  await expect(claimed).toBeEnabled();
+  await claimed.click();
+  const table = dialog.getByRole('table', { name: 'Selected module comparison', exact: true });
+  await expect(table).toContainText('Other workshop');
+  await expect(table).toContainText('LMS Marketing Workshop');
+  await dialog.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+  await lmsOptions.filter({ hasText: 'Cross programme module' }).click();
+  await expect(table).toContainText('MM LVL6');
+  await expect(table).toContainText('ME L4');
+  await expect(table).toContainText('2026-02-02');
+  await expect(dialog.getByText('Dates and tutor differ', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Save manual match', exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('standalone-module-comparison.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const scroll = dialog.getByRole('region', { name: 'Module comparison details' });
+  expect(await scroll.evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('standalone-module-comparison-mobile.png') });
+  await dialog.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Search LMS match modules', exact: true }).press('Escape');
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(api.writes).toEqual([]);
+  expect(JSON.stringify(api.items)).toBe(originalItems);
   expect(api.errors).toEqual([]);
 });
 

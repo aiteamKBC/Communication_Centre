@@ -217,29 +217,32 @@ export function matchLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow
   return { matched, unmatchedCurrent, unmatchedLms: records.filter(record => !used.has(record.sourceModuleId)), review };
 }
 
+export function compareLmsModule({ programme, cohort, block, module }: CurrentPlanRecord, lms: PresentedLmsRow,
+  holidays: Holiday[] = [], tutorProfiles: TutorProfile[] = [], method: PlanDifference['matchMethod'] = 'manual'): PlanDifference {
+  const rowHolidays = holidays.filter(holiday => cohort.holidayIds?.includes(holiday.id));
+  const endDate = validRange(block)
+    ? buildHolidayAdjustedSessionPlan(block, rowHolidays).effectiveEndDate || block.endDate : block.endDate;
+  const current = { startDate: block.startDate || null, endDate: endDate || null, baselineEndDate: block.endDate || null, tutorName: tutorDisplayName(block, tutorProfiles).trim() };
+  const tutorDiffers = normalize(current.tutorName) !== normalize(lms.tutorName ?? null);
+  const datesDiffer = current.startDate !== lms.startDate || current.endDate !== lms.endDate;
+  let kind: PlanDifference['kind'];
+  if (!validRange(current) || !validRange(lms)) kind = 'incomplete';
+  else if (datesDiffer && tutorDiffers) kind = 'datesAndTutor';
+  else if (datesDiffer) kind = 'dates';
+  else if (tutorDiffers) kind = 'tutor';
+  else kind = 'same';
+  return {
+    id: JSON.stringify(['current', programme.id, cohort.id, block.id]),
+    programmeId: programme.id, programme: programme.name, module,
+    cohort: cohort.label, group: block.groupName ?? '', current, lms,
+    tutorDiffers, kind, matchMethod: method,
+  };
+}
+
 export function compareLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow[], customModules: CustomModule[], holidays: Holiday[] = [], tutorProfiles: TutorProfile[] = []) {
   const matching = matchLmsPlans(groups, records, customModules);
   // Only confirmed one-to-one matches reach date and tutor comparison.
-  const matches: PlanDifference[] = matching.matched.map(({ current: { programme, cohort, block, module }, lms, method }) => {
-    const rowHolidays = holidays.filter(holiday => cohort.holidayIds?.includes(holiday.id));
-    const endDate = validRange(block)
-      ? buildHolidayAdjustedSessionPlan(block, rowHolidays).effectiveEndDate || block.endDate : block.endDate;
-    const current = { startDate: block.startDate || null, endDate: endDate || null, baselineEndDate: block.endDate || null, tutorName: tutorDisplayName(block, tutorProfiles).trim() };
-    const tutorDiffers = normalize(current.tutorName) !== normalize(lms.tutorName ?? null);
-    const datesDiffer = current.startDate !== lms.startDate || current.endDate !== lms.endDate;
-    let kind: PlanDifference['kind'];
-    if (!validRange(current) || !validRange(lms)) kind = 'incomplete';
-    else if (datesDiffer && tutorDiffers) kind = 'datesAndTutor';
-    else if (datesDiffer) kind = 'dates';
-    else if (tutorDiffers) kind = 'tutor';
-    else kind = 'same';
-    return {
-      id: JSON.stringify(['current', programme.id, cohort.id, block.id]),
-      programmeId: programme.id, programme: programme.name, module,
-      cohort: cohort.label, group: block.groupName ?? '', current, lms,
-      tutorDiffers, kind, matchMethod: method,
-    };
-  });
+  const matches = matching.matched.map(({ current, lms, method }) => compareLmsModule(current, lms, holidays, tutorProfiles, method));
   return {
     ...matching, matches,
     differences: matches.filter(row => row.kind !== 'same' && row.kind !== 'incomplete'),

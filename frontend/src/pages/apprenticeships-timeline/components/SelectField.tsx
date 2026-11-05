@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
+import { filterValueKey, matchesSelectFilters, type SelectFilterField, type SelectFilterMetadata } from './selectFilters';
 
-interface SelectOption {
+interface SelectOption extends SelectFilterMetadata {
   value: string;
   label: string;
   description?: string;
@@ -29,6 +30,8 @@ interface Props {
   searchByLabelOnly?: boolean;
   wrapLabels?: boolean;
   popoverZIndex?: number;
+  filterFields?: SelectFilterField[];
+  filterByDateRange?: boolean;
 }
 
 export default function SelectField({
@@ -49,6 +52,8 @@ export default function SelectField({
   searchByLabelOnly = false,
   wrapLabels = false,
   popoverZIndex = 120,
+  filterFields,
+  filterByDateRange = false,
 }: Props) {
   const listId = useId();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -58,6 +63,12 @@ export default function SelectField({
   const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const hasFilters = Object.values(filterValues).some(Boolean) || Boolean(from || to);
+  const invalidRange = Boolean(from && to && from > to);
+  const hasFilterControls = Boolean(filterFields?.length || filterByDateRange);
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(option => option.value === value)));
   const [popoverStyle, setPopoverStyle] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number }>({
     top: 0,
@@ -77,13 +88,13 @@ export default function SelectField({
   );
   const filteredOptions = useMemo(() => {
     const term = query.trim().toLowerCase();
-    if (!term) return options;
     return options.filter(option => (
-      option.label.toLowerCase().includes(term) ||
+      (!term || option.label.toLowerCase().includes(term) ||
       (!searchByLabelOnly && (option.value.toLowerCase().includes(term) ||
-      (option.description || '').toLowerCase().includes(term)))
+      (option.description || '').toLowerCase().includes(term))))
+      && matchesSelectFilters(option, filterValues, from, to)
     ));
-  }, [options, query, searchByLabelOnly]);
+  }, [options, query, searchByLabelOnly, filterValues, from, to]);
 
   const closeAndFocus = () => {
     setOpen(false);
@@ -128,7 +139,7 @@ export default function SelectField({
     if (listRef.current) {
       listRef.current.scrollTop = 0;
     }
-  }, [query]);
+  }, [query, filterValues, from, to]);
 
   useLayoutEffect(() => {
     if (!open || disabled) {
@@ -174,7 +185,7 @@ export default function SelectField({
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
       const width = Math.min(Math.max(rect.width, 320), viewportWidth - 24);
-      const popoverHeight = 380;
+      const popoverHeight = hasFilterControls ? 600 : 380;
       const left = Math.min(Math.max(12, rect.left), viewportWidth - width - 12);
       const spaceBelow = Math.max(0, viewportHeight - rect.bottom - 20);
       const spaceAbove = Math.max(0, rect.top - 20);
@@ -194,7 +205,7 @@ export default function SelectField({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open, disabled]);
+  }, [open, disabled, hasFilterControls]);
 
   useEffect(() => {
     if (!open) {
@@ -301,12 +312,22 @@ export default function SelectField({
       {open && !disabled && createPortal(
         <div
           ref={popoverRef}
+          data-select-list-id={listId}
           className="fixed"
           onKeyDown={event => {
             if (event.key === 'Escape') {
               event.preventDefault();
               event.stopPropagation();
               closeAndFocus();
+            }
+            if (event.key === 'Tab') {
+              const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)')]
+                .filter(control => control.tabIndex >= 0);
+              if ((event.shiftKey && document.activeElement === controls[0])
+                  || (!event.shiftKey && document.activeElement === controls[controls.length - 1])) {
+                event.preventDefault();
+                closeAndFocus();
+              }
             }
           }}
           onBlur={event => {
@@ -326,7 +347,7 @@ export default function SelectField({
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
               <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200">
-                {query.trim() ? `${filteredOptions.length}/${options.length}` : `${options.length} options`}
+                {query.trim() || hasFilters ? `${filteredOptions.length}/${options.length}` : `${options.length} options`}
               </span>
             </div>
 
@@ -356,20 +377,68 @@ export default function SelectField({
                     }
                   }}
                   placeholder={searchPlaceholder}
-                  className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-700 placeholder:text-slate-400 focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-700 placeholder:text-slate-400 focus:outline-none [&::-webkit-search-cancel-button]:appearance-none"
                 />
-                {query && (
+                {(query || hasFilters) && (
                   <button
                     type="button"
-                    onClick={() => setQuery('')}
+                    onClick={() => { searchRef.current?.focus({ preventScroll: true }); setFilterValues({}); setFrom(''); setTo(''); setQuery(''); }}
                     className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                    aria-label="Clear search"
+                    aria-label={hasFilterControls ? 'Reset search and filters' : 'Clear search'}
+                    title={hasFilterControls ? 'Reset search and filters' : 'Clear search'}
                   >
                     <i aria-hidden="true" className="ri-close-line text-sm" />
                   </button>
                 )}
               </div>
             </div>
+
+            {hasFilterControls && <div role="group" aria-label={`${label} filters`} className="max-h-[45vh] shrink-0 space-y-2 overflow-y-auto border-b border-slate-100 bg-slate-50 p-2">
+              <div className="grid grid-cols-2 gap-2">
+                {filterFields?.map(field => {
+                  const descendants = filterFields.filter(candidate => candidate.dependsOn?.includes(field.key));
+                  // Parents can always change. Sibling choices (group/tutor)
+                  // narrow each other to combinations present in the data.
+                  const scope = Object.fromEntries(Object.entries(filterValues)
+                    .filter(([key]) => key !== field.key && !descendants.some(candidate => candidate.key === key)));
+                  const missingParent = field.dependsOn?.find(key => !filterValues[key]);
+                  const choices = new Map<string, string>();
+                  for (const option of options) {
+                    if (missingParent || !matchesSelectFilters(option, scope, '', '')) continue;
+                    const value = option.filterValues?.[field.key];
+                    choices.set(filterValueKey(value), value?.trim() || 'Not provided');
+                  }
+                  // Keep a selected value visible if refreshed data no longer contains it.
+                  const active = filterValues[field.key];
+                  if (active && !choices.has(active)) choices.set(active, JSON.parse(active) || 'Not provided');
+                  return <label key={field.key} className="min-w-0 text-[11px] font-semibold text-slate-600">{field.label}
+                    <select aria-label={`${label} ${field.label} filter`} value={active || ''}
+                      disabled={Boolean(missingParent)}
+                      onChange={event => setFilterValues(current => {
+                        const next = { ...current, [field.key]: event.target.value };
+                        for (const descendant of descendants) delete next[descendant.key];
+                        return next;
+                      })}
+                      className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1 text-xs text-slate-700 disabled:bg-slate-100 disabled:text-slate-400">
+                      <option value="">{missingParent ? `Choose ${filterFields.find(parent => parent.key === missingParent)?.label || missingParent} first` : 'All'}</option>
+                      {[...choices].sort(([, left], [, right]) => left.localeCompare(right, 'en-GB', { numeric: true }))
+                        .map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+                    </select>
+                  </label>;
+                })}
+                {filterByDateRange && <>
+                  <label className="min-w-0 text-[11px] font-semibold text-slate-600">From
+                    <input type="date" aria-label={`${label} From`} value={from} max={to || undefined} aria-invalid={invalidRange}
+                      onChange={event => setFrom(event.target.value)} className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1 text-xs text-slate-700" />
+                  </label>
+                  <label className="min-w-0 text-[11px] font-semibold text-slate-600">To
+                    <input type="date" aria-label={`${label} To`} value={to} min={from || undefined} aria-invalid={invalidRange}
+                      onChange={event => setTo(event.target.value)} className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1 text-xs text-slate-700" />
+                  </label>
+                </>}
+              </div>
+              {invalidRange && <p role="alert" className="text-xs text-red-700">From must be on or before To.</p>}
+            </div>}
 
             <div ref={listRef} id={listId} className="relative min-h-0 max-h-64 overflow-y-auto overscroll-contain p-2" role="listbox" aria-label={label}>
               {filteredOptions.map((option, index) => {
@@ -414,7 +483,7 @@ export default function SelectField({
               {filteredOptions.length === 0 && (
                 <div className="px-3 py-8 text-center">
                   <p className="text-sm font-semibold text-slate-600">{emptyTitle}</p>
-                  <p className="mt-1 text-xs text-slate-400">{emptyText}</p>
+                  <p className="mt-1 text-xs text-slate-400">{hasFilters ? 'Try another search or clear the filters.' : emptyText}</p>
                 </div>
               )}
             </div>

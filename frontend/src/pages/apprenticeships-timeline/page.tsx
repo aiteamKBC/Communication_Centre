@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
+import { ArrowLeftRight, BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
 import './training-plan.css';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
@@ -10,6 +10,7 @@ import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import LmsReference from './components/LmsReference';
 import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
+import ModuleComparisonModal from './components/ModuleComparisonModal';
 import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
@@ -3093,6 +3094,7 @@ export default function ApprenticeshipTimeline() {
   const [showAddModule,  setShowAddModule]  = useState(false);
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [showManageModules, setShowManageModules] = useState(false);
+  const [showModuleComparison, setShowModuleComparison] = useState(false);
   const [showKsbProfiles, setShowKsbProfiles] = useState(false);
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
@@ -6922,6 +6924,10 @@ export default function ApprenticeshipTimeline() {
                 {tab.label}
               </button>
             ))}
+            <button type="button" onClick={() => setShowModuleComparison(true)} disabled={isInitialProgrammesLoading}
+              className="flex items-center gap-1.5 rounded-md border border-teal-200 bg-teal-50 px-4 py-1.5 text-xs font-semibold text-teal-900 disabled:opacity-40">
+              <ArrowLeftRight size={16} aria-hidden="true" />Compare
+            </button>
           </div>
           {canManageCohorts && (
             <div className="tp-management-actions training-plan-action-row lg:overflow-visible lg:pb-0">
@@ -7710,6 +7716,9 @@ export default function ApprenticeshipTimeline() {
           )
         )
       )}
+
+      {showModuleComparison && <ModuleComparisonModal groups={groups} customModules={customModules} holidays={holidays}
+        tutorProfiles={tutorProfiles} onClose={() => setShowModuleComparison(false)} />}
 
       {canEditTrainingPlan && showManageModules && (
         <ManageModulesModal
