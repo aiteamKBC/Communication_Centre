@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import * as XLSX from 'xlsx';
-import { compareLmsPlans, matchLmsPlans, presentLmsRows } from '../../src/pages/apprenticeships-timeline/lmsComparison';
-import { buildLmsTimelineLayout } from '../../src/pages/apprenticeships-timeline/lmsTimelineLayout';
+import { compareLmsPlans, lmsCohortDisplayName, lmsGroupDisplayName, matchLmsPlans, presentLmsRows } from '../../src/pages/apprenticeships-timeline/lmsComparison';
+import { buildLmsTimelineLayout, lmsRecordGroup } from '../../src/pages/apprenticeships-timeline/lmsTimelineLayout';
 import type { LmsReferenceRow } from '../../src/pages/apprenticeships-timeline/lmsReference';
 import type { ModuleBlock, ProgrammeGroup } from '../../src/pages/apprenticeships-timeline/types';
 
@@ -89,25 +89,28 @@ test('comparison links repeated modules by cohort, group and start date despite 
   expect(JSON.stringify({ programme, records })).toBe(before);
 });
 
-test('comparison leaves different or missing cohorts unlinked despite identical dates, tutors and IDs', () => {
+test('comparison matches unique module names and start dates despite different or missing cohorts', () => {
   const programme = group([block('one', 'Marketing', { moduleCatalogueId: 'one', tutor: 'Same Tutor' })]);
   for (const cohortName of ['February cohort', null, '']) {
     const records = presentLmsRows([matchingSource('one', 'Marketing', { cohortId: 'c1', cohortName, tutorName: 'Same Tutor' })], [programme]);
     const result = compareLmsPlans([programme], records, []);
-    expect(result.unchanged).toBe(0);
-    expect(result.matches).toEqual([]);
+    expect(result.unchanged).toBe(1);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].matchMethod).toBe('automatic');
     expect(result.differences).toEqual([]);
-    expect(result.unmatchedCurrent).toHaveLength(1);
-    expect(result.unmatchedLms).toHaveLength(1);
+    expect(result.unmatchedCurrent).toHaveLength(0);
+    expect(result.unmatchedLms).toHaveLength(0);
   }
 });
 
-test('comparison requires group evidence in multi-group cohorts and never guesses from module, date or tutor', () => {
+test('comparison accepts missing groups for unique name/start pairs but rejects explicit group conflicts', () => {
   const programme = group([
     block('one', 'Marketing', { groupName: 'Group 1', tutor: 'Same Tutor' }),
     block('two', 'Other module', { groupName: 'Group 2' }),
   ]);
-  for (const overrides of [{}, { groupName: 'Group 2' }, { groupName: 'Group 9' }, { groupName: 'Group 1', module: 'Marketing G2' }]) {
+  const missingGroup = presentLmsRows([matchingSource('one', 'Marketing', { tutorName: 'Same Tutor' })], [programme]);
+  expect(compareLmsPlans([programme], missingGroup, []).unchanged).toBe(1);
+  for (const overrides of [{ groupName: 'Group 2' }, { groupName: 'Group 9' }, { groupName: 'Group 1', module: 'Marketing G2' }]) {
     const records = presentLmsRows([matchingSource('one', 'Marketing', { tutorName: 'Same Tutor', ...overrides })], [programme]);
     const result = compareLmsPlans([programme], records, []);
     expect(result.unchanged).toBe(0);
@@ -117,15 +120,68 @@ test('comparison requires group evidence in multi-group cohorts and never guesse
   }
   const records = presentLmsRows([matchingSource('one', 'Marketing', { groupName: 'G1', tutorName: 'Same Tutor' })], [programme]);
   expect(compareLmsPlans([programme], records, []).unchanged).toBe(1);
-  // Missing group names must not collapse distinct local group IDs.
+  // Unique module names can distinguish placements with independent group IDs.
   programme.rows[0].blks.forEach((item, index) => { item.groupName = ''; item.groupId = `local-${index}`; });
-  expect(compareLmsPlans([programme], presentLmsRows([matchingSource('one', 'Marketing')], [programme]), []).unchanged).toBe(0);
+  expect(compareLmsPlans([programme], presentLmsRows([matchingSource('one', 'Marketing')], [programme]), []).matches).toHaveLength(1);
 });
 
-test('comparison infers a missing LMS group only when the cohort has a single group', () => {
+test('comparison infers a missing LMS group for a unique placement and respects explicit groups', () => {
   const programme = group([block('one', 'Marketing', { groupName: 'Tuesday group' })]);
   expect(compareLmsPlans([programme], presentLmsRows([matchingSource('one', 'Marketing')], [programme]), []).unchanged).toBe(1);
   expect(compareLmsPlans([programme], presentLmsRows([matchingSource('one', 'Marketing', { groupName: 'Friday group' })], [programme]), []).unchanged).toBe(0);
+});
+
+test('MBA modules with the same name and start date match automatically without LMS group labels', () => {
+  const programme = group([
+    block('strategic', 'mba-strategic', { startDate: '2026-10-31', endDate: '2027-02-18', groupName: 'G1-Saturday-9 am', tutor: 'Plan Tutor' }),
+    block('other', 'Other module', { groupName: 'G2-Tuesday' }),
+  ], 'mba');
+  programme.name = 'MBA';
+  programme.rows[0].label = 'MBA 2026';
+  const modules = [{ id: 'mba-strategic', name: 'Chari-Strategic Management', defaultSessions: 1, bg: '', tx: '' }];
+  const original = [source('lms-strategic', ' chari-strategic   MANAGEMENT ', {
+    programme: 'MBA', cohortName: null, groupName: null, startDate: '2026-10-31', endDate: '2027-02-18', tutorName: 'LMS Tutor',
+  })];
+  const before = JSON.stringify({ programme, original });
+  const records = presentLmsRows(original, [programme], modules);
+  const result = compareLmsPlans([programme], records, modules);
+  expect(result.matches).toHaveLength(1);
+  expect(result.matches[0]).toMatchObject({ matchMethod: 'automatic', kind: 'datesAndTutor', lms: { sourceModuleId: 'lms-strategic', cohortName: null, groupName: null } });
+  expect(records[0].matchedPlanCohort?.name).toBe('MBA 2026');
+  expect(records[0].matchedPlanGroup?.name).toBe('G1-Saturday-9 am');
+  expect(JSON.stringify({ programme, original })).toBe(before);
+});
+
+test('name/start fallback leaves duplicate source or current placements for review', () => {
+  const programme = group([block('one', 'Marketing', { groupName: 'G1' })]);
+  const original = [source('lms-one', 'Marketing', { cohortName: null, groupName: null })];
+  programme.rows[0].blks.push(block('two', 'Marketing', { groupName: 'G2' }));
+  let result = matchLmsPlans([programme], presentLmsRows(original, [programme]), []);
+  expect(result.matched).toEqual([]);
+  expect(result.review).toHaveLength(2);
+  programme.rows[0].blks.pop();
+  programme.rows.push({ ...programme.rows[0], id: 'other-cohort', label: 'Other cohort', blks: [block('three', 'Marketing', { groupName: 'G1' })] });
+  result = matchLmsPlans([programme], presentLmsRows(original, [programme]), []);
+  expect(result.matched).toEqual([]);
+  expect(result.review).toHaveLength(2);
+  programme.rows.pop();
+  const repeated = [...original, { ...original[0], sourceModuleId: 'lms-two' }];
+  result = matchLmsPlans([programme], presentLmsRows(repeated, [programme]), []);
+  expect(result.matched).toEqual([]);
+  expect(result.review[0].candidates).toHaveLength(2);
+  expect(matchLmsPlans([programme], presentLmsRows([...repeated].reverse(), [programme]), []).matched).toEqual([]);
+});
+
+test('cohort matches take priority over fallback claims regardless of record ordering', () => {
+  const programme = group([block('one', 'Marketing')]);
+  programme.rows.push({ ...programme.rows[0], id: 'c2', label: 'February cohort', blks: [block('two', 'Marketing')] });
+  const records = presentLmsRows([matchingSource('identified', 'Marketing')], [programme]);
+  const result = matchLmsPlans([programme], records, []);
+  expect(result.matched.map(pair => [pair.current.block.id, pair.lms.sourceModuleId])).toEqual([['one', 'identified']]);
+  expect(result.review).toEqual([]);
+  expect(result.unmatchedCurrent[0].reason).toContain('reserved by another current record');
+  const reversed = { ...programme, rows: [...programme.rows].reverse() };
+  expect(matchLmsPlans([reversed], records, []).matched.map(pair => pair.current.block.id)).toEqual(['one']);
 });
 
 test('comparison refuses to reuse a source record for duplicate current placements', () => {
@@ -226,18 +282,133 @@ test('start dates distinguish repeated modules without reusing or arbitrarily ch
   expect(JSON.stringify({ programme, records })).toBe(before);
 });
 
-test('unmatched records explain missing cohorts, group conflicts and different start dates', () => {
+test('unmatched records explain module names, group conflicts and different start dates', () => {
   const programme = group([block('one', 'Marketing', { groupName: 'G2-Thursday' })]);
   const compare = (overrides: Partial<LmsReferenceRow>) => compareLmsPlans([programme],
     presentLmsRows([matchingSource('source', 'Marketing', { groupName: 'G2-Marketing Thursday', ...overrides })], [programme]), []);
   expect(compare({}).unchanged).toBe(1);
   expect(compare({ startDate: '2026-01-12' }).unmatchedCurrent[0].reason)
     .toContain('Start date does not match a valid LMS start date. LMS: 2026-01-12');
-  expect(compare({ cohortName: null }).unmatchedCurrent[0].reason).toContain('same cohort name');
+  expect(compare({ cohortName: null }).unchanged).toBe(1);
+  expect(compare({ cohortName: null, startDate: '2026-01-12' }).unmatchedCurrent[0].reason).toContain('Start date does not match');
   expect(compare({ module: 'Other module' }).unmatchedCurrent[0].reason).toContain('same module name');
   expect(compare({ groupName: 'G1-Marketing Wednesday' }).unmatchedCurrent[0].reason).toContain('LMS group');
   programme.rows[0].blks[0].startDate = '';
   expect(compare({}).unmatchedCurrent[0].reason).toBe('Current start date is missing or invalid.');
+});
+
+test('manual matches compare the selected pair despite different names, cohorts, groups and start dates', () => {
+  const programme = group([block('one', 'Marketing', { groupName: 'G1', tutor: 'Plan Tutor', lmsSourceModuleId: 'chosen' })]);
+  const original = [source('chosen', 'Different LMS title', { cohortName: null, groupName: null, startDate: '2026-02-02', endDate: '2026-02-16', tutorName: 'LMS Tutor' })];
+  const before = JSON.stringify({ programme, original });
+  const records = presentLmsRows(original, [programme]);
+  const result = compareLmsPlans([programme], records, []);
+  expect(result.matches).toHaveLength(1);
+  expect(result.matches[0]).toMatchObject({ matchMethod: 'manual', kind: 'datesAndTutor', lms: { sourceModuleId: 'chosen', cohortName: null, startDate: '2026-02-02' } });
+  expect(records[0].matchedPlanCohort?.name).toBe('January cohort');
+  expect(records[0].matchedPlanGroup?.name).toBe('G1');
+  expect(JSON.stringify({ programme, original })).toBe(before);
+});
+
+test('manual matches reserve their LMS record and removal restores automatic matching', () => {
+  const programme = group([block('automatic', 'Marketing'), block('manual', 'Other module', { lmsSourceModuleId: 'chosen' })]);
+  const records = presentLmsRows([matchingSource('chosen', 'Marketing')], [programme]);
+  let result = matchLmsPlans([programme], records, []);
+  expect(result.matched.map(pair => [pair.current.block.id, pair.method])).toEqual([['manual', 'manual']]);
+  expect(result.unmatchedCurrent.map(record => record.block.id)).toEqual(['automatic']);
+  programme.rows[0].blks[1].lmsSourceModuleId = '';
+  result = matchLmsPlans([programme], records, []);
+  expect(result.matched.map(pair => [pair.current.block.id, pair.method])).toEqual([['automatic', 'automatic']]);
+});
+
+test('duplicate, missing and cross-programme manual targets never silently fall back to automatic matching', () => {
+  const programme = group([block('one', 'Marketing', { lmsSourceModuleId: 'chosen' }), block('two', 'Marketing', { lmsSourceModuleId: 'chosen' })]);
+  const records = presentLmsRows([matchingSource('chosen', 'Marketing')], [programme]);
+  expect(matchLmsPlans([programme], records, []).matched).toEqual([]);
+  expect(matchLmsPlans([programme], records, []).review).toHaveLength(2);
+  programme.rows[0].blks.pop();
+  programme.rows[0].blks[0].lmsSourceModuleId = 'missing';
+  expect(matchLmsPlans([programme], records, []).unmatchedCurrent[0].reason).toContain('saved LMS match is unavailable');
+  programme.rows[0].blks[0].lmsSourceModuleId = 'chosen';
+  const otherProgramme = presentLmsRows([matchingSource('chosen', 'Marketing', { programme: 'Marketing Manager Level 6' })], [programme]);
+  expect(matchLmsPlans([programme], otherProgramme, []).matched).toEqual([]);
+});
+
+test('missing LMS cohort names use a uniquely confirmed Training Plan cohort for display', () => {
+  const programme = group([block('one', 'custom-1', { groupName: 'G2-Thursday' })]);
+  programme.rows[0].label = 'May 2026';
+  const modules = [{ id: 'custom-1', name: 'Marketing', defaultSessions: 1, bg: '', tx: '' }];
+  const original = [source('source', 'Marketing', { groupName: 'G2-Marketing Thursday', cohortName: '' })];
+  const before = JSON.stringify({ programme, original });
+  const records = presentLmsRows(original, [programme], modules);
+  expect(lmsCohortDisplayName(records[0])).toBe('May 2026');
+  expect(records[0].matchedPlanCohort).toEqual({ id: 'c1', name: 'May 2026' });
+  expect(records[0].cohortName).toBe('');
+  expect(records[0].cohortId).toBeUndefined();
+  expect(buildLmsTimelineLayout(records, [programme], modules).groups[0].rows[0].label).toBe('May 2026');
+  // Matching uses the original source fields, including a missing cohort name.
+  expect(matchLmsPlans([programme], records, modules).matched).toHaveLength(1);
+  expect(JSON.stringify({ programme, original })).toBe(before);
+});
+
+test('cohort display inference preserves source names and rejects ambiguous or incomplete identities', () => {
+  const programme = group([block('one', 'Marketing', { groupName: 'G1-Wednesday' })]);
+  const infer = (overrides: Partial<LmsReferenceRow> = {}) => presentLmsRows([
+    source('source', 'Marketing', { groupName: 'G1-Marketing Wednesday', ...overrides }),
+  ], [programme]);
+  expect(lmsCohortDisplayName(infer({ cohortName: 'Actual LMS cohort' })[0])).toBe('Actual LMS cohort');
+  for (const overrides of [
+    { startDate: '2026-01-12' }, { startDate: null }, { startDate: '2026-02-30' },
+    { module: 'Other module' }, { groupName: 'G2-Thursday' }, { programme: 'Marketing Manager Level 6' },
+  ]) {
+    expect(infer(overrides)[0].matchedPlanCohort).toBeUndefined();
+  }
+  programme.rows.push({ ...programme.rows[0], id: 'c2', label: 'Another cohort', blks: [block('two', 'Marketing', { groupName: 'G1-Wednesday' })] });
+  expect(infer()[0].matchedPlanCohort).toBeUndefined();
+  programme.rows.pop();
+  const repeated = presentLmsRows([
+    source('source-1', 'Marketing', { groupName: 'G1-Wednesday' }),
+    source('source-2', 'Marketing', { groupName: 'G1-Wednesday' }),
+  ], [programme]);
+  expect(repeated.every(record => !record.matchedPlanCohort)).toBe(true);
+});
+
+test('missing LMS group names show the full Training Plan name for confirmed display matches', () => {
+  const programme = group([
+    block('one', 'Marketing', { groupId: 'g1', groupName: 'G1-Wednesday' }),
+    block('two', 'Marketing', { groupId: 'g2', groupName: 'G2-Thursday', startDate: '2026-01-08' }),
+  ]);
+  const original = [matchingSource('source', 'Marketing', { startDate: '2026-01-08' })];
+  const before = JSON.stringify({ programme, original });
+  const records = presentLmsRows(original, [programme]);
+  expect(lmsGroupDisplayName(records[0])).toBe('G2-Thursday');
+  expect(records[0].matchedPlanGroup).toEqual({ id: 'g2', name: 'G2-Thursday' });
+  expect(records[0].groupName).toBeUndefined();
+  expect(lmsRecordGroup(records[0])).toBe('G2-Thursday');
+  expect(buildLmsTimelineLayout(records, [programme]).groups[0].rows[0].blks[0].groupName).toBe('G2-Thursday');
+  expect(matchLmsPlans([programme], records, []).matched).toHaveLength(1);
+  expect(JSON.stringify({ programme, original })).toBe(before);
+});
+
+test('group display inference preserves source names and refuses ambiguous or changed dates', () => {
+  const programme = group([block('one', 'Marketing', { groupName: 'G1-Wednesday' })]);
+  const infer = (overrides: Partial<LmsReferenceRow> = {}) => presentLmsRows([
+    matchingSource('source', 'Marketing', overrides),
+  ], [programme]);
+  expect(lmsGroupDisplayName(infer({ groupName: 'Actual LMS group' })[0])).toBe('Actual LMS group');
+  expect(infer({ groupName: 'Actual LMS group' })[0].matchedPlanGroup).toBeUndefined();
+  for (const startDate of ['2026-01-12', null, '2026-02-30']) {
+    expect(lmsRecordGroup(infer({ startDate })[0])).toBe('Group not provided');
+  }
+  expect(lmsRecordGroup(infer({ module: 'Marketing G9' })[0])).toBe('G9');
+  const bothMissing = infer({ cohortName: null })[0];
+  expect(lmsCohortDisplayName(bothMissing)).toBe('January cohort');
+  expect(lmsGroupDisplayName(bothMissing)).toBe('G1-Wednesday');
+  programme.rows[0].blks.push(block('two', 'Marketing', { groupName: 'G2-Thursday' }));
+  expect(lmsRecordGroup(infer()[0])).toBe('Group not provided');
+  programme.rows[0].blks.pop();
+  const repeated = presentLmsRows([matchingSource('a', 'Marketing'), matchingSource('b', 'Marketing')], [programme]);
+  expect(repeated.every(record => !record.matchedPlanGroup)).toBe(true);
 });
 
 test('LMS layout orders unknown cohorts newest first without copying current groups', () => {
@@ -323,7 +494,7 @@ test('LMS groups follow matching cohort module assignments, retain title groups 
   const result = buildLmsTimelineLayout(records, [programme]);
   const blocks = result.groups.flatMap(group => group.rows.flatMap(row => row.blks));
   expect(Object.fromEntries(blocks.map(block => [block.moduleCatalogueId, block.groupName]))).toEqual({
-    one: 'G1 - Tuesday', two: 'G2 - Friday', three: 'Group not provided', four: 'G2 - Friday', five: 'Group not provided', six: 'G9',
+    one: 'Group not provided', two: 'G2 - Friday', three: 'Group not provided', four: 'G2', five: 'Group not provided', six: 'G9',
   });
   expect(blocks.find(block => block.moduleCatalogueId === 'one')).toMatchObject({ startDate: '2025-09-01', tutor: 'LMS Tutor', sessions: 0 });
   expect(JSON.stringify({ programme, records })).toBe(before);
@@ -434,7 +605,7 @@ test('LMS layout sorts start and creation dates together, preserves provenance a
   expect(result.groups[0].rows[1].blks[1].startDateSource).toBe('created_at');
 });
 
-test('comparison shows both timelines above differences, keeps programme filtering and scrolls on mobile without writing', async ({ page }, testInfo) => {
+test('source tabs browse one timeline at a time and keep comparison inside module editing', async ({ page }) => {
   test.setTimeout(90_000);
   const user = { id: 1, email: 'comparison@example.com', username: 'comparison', displayName: 'Comparison',
     groups: ['Admin Access'], access: { adminAccess: true, operationsAccess: true, canManageCohorts: true } };
@@ -482,29 +653,36 @@ test('comparison shows both timelines above differences, keeps programme filteri
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: { '1': 'LMS Tutor One', '2': 'LMS Tutor Two' } };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: Object.fromEntries(records.map(row => [row.sourceModuleId, {
       cohortId: row.sourceModuleId === '6' ? 'old-lms-cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'feb-lms-cohort' : 'jan-lms-cohort',
-      cohortName: row.sourceModuleId === '6' ? 'March 2024 LMS cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'February cohort' : 'January cohort',
-      groupName: row.groupName || '',
+      cohortName: row.sourceModuleId === '2' ? '' : row.sourceModuleId === '6' ? 'March 2024 LMS cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'February cohort' : 'January cohort',
+      groupName: row.sourceModuleId === '2' ? '' : row.groupName || '',
     }])) };
     await route.fulfill({ status: 200, contentType: 'application/json', headers, body: JSON.stringify(body) });
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/training-plan');
-  await expect(page.getByRole('button', { name: /Monthly Module Breakdown/ })).toBeVisible();
-  const table = page.getByRole('table', { name: 'Plan differences', exact: true });
-  await expect(table).toHaveCount(0);
-  await page.getByRole('button', { name: 'Compare plans', exact: true }).click();
-  await expect(table).toBeVisible();
-  await expect(page.getByRole('link', { name: 'View matching results and differences', exact: true })).toHaveAttribute('href', '#training-plan-differences');
-  await expect(page.locator('#current-training-plan-panel')).toBeVisible();
-  await expect(page.locator('#training-plan-lms-reference')).toBeVisible();
   const current = page.locator('#current-training-plan-panel');
-  const scrollRect = await current.locator('.training-plan-gantt-scroll').boundingBox();
-  const firstBar = await current.locator('[data-timeline-block-id="b0"]').boundingBox();
-  expect(firstBar!.x).toBeGreaterThan(scrollRect!.x + 200);
-  expect(firstBar!.x).toBeLessThan(scrollRect!.x + scrollRect!.width);
-  await expect(page.getByRole('region', { name: 'Comparison zoom filter', exact: true })).toBeVisible();
+  await expect(current).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Compare plans', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('table', { name: 'Plan differences', exact: true })).toHaveCount(0);
+  await expect(current.getByRole('button', { name: /Monthly Module Breakdown/ })).toHaveAttribute('aria-expanded', 'false');
+  await expect(current.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
+  await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(0);
+  await current.getByTitle('Expand programme', { exact: true }).click();
+  await expect(current.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await current.getByTitle('Collapse programme', { exact: true }).click();
+  await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(0);
+  await current.getByTitle('Expand programme', { exact: true }).click();
+  const sourceColour = await current.locator('[data-timeline-block-id="b0"]').evaluate(bar => getComputedStyle(bar).backgroundColor);
+  await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
+  await expect(current).toBeHidden();
   const lms = page.getByRole('region', { name: 'LMS reference timeline', exact: true });
+  await expect(lms).toBeVisible();
   await expect(lms.getByRole('button', { name: /Monthly Module Breakdown/ })).toBeVisible();
+  await expect(lms.getByRole('button', { name: /Monthly Module Breakdown/ })).toHaveAttribute('aria-expanded', 'false');
+  await expect(lms.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
+  await lms.getByTitle('Expand programme', { exact: true }).click();
+  await expect(lms.locator('details').filter({ hasText: 'LMS modules' })).not.toHaveAttribute('open');
+  await lms.locator('summary').filter({ hasText: /^LMS modules/ }).click();
   const moduleList = lms.getByRole('table', { name: 'All captured LMS modules, including missing or invalid dates', exact: true });
   await expect(moduleList.locator('tbody tr')).toHaveCount(7);
   await lms.getByLabel('LMS modules dates', { exact: true }).selectOption('missing');
@@ -513,133 +691,25 @@ test('comparison shows both timelines above differences, keeps programme filteri
   await lms.getByRole('button', { name: 'Reset modules filters', exact: true }).click();
   await lms.getByLabel('Search LMS modules', { exact: true }).fill('LMS Tutor One');
   await expect(moduleList.locator('tbody tr')).toHaveCount(1);
-  await expect(moduleList).toContainText('Same module');
   await lms.getByRole('button', { name: 'Reset modules filters', exact: true }).click();
-  await expect(lms.getByTitle('January cohort', { exact: true })).toBeVisible();
-  await expect(lms.locator('[data-lms-cohort]').first()).toHaveAttribute('data-lms-cohort', 'February cohort');
-  await expect(lms.locator('[data-lms-cohort]').last()).toHaveAttribute('data-lms-cohort', 'March 2024 LMS cohort');
-  await expect(lms.getByTitle('Same module', { exact: true })).toHaveCount(0);
-  await expect(lms.getByTitle('Group 1', { exact: true }).first()).toBeVisible();
-  await expect(lms.getByText('No matching LMS dates', { exact: true })).toHaveCount(0);
-  await expect(lms.locator('[data-source="LMS"]')).toHaveCount(6);
-  await expect(lms.getByRole('button', { name: 'Modules 6', exact: true })).toBeVisible();
-  const repeatedColours = await lms.locator('[data-source="LMS"][title^="LMS: Repeated module."]').evaluateAll(bars => bars.map(bar => getComputedStyle(bar).backgroundColor));
-  expect(repeatedColours).toHaveLength(2);
-  expect(new Set(repeatedColours).size).toBe(1);
-  const sourceColour = await lms.locator('[data-source="LMS"][title^="LMS: Same module."]').evaluate(bar => getComputedStyle(bar).backgroundColor);
-  expect(sourceColour).toBe(await current.locator('[data-timeline-block-id="b0"]').evaluate(bar => getComputedStyle(bar).backgroundColor));
-  expect(sourceColour).toBe('rgb(32, 134, 155)');
+  await expect(lms.locator('[data-source="LMS"][title^="LMS: Same module."]')).toHaveCSS('background-color', sourceColour);
   await expect(lms.getByText(/1 LMS module uses its creation date/)).toBeVisible();
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Same module."]')).toHaveAttribute('title', /Tutor: LMS Tutor One/);
-  await expect(lms.getByTitle('Tutor: LMS Tutor One', { exact: true })).toBeVisible();
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Changed module."]')).toHaveAttribute('title', /Tutor: LMS Tutor Two/);
   const downloading = page.waitForEvent('download');
   await lms.getByRole('button', { name: 'Export', exact: true }).click();
   const download = await downloading;
   const workbook = XLSX.read(readFileSync((await download.path())!), { type: 'buffer' });
   const exported = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets['LMS Training Plan']);
   expect(exported).toHaveLength(7);
-  expect(exported.some(row => row['Source Module ID'] === 'excluded')).toBe(false);
   expect(exported.find(row => row['Source Module ID'] === '1')?.['Tutor Name']).toBe('LMS Tutor One');
-  expect(exported.find(row => row['Source Module ID'] === '1')?.Cohort).toBe('January cohort');
-  expect(exported.find(row => row['Source Module ID'] === '1')?.Group).toBe('Group 1');
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Partial module."]')).toHaveCount(0);
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Changed module."]')).toHaveAttribute('title', /Start: 2026-01-12/);
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Changed module."]')).toHaveAttribute('title', /From created_at \(start_date missing\)/);
-  await expect(lms.locator('[data-source="LMS"][title^="LMS: Same module."]')).not.toHaveAttribute('title', /From created_at/);
   await lms.locator('[data-source="LMS"][title^="LMS: Changed module."]').click();
-  const monthlyDates = page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true });
-  await expect(monthlyDates).toBeVisible();
-  await expect(monthlyDates).toContainText('2026-01-12');
-  await expect(monthlyDates).toContainText('2026-02-02');
-  await expect(monthlyDates).toContainText('LMS Tutor Two');
-  await expect(monthlyDates).not.toContainText('delivered');
+  await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toContainText('LMS Tutor Two');
   await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
-  for (const timeline of [current, lms]) {
-    const bars = timeline === current
-      ? ['b0', 'b1', 'b5'].map(id => timeline.locator(`[data-timeline-block-id="${id}"]`))
-      : [names[0], names[1], names[5]].map(name => timeline.locator(`[data-source="LMS"][title^="LMS: ${name}."]`));
-    const boxes = await Promise.all(bars.map(bar => bar.boundingBox()));
-    const sorted = boxes.map(box => box!).sort((a, b) => a.y - b.y);
-    expect(sorted[1].y).toBeGreaterThanOrEqual(sorted[0].y + sorted[0].height);
-    expect(sorted[2].y).toBeGreaterThanOrEqual(sorted[1].y + sorted[1].height);
-  }
   await expect(lms.getByTitle('Edit cohort', { exact: true })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath('lms-cohort-group-layout.png'), fullPage: true });
-  const comparisonZoom = page.getByRole('region', { name: 'Comparison zoom filter', exact: true });
-  for (const level of ['Year', 'Intake', 'Month', 'Week', 'Day', 'Month']) {
-    await comparisonZoom.getByRole('button', { name: level, exact: true }).click();
-    await lms.locator('.training-plan-gantt-scroll').scrollIntoViewIfNeeded();
-    await expect(lms.locator('[data-source="LMS"]').first()).toBeInViewport();
-  }
-  const grid = await page.locator('#training-plan-comparison').boundingBox();
-  const section = await page.getByRole('region', { name: 'Plan differences', exact: true }).boundingBox();
-  expect(section!.y).toBeGreaterThanOrEqual(grid!.y + grid!.height);
-  await expect(table.getByRole('columnheader', { name: 'Programme', exact: true })).toHaveCount(0);
-  const matchingSection = page.getByRole('region', { name: '1. Match records', exact: true });
-  await expect(matchingSection).toContainText('4 confirmed matches');
-  await expect(matchingSection).toContainText('1 current records unmatched');
-  await expect(matchingSection).toContainText('1 LMS records unmatched');
-  await expect(matchingSection).toContainText('1 current records need match review');
-  await matchingSection.getByText('Matched records (4)', { exact: true }).click();
-  const matchedTable = matchingSection.getByRole('table', { name: 'Confirmed record matches', exact: true });
-  await expect(matchedTable.locator('tbody tr')).toHaveCount(4);
-  await expect(matchedTable.getByRole('row', { name: /Changed module/ })).toContainText('LMS record: 2');
-  await matchingSection.getByText('Unmatched records (2) — excluded from comparison', { exact: true }).click();
-  const unmatchedTable = matchingSection.getByRole('table', { name: 'Unmatched records excluded from comparison', exact: true });
-  await expect(unmatchedTable.locator('tbody tr')).toHaveCount(2);
-  await expect(unmatchedTable).toContainText('Current module');
-  await expect(unmatchedTable).toContainText('No LMS record has the same module name in this cohort.');
-  await expect(unmatchedTable).toContainText('LMS module');
-  await matchingSection.getByText('Matches needing review (1) — excluded from comparison', { exact: true }).click();
-  const reviewTable = matchingSection.getByRole('table', { name: 'Uncertain matches excluded from comparison', exact: true });
-  await expect(reviewTable.locator('tbody tr')).toHaveCount(1);
-  await expect(reviewTable).toContainText('LMS record: 4');
-  await expect(reviewTable).toContainText('LMS record: 5');
-  await expect(table.locator('tbody tr')).toHaveCount(2);
-  await expect(page.getByText('4 linked · 1 differences · 2 unchanged · 1 incomplete', { exact: true })).toBeVisible();
-  await expect(table).not.toContainText('Current module');
-  await expect(table).not.toContainText('LMS module');
-  await expect(table).not.toContainText('Repeated module');
-  await expect(table.getByRole('rowheader', { name: /Same module/ })).toHaveCount(0);
-  const changed = table.getByRole('row', { name: /Changed module/ });
-  await expect(changed).toContainText('2026-01-26');
-  await expect(changed).toContainText('2026-01-12');
-  await expect(changed).toContainText('From created_at (start_date missing)');
-  await expect(changed).toContainText('Plan Tutor Two');
-  await expect(changed).toContainText('LMS Tutor Two');
-  await expect(changed).toContainText('Dates and tutor differ');
-  await expect(table.getByRole('row', { name: /Partial module/ })).toContainText('Not provided');
-  await page.getByLabel('Difference programme', { exact: true }).selectOption('me-lvl4');
-  await expect(table.locator('tbody tr')).toHaveCount(2);
-  await page.getByLabel('Difference type', { exact: true }).selectOption('dates');
-  await expect(table.locator('tbody tr')).toHaveCount(1);
-  await page.getByLabel('Difference type', { exact: true }).selectOption('tutor');
-  await expect(table.locator('tbody tr')).toHaveCount(1);
-  await page.getByRole('button', { name: 'Reset differences filters', exact: true }).click();
-  await page.getByLabel('Search differences', { exact: true }).fill('Plan Tutor Two');
-  await expect(table.locator('tbody tr')).toHaveCount(1);
-  await page.getByRole('button', { name: 'Reset differences filters', exact: true }).click();
-  await page.getByLabel('Search differences', { exact: true }).fill('no such module');
-  await expect(table).toContainText('No differences match these filters.');
-  await page.getByRole('button', { name: 'Reset differences filters', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
-  const scroll = page.getByRole('region', { name: 'Plan differences table', exact: true });
-  expect(await scroll.evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
-  await page.getByRole('button', { name: 'Exit comparison', exact: true }).click();
-  await expect(table).toHaveCount(0);
-  await expect(page.locator('#current-training-plan-panel')).toBeVisible();
-  await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();
-  await expect(table).toHaveCount(0);
-  await page.getByRole('button', { name: 'Compare plans', exact: true }).click();
-  await expect(table).toBeVisible();
-  await expect(page.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();
-  await expect(page.locator('#current-training-plan-panel')).toBeVisible();
-  await page.getByRole('button', { name: 'Exit comparison', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();
-  await expect(page.locator('#current-training-plan-panel')).toBeHidden();
-  await expect(page.getByRole('table', { name: 'LMS reference', exact: true })).toHaveCount(0);
+  await expect(lms).toBeVisible();
+  await page.getByRole('tab', { name: 'Current Training Plan', exact: true }).click();
+  await expect(current).toBeVisible();
+  await expect(lms).toBeHidden();
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

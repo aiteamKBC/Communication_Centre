@@ -1,4 +1,4 @@
-import { comparisonModuleName, isComparisonDate, type PresentedLmsRow } from './lmsComparison';
+import { isComparisonDate, lmsCohortDisplayName, lmsGroupDisplayName, type PresentedLmsRow } from './lmsComparison';
 import { createLmsModuleColourResolver } from './lmsModuleColours';
 import type { CohortRow, CustomModule, ModuleBlock, ProgrammeGroup } from './types';
 
@@ -6,26 +6,15 @@ export function hasLmsDateRange(row: PresentedLmsRow): boolean {
   return isComparisonDate(row.startDate) && isComparisonDate(row.endDate) && row.startDate! <= row.endDate!;
 }
 
-const normalize = (value?: string | null) => (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const groupNumber = (value?: string | null) => value?.match(/\b(?:g|group)\s*[-:]?\s*(\d+)\b/i)?.[1];
 
-// Only use current cohort groups when its identity is unambiguous. Dates and tutors
-// always belong to the captured LMS module, even when its group comes from the plan.
-export function lmsRecordGroup(record: PresentedLmsRow, currentProgrammes: ProgrammeGroup[], modules: CustomModule[] = []) {
-  const programme = currentProgrammes.find(item => item.id === record.planProgrammeId);
-  const matches = programme?.rows.filter(row => normalize(row.label) && normalize(row.label) === normalize(record.cohortName)) ?? [];
-  const cohort = matches.length === 1 ? matches[0] : undefined;
-  const names = [...new Set(cohort?.blks.map(block => block.groupName?.trim()).filter((name): name is string => Boolean(name)) ?? [])];
-  if (record.groupName?.trim()) return record.groupName.trim();
+// Plan names are supplied only by confirmed display matches. A title's explicit
+// group number remains usable even when no current plan placement is confirmed.
+export function lmsRecordGroup(record: PresentedLmsRow) {
+  const name = lmsGroupDisplayName(record);
+  if (name) return name;
   const number = groupNumber(record.module);
-  if (number) {
-    const matchingNames = names.filter(name => groupNumber(name) === number);
-    return matchingNames.length === 1 ? matchingNames[0] : `G${number}`;
-  }
-  const moduleGroups = [...new Set(cohort?.blks
-    .filter(block => normalize(comparisonModuleName(block, modules)) === normalize(record.module))
-    .map(block => block.groupName?.trim()).filter((name): name is string => Boolean(name)) ?? [])];
-  return moduleGroups.length === 1 ? moduleGroups[0] : names.length === 1 ? names[0] : 'Group not provided';
+  return number ? `G${number}` : 'Group not provided';
 }
 
 // Arrange captured dates within LMS cohorts, newest first, with a separate lane
@@ -61,18 +50,19 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
       || left.endDate!.localeCompare(right.endDate!)
       || left.sourceModuleId.localeCompare(right.sourceModuleId)
     ))) {
-      const name = record.cohortName?.trim().replace(/\s+/g, ' ');
+      const name = lmsCohortDisplayName(record).replace(/\s+/g, ' ');
       const key = record.cohortId?.trim() ? `id:${record.cohortId.trim()}`
-        : name ? `name:${name.toLowerCase()}` : `missing:${record.startDate!.slice(0, 7)}`;
+        : record.matchedPlanCohort ? `plan:${record.matchedPlanCohort.id}`
+          : name ? `name:${name.toLowerCase()}` : `missing:${record.startDate!.slice(0, 7)}`;
       byCohort.set(key, [...(byCohort.get(key) ?? []), record]);
     }
     const rows: CohortRow[] = [];
     for (const [cohort, entries] of byCohort) {
-      const cohortName = entries.find(record => record.cohortName?.trim())?.cohortName?.trim() || 'Cohort not provided';
+      const cohortName = entries.map(lmsCohortDisplayName).find(Boolean) || 'Cohort not provided';
       rows.push({
         id: `lms-cohort:${programmeId}:${cohort}`, label: cohortName,
         dateLbl: entries[0].startDate!, intake: '', quarter: '',
-        blks: entries.map(record => blockFor(record, cohort, lmsRecordGroup(record, currentProgrammes, currentModules))),
+        blks: entries.map(record => blockFor(record, cohort, lmsRecordGroup(record))),
       });
     }
     rows.sort((left, right) => right.dateLbl.localeCompare(left.dateLbl) || left.id.localeCompare(right.id));

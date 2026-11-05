@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import type { PresentedLmsRow } from '../lmsComparison';
+import { lmsCohortDisplayName, type PresentedLmsRow } from '../lmsComparison';
 import { buildLmsTimelineLayout, lmsRecordGroup } from '../lmsTimelineLayout';
 import LmsModuleRecords from './LmsModuleRecords';
 import type { CustomModule, ProgrammeGroup, ZoomLevel } from '../types';
@@ -24,8 +24,11 @@ export default function LmsReferenceTimeline({ rows, currentProgrammes, currentM
     const sheet = XLSX.utils.json_to_sheet(rows.map(row => ({
       Source: 'LMS', Programme: row.programme ?? '', Module: row.module ?? '',
       'Tutor Name': row.tutorName ?? '',
-      Cohort: row.cohortName ?? '', 'Source Cohort ID': row.cohortId ?? '',
-      Group: lmsRecordGroup(row, currentProgrammes, currentModules),
+      Cohort: lmsCohortDisplayName(row), 'Source Cohort ID': row.cohortId ?? '',
+      'Cohort Name Source': row.cohortName?.trim() ? 'LMS' : row.matchedPlanCohort ? 'Training Plan' : '',
+      Group: lmsRecordGroup(row),
+      'Group Name Source': row.groupName?.trim() ? 'LMS' : row.matchedPlanGroup ? 'Training Plan'
+        : /\b(?:g|group)\s*[-:]?\s*\d+\b/i.test(row.module ?? '') ? 'LMS module title' : '',
       'Start Date': row.startDate ?? '', 'End Date': row.endDate ?? '',
       'Start Date Source': row.startDateSource || (row.startDate ? 'start_date' : ''),
       'Source Module ID': row.sourceModuleId,
@@ -39,7 +42,7 @@ export default function LmsReferenceTimeline({ rows, currentProgrammes, currentM
   const creationDateCount = rows.filter(row => row.startDateSource === 'created_at').length;
 
   return <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200" role="region" aria-label="LMS reference timeline">
-    <p className="border-b border-gray-100 px-4 py-3 text-xs text-gray-500">Groups follow matching Training Plan cohorts or group labels in LMS module names. Session schedules, holidays, coaches and KSB mappings are not included in the LMS capture.</p>
+    <p className="border-b border-gray-100 px-4 py-3 text-xs text-gray-500">Group names use LMS labels or confirmed Training Plan matches. Session schedules, holidays, coaches and KSB mappings are not included in the LMS capture.</p>
     {creationDateCount > 0 && <div className="space-y-1 border-b border-gray-100 px-4 py-3 text-xs text-gray-600">
       <p>{creationDateCount} LMS module{creationDateCount === 1 ? ' uses its' : 's use their'} creation date because start_date is missing. These dates are labelled <strong>From created_at</strong>.</p>
     </div>}
@@ -54,6 +57,6 @@ export default function LmsReferenceTimeline({ rows, currentProgrammes, currentM
         <p role="status" className="text-sm text-gray-600">No LMS modules with a complete, valid date range are available for this timeline.</p>
         <button type="button" onClick={exportReference} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">Export</button>
       </div>}
-    <LmsModuleRecords rows={rows} currentProgrammes={currentProgrammes} currentModules={currentModules} />
+    <LmsModuleRecords rows={rows} />
   </div>;
 }

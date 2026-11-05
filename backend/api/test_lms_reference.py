@@ -13,6 +13,19 @@ from .training_plan_lms_reference import (
 )
 
 
+class ManualMatchMetadataTests(SimpleTestCase):
+    def test_manual_match_survives_notes_colour_and_metadata_edits(self):
+        from .views import (set_training_plan_metadata_markers, training_plan_marker_value,
+                            update_training_plan_module_color_marker, update_training_plan_visible_notes)
+        notes = '__program_id:p1\n__cohort_id:c1\n__module_catalogue_id:42\n__lms_source_module_id:source-1\nOriginal notes'
+        notes = update_training_plan_visible_notes(notes, 'Updated notes')
+        notes = update_training_plan_module_color_marker(notes, '#123456')
+        notes = set_training_plan_metadata_markers(notes, {'__group_id:': 'g2'})
+        self.assertEqual(training_plan_marker_value(notes, '__lms_source_module_id:'), 'source-1')
+        self.assertEqual(training_plan_marker_value(notes, '__module_catalogue_id:'), '42')
+        self.assertTrue(notes.endswith('Updated notes'))
+
+
 class ReferenceSourceDateTests(SimpleTestCase):
     def read(self, start, created, *, omit_start_column=False, omit_created_column=False,
              writable=False, created_type='timestamp without time zone'):

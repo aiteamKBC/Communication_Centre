@@ -9,6 +9,7 @@ import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, 
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import LmsReference from './components/LmsReference';
+import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
 import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
 import HolidayManager from './components/HolidayManager';
 import AddModuleModal from './components/AddModuleModal';
@@ -35,7 +36,7 @@ type ModalState =
   | { open: true; mode: 'add'; defaultGroupIdx: number }
   | { open: true; mode: 'add'; defaultGroupIdx: number; lockGroupSelection: true }
   | { open: true; mode: 'add'; defaultGroupIdx: number; prefillTutorProfileId: string; prefillModule: ModuleValue; lockGroupSelection?: true }
-  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string; prefillTutorProfileId?: string; prefillModule?: ModuleValue };
+  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string; openLmsMatching?: boolean; prefillTutorProfileId?: string; prefillModule?: ModuleValue };
 
 type ProgramModalState =
   | { open: false }
@@ -228,6 +229,7 @@ const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
 const MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:';
+const LMS_MODULE_MATCH_MARKER_PREFIX = '__lms_source_module_id:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
@@ -337,9 +339,9 @@ function filterSessionKsbMappingForProfile(mapping: SessionKsbMapping | undefine
   };
 }
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; moduleCatalogueId?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; moduleCatalogueId?: string; lmsSourceModuleId?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
+  if (!value.startsWith(LMS_MODULE_MATCH_MARKER_PREFIX) && !value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
     return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, moduleCatalogueId: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, cohortId: undefined, groupId: undefined, blockId: undefined, notes: raw || '' };
   }
 
@@ -349,6 +351,7 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let cohortColor: string | undefined;
   let moduleColor: string | undefined;
   let moduleCatalogueId: string | undefined;
+  let lmsSourceModuleId: string | undefined;
   let cohortEndDate: string | undefined;
   let groupName: string | undefined;
   let coachName: string | undefined;
@@ -359,6 +362,10 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let readingMarkers = true;
 
   lines.forEach(line => {
+    if (readingMarkers && line.startsWith(LMS_MODULE_MATCH_MARKER_PREFIX)) {
+      lmsSourceModuleId = line.slice(LMS_MODULE_MATCH_MARKER_PREFIX.length).trim() || undefined;
+      return;
+    }
     if (readingMarkers && line.startsWith(HOLIDAY_MARKER_PREFIX)) {
       line
         .slice(HOLIDAY_MARKER_PREFIX.length)
@@ -433,10 +440,10 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, moduleCatalogueId, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, moduleCatalogueId, lmsSourceModuleId, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string, moduleCatalogueId?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string, moduleCatalogueId?: string, lmsSourceModuleId?: string): string {
   const markers: string[] = [];
   if (programId) {
     markers.push(`${PROGRAM_ID_MARKER_PREFIX}${programId}`);
@@ -461,6 +468,9 @@ function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: s
   }
   if (moduleCatalogueId) {
     markers.push(`${MODULE_CATALOGUE_ID_MARKER_PREFIX}${moduleCatalogueId}`);
+  }
+  if (lmsSourceModuleId) {
+    markers.push(`${LMS_MODULE_MATCH_MARKER_PREFIX}${lmsSourceModuleId}`);
   }
   if (cohortEndDate) {
     markers.push(`${COHORT_END_DATE_MARKER_PREFIX}${cohortEndDate}`);
@@ -660,6 +670,7 @@ function buildGroupsFromTrainingRows(
       trainingPlanId: item.id ? String(item.id) : undefined,
       groupId: parsedNotes.groupId,
       moduleCatalogueId: parsedNotes.moduleCatalogueId,
+      lmsSourceModuleId: parsedNotes.lmsSourceModuleId,
       mod: modKey,
       groupName: item.groupName || parsedNotes.groupName,
       coachName: item.coachName || parsedNotes.coachName,
@@ -721,7 +732,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
         ksbProfileId: row.ksbProfileId || '',
         programmeDisplayOrder: groupIndex,
         cohortDisplayOrder: rowIndex,
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id, block.moduleCatalogueId),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id, block.moduleCatalogueId, block.lmsSourceModuleId),
       })),
     ),
   );
@@ -748,6 +759,7 @@ function cloneModuleBlock(block: ModuleBlock, patch: Partial<ModuleBlock> = {}):
     ...patch,
     id: patch.id || nextCloneId('blk'),
     trainingPlanId: undefined,
+    lmsSourceModuleId: undefined,
     groupId: patch.groupId ?? block.groupId ?? nextCloneId('grp'),
     days: [...(patch.days ?? block.days ?? [])],
     sessionKsbMappings: normalizeSessionKsbMappings(patch.sessionKsbMappings ?? block.sessionKsbMappings, sessions),
@@ -2630,7 +2642,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
   const totalSummaryClashes = (summary: ModuleMonthlySummary) => summary.affectedSessions + summary.extensionAffectedSessions;
   const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
   const [selectedProgrammeGroup, setSelectedProgrammeGroup] = useState<ProgrammeSummaryGroup | null>(null);
-  const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(false);
+  const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [programmeFilter, setProgrammeFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
@@ -2716,6 +2728,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
         <button
           type="button"
           onClick={() => setIsBreakdownCollapsed(value => !value)}
+          aria-expanded={!isBreakdownCollapsed}
           className={`flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50 ${isBreakdownCollapsed ? '' : 'border-b border-gray-100'}`}
         >
           <span className="flex min-w-0 items-center gap-3">
@@ -5142,9 +5155,10 @@ export default function ApprenticeshipTimeline() {
     }
 
     const requestPayload: Record<string, unknown> = { ...payload };
-    if ('notes' in payload) {
+    delete requestPayload.lmsSourceModuleId;
+    if ('notes' in payload || 'lmsSourceModuleId' in payload) {
       requestPayload.notes = joinPersistedNotes(
-        payload.notes || '',
+        'notes' in payload ? payload.notes || '' : targetBlock.notes || '',
         targetRow?.holidayIds || [],
         targetRow?.color,
         typeof payload.color === 'string' ? payload.color : targetBlock.color,
@@ -5155,6 +5169,8 @@ export default function ApprenticeshipTimeline() {
         targetRow?.id,
         targetBlock.groupId,
         targetBlock.id,
+        targetBlock.moduleCatalogueId,
+        'lmsSourceModuleId' in payload ? payload.lmsSourceModuleId : targetBlock.lmsSourceModuleId,
       );
     }
 
@@ -5176,6 +5192,7 @@ export default function ApprenticeshipTimeline() {
               tutorProfileId: updatedItem?.tutorProfileId || payload.tutorProfileId || block.tutorProfileId,
               notes: 'notes' in payload ? payload.notes : block.notes,
               color: typeof payload.color === 'string' ? payload.color : block.color,
+              lmsSourceModuleId: 'lmsSourceModuleId' in payload ? payload.lmsSourceModuleId || undefined : block.lmsSourceModuleId,
             };
           }),
         }),
@@ -5202,6 +5219,22 @@ export default function ApprenticeshipTimeline() {
       await kbcSwal.fire({ title: 'Module Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
       return false;
     }
+  };
+
+  const saveLmsModuleMatch: SaveLmsModuleMatch = async (current, sourceModuleId) => {
+    if (/[\r\n]/.test(sourceModuleId)) throw new Error('The LMS module ID is invalid.');
+    const groupIdx = groups.findIndex(programme => programme.id === current.programme.id);
+    const rowIdx = groups[groupIdx]?.rows.findIndex(cohort => cohort.id === current.cohort.id) ?? -1;
+    if (groupIdx < 0 || rowIdx < 0) throw new Error('The current module is no longer available. Reload and retry.');
+    const duplicate = sourceModuleId && groups.some(programme => programme.rows.some(cohort => cohort.blks.some(block =>
+      block.lmsSourceModuleId === sourceModuleId
+      && !(programme.id === current.programme.id && cohort.id === current.cohort.id && block.id === current.block.id))));
+    if (duplicate) throw new Error('This LMS module is already matched to another current module. Remove that match first.');
+    const saved = await updateModulePartial(groupIdx, rowIdx, current.block.id, { lmsSourceModuleId: sourceModuleId });
+    if (saved) setModal(previous => previous.open && previous.mode === 'edit' && previous.groupIdx === groupIdx && previous.rowIdx === rowIdx
+      ? { ...previous, row: { ...previous.row, blks: previous.row.blks.map(block => block.id === current.block.id
+        ? { ...block, lmsSourceModuleId: sourceModuleId || undefined } : block) } } : previous);
+    return saved;
   };
 
   const handleDeleteRow = async (groupIdx: number, rowIdx: number) => {
@@ -6936,14 +6969,14 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles} currentLoading={isInitialProgrammesLoading} zoom={zoom} onZoomChange={setZoom}
+          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
             renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
             onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
               const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [programme.rows[rowIndex]] }], [], lmsModules, [], [])
                 .find(item => item.moduleBlockId === blockId);
               if (summary) setSelectedMonthlySummary({ summary, mode: 'monthly' });
             }}>
-          {comparing => isInitialProgrammesLoading ? (
+          {isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
             <>
@@ -6957,7 +6990,6 @@ export default function ApprenticeshipTimeline() {
                   tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
                   zoom={zoom}
                   onZoomChange={setZoom}
-                  showZoomControls={!comparing}
                   onManageHolidays={() => setShowHolidayMgr(true)}
                   onAddRow={(gi) => {
                     if (!canManageCohorts) {
@@ -7580,11 +7612,13 @@ export default function ApprenticeshipTimeline() {
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
+          openLmsMatching={modal.mode === 'edit' ? modal.openLmsMatching : false}
           prefillTutorProfileId={'prefillTutorProfileId' in modal ? modal.prefillTutorProfileId : undefined}
           prefillModule={'prefillModule' in modal ? modal.prefillModule : undefined}
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
           onUpdateModulePartial={modal.open && modal.mode === 'edit' ? (blockId, payload) => updateModulePartial(modal.groupIdx, modal.rowIdx, blockId, payload) : undefined}
+          onSaveLmsMatch={saveLmsModuleMatch}
           onCreateTutorProfile={createTutorProfile}
           onManageHolidays={() => setShowHolidayMgr(true)}
           onBackToPreviousStep={() => {
@@ -7680,6 +7714,11 @@ export default function ApprenticeshipTimeline() {
       {canEditTrainingPlan && showManageModules && (
         <ManageModulesModal
           modules={catalogModules}
+          comparisonGroups={groups}
+          customModules={customModules}
+          holidays={holidays}
+          tutorProfiles={tutorProfiles}
+          onSaveLmsMatch={saveLmsModuleMatch}
           ksbProfiles={ksbProfiles}
           onAdd={handleAddCatalogModule}
           onUpdate={handleUpdateCatalogModule}

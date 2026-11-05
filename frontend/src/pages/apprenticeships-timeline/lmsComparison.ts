@@ -15,14 +15,24 @@ const normalize = (value: string | null) => (value ?? '').trim().replace(/\s+/g,
 
 export interface PresentedLmsRow extends LmsReferenceRow {
   planProgrammeId: string;
+  matchedPlanCohort?: { id: string; name: string };
+  matchedPlanGroup?: { id?: string; name: string };
 }
+
+export const lmsCohortDisplayName = (record: PresentedLmsRow) => (
+  record.cohortName?.trim() || record.matchedPlanCohort?.name || ''
+);
+
+export const lmsGroupDisplayName = (record: PresentedLmsRow) => (
+  record.groupName?.trim() || record.matchedPlanGroup?.name || ''
+);
 
 export function comparisonModuleName(block: ProgrammeGroup['rows'][number]['blks'][number], customModules: CustomModule[]): string {
   return block.mod in MS ? getModuleMeta(block.mod).lbl
     : customModules.find(item => item.id === block.mod || item.name === block.mod)?.name ?? getModuleMeta(block.mod).lbl;
 }
 
-export function presentLmsRows(records: LmsReferenceRow[], currentProgrammes: ProgrammeGroup[]): PresentedLmsRow[] {
+export function presentLmsRows(records: LmsReferenceRow[], currentProgrammes: ProgrammeGroup[], customModules: CustomModule[] = []): PresentedLmsRow[] {
   const presentation = displayedLmsProgrammes.map((programme, fallbackOrder) => {
     const currentOrder = currentProgrammes.findIndex(group => (
       group.id === programme.planId
@@ -37,7 +47,7 @@ export function presentLmsRows(records: LmsReferenceRow[], currentProgrammes: Pr
     };
   }).sort((left, right) => left.order - right.order);
   // Presentation copies preserve the captured source names and identifiers.
-  return presentation.flatMap(programme => records
+  const presented = presentation.flatMap(programme => records
     .filter(row => normalize(row.programme) === programme.sourceName)
     .sort((left, right) => (
       (isComparisonDate(right.startDate) ? right.startDate! : '')
@@ -45,6 +55,20 @@ export function presentLmsRows(records: LmsReferenceRow[], currentProgrammes: Pr
       || left.sourceModuleId.localeCompare(right.sourceModuleId)
     ))
     .map(row => ({ ...row, programme: programme.name, planProgrammeId: programme.planProgrammeId })));
+  // Display labels use the same confirmed pairs as comparison. Keep the source
+  // names and IDs intact rather than inventing candidate source identities.
+  const confirmed = new Map(matchLmsPlans(currentProgrammes, presented, customModules).matched
+    .map(({ current, lms }) => [lms.sourceModuleId, current]));
+  return presented.map(record => {
+    const current = confirmed.get(record.sourceModuleId);
+    if (!current) return record;
+    return { ...record,
+      ...(!normalize(record.cohortName ?? null)
+        ? { matchedPlanCohort: { id: current.cohort.id, name: current.cohort.label } } : {}),
+      ...(!normalize(record.groupName ?? null) && current.block.groupName?.trim()
+        ? { matchedPlanGroup: { id: current.block.groupId, name: current.block.groupName.trim() } } : {}),
+    };
+  });
 }
 
 export const differenceLabels = {
@@ -65,6 +89,7 @@ export interface PlanDifference {
   lms: PresentedLmsRow;
   tutorDiffers: boolean;
   kind: DifferenceKind | 'same';
+  matchMethod: 'automatic' | 'manual';
 }
 
 export interface CurrentPlanRecord {
@@ -102,70 +127,92 @@ export function matchLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow
   const localGroupKey = (block: ProgrammeGroup['rows'][number]['blks'][number]) => (
     groupKey(block.groupName) || (block.groupId ? `local:${block.groupId}` : '')
   );
-  const matchesGroup = (record: PresentedLmsRow, block: ModuleBlock, groupCount: number) => {
+  const matchesGroup = (record: PresentedLmsRow, block: ModuleBlock) => {
     const titleGroup = record.module?.match(groupSuffix)?.[1];
     if (groupKey(record.groupName) && titleGroup && groupKey(record.groupName) !== groupKey(`G${titleGroup}`)) return false;
     const explicitGroup = groupKey(record.groupName) || (titleGroup ? groupKey(`G${titleGroup}`) : '');
-    // Missing source groups are safe only for single-group cohorts.
-    return explicitGroup ? explicitGroup === localGroupKey(block) : groupCount === 1;
+    // Missing source groups are resolved only by one-to-one candidate counts.
+    return !explicitGroup || explicitGroup === localGroupKey(block);
   };
   const byName = new Map<string, PresentedLmsRow[]>();
+  const byModuleStart = new Map<string, PresentedLmsRow[]>();
+  const manualIds = new Set(groups.flatMap(programme => programme.rows.flatMap(cohort =>
+    cohort.blks.map(block => block.lmsSourceModuleId?.trim()).filter(Boolean))));
   const keyFor = (programmeId: string, cohort: string | null, module: string | null, startDate: string | null) => (
     JSON.stringify([programmeId, normalize(cohort), moduleKey(module), startDate])
   );
   for (const record of records) {
-    // Missing identity details cannot be filled from end dates or tutors.
-    if (!moduleKey(record.module) || !normalize(record.cohortName ?? null) || !isComparisonDate(record.startDate)) continue;
+    if (manualIds.has(record.sourceModuleId) || !moduleKey(record.module) || !isComparisonDate(record.startDate)) continue;
+    const moduleStartKey = keyFor(record.planProgrammeId, null, record.module, record.startDate);
+    byModuleStart.set(moduleStartKey, [...(byModuleStart.get(moduleStartKey) ?? []), record]);
+    if (!normalize(record.cohortName ?? null)) continue;
     const key = keyFor(record.planProgrammeId, record.cohortName ?? null, record.module, record.startDate);
     byName.set(key, [...(byName.get(key) ?? []), record]);
   }
   const entries = groups.flatMap(programme => programme.rows.flatMap(cohort => {
-    const cohortGroups = new Set(cohort.blks.map(localGroupKey));
     return cohort.blks.map(block => {
       const module = comparisonModuleName(block, customModules);
-      const candidates = normalize(cohort.label) && moduleKey(module) && isComparisonDate(block.startDate)
+      const manualId = block.lmsSourceModuleId?.trim();
+      const validIdentity = moduleKey(module) && isComparisonDate(block.startDate);
+      const strictCandidates = validIdentity && normalize(cohort.label)
         ? (byName.get(keyFor(programme.id, cohort.label, module, block.startDate)) ?? [])
-          .filter(record => matchesGroup(record, block, cohortGroups.size)) : [];
+          .filter(record => matchesGroup(record, block)) : [];
+      const candidates = manualId
+        ? records.filter(record => record.sourceModuleId === manualId && record.planProgrammeId === programme.id)
+        : strictCandidates;
+      const fallbackCandidates = !manualId && validIdentity
+        ? (byModuleStart.get(keyFor(programme.id, null, module, block.startDate)) ?? [])
+          .filter(record => matchesGroup(record, block)) : [];
       const unmatchedReason = () => {
+        if (manualId) return 'The saved LMS match is unavailable or belongs to a different programme. Remove it or choose another LMS module.';
         if (!isComparisonDate(block.startDate)) return 'Current start date is missing or invalid.';
-        if (!normalize(cohort.label)) return 'Current cohort name is missing.';
         if (!moduleKey(module)) return 'Current module name is missing.';
         const programmeRecords = records.filter(record => record.planProgrammeId === programme.id);
         if (!programmeRecords.length) return 'No LMS records for this programme.';
-        const cohortRecords = programmeRecords.filter(record => normalize(record.cohortName ?? null) === normalize(cohort.label));
-        if (!cohortRecords.length) return 'No LMS record has the same cohort name. Check missing or different LMS cohort labels.';
-        const moduleRecords = cohortRecords.filter(record => moduleKey(record.module) === moduleKey(module));
-        if (!moduleRecords.length) return 'No LMS record has the same module name in this cohort.';
-        const groupRecords = moduleRecords.filter(record => matchesGroup(record, block, cohortGroups.size));
-        if (!groupRecords.length) return 'LMS group is missing, different or conflicts with the module title.';
+        const moduleRecords = programmeRecords.filter(record => moduleKey(record.module) === moduleKey(module));
+        if (!moduleRecords.length) return 'No LMS record has the same module name in this programme.';
+        const groupRecords = moduleRecords.filter(record => matchesGroup(record, block));
+        if (!groupRecords.length) return 'LMS group differs or conflicts with the module title.';
+        if (groupRecords.some(record => isComparisonDate(record.startDate) && record.startDate === block.startDate)) {
+          return 'LMS records with this module name and start date are reserved by another current record. Review its cohort or manual match.';
+        }
         const starts = [...new Set(groupRecords.map(record => record.startDate || 'Not provided'))].sort();
         return `Start date does not match a valid LMS start date. LMS: ${starts.join(', ')}.`;
       };
-      return { programme, cohort, block, module, candidates, unmatchedReason };
+      return { programme, cohort, block, module, candidates, fallbackCandidates, unmatchedReason, manualId };
     });
   }));
+  // Honour explicit cohort placements first. A fallback must not take a source
+  // record already identified by a cohort or a saved manual assignment.
+  const identified = new Set(entries.flatMap(entry => entry.candidates.map(record => record.sourceModuleId)));
+  for (const entry of entries) {
+    if (!entry.manualId && !entry.candidates.length) {
+      entry.candidates = entry.fallbackCandidates.filter(record => !identified.has(record.sourceModuleId));
+    }
+  }
   const currentCounts = new Map<string, number>();
   for (const entry of entries) for (const record of entry.candidates) {
     currentCounts.set(record.sourceModuleId, (currentCounts.get(record.sourceModuleId) ?? 0) + 1);
   }
   const used = new Set<string>();
-  const matched: { current: CurrentPlanRecord; lms: PresentedLmsRow }[] = [];
+  const matched: { current: CurrentPlanRecord; lms: PresentedLmsRow; method: 'automatic' | 'manual' }[] = [];
   const unmatchedCurrent: (CurrentPlanRecord & { reason: string })[] = [];
   const review: MatchReview[] = [];
-  for (const { programme, cohort, block, module, candidates, unmatchedReason } of entries) {
+  for (const { programme, cohort, block, module, candidates, unmatchedReason, manualId } of entries) {
     candidates.forEach(record => used.add(record.sourceModuleId));
     const currentMatchCount = Math.max(0, ...candidates.map(record => currentCounts.get(record.sourceModuleId) ?? 0));
     const sameNameCohorts = programme.rows.filter(row => normalize(row.label) === normalize(cohort.label)).length;
     const sourceCohorts = new Set(records.filter(record => record.planProgrammeId === programme.id
       && normalize(record.cohortName ?? null) === normalize(cohort.label)).map(record => record.cohortId?.trim() || 'unknown'));
-    const ambiguous = candidates.length > 1 || currentMatchCount > 1 || (candidates.length > 0 && (sameNameCohorts > 1 || sourceCohorts.size > 1));
+    const ambiguousCohort = !manualId && (sameNameCohorts > 1 || sourceCohorts.size > 1);
+    const ambiguous = candidates.length > 1 || currentMatchCount > 1 || (candidates.length > 0 && ambiguousCohort);
     const current = { programme, cohort, block, module };
     if (!candidates.length) unmatchedCurrent.push({ ...current, reason: unmatchedReason() });
     else if (ambiguous) review.push({ current, candidates,
-      reason: sameNameCohorts > 1 || sourceCohorts.size > 1 ? 'Cohort name identifies more than one cohort'
+      reason: ambiguousCohort ? 'Cohort name identifies more than one cohort'
         : currentMatchCount > 1 ? 'LMS record has more than one possible current record' : 'More than one possible LMS record',
     });
-    else matched.push({ current, lms: candidates[0] });
+    else matched.push({ current, lms: candidates[0], method: manualId ? 'manual' : 'automatic' });
   }
   return { matched, unmatchedCurrent, unmatchedLms: records.filter(record => !used.has(record.sourceModuleId)), review };
 }
@@ -173,7 +220,7 @@ export function matchLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow
 export function compareLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow[], customModules: CustomModule[], holidays: Holiday[] = [], tutorProfiles: TutorProfile[] = []) {
   const matching = matchLmsPlans(groups, records, customModules);
   // Only confirmed one-to-one matches reach date and tutor comparison.
-  const matches: PlanDifference[] = matching.matched.map(({ current: { programme, cohort, block, module }, lms }) => {
+  const matches: PlanDifference[] = matching.matched.map(({ current: { programme, cohort, block, module }, lms, method }) => {
     const rowHolidays = holidays.filter(holiday => cohort.holidayIds?.includes(holiday.id));
     const endDate = validRange(block)
       ? buildHolidayAdjustedSessionPlan(block, rowHolidays).effectiveEndDate || block.endDate : block.endDate;
@@ -190,7 +237,7 @@ export function compareLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsR
       id: JSON.stringify(['current', programme.id, cohort.id, block.id]),
       programmeId: programme.id, programme: programme.name, module,
       cohort: cohort.label, group: block.groupName ?? '', current, lms,
-      tutorDiffers, kind,
+      tutorDiffers, kind, matchMethod: method,
     };
   });
   return {

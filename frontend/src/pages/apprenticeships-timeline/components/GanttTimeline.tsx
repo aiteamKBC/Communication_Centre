@@ -1152,7 +1152,11 @@ export default function GanttTimeline({
     catalogModule?: CatalogModule;
   } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays, referenceSource));
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const collapsedGroups = useMemo(
+    () => new Set(groups.filter(group => !expandedGroups.has(group.id)).map(group => group.id)),
+    [groups, expandedGroups],
+  );
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
   const [virtualViewport, setVirtualViewport] = useState(() => ({ top: 0, bottom: typeof window === 'undefined' ? 900 : window.innerHeight }));
@@ -1612,7 +1616,7 @@ export default function GanttTimeline({
   }, []);
 
   const toggleGroupCollapse = useCallback((groupId: string) => {
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
@@ -2444,10 +2448,10 @@ export default function GanttTimeline({
   const navigateToExpiringModule = useCallback((item: ExpiringModuleSummary) => {
     setNotificationsOpen(false);
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
 
@@ -2480,10 +2484,10 @@ export default function GanttTimeline({
   const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
     setLastClassSelection({ classKey: item.key, moduleKey });
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
     const rowKey = `${item.groupIdx}-${item.rowIdx}`;
@@ -2517,10 +2521,10 @@ export default function GanttTimeline({
     const target = [...items].sort((a, b) => b.clashCount - a.clashCount || a.targetDate.localeCompare(b.targetDate))[0];
     if (!target) return;
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[target.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
     setFocusedTimelineTarget({ groupIdx: target.groupIdx });
@@ -3769,6 +3773,7 @@ export default function GanttTimeline({
                     </p>
                     <button
                       onClick={() => toggleGroupCollapse(grp.id)}
+                      aria-expanded={!isCollapsed}
                       title={isCollapsed ? 'Expand programme' : 'Collapse programme'}
                       className="w-5 h-5 flex items-center justify-center rounded shrink-0 cursor-pointer transition-all hover:scale-110"
                       style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}

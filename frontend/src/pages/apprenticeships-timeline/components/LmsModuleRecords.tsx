@@ -1,21 +1,18 @@
 import { useMemo, useState } from 'react';
-import type { PresentedLmsRow } from '../lmsComparison';
+import { lmsCohortDisplayName, type PresentedLmsRow } from '../lmsComparison';
 import { hasLmsDateRange, lmsRecordGroup } from '../lmsTimelineLayout';
-import type { CustomModule, ProgrammeGroup } from '../types';
 
 // Keep modules with missing dates available even though they cannot be drawn.
-export default function LmsModuleRecords({ rows, currentProgrammes, currentModules }: {
-  rows: PresentedLmsRow[]; currentProgrammes: ProgrammeGroup[]; currentModules: CustomModule[];
-}) {
+export default function LmsModuleRecords({ rows }: { rows: PresentedLmsRow[] }) {
   const [search, setSearch] = useState('');
   const [programme, setProgramme] = useState('all');
   const [dates, setDates] = useState('all');
-  const records = useMemo(() => rows.map(row => ({ ...row, group: lmsRecordGroup(row, currentProgrammes, currentModules) })), [rows, currentProgrammes, currentModules]);
+  const records = useMemo(() => rows.map(row => ({ ...row, group: lmsRecordGroup(row) })), [rows]);
   const filtered = records.filter(row => (programme === 'all' || row.planProgrammeId === programme)
     && (dates === 'all' || !hasLmsDateRange(row))
-    && [row.programme, row.cohortName, row.group, row.module, row.tutorName, row.sourceModuleId].join(' ').toLowerCase().includes(search.trim().toLowerCase()));
+    && [row.programme, lmsCohortDisplayName(row), row.group, row.module, row.tutorName, row.sourceModuleId].join(' ').toLowerCase().includes(search.trim().toLowerCase()));
   const programmes = [...new Map(records.map(row => [row.planProgrammeId, row.programme || 'Programme not provided'])).entries()];
-  return <details className="border-t border-gray-200" open>
+  return <details className="border-t border-gray-200">
     <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-kbc-navy">LMS modules ({rows.length})</summary>
     <div className="flex flex-wrap gap-2 border-y border-gray-100 bg-slate-50 px-4 py-3">
       <input type="search" aria-label="Search LMS modules" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search module, group, tutor..." className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs" />
@@ -33,8 +30,8 @@ export default function LmsModuleRecords({ rows, currentProgrammes, currentModul
         <thead className="sticky top-0 bg-slate-100 text-kbc-navy"><tr>{['Programme', 'Cohort', 'Group', 'Module', 'Tutor', 'Start Date', 'End Date'].map(label => <th key={label} scope="col" className="px-4 py-3">{label}</th>)}</tr></thead>
         <tbody>{filtered.map(row => <tr key={row.sourceModuleId} className="border-t border-slate-100">
           <td className="px-4 py-3">{row.programme || 'Programme not provided'}</td>
-          <td className="px-4 py-3">{row.cohortName || 'Cohort not provided'}</td>
-          <td className="px-4 py-3">{row.group}</td>
+          <td className="px-4 py-3">{lmsCohortDisplayName(row) || 'Cohort not provided'}{row.matchedPlanCohort && <span className="mt-1 block text-gray-500">From Training Plan</span>}</td>
+          <td className="px-4 py-3">{row.group}{row.matchedPlanGroup && <span className="mt-1 block text-gray-500">From Training Plan</span>}</td>
           <th scope="row" className="px-4 py-3 font-semibold">{row.module || 'Module not provided'}<span className="mt-1 block font-normal text-gray-400">ID: {row.sourceModuleId}</span></th>
           <td className="px-4 py-3">{row.tutorName || 'Not assigned'}</td>
           <td className="whitespace-nowrap px-4 py-3">{row.startDate || 'Not provided'}{row.startDateSource === 'created_at' && <span className="block text-amber-800">From created_at</span>}{!hasLmsDateRange(row) && <span className="block text-amber-800">Missing or invalid date range</span>}</td>

@@ -42,6 +42,7 @@ export interface ModuleBlock {
   startDateSource?: 'created_at';
   trainingPlanId?: string;
   moduleCatalogueId?: string;
+  lmsSourceModuleId?: string;
   groupId?: string;
   mod: ModuleValue;
   groupName?: string;

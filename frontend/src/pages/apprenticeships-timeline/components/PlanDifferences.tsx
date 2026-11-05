@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { compareLmsPlans, differenceLabels, isComparisonDate, type DifferenceKind, type PresentedLmsRow } from '../lmsComparison';
+import { compareLmsPlans, differenceLabels, isComparisonDate, type CurrentPlanRecord, type DifferenceKind, type PresentedLmsRow } from '../lmsComparison';
 import type { CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
 import PlanMatchingResults from './PlanMatchingResults';
 
@@ -19,8 +19,9 @@ function SourceDate({ value, changed }: {
   </span>;
 }
 
-export default function PlanDifferences({ currentProgrammes, records, customModules, holidays, tutorProfiles }: {
+export default function PlanDifferences({ currentProgrammes, records, customModules, holidays, tutorProfiles, onMatchCurrent }: {
   currentProgrammes: ProgrammeGroup[]; records: PresentedLmsRow[]; customModules: CustomModule[]; holidays: Holiday[]; tutorProfiles: TutorProfile[];
+  onMatchCurrent?: (current: CurrentPlanRecord) => void;
 }) {
   const [search, setSearch] = useState('');
   const [programme, setProgramme] = useState('all');
@@ -39,12 +40,12 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
   }, [comparisons, search, programme, kind]);
 
   return <>
-    <PlanMatchingResults result={result} />
+    <PlanMatchingResults result={result} onMatchCurrent={onMatchCurrent} />
     <section aria-labelledby="plan-differences-heading" className="min-w-0 w-full overflow-hidden rounded-xl border border-gray-200 bg-white">
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-4">
       <div>
         <h2 id="plan-differences-heading" className="text-sm font-extrabold text-kbc-navy">Plan differences</h2>
-        <p className="mt-1 text-xs text-gray-500">2. Compare end dates and tutors only for confirmed matches with the same start date. Unmatched records and uncertain matches are excluded.</p>
+        <p className="mt-1 text-xs text-gray-500">2. Compare dates and tutors for confirmed automatic or manual matches. Automatic matches require the same start date; manual matches compare the pair you selected.</p>
         <p className="mt-1 text-xs text-gray-500">Current end dates follow the timeline session schedule, including holiday extensions.</p>
       </div>
       <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-kbc-navy">{matches.length} linked · {differences.length} differences · {unchanged} unchanged · {incomplete.length} incomplete</span>
@@ -71,7 +72,7 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
     </div>
     <div className="max-h-[560px] overflow-auto" tabIndex={0} role="region" aria-label="Plan differences table">
       <table className="w-full min-w-[900px] border-collapse text-left text-xs" aria-label="Plan differences">
-        <caption className="sr-only">End date and tutor differences after matching programme, cohort, module, group and start date. Current end dates include scheduled holiday extensions; LMS dates are shown exactly as stored.</caption>
+        <caption className="sr-only">Date and tutor differences for confirmed automatic or manual matches. Current end dates include scheduled holiday extensions; LMS dates are shown exactly as stored.</caption>
         <thead className="sticky top-0 z-10 text-white">
           <tr>
             <th rowSpan={2} scope="col" className="bg-kbc-navy px-4 py-3">Module / Cohort</th>
@@ -92,6 +93,7 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
           {rows.map(row => <tr key={row.id} className="odd:bg-slate-50/70 hover:bg-slate-100/70">
             <th scope="row" className="max-w-xs px-4 py-3 font-semibold text-kbc-navy">
               {row.module}
+              {row.matchMethod === 'manual' && <><span className="mt-1 block font-bold text-teal-800">Manual match</span><span className="mt-1 block font-normal text-gray-500">LMS: {row.lms.module || 'Module not provided'} / {row.lms.cohortName || 'Cohort not provided'} / {row.lms.groupName || 'Group not provided'}</span></>}
               {row.cohort && <span className="mt-1 block font-normal text-gray-500">{row.cohort}{row.group ? ` · ${row.group}` : ''}</span>}
             </th>
             {(['current', 'lms'] as const).map(source => <SourceCells key={source} source={source} row={row} />)}

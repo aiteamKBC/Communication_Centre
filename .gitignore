@@ -14,6 +14,7 @@ backend/venv/
 
 # Local data
 backend/db.sqlite3
+/backend/private_exports/
 
 # Secrets
 backend/.env
