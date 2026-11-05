@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import CoachActivity from '../../coach-centre/CoachActivity';
 import CoachDesk from '../../coach-centre/CoachDesk';
 import { useCallCentre } from '../api';
 
@@ -13,7 +14,14 @@ type Order = 'name' | 'missed';
 export default function Coaches({ coach, onOpen, onBack }: {
   coach: string | null; onOpen: (email: string) => void; onBack: () => void;
 }) {
-  if (coach) return <CoachDesk key={coach} target={{ coach }} onBack={onBack} />;
+  if (coach) {
+    return (
+      <>
+        <CoachDesk key={coach} target={{ coach }} onBack={onBack} />
+        <CoachActivity key={`log:${coach}`} coach={coach} />
+      </>
+    );
+  }
   return <CoachIndex onOpen={onOpen} />;
 }
 
@@ -75,6 +83,7 @@ function CoachIndex({ onOpen }: { onOpen: (email: string) => void }) {
           ))}
         </div>
       )}
+      <CoachActivity coaches={coaches} />
     </div>
   );
 }

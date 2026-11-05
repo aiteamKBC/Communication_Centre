@@ -673,3 +673,54 @@ class AttendanceEdit(Retained):
     class Meta:
         db_table = 'callcenter_attendance_edit'
         managed = False
+
+
+class AuthorisedAbsence(Retained):
+    """A coming lecture a learner told their coach they will miss, with the reason (``authorised_absence``). When the
+    register then shows them absent, the missed-lecture case closes as soon as it is made (``ticket``)."""
+    learner_email = models.EmailField()
+    learner_name = models.CharField(max_length=255, blank=True)
+    coach_email = models.EmailField()
+    # occurrence:<curriculum.live_session_occurrences.id> or series:<curriculum.live_sessions.id> (a one-off session).
+    session_ref = models.CharField(max_length=80)
+    occurrence_id = models.CharField(max_length=64, blank=True)
+    session_date = models.DateField()
+    starts_at = models.DateTimeField()
+    module = models.CharField(max_length=255, blank=True)
+    module_id = models.CharField(max_length=64, blank=True)
+    reason = models.CharField(max_length=20)
+    note = models.TextField(blank=True)
+    added_by = models.CharField(max_length=255)
+    added_role = models.CharField(max_length=10)
+    created_at = models.DateTimeField(auto_now_add=True)
+    cancelled_by = models.CharField(max_length=255, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_note = models.TextField(blank=True)
+    ticket = models.ForeignKey(CaseTicket, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'callcenter_authorised_absence'
+        managed = False
+
+
+class CoachLog(Retained):
+    """What was done on a coach's desk (coach_centre.py), by the coach or by a director: append-only."""
+    coach_email = models.EmailField()
+    actor = models.CharField(max_length=255)
+    actor_role = models.CharField(max_length=10)
+    action = models.CharField(max_length=30)
+    learner_email = models.EmailField(blank=True)
+    learner_name = models.CharField(max_length=255, blank=True)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = EventQuerySet.as_manager()
+
+    class Meta:
+        db_table = 'callcenter_coach_log'
+        managed = False
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError('The coach log is append-only.')
+        super().save(*args, **kwargs)

@@ -75,6 +75,9 @@ ATTENDED_OTHER_GROUP = 'attended_other_group'
 # A missed lecture already caught up in a catch-up session with the coach: said by the learner on the call, or marked by
 # the coach on the coaches' screen (coach_centre.py). Either closes the case.
 CAUGHT_UP_WITH_COACH = 'caught_up_with_coach'
+# A missed lecture the learner told their coach beforehand they would miss (authorised_absence.py): the case closes as
+# soon as it is made.
+AUTHORISED_ABSENCE = 'authorised_absence'
 PROMISES = {
     'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None, CAUGHT_UP_WITH_COACH: None},
     'pr': {'book_pr': None},

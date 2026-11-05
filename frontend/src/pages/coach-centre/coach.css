@@ -27,6 +27,15 @@
 .cc .cc-until { margin-left: 1.7rem; max-width: 16rem; }
 .cc .cc-until small { display: block; font-weight: 400; margin-top: .25rem; }
 .cc .cc-paused .ec-dl { margin: .5rem 0 1rem; }
+.cc .cc-absences { list-style: none; margin: 1.2rem 0 0; padding: 0; border-top: 1px solid var(--line); }
+.cc .cc-absences li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+  padding: .7rem .25rem; border-bottom: 1px solid var(--line); }
+.cc .cc-absence-state { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.cc .cc-absence-state .ec-buttons { gap: .4rem; }
+.cc.cc-log { margin-top: 1.5rem; }
+.cc .cc-log-filter { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
+.cc .cc-log-filter select { width: auto; max-width: 22rem; }
+.cc .cc-log td small { display: block; }
 @media (max-width: 860px) {
   .cc .ed-desk { grid-template-columns: 1fr; }
   .cc .cc-roster { max-height: 320px; }

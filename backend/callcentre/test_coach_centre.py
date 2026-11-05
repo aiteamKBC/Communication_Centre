@@ -72,11 +72,13 @@ class CaughtUpTests(SimpleTestCase):
         self.assertEqual(coach_centre.case_ids([3, 1, 3]), [1, 3])
 
     def test_only_the_coachs_open_lectures_close_as_caught_up_by_the_coach(self):
-        tickets = [SimpleNamespace(pk=1), SimpleNamespace(pk=2)]
+        tickets = [SimpleNamespace(pk=pk, learner_email='amy@learners.uk', learner_name='Amy Stone', overdue_since=None,
+                                   source_data={}) for pk in (1, 2)]
         query = MagicMock()
         query.select_for_update.return_value.filter.return_value.order_by.return_value = tickets
         with patch('callcentre.coach_centre.cached_directory', return_value=directory()), \
                 patch('callcentre.coach_centre.open_lectures', return_value=query) as lectures, \
+                patch('callcentre.coach_centre.log') as log, \
                 patch('callcentre.coach_centre.close') as close:
             closed = coach_centre.mark_caught_up.__wrapped__('sara@kbc.uk', 'Sara Coach', [1, 2, 9], ' Done on Monday ')
         self.assertEqual(closed, 2)
@@ -84,15 +86,17 @@ class CaughtUpTests(SimpleTestCase):
         query.select_for_update.return_value.filter.assert_called_with(pk__in=[1, 2, 9])
         close.assert_any_call(tickets[0], None, 'coach', CAUGHT_UP_WITH_COACH,
                               {'note': 'Done on Monday', 'coach_email': 'sara@kbc.uk', 'caught_up_with_coach': True}, 'Sara Coach')
+        self.assertEqual(log.call_count, 2)   # one log entry per lecture
 
 
 class CoachDoNotCallTests(SimpleTestCase):
     def test_only_their_own_learners(self):
         with patch('callcentre.coach_centre.cached_directory', return_value=directory()), \
+                patch('callcentre.coach_centre.log'), \
                 patch('callcentre.coach_centre.do_not_call.add') as add:
             with self.assertRaisesMessage(ValueError, 'one of your learners'):
-                coach_centre.take_off_lists('sara@kbc.uk', 'Sara', 'ben@learners.uk', 'medical', 'Off sick', None)
-            coach_centre.take_off_lists('sara@kbc.uk', 'Sara', 'AMY@learners.uk', 'medical', 'Off sick', '2026-11-07')
+                coach_centre.take_off_lists.__wrapped__('sara@kbc.uk', 'Sara', 'ben@learners.uk', 'medical', 'Off sick', None)
+            coach_centre.take_off_lists.__wrapped__('sara@kbc.uk', 'Sara', 'AMY@learners.uk', 'medical', 'Off sick', '2026-11-07')
         add.assert_called_once_with('amy@learners.uk', 'Amy Stone', 'medical', 'Off sick', 'Sara',
                                     until=date(2026, 11, 7), role='coach')
 
@@ -211,10 +215,13 @@ class DirectorCoachesTests(SimpleTestCase):
 
     def test_a_director_lifts_any_entry_on_the_coachs_learners(self):
         entry = SimpleNamespace(learner_email='amy@learners.uk')
-        with patch('callcentre.coach_centre.cached_directory', return_value=directory()),                 patch('callcentre.coach_centre.do_not_call.in_force') as in_force,                 patch('callcentre.coach_centre.do_not_call.remove') as remove:
+        with patch('callcentre.coach_centre.cached_directory', return_value=directory()), \
+                patch('callcentre.coach_centre.do_not_call.in_force') as in_force, \
+                patch('callcentre.coach_centre.log'), \
+                patch('callcentre.coach_centre.do_not_call.remove') as remove:
             in_force.return_value.filter.return_value.first.return_value = entry
-            coach_centre.lift('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')
+            coach_centre.lift.__wrapped__('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')
             remove.assert_called_once_with(5, 'Fine again', 'Dee')
             entry.learner_email = 'ben@learners.uk'
             with self.assertRaisesMessage(ValueError, 'no longer on the list'):
-                coach_centre.lift('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')
+                coach_centre.lift.__wrapped__('sara@kbc.uk', 'Dee', 5, 'Fine again', 'director')

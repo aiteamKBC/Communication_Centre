@@ -44,6 +44,19 @@ def do_not_call(request, coach, name, role):
     return overview(coach, name)
 
 
+def absence(request, coach, name, role):
+    """Mark one of the learner's coming lectures as an authorised absence, or cancel one not applied yet."""
+    data, actor = body(request), display_name(request.user)
+    if data.get('action') == 'add':
+        coach_centre.mark_absent(coach, actor, data.get('learner_email'), data.get('session_ref'), data.get('reason'),
+                                 data.get('note'), role)
+    elif data.get('action') == 'cancel':
+        coach_centre.cancel_absence(coach, actor, data.get('id'), data.get('note'), role)
+    else:
+        raise ValueError('Unknown action.')
+    return overview(coach, name)
+
+
 @coach_only
 @require_GET
 def coach_home(request):
@@ -64,6 +77,13 @@ def coach_do_not_call(request):
     return do_not_call(request, request.user.email, display_name(request.user), 'coach')
 
 
+@coach_only
+@require_POST
+@csrf_protect
+def coach_absence(request):
+    return absence(request, request.user.email, display_name(request.user), 'coach')
+
+
 # --- the director's Coaches tab ------------------------------------------------------------------
 
 def chosen(value):
@@ -78,6 +98,14 @@ def chosen(value):
 def coaches(request):
     require_manager(request.user)
     return JsonResponse(coach_centre.coaches())
+
+
+@authenticated
+@require_GET
+def coach_log(request):
+    """What was done on the coaches' desks, newest first: one coach's, or everyone's."""
+    require_manager(request.user)
+    return JsonResponse({'entries': coach_centre.activity(request.GET.get('coach') or None)})
 
 
 @authenticated
@@ -101,3 +129,11 @@ def coach_desk_caught_up(request):
 def coach_desk_do_not_call(request):
     require_manager(request.user)
     return do_not_call(request, *chosen(body(request).get('coach')), 'director')
+
+
+@authenticated
+@require_POST
+@csrf_protect
+def coach_desk_absence(request):
+    require_manager(request.user)
+    return absence(request, *chosen(body(request).get('coach')), 'director')

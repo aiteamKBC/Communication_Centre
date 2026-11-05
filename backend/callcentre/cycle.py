@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from .ai import process_ai
 from .attendance_edits import verify_pending as verify_attendance_edits
+from .authorised_absence import apply as apply_authorised_absences
 from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
 from .call_scope import system_calls
@@ -271,6 +272,8 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'contacts_refreshed', lambda: refresh_contacts(people))
             step(result, 'phone_directory', lambda: update_phone_directory(people))
             step(result, 'source_created', lambda: generate_risks(people))
+            # Straight after: a missed lecture the coach was told about beforehand never reaches a list.
+            step(result, 'authorised_absences', lambda: apply_authorised_absences(people))
             # Before the bookings: the next day's reviews and coaching meetings come from the stored Outlook meetings.
             step(result, 'review_meetings', lambda: review_meetings_step(people))
             bookings = get_source('bookings', lambda: load_bookings(people))

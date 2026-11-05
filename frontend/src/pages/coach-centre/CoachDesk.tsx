@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useCallCentre } from '../call-centre/api';
 import { signOut } from '../call-centre/signOut';
+import AuthorisedAbsences from './AuthorisedAbsences';
 import CallPause from './CallPause';
 import MissedLectures from './MissedLectures';
 import type { CoachLearner, CoachOverview, DeskTarget } from './types';
@@ -150,6 +151,9 @@ export default function CoachDesk({ target, onBack }: { target: DeskTarget; onBa
                   <p className="ec-muted">{[selected.programme, selected.organisation, selected.email].filter(Boolean).join(' · ')}</p>
                 </section>
                 <MissedLectures key={`lectures:${selected.email}`} learner={selected} target={target} coachName={coachName} onSaved={onSaved} />
+                <AuthorisedAbsences key={`absences:${selected.email}`} learner={selected} target={target} days={data.absences.days}
+                  reasons={data.absences.reasons} setUp={data.absences.set_up} notSetUp={data.absences.not_set_up}
+                  error={data.absences.error} onSaved={onSaved} />
                 <CallPause key={`calls:${selected.email}`} learner={selected} target={target} setUp={data.do_not_call.set_up}
                   notSetUp={data.do_not_call.not_set_up} reasons={data.do_not_call.reasons} onSaved={onSaved} />
               </div>
