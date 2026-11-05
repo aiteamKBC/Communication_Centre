@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
+import { CalendarCheck2, MoveHorizontal } from 'lucide-react';
 import type { CatalogModule, CoachProfile, Holiday, KsbProfile, ModuleBlock, ProgrammeGroup, SessionCoverage, SessionKsbMapping, TutorProfile, WeekDayKey } from '../types';
 import { getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
@@ -1428,7 +1429,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
   );
 
   const renderHeader = () => (
-    <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }}>
+    <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }} aria-label="Session schedule headings">
       {renderColumnGroup()}
       <thead>
         <tr>
@@ -1461,16 +1462,18 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
   );
 
   return (
-    <div className="bg-white rounded-xl overflow-hidden border border-gray-300">
-      <div className="flex items-center justify-between px-3 py-3 border-b border-gray-200 sm:px-5" style={{ background: '#F9FAFB' }}>
-        <div>
+    <div className="tp-schedule-card bg-white rounded-xl overflow-hidden border border-gray-300">
+      <div className="tp-schedule-heading flex items-center justify-between px-3 py-3 border-b border-gray-200 sm:px-5" style={{ background: '#F9FAFB' }}>
+        <span className="tp-section-icon"><CalendarCheck2 size={21} aria-hidden="true" /></span>
+        <div className="min-w-0 flex-1">
           <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
           <p className="text-xs text-gray-400 mt-0.5">{rows.length} current module{rows.length !== 1 ? 's' : ''} running today</p>
         </div>
+        <span className="tp-scroll-hint"><MoveHorizontal size={16} aria-hidden="true" /><span>Scroll to explore</span></span>
       </div>
 
       {/* Today's sessions container */}
-      <div className="px-3 py-4 border-b bg-white sm:px-5">
+      <div className="tp-schedule-week px-3 py-4 border-b bg-white sm:px-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h4 className="text-sm font-bold text-kbc-navy">This Week / Session Status</h4>
@@ -1480,7 +1483,7 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
         {thisWeekSessions.length === 0 ? (
           <p className="text-xs text-gray-400 mt-2">No current module sessions scheduled for this week.</p>
         ) : (
-          <ul className="mt-3 space-y-2">
+          <ul className="mt-3" tabIndex={0} aria-label="This week's sessions">
             {thisWeekSessions.map((s, i) => (
               <li
                 key={`${s.cohort}-${s.module}-${i}`}
@@ -1545,8 +1548,8 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
         </div>
       </div>
 
-      <div ref={scrollRef} className="max-h-[calc(100vh-210px)] overflow-auto" onScroll={handleTableScroll}>
-        <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }}>
+      <div ref={scrollRef} className="tp-schedule-scroll max-h-[calc(100vh-210px)] overflow-auto" onScroll={handleTableScroll} tabIndex={0} role="region" aria-label="Session schedule rows">
+        <table className="table-fixed border-collapse" style={{ width: TABLE_MIN_WIDTH }} aria-label="Session schedule">
           {renderColumnGroup()}
           <tbody>
             {sections.map(section => (

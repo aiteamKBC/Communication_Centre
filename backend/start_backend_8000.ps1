@@ -17,13 +17,20 @@ if (-not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Path $logDir | Out-Null
 }
 
-$existingConnection = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($existingConnection) {
-    $existingProcess = Get-Process -Id $existingConnection.OwningProcess -ErrorAction SilentlyContinue
-    if ($existingProcess) {
-        Write-Output "Backend is already listening on 127.0.0.1:8000 with PID $($existingProcess.Id)."
-        exit 0
+function Test-BackendPort {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        return ($client.ConnectAsync('127.0.0.1', 8000).Wait(500) -and $client.Connected)
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
     }
+}
+
+if (Test-BackendPort) {
+    Write-Output "Backend is already listening on 127.0.0.1:8000."
+    exit 0
 }
 
 if ($Local) {
@@ -41,6 +48,7 @@ $arguments = @(
 
 $process = Start-Process `
     -FilePath $pythonExe `
+    -WindowStyle Hidden `
     -ArgumentList $arguments `
     -WorkingDirectory $projectDir `
     -RedirectStandardOutput $stdoutLog `
@@ -48,12 +56,13 @@ $process = Start-Process `
     -PassThru
 
 for ($attempt = 0; $attempt -lt 20; $attempt++) {
-    $listeningConnection = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($listeningConnection) { break }
+    $listening = Test-BackendPort
+    if ($listening) { break }
+    if ($process.HasExited) { break }
     Start-Sleep -Milliseconds 500
 }
 
-if (-not $listeningConnection) {
+if (-not $listening) {
     Write-Error "Backend failed to start. Check $stderrLog and $stdoutLog."
 }
 

@@ -1,5 +1,7 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
+import './training-plan.css';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
@@ -145,6 +147,7 @@ interface ModuleMonthSummary {
 }
 
 interface ModuleMonthlySummary {
+  source?: 'LMS';
   key: string;
   programmeId: string;
   cohortId: string;
@@ -1137,9 +1140,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     ['Group', summary.groupName],
     ['Tutor', summary.tutor],
     ['Coach', summary.coach],
-    ['Planned sessions', String(summary.totalSessions)],
-    ['Skipped weeks', String(totalClashedSessions)],
-    ['Delivery weeks', String(totalWeeks)],
+    ['Planned sessions', summary.source === 'LMS' ? 'Not captured' : String(summary.totalSessions)],
+    ['Skipped weeks', summary.source === 'LMS' ? 'Not captured' : String(totalClashedSessions)],
+    ['Delivery weeks', summary.source === 'LMS' ? 'Not captured' : String(totalWeeks)],
   ];
   const renderKsbBadges = (mapping: SessionKsbMapping) => {
     const rows = [
@@ -1160,6 +1163,10 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     `;
   };
   const monthRows = summary.months.map(month => {
+    if (summary.source === 'LMS') {
+      const bounds = monthBounds(month.key);
+      return `<tr><td>${escapeAlertHtml(month.label)}</td><td>${escapeAlertHtml(summary.moduleStartDate > bounds.start ? summary.moduleStartDate : bounds.start)}</td><td>${escapeAlertHtml(summary.moduleEndDate < bounds.end ? summary.moduleEndDate : bounds.end)}</td><td>${escapeAlertHtml(summary.tutor)}</td></tr>`;
+    }
     const clashedCount = month.sessions.filter(session => session.holidays.length > 0).length;
     const validCount = month.sessions.filter(session => !session.isClash).length;
     const sessionsHtml = month.sessions.length
@@ -1269,7 +1276,7 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
         <h1>${escapeAlertHtml(summary.moduleName)}</h1>
         <div class="subtitle">
           ${escapeAlertHtml(summary.programme)} - ${escapeAlertHtml(summary.cohort)}<br />
-          ${escapeAlertHtml(summary.dateRange)}
+          ${escapeAlertHtml(summary.dateRange)}${summary.source === 'LMS' ? '<br />Source: LMS. Session schedules, holidays, coaches and KSB mappings were not captured.' : ''}
         </div>
       </div>
       <div class="generated">
@@ -1299,9 +1306,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
       <thead>
         <tr>
           <th>Month</th>
-          <th>Sessions</th>
-          <th>Session Dates</th>
-          <th>Holidays</th>
+          <th>${summary.source === 'LMS' ? 'Start Date' : 'Sessions'}</th>
+          <th>${summary.source === 'LMS' ? 'End Date' : 'Session Dates'}</th>
+          <th>${summary.source === 'LMS' ? 'Tutor' : 'Holidays'}</th>
         </tr>
       </thead>
       <tbody>${monthRows}</tbody>
@@ -1352,6 +1359,15 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
         const meta = resolveTrainingModuleMeta(block, customModules);
         const catalogModule = resolveCatalogModuleForBlock(block, meta.lbl, catalogModules);
         const months = new Map<string, ModuleMonthSummary>();
+        if (block.source === 'LMS') {
+          // An LMS range is a delivery interval, not evidence of weekly sessions.
+          const [startYear, startMonth] = block.startDate.split('-').map(Number);
+          const [endYear, endMonth] = block.endDate.split('-').map(Number);
+          for (let index = startYear * 12 + startMonth - 1; index <= endYear * 12 + endMonth - 1; index++) {
+            const key = `${Math.floor(index / 12).toString().padStart(4, '0')}-${(index % 12 + 1).toString().padStart(2, '0')}`;
+            months.set(key, { key, label: formatPlanMonth(key), sessions: [], holidays: [] });
+          }
+        }
         const scopedHolidays = getRowActiveHolidays(row, holidays);
         const sessionPlan = buildHolidayAdjustedSessionPlan(block, scopedHolidays);
         const affectedSessions = sessionPlan.originalClashedSessions;
@@ -1464,6 +1480,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
         });
 
         return {
+          source: block.source,
           key: `${group.id}-${row.id}-${block.id}`,
           programmeId: group.id,
           cohortId: row.id,
@@ -1476,8 +1493,8 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           groupName: block.groupName || 'No group name',
           moduleStartDate: block.startDate,
           moduleEndDate: sessionPlan.effectiveEndDate,
-          tutor: block.tutor || 'TBD',
-          coach: block.coachName || 'TBD',
+          tutor: block.tutor || (block.source === 'LMS' ? 'Not assigned in LMS' : 'TBD'),
+          coach: block.coachName || (block.source === 'LMS' ? 'Not provided in LMS' : 'TBD'),
           dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(sessionPlan.effectiveEndDate)}`,
           totalSessions: block.sessions || 0,
           scheduledSessions: sortedMonths.reduce((count, month) => count + month.sessions.filter(session => !session.isClash).length, 0),
@@ -1601,6 +1618,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
             <button
               type="button"
               onClick={handleClose}
+              aria-label="Close module overview dialog"
               className="flex h-10 w-10 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
             >
               <i className="ri-close-line text-lg" />
@@ -1608,14 +1626,15 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
           </div>
         </div>
 
+        {summary.source === 'LMS' && <p className="border-b border-teal-100 bg-teal-50 px-5 py-3 text-xs text-teal-900">LMS captured date range. Session schedules, holidays, coaches and KSB mappings were not captured; session counts are unavailable.</p>}
         <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
           {[
             ['ri-group-line', 'Group', summary.groupName],
             ['ri-user-3-line', 'Tutor', summary.tutor],
             ['ri-user-star-line', 'Coach', summary.coach],
             ['ri-calendar-check-line', 'Planned sessions', summary.totalSessions],
-            ['ri-alert-line', 'Skipped weeks', totalClashedSessions],
-            ['ri-route-line', 'Delivery weeks', totalWeeks],
+            ['ri-alert-line', 'Skipped weeks', summary.source === 'LMS' ? 'Not captured' : totalClashedSessions],
+            ['ri-route-line', 'Delivery weeks', summary.source === 'LMS' ? 'Not captured' : totalWeeks],
           ].map(([icon, label, value]) => (
             <div key={label} className="flex min-h-[58px] items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${label === 'Skipped weeks' && totalClashedSessions ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-kbc-navy'}`}>
@@ -1634,7 +1653,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
             {isMonthly ? 'Monthly Module Breakdown' : 'Subprogramme Students'}
           </span>
           <span className="text-xs font-semibold text-slate-400">
-            {summary.scheduledSessions} scheduled / {summary.totalSessions} planned
+            {summary.source === 'LMS' ? 'Source: LMS · Captured dates' : `${summary.scheduledSessions} scheduled / ${summary.totalSessions} planned`}
           </span>
         </div>
         {isMonthly && totalClashedSessions > 0 && (
@@ -1648,7 +1667,17 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
           </div>
         )}
 
-        {isMonthly && (
+        {isMonthly && summary.source === 'LMS' && <div className="min-h-0 flex-1 overflow-auto p-5">
+          <table className="w-full text-left text-xs">
+            <caption className="sr-only">LMS monthly delivery dates</caption>
+            <thead className="bg-slate-100 text-slate-500"><tr><th className="px-3 py-2">Month</th><th className="px-3 py-2">Start Date</th><th className="px-3 py-2">End Date</th><th className="px-3 py-2">Tutor</th></tr></thead>
+            <tbody>{selectedMonths.map(month => {
+              const bounds = monthBounds(month.key);
+              return <tr key={month.key} className="border-t border-slate-100"><th scope="row" className="px-3 py-3">{month.label}</th><td className="px-3 py-3">{summary.moduleStartDate > bounds.start ? summary.moduleStartDate : bounds.start}</td><td className="px-3 py-3">{summary.moduleEndDate < bounds.end ? summary.moduleEndDate : bounds.end}</td><td className="px-3 py-3">{summary.tutor}</td></tr>;
+            })}</tbody>
+          </table>
+        </div>}
+        {isMonthly && summary.source !== 'LMS' && (
         <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <table className="min-w-full text-left text-xs">
@@ -2596,6 +2625,7 @@ function KsbBadges({ mapping }: { mapping: SessionKsbMapping }) {
 }
 
 function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
+  const isLms = summaries.length > 0 && summaries.every(summary => summary.source === 'LMS');
   type ProgrammeSummaryGroup = { programme: string; color: string; summaries: ModuleMonthlySummary[]; countedSessions: number; affectedSessions: number };
   const totalSummaryClashes = (summary: ModuleMonthlySummary) => summary.affectedSessions + summary.extensionAffectedSessions;
   const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
@@ -2694,7 +2724,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-bold text-kbc-navy">Monthly Module Breakdown</span>
-              <span className="mt-0.5 block text-xs text-gray-400">Click any module to view monthly sessions, holidays, tutors, and coaches.</span>
+              <span className="mt-0.5 block text-xs text-gray-400">{summaries.every(summary => summary.source === 'LMS') ? 'Review LMS modules by month, cohort, group and tutor. Session schedules were not captured.' : 'Click any module to view monthly sessions, holidays, tutors, and coaches.'}</span>
             </span>
           </span>
           <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
@@ -2783,7 +2813,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                     <span className="mt-0.5 block text-gray-400">{group.summaries.length} module{group.summaries.length !== 1 ? 's' : ''}</span>
                   </span>
                   <span className="rounded-md bg-white px-2 py-1 text-center font-bold text-kbc-navy">
-                    {group.countedSessions}
+                    {isLms ? 'N/A' : group.countedSessions}
                   </span>
                   <span
                     className={`rounded-md px-2 py-1 text-center font-bold ${group.affectedSessions ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
@@ -2794,7 +2824,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                         <i className="ri-alert-line" />
                         {group.affectedSessions}
                       </span>
-                    ) : '0'}
+                    ) : isLms ? 'N/A' : '0'}
                   </span>
                   <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
                     <i className="ri-arrow-right-s-line text-base" />
@@ -2822,7 +2852,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                   <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedProgrammeGroup.programme}</h3>
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
-                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''} - {selectedProgrammeGroup.countedSessions} valid counted sessions
+                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''}{isLms ? ' - LMS captured dates' : ` - ${selectedProgrammeGroup.countedSessions} valid counted sessions`}
                 </p>
               </div>
               <button
@@ -2836,9 +2866,9 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
 
             <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3">
               <span><strong className="text-gray-700">Modules:</strong> {selectedProgrammeGroup.summaries.length}</span>
-              <span><strong className="text-gray-700">Valid counted sessions:</strong> {selectedProgrammeGroup.countedSessions}</span>
+              <span><strong className="text-gray-700">Valid counted sessions:</strong> {isLms ? 'Not captured' : selectedProgrammeGroup.countedSessions}</span>
               <span className={selectedProgrammeGroup.affectedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
-                <strong>Holiday clashes:</strong> {selectedProgrammeGroup.affectedSessions}
+                <strong>Holiday clashes:</strong> {isLms ? 'Not captured' : selectedProgrammeGroup.affectedSessions}
               </span>
             </div>
 
@@ -2910,7 +2940,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                       <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
                     </span>
                     <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
-                      {summary.countedSessions}
+                      {isLms ? 'N/A' : summary.countedSessions}
                     </span>
                     <span
                       className={`rounded-md px-2 py-1 text-center font-bold ${clashes ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
@@ -2921,7 +2951,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                           <i className="ri-alert-line" />
                           {clashes}
                         </span>
-                      ) : '0'}
+                      ) : isLms ? 'N/A' : '0'}
                     </span>
                     <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
                       <i className="ri-external-link-line text-sm" />
@@ -6579,14 +6609,14 @@ export default function ApprenticeshipTimeline() {
   };
 
   return (
-    <div className="min-h-screen bg-kbc-bg font-sans">
+    <div className="training-plan-page min-h-screen bg-kbc-bg font-sans">
       <TopNav />
 
       {/* ── PAGE HEADER ─────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-screen-xl mx-auto px-3 sm:px-4 md:px-6 py-3 sm:py-4">
+      <div className="tp-page-header bg-white border-b border-gray-200">
+        <div className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-3 sm:py-4">
           {/* Breadcrumb */}
-          <div className="flex items-center gap-1.5 mb-3 text-xs text-gray-400">
+          <div className="tp-breadcrumb flex items-center gap-1.5 mb-3 text-xs text-gray-400">
             <Link to="/" className="hover:text-kbc-navy transition-colors cursor-pointer">Home</Link>
             <i className="ri-arrow-right-s-line" />
             <Link to="/events" className="hover:text-kbc-navy transition-colors cursor-pointer">Events</Link>
@@ -6594,12 +6624,13 @@ export default function ApprenticeshipTimeline() {
             <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
+          <div className="tp-header-content flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
-                <i className="ri-time-line text-white text-base" />
+              <div className="tp-title-icon w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
+                <GraduationCap size={25} aria-hidden="true" />
               </div>
               <div>
+                <p className="tp-eyebrow">Learning &amp; delivery</p>
                 <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
                   Apprenticeships Training Plan
                 </h1>
@@ -6607,21 +6638,19 @@ export default function ApprenticeshipTimeline() {
               </div>
             </div>
 
-            <div className="training-plan-action-row w-full md:w-auto md:flex md:flex-wrap md:overflow-visible md:pb-0 md:ml-3">
+            <div className="tp-stat-grid" aria-label="Training Plan overview">
               {[
-                { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
-                { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
-                { icon: 'ri-team-line',        label: `${totalGroups} Groups` },
-                { icon: 'ri-puzzle-line',      label: `${totalModules} Modules` },
-                { icon: 'ri-stack-line',       label: `${totalSessions} Sessions` },
-                { icon: 'ri-calendar-event-line', label: `${holidayCount} Holidays` },
-                { icon: 'ri-live-line',        label: 'Apr 2026 Live' },
+                { icon: BookOpen, value: groups.length, label: 'Programmes' },
+                { icon: GraduationCap, value: totalCohorts, label: 'Cohorts' },
+                { icon: Users, value: totalGroups, label: 'Groups' },
+                { icon: Layers3, value: totalModules, label: 'Modules' },
+                { icon: Clock3, value: totalSessions, label: 'Sessions' },
+                { icon: CalendarDays, value: holidayCount, label: 'Holidays' },
               ].map((s, i) => (
-                <span key={i} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border"
-                  style={{ background: '#F0F4FF', color: '#2E4482', borderColor: '#D5DFF7' }}>
-                  <i className={`${s.icon} text-xs`} />
-                  {s.label}
-                </span>
+                <div key={i} className="tp-stat">
+                  <span className="tp-stat-icon"><s.icon size={18} aria-hidden="true" /></span>
+                  <span><strong>{isInitialProgrammesLoading ? '—' : s.value}</strong><span className="tp-stat-label">{s.label}</span></span>
+                </div>
               ))}
             </div>
 
@@ -6682,7 +6711,7 @@ export default function ApprenticeshipTimeline() {
           </div>
 
           {/* Action buttons */}
-          <div className="training-plan-action-row mt-3 xl:hidden">
+          <div className="tp-header-secondary-actions training-plan-action-row mt-3 xl:hidden">
             {canManageCohorts && (
               <button
                 onClick={() => setShowHolidayMgr(true)}
@@ -6769,7 +6798,7 @@ export default function ApprenticeshipTimeline() {
         </div>
       </div>
 
-      <main className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
+      <main className="tp-workspace max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
         {(trainingPlanServerUnavailable || trainingPlanServerRecovered) && (
           <div className={`rounded-lg border px-4 py-3 text-sm ${trainingPlanServerUnavailable ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -6800,8 +6829,14 @@ export default function ApprenticeshipTimeline() {
           </div>
         )}
         {/* Today's Sessions */}
-        <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
-          <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
+        <div className="tp-today-card bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
+          <div className="tp-section-heading">
+            <div className="flex items-center gap-3">
+              <span className="tp-section-icon"><CalendarDays size={19} aria-hidden="true" /></span>
+              <div><p className="tp-eyebrow">Daily overview</p><h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2></div>
+            </div>
+            <span className="tp-count-badge">{isInitialProgrammesLoading ? 'Loading…' : `${todaySessions.length} scheduled`}</span>
+          </div>
           {isInitialProgrammesLoading ? (
             <div className="mt-3 space-y-3 animate-pulse">
               {[0, 1, 2].map((item) => (
@@ -6815,7 +6850,7 @@ export default function ApprenticeshipTimeline() {
               ))}
             </div>
           ) : todaySessions.length === 0 ? (
-            <p className="text-xs text-gray-400 mt-2">No sessions yet. Add cohorts and module blocks to populate this schedule.</p>
+            <p className="tp-today-empty text-xs text-gray-400 mt-2">No sessions scheduled for today.</p>
           ) : (
             <ul className="mt-3 divide-y">
               {todaySessions.map((s, i) => (
@@ -6836,27 +6871,27 @@ export default function ApprenticeshipTimeline() {
         </div>
 
         {/* Tab switcher */}
-        <div className="flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
-          <div className="training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0">
+        <div className="tp-workspace-nav flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
+          <div className="tp-view-tabs training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0" aria-label="Training Plan views">
             {([
-              { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
-              { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
-              { key: 'tutors',   label: 'Tutor Profiles', icon: 'ri-user-star-line' },
-              { key: 'coaches',  label: 'Coach Profiles', icon: 'ri-user-follow-line' },
+              { key: 'gantt',    label: 'Training Plan', icon: CalendarRange },
+              { key: 'schedule', label: 'Session Schedule', icon: Table2 },
+              { key: 'tutors',   label: 'Tutor Profiles', icon: UserRound },
+              { key: 'coaches',  label: 'Coach Profiles', icon: ContactRound },
             ] as const).map(tab => (
-              <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+              <button key={tab.key} onClick={() => setActiveTab(tab.key)} aria-pressed={activeTab === tab.key}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
                 style={{
                   background: activeTab === tab.key ? '#1B2A4A' : 'transparent',
                   color:      activeTab === tab.key ? '#fff'    : '#6B7280',
                 }}>
-                <i className={tab.icon} />
+                <tab.icon size={16} aria-hidden="true" />
                 {tab.label}
               </button>
             ))}
           </div>
           {canManageCohorts && (
-            <div className="training-plan-action-row lg:overflow-visible lg:pb-0">
+            <div className="tp-management-actions training-plan-action-row lg:overflow-visible lg:pb-0">
               <button
                 onClick={() => setShowHolidayMgr(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
@@ -6901,14 +6936,20 @@ export default function ApprenticeshipTimeline() {
 
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules} holidays={holidays} currentLoading={isInitialProgrammesLoading} zoom={zoom} onZoomChange={setZoom}>
+          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles} currentLoading={isInitialProgrammesLoading} zoom={zoom} onZoomChange={setZoom}
+            renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
+            onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
+              const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [programme.rows[rowIndex]] }], [], lmsModules, [], [])
+                .find(item => item.moduleBlockId === blockId);
+              if (summary) setSelectedMonthlySummary({ summary, mode: 'monthly' });
+            }}>
           {comparing => isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
             <>
-              <div data-training-plan-overview><MonthlyModuleBreakdown summaries={monthlyModuleSummaries} /></div>
               <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200">
                 <GanttTimeline
+                  beforeTimeline={<div data-training-plan-overview><MonthlyModuleBreakdown summaries={monthlyModuleSummaries} /></div>}
                   groups={groups}
                   holidays={holidays}
                   customModules={customModules}

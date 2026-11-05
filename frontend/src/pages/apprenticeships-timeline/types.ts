@@ -39,6 +39,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 export interface ModuleBlock {
   id: string;
   source?: 'LMS';
+  startDateSource?: 'created_at';
   trainingPlanId?: string;
   moduleCatalogueId?: string;
   groupId?: string;
@@ -70,6 +71,8 @@ export interface CohortRow {
   holidayIds?: string[];
   ksbProfileId?: string;
   blks: ModuleBlock[];
+  // Display-only group slots when arranging LMS dates against the current plan.
+  referenceGroupNames?: string[];
 }
 
 export interface ProgrammeGroup {

@@ -1,75 +1,59 @@
-import { useMemo, useState } from 'react';
-import type { LmsReferenceRow } from '../lmsReference';
+import { useMemo, useState, type ReactNode } from 'react';
+import type { PresentedLmsRow } from '../lmsComparison';
+import { buildLmsTimelineLayout, lmsRecordGroup } from '../lmsTimelineLayout';
+import LmsModuleRecords from './LmsModuleRecords';
 import type { CustomModule, ProgrammeGroup, ZoomLevel } from '../types';
 import GanttTimeline from './GanttTimeline';
 import * as XLSX from 'xlsx';
 
-// Only complete source date ranges can be drawn; never infer dates from the live plan.
-function hasLmsDateRange(row: LmsReferenceRow): boolean {
-  const valid = (value: string | null): value is string => {
-    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-    const date = new Date(`${value}T00:00:00Z`);
-    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
-  };
-  return valid(row.startDate) && valid(row.endDate) && row.startDate <= row.endDate;
-}
-
-const colours = ['#0F766E', '#0E7490', '#0369A1', '#047857'];
 const noEdit = () => {};
 
-export default function LmsReferenceTimeline({ rows, comparisonZoom }: { rows: LmsReferenceRow[]; comparisonZoom?: ZoomLevel }) {
+export interface LmsReferenceTimelineProps {
+  rows: PresentedLmsRow[];
+  currentProgrammes: ProgrammeGroup[];
+  currentModules: CustomModule[];
+  comparisonZoom?: ZoomLevel;
+  renderOverview: (groups: ProgrammeGroup[], modules: CustomModule[]) => ReactNode;
+  onViewModule: (group: ProgrammeGroup, rowIndex: number, blockId: string, modules: CustomModule[]) => void;
+}
+
+export default function LmsReferenceTimeline({ rows, currentProgrammes, currentModules, comparisonZoom, renderOverview, onViewModule }: LmsReferenceTimelineProps) {
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const exportReference = () => {
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows.map(row => ({
       Source: 'LMS', Programme: row.programme ?? '', Module: row.module ?? '',
+      'Tutor Name': row.tutorName ?? '',
+      Cohort: row.cohortName ?? '', 'Source Cohort ID': row.cohortId ?? '',
+      Group: lmsRecordGroup(row, currentProgrammes, currentModules),
       'Start Date': row.startDate ?? '', 'End Date': row.endDate ?? '',
+      'Start Date Source': row.startDateSource || (row.startDate ? 'start_date' : ''),
       'Source Module ID': row.sourceModuleId,
     })));
     XLSX.utils.book_append_sheet(workbook, sheet, 'LMS Training Plan');
     XLSX.writeFile(workbook, 'lms-training-plan-reference.xlsx');
   };
-  const { groups, customModules } = useMemo(() => {
-    const programmes = new Map<string, ProgrammeGroup>();
-    const customModules: CustomModule[] = [];
-    rows.filter(hasLmsDateRange).forEach(row => {
-      // Source identifiers keep distinct programmes/modules separate even when names repeat.
-      const key = JSON.stringify([row.sourceProgrammeId, row.programme]);
-      let group = programmes.get(key);
-      if (!group) {
-        group = {
-          id: `lms-programme:${key}`, name: row.programme?.trim() || 'Programme not provided',
-          sub: 'LMS reference', color: '#115E59',
-          rows: [{ id: `lms-modules:${key}`, label: 'LMS modules', dateLbl: '', intake: '', quarter: '', blks: [] }],
-        };
-        programmes.set(key, group);
-      }
-      let hash = 0;
-      for (const character of row.sourceModuleId) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-      const moduleId = `lms-module:${row.sourceModuleId}`;
-      const moduleName = row.module?.trim() || 'Module not provided';
-      const color = colours[hash % colours.length];
-      customModules.push({ id: moduleId, name: moduleName, defaultSessions: 0, bg: color, tx: '#FFFFFF' });
-      group.rows[0].blks.push({
-        id: moduleId, source: 'LMS', moduleCatalogueId: row.sourceModuleId, mod: moduleId,
-        groupName: `${moduleName} · #${row.sourceModuleId}`, color,
-        startDate: row.startDate!, endDate: row.endDate!,
-        // The capture contains no tutor, group, session or completion information.
-        tutor: '', sessions: 0,
-      });
-    });
-    return { groups: [...programmes.values()], customModules };
-  }, [rows]);
-
-  if (!groups.length) return <p role="status" className="px-4 py-6 text-sm text-gray-600">
-    No LMS modules with a complete, valid date range are available for this timeline.
-  </p>;
+  const { groups, customModules } = useMemo(
+    () => buildLmsTimelineLayout(rows, currentProgrammes, currentModules), [rows, currentProgrammes, currentModules],
+  );
+  const creationDateCount = rows.filter(row => row.startDateSource === 'created_at').length;
 
   return <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200" role="region" aria-label="LMS reference timeline">
-    <GanttTimeline groups={groups} customModules={customModules} holidays={[]} zoom={comparisonZoom ?? zoom} onZoomChange={setZoom}
+    <p className="border-b border-gray-100 px-4 py-3 text-xs text-gray-500">Groups follow matching Training Plan cohorts or group labels in LMS module names. Session schedules, holidays, coaches and KSB mappings are not included in the LMS capture.</p>
+    {creationDateCount > 0 && <div className="space-y-1 border-b border-gray-100 px-4 py-3 text-xs text-gray-600">
+      <p>{creationDateCount} LMS module{creationDateCount === 1 ? ' uses its' : 's use their'} creation date because start_date is missing. These dates are labelled <strong>From created_at</strong>.</p>
+    </div>}
+    {groups.length ? <GanttTimeline groups={groups} customModules={customModules} holidays={[]} zoom={comparisonZoom ?? zoom} onZoomChange={setZoom}
+      beforeTimeline={<div data-lms-plan-overview>{renderOverview(groups, customModules)}</div>}
+      onViewMonthlyBreakdown={(groupIndex, rowIndex, blockId) => onViewModule(groups[groupIndex], rowIndex, blockId, customModules)}
       showZoomControls={comparisonZoom === undefined}
       referenceSource="LMS" canManageCohorts={false}
       onExportExcel={exportReference}
       onAddRow={noEdit} onEditRow={noEdit} onDeleteRow={noEdit} />
+      : <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-6">
+        <p role="status" className="text-sm text-gray-600">No LMS modules with a complete, valid date range are available for this timeline.</p>
+        <button type="button" onClick={exportReference} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">Export</button>
+      </div>}
+    <LmsModuleRecords rows={rows} currentProgrammes={currentProgrammes} currentModules={currentModules} />
   </div>;
 }

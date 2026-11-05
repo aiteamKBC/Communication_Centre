@@ -1,4 +1,5 @@
 import type { ZoomLevel } from '../types';
+import { Minus, Plus } from 'lucide-react';
 import { ZOOM_LEVELS, getZoomLabel, zoomIn, zoomOut } from '../utils';
 
 export default function TimelineZoomControls({ zoom, onZoomChange }: {
@@ -19,11 +20,11 @@ export default function TimelineZoomControls({ zoom, onZoomChange }: {
     <div className="ml-1 flex shrink-0 items-center gap-1">
       <button type="button" aria-label="Zoom out" onClick={() => onZoomChange(zoomOut(zoom))} disabled={zoom === 'year'}
         className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
-        <i className="ri-zoom-out-line text-sm" aria-hidden="true" />
+        <Minus size={15} aria-hidden="true" />
       </button>
       <button type="button" aria-label="Zoom in" onClick={() => onZoomChange(zoomIn(zoom))} disabled={zoom === 'day'}
         className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
-        <i className="ri-zoom-in-line text-sm" aria-hidden="true" />
+        <Plus size={15} aria-hidden="true" />
       </button>
     </div>
   </>;

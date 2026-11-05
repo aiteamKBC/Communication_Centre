@@ -65,7 +65,7 @@ def main():
                 with connection.schema_editor() as editor:
                     for model in apps.get_models():
                         editor.create_model(model)
-            modules = sys.argv[1:] or ['api.tests', 'login.tests', 'callcentre.tests',
+            modules = sys.argv[1:] or ['api.tests', 'api.test_lms_reference', 'login.tests', 'callcentre.tests',
                                       'callcentre.test_learner_satisfaction', 'callcentre.test_source_bridge', 'callcentre.test_identity',
                                       'callcentre.test_call_flow', 'callcentre.test_history', 'callcentre.test_call_scope',
                                       'callcentre.test_active_learners']

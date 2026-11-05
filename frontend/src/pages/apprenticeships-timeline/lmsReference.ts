@@ -6,7 +6,12 @@ export interface LmsReferenceRow {
   sourceProgrammeId: string | null;
   programme: string | null;
   module: string | null;
+  tutorName?: string | null;
+  cohortId?: string | null;
+  cohortName?: string | null;
+  groupName?: string | null;
   startDate: string | null;
+  startDateSource?: 'created_at';
   endDate: string | null;
 }
 
@@ -46,4 +51,32 @@ export async function requestLmsReference(capture = false): Promise<LmsReference
     throw new Error('The LMS reference response could not be read.');
   }
   return payload.reference;
+}
+
+export async function requestLmsTutorNames(): Promise<Record<string, string>> {
+  const response = await fetchWithTimeout('/api/training-plan/lms-reference/tutors/', {
+    credentials: 'same-origin', cache: 'no-store', timeoutMs: 15000,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.tutorNames || typeof payload.tutorNames !== 'object' || Array.isArray(payload.tutorNames)) {
+    throw new Error('LMS tutor names could not be loaded. Please retry.');
+  }
+  return Object.fromEntries(Object.entries(payload.tutorNames).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+}
+
+export type LmsCohortLabels = Record<string, { cohortId: string | null; cohortName: string; groupName?: string }>;
+
+export async function requestLmsCohorts(): Promise<LmsCohortLabels> {
+  const response = await fetchWithTimeout('/api/training-plan/lms-reference/cohorts/', {
+    credentials: 'same-origin', cache: 'no-store', timeoutMs: 15000,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.cohorts || typeof payload.cohorts !== 'object' || Array.isArray(payload.cohorts)) {
+    throw new Error('LMS cohorts could not be loaded. Please retry.');
+  }
+  return Object.fromEntries(Object.entries(payload.cohorts).filter((entry): entry is [string, LmsCohortLabels[string]] => {
+    const value = entry[1] as LmsCohortLabels[string] | null;
+    return Boolean(value && typeof value.cohortName === 'string' && (value.cohortId === null || typeof value.cohortId === 'string')
+      && (value.groupName === undefined || typeof value.groupName === 'string'));
+  }));
 }

@@ -65,12 +65,14 @@ def main():
                 headers={'Cookie': settings.SESSION_COOKIE_NAME + '=' + cookie})
             with urllib.request.urlopen(request, timeout=10) as response:
                 payload = json.loads(response.read())
-            local_ids = set(TrainingPlan.objects.filter(active_training_plan_filter()).values_list('id', flat=True))
+            local_labels = {ident: (cohort, group) for ident, cohort, group in
+                TrainingPlan.objects.filter(active_training_plan_filter()).values_list('id', 'cohort_name', 'group_name')}
+            local_ids = set(local_labels)
             if {item['id'] for item in payload['items']} != local_ids:
                 raise RuntimeError('Running API records do not match the verified local copy.')
-            if any(not item['cohortName'].startswith('Test Cohort ') for item in payload['items']):
-                raise RuntimeError('Running API did not return the sanitised test copy.')
-            print('Running API on 127.0.0.1:8101 verified against the restored, sanitised copy:', len(local_ids), 'active records.')
+            if any((item['cohortName'], item['groupName']) != local_labels[item['id']] for item in payload['items']):
+                raise RuntimeError('Running API labels do not match the verified local copy.')
+            print('Running API on 127.0.0.1:8101 verified against the restored local copy:', len(local_ids), 'active records.')
         finally:
             client.logout()
     connections.close_all()
