@@ -66,8 +66,8 @@ export default function SelectField({
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const hasFilters = Object.values(filterValues).some(Boolean) || Boolean(from || to);
-  const invalidRange = Boolean(from && to && from > to);
+  const hasFilters = Object.values(filterValues).some(Boolean) || Boolean(filterByDateRange && (from || to));
+  const invalidRange = Boolean(filterByDateRange && from && to && from > to);
   const hasFilterControls = Boolean(filterFields?.length || filterByDateRange);
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(option => option.value === value)));
   const [popoverStyle, setPopoverStyle] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number }>({
@@ -92,9 +92,9 @@ export default function SelectField({
       (!term || option.label.toLowerCase().includes(term) ||
       (!searchByLabelOnly && (option.value.toLowerCase().includes(term) ||
       (option.description || '').toLowerCase().includes(term))))
-      && matchesSelectFilters(option, filterValues, from, to)
+      && matchesSelectFilters(option, filterValues, filterByDateRange ? from : '', filterByDateRange ? to : '')
     ));
-  }, [options, query, searchByLabelOnly, filterValues, from, to]);
+  }, [options, query, searchByLabelOnly, filterValues, filterByDateRange, from, to]);
 
   const closeAndFocus = () => {
     setOpen(false);

@@ -100,7 +100,7 @@ test('LMS recommendations include a single shared word and keep unrelated module
   expect(api.errors).toEqual([]);
 });
 
-test('Compare filters current modules by group and inclusive overlapping dates while keeping the selected module', async ({ page }) => {
+test('Compare filters current modules by group and resets from the search icon while keeping the selected module', async ({ page }) => {
   const api = await setup(page);
   await page.goto('/training-plan');
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
@@ -114,15 +114,10 @@ test('Compare filters current modules by group and inclusive overlapping dates w
   await expect(page.getByLabel('Current modules Group filter', { exact: true })).toBeDisabled();
   await page.getByLabel('Current modules Cohort filter', { exact: true }).selectOption({ label: 'January cohort' });
   await page.getByLabel('Current modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
-  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-19');
-  await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-19');
+  await expect(page.getByLabel('Current modules From', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Current modules To', { exact: true })).toHaveCount(0);
   await expect(options).toHaveCount(1);
   await expect(options.first()).toContainText('Group 2');
-  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-20');
-  await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-21');
-  await expect(options).toHaveCount(0);
-  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-10');
-  await expect(options).toHaveCount(1);
   await options.first().click();
   const trigger = page.getByRole('button', { name: 'Current module to compare', exact: true });
   await expect(trigger).toContainText('Marketing');
@@ -133,14 +128,12 @@ test('Compare filters current modules by group and inclusive overlapping dates w
   await trigger.click();
   await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
   await expect(options).toHaveCount(3);
-  await expect(page.getByLabel('Current modules From', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('Current modules To', { exact: true })).toHaveValue('');
   await expect(page.getByRole('combobox', { name: 'Search current comparison modules', exact: true })).toBeFocused();
   expect(api.writes).toEqual([]);
   expect(api.errors).toEqual([]);
 });
 
-test('LMS search combines programme, cohort, group, tutor and dates and resets on mobile', async ({ page }, testInfo) => {
+test('LMS search combines programme, cohort, group and tutor and resets from the search icon on mobile', async ({ page }, testInfo) => {
   const api = await setup(page, false, [
     { sourceModuleId: 'target', module: 'Marketing February', groupName: 'Group 2', cohortName: 'Spring cohort', tutorName: 'Second Tutor', startDate: '2026-02-05', endDate: '2026-02-20' },
     { sourceModuleId: 'other', module: 'Marketing March', programme: 'Marketing Manager Level 6', groupName: 'Group 3', cohortName: 'Later cohort', tutorName: 'Other Tutor', startDate: '2026-03-01', endDate: '2026-03-20' },
@@ -175,8 +168,10 @@ test('LMS search combines programme, cohort, group, tutor and dates and resets o
   await page.getByLabel('LMS modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
   await expect(tutor.locator('option')).toHaveText(['All', 'Second Tutor']);
   await page.getByLabel('LMS modules Tutor filter', { exact: true }).selectOption({ label: 'Second Tutor' });
-  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-20');
-  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-02-20');
+  await expect(page.getByLabel('LMS modules From', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('LMS modules To', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Clear filters and search', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Modules overlapping this period/)).toHaveCount(0);
   await search.fill('February');
   await expect(options).toHaveCount(1);
   await expect(options.first()).toContainText('Marketing February');
@@ -189,8 +184,6 @@ test('LMS search combines programme, cohort, group, tutor and dates and resets o
   await expect(options).toHaveCount(7);
   await expect(search).toHaveValue('');
   await expect(search).toBeFocused();
-  await expect(page.getByLabel('LMS modules From', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('LMS modules To', { exact: true })).toHaveValue('');
   await expect(cohort).toBeDisabled();
   await page.getByLabel('LMS modules Programme filter', { exact: true }).selectOption({ label: 'ME L4' });
   await cohort.selectOption({ label: 'Spring cohort' });
@@ -208,12 +201,6 @@ test('LMS search combines programme, cohort, group, tutor and dates and resets o
   await expect(tutor).toBeDisabled();
   await expect(cohort.locator('option')).toHaveText(['All', 'Later cohort']);
   await expect(options).toHaveCount(1);
-  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
-  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-01');
-  await expect(options).toHaveCount(5);
-  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-01-01');
-  await expect(page.getByRole('alert')).toHaveText('From must be on or before To.');
-  await expect(options).toHaveCount(0);
   await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
   await expect(options).toHaveCount(7);
   expect(api.writes).toEqual([]);
