@@ -71,3 +71,22 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
   }
   return { groups, customModules, undrawableCount: records.length - validRecords.length };
 }
+
+// Keep the two sources in adjacent programme sections on one date axis.
+// Source records and saved programme/cohort identities remain untouched.
+export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = []) {
+  const lms = buildLmsTimelineLayout(records, currentProgrammes, currentModules);
+  const remaining = new Map(lms.groups.map(group => [group.id, group]));
+  const groups: ProgrammeGroup[] = [];
+  const appendLms = (group: ProgrammeGroup) => {
+    groups.push({ ...group, planSource: 'LMS', color: '#115E59' });
+    remaining.delete(group.id);
+  };
+  for (const programme of currentProgrammes) {
+    groups.push({ ...programme, id: `merged-current:${programme.id}`, planSource: 'Current', color: '#1B2A4A' });
+    const reference = remaining.get(`lms-programme:${programme.id}`);
+    if (reference) appendLms(reference);
+  }
+  for (const reference of remaining.values()) appendLms(reference);
+  return { groups, customModules: [...currentModules, ...lms.customModules], undrawableCount: lms.undrawableCount };
+}

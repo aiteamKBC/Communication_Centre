@@ -608,6 +608,7 @@ interface Props {
   exportExcelDisabled?: boolean;
   canManageCohorts?: boolean;
   referenceSource?: 'LMS';
+  mergedSources?: boolean;
 }
 
 // ── View window per zoom level ────────────────────────────────────────────
@@ -637,7 +638,7 @@ function getFirstDisplayedModuleDate(groups: ProgrammeGroup[]): string | undefin
   return undefined;
 }
 
-function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holidays: Holiday[] = [], referenceSource?: 'LMS'): { start: Date; end: Date } {
+function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holidays: Holiday[] = [], fitModules = false): { start: Date; end: Date } {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
 
@@ -647,7 +648,7 @@ function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holida
     ? new Date(maxEnd.getFullYear(), 11, 31)   // Dec 31 of last module's year
     : null;
 
-  if (referenceSource && groups?.length) {
+  if (fitModules && groups?.length) {
     const displayedDate = getFirstDisplayedModuleDate(groups);
     const anchor = displayedDate ? parseLocalDateOnly(displayedDate) : null;
     if (anchor && zoom === 'week') return getNormalizedWeekWindow(anchor);
@@ -1113,9 +1114,10 @@ export default function GanttTimeline({
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
-  referenceSource, showZoomControls = true, beforeTimeline,
+  referenceSource, mergedSources = false, showZoomControls = true, beforeTimeline,
 }: Props) {
-  const canManageCohorts = allowManagement && !referenceSource;
+  const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
+  const fitModules = Boolean(referenceSource) || mergedSources;
   const cohortHeaderHeight = COHORT_H;
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -1151,8 +1153,8 @@ export default function GanttTimeline({
     rowIdx: number;
     catalogModule?: CatalogModule;
   } | null>(null);
-  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays, referenceSource));
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays, fitModules));
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(mergedSources ? groups.map(group => group.id) : []));
   const collapsedGroups = useMemo(
     () => new Set(groups.filter(group => !expandedGroups.has(group.id)).map(group => group.id)),
     [groups, expandedGroups],
@@ -1634,24 +1636,24 @@ export default function GanttTimeline({
 
   const handleZoomChange = useCallback((z: ZoomLevel) => {
     onZoomChange(z);
-    setViewWindow(getDefaultViewWindow(z, groups, holidays, referenceSource));
+    setViewWindow(getDefaultViewWindow(z, groups, holidays, fitModules));
     setTooltip(null);
-  }, [onZoomChange, groups, holidays, referenceSource]);
+  }, [onZoomChange, groups, holidays, fitModules]);
 
   // A comparison toolbar can change zoom without using this timeline's buttons.
   const previousZoom = useRef(zoom);
   useEffect(() => {
     if (previousZoom.current === zoom) return;
     previousZoom.current = zoom;
-    setViewWindow(getDefaultViewWindow(zoom, groups, holidays, referenceSource));
+    setViewWindow(getDefaultViewWindow(zoom, groups, holidays, fitModules));
     setTooltip(null);
-  }, [zoom, groups, holidays, referenceSource]);
+  }, [zoom, groups, holidays, fitModules]);
 
   const effectiveViewWindow = useMemo(() => {
     const base = zoom === 'week' ? getNormalizedWeekWindow(viewWindow.start) : viewWindow;
-    if (referenceSource && (zoom === 'week' || zoom === 'day')) return base;
+    if (fitModules && (zoom === 'week' || zoom === 'day')) return base;
     return { start: base.start, end: effectiveEnd > base.end ? effectiveEnd : base.end };
-  }, [viewWindow, zoom, effectiveEnd, referenceSource]);
+  }, [viewWindow, zoom, effectiveEnd, fitModules]);
 
   const cols       = useMemo(() => generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end), [zoom, effectiveViewWindow]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
@@ -3220,8 +3222,8 @@ export default function GanttTimeline({
         <div className="tp-timeline-heading-title">
           <span className={`tp-section-icon ${referenceSource ? 'tp-timeline-icon-lms' : ''}`}><CalendarRange size={19} aria-hidden="true" /></span>
           <div>
-            <h3>{referenceSource ? 'LMS reference timeline' : 'Programme timeline'}</h3>
-            <p>{referenceSource ? 'Captured module dates, preserved for comparison.' : 'Explore delivery dates across programmes and cohorts.'}</p>
+            <h3>{mergedSources ? 'Combined programme timeline' : referenceSource ? 'LMS reference timeline' : 'Programme timeline'}</h3>
+            <p>{mergedSources ? 'One date axis for Current and LMS modules.' : referenceSource ? 'Captured module dates, preserved for comparison.' : 'Explore delivery dates across programmes and cohorts.'}</p>
           </div>
         </div>
         <span className="tp-timeline-hint">{referenceSource ? <LockKeyhole size={14} aria-hidden="true" /> : <Hand size={14} aria-hidden="true" />}{referenceSource ? 'Read only' : 'Drag to explore'}</span>
@@ -3245,7 +3247,7 @@ export default function GanttTimeline({
           {(zoom === 'week' || zoom === 'day') && (
             <button
               onClick={() => {
-                setViewWindow(getDefaultViewWindow(zoom, groups, holidays, referenceSource));
+                setViewWindow(getDefaultViewWindow(zoom, groups, holidays, fitModules));
               }}
               className="px-3 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
             >
@@ -3727,11 +3729,13 @@ export default function GanttTimeline({
             <div
               key={grp.id}
               data-programme-target={gi}
+              data-plan-source={grp.planSource}
               className="relative"
               onDragOver={canManageCohorts ? (e) => { if (dragItem.current?.type === 'group') handleDragOver(e, { type: 'group', groupIdx: gi }); } : undefined}
               onDragLeave={canManageCohorts ? handleDragLeave : undefined}
               onDrop={canManageCohorts ? (e) => handleGroupDrop(e, gi) : undefined}
               style={{
+                ...(mergedSources ? { borderTop: `4px solid ${grp.color}` } : {}),
                 ...(isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : {}),
                 ...(isFocusedProgramme ? { boxShadow: 'inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)' } : {}),
               }}
@@ -3786,8 +3790,8 @@ export default function GanttTimeline({
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
                         <i className="ri-book-open-line text-white" style={{ fontSize: '11px' }} />
                       </div>
-                      <p className="text-white/50 min-w-0" style={{ fontSize: '8.5px' }}>
-                        {referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
+                      <p className={grp.planSource ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: grp.planSource ? '10px' : '8.5px' }}>
+                        {grp.planSource ? `${grp.planSource} Training Plan` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
                       </p>
                     </div>
                     {canManageCohorts && (

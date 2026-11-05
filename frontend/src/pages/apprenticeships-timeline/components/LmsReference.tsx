@@ -1,19 +1,24 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Database, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Database, GitMerge, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
 import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
 import LmsReferenceTimeline, { type LmsReferenceTimelineProps } from './LmsReferenceTimeline';
 import { presentLmsRows } from '../lmsComparison';
-import type { CustomModule, ProgrammeGroup } from '../types';
+import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
+import MergedPlanTimeline from './MergedPlanTimeline';
 
-export default function LmsReference({ canCapture, currentProgrammes, customModules, renderLmsOverview, onViewLmsModule, children }: {
+export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, catalogModules, tutorProfiles, renderLmsOverview, onViewLmsModule, children }: {
   canCapture: boolean;
   currentProgrammes: ProgrammeGroup[];
   customModules: CustomModule[];
+  holidays: Holiday[];
+  catalogModules: CatalogModule[];
+  tutorProfiles: TutorProfile[];
   renderLmsOverview: LmsReferenceTimelineProps['renderOverview'];
   onViewLmsModule: LmsReferenceTimelineProps['onViewModule'];
   children: ReactNode;
 }) {
-  const [visible, setVisible] = useState(false);
+  const [view, setView] = useState<'current' | 'lms' | 'merged'>('current');
+  const visible = view !== 'current';
   const [loaded, setLoaded] = useState(false);
   const [reference, setReference] = useState<Reference | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,17 +76,24 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
       <div className="tp-source-label"><span className="tp-eyebrow">Timeline workspace</span><span>Choose your plan source</span></div>
       <div className="tp-source-tabs flex flex-wrap gap-1" role="tablist" aria-label="Training Plan data source">
         <button id="current-training-plan-tab" type="button" role="tab" aria-selected={!visible} aria-controls="current-training-plan-panel"
-          onClick={() => setVisible(false)}
+          onClick={() => setView('current')}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${!visible ? 'bg-kbc-navy text-white' : 'text-gray-600 hover:bg-slate-50'}`}><Layers3 size={16} aria-hidden="true" />Current Training Plan</button>
-        <button id="lms-training-plan-tab" type="button" role="tab" aria-selected={visible} aria-controls="training-plan-lms-reference"
-          onClick={() => { if (!loaded && !busy) void load(); setVisible(true); }}
-          className={`rounded-lg px-4 py-2 text-xs font-bold ${visible ? 'bg-teal-800 text-white' : 'text-teal-900 hover:bg-teal-50'}`}><Database size={16} aria-hidden="true" />LMS Training Plan</button>
+        <button id="lms-training-plan-tab" type="button" role="tab" aria-selected={view === 'lms'} aria-controls="training-plan-lms-reference"
+          onClick={() => { if (!loaded && !busy) void load(); setView('lms'); }}
+          className={`rounded-lg px-4 py-2 text-xs font-bold ${view === 'lms' ? 'bg-teal-800 text-white' : 'text-teal-900 hover:bg-teal-50'}`}><Database size={16} aria-hidden="true" />LMS Training Plan</button>
+        <button id="merged-training-plan-tab" type="button" role="tab" aria-selected={view === 'merged'} aria-controls="merged-training-plan-panel"
+          onClick={() => { if (!loaded && !busy) void load(); setView('merged'); }}
+          className={`rounded-lg px-4 py-2 text-xs font-bold ${view === 'merged' ? 'bg-kbc-navy text-white' : 'text-kbc-navy hover:bg-slate-50'}`}><GitMerge size={16} aria-hidden="true" />Merge</button>
       </div>
       </div>
       <div id="current-training-plan-panel" role="tabpanel" aria-labelledby="current-training-plan-tab" hidden={visible} className="min-w-0 space-y-4">
         <div className="space-y-4">{children}</div>
       </div>
-      <section id="training-plan-lms-reference" role="tabpanel" aria-labelledby="lms-training-plan-tab" hidden={!visible} className="min-w-0 space-y-4">
+      <section id="merged-training-plan-panel" role="tabpanel" aria-labelledby="merged-training-plan-tab" hidden={view !== 'merged'} className="min-w-0 space-y-4">
+        {view === 'merged' && reference && <MergedPlanTimeline records={records} currentProgrammes={currentProgrammes}
+          customModules={customModules} holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles} />}
+      </section>
+      <section id="training-plan-lms-reference" role="tabpanel" aria-labelledby="lms-training-plan-tab" hidden={view !== 'lms'} className="min-w-0 space-y-4">
         <div className="tp-lms-heading training-plan-comparison-heading flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="tp-lms-heading-icon"><Database size={20} aria-hidden="true" /></span>

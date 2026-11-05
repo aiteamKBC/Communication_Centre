@@ -6976,6 +6976,7 @@ export default function ApprenticeshipTimeline() {
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
           <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
+            holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles}
             renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
             onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
               const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [programme.rows[rowIndex]] }], [], lmsModules, [], [])

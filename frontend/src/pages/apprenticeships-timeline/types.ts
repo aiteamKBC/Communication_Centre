@@ -78,6 +78,7 @@ export interface CohortRow {
 
 export interface ProgrammeGroup {
   id: string;
+  planSource?: 'Current' | 'LMS';
   name: string;
   sub: string;
   color: string;
