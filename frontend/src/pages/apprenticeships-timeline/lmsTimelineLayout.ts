@@ -7,6 +7,7 @@ export function hasLmsDateRange(row: PresentedLmsRow): boolean {
 }
 
 const groupNumber = (value?: string | null) => value?.match(/\b(?:g|group)\s*[-:]?\s*(\d+)\b/i)?.[1];
+export type MergeMode = 'manual' | 'automatic';
 
 // Plan names are supplied only by confirmed display matches. A title's explicit
 // group number remains usable even when no current plan placement is confirmed.
@@ -75,7 +76,7 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
 function sortMergedRows(rows: CohortRow[]): CohortRow[] {
   const units: { rows: CohortRow[]; start: string }[] = [];
   for (const row of rows) {
-    const pair = row.manualMatch && units.find(unit => unit.rows[0].manualMatch?.id === row.manualMatch!.id);
+    const pair = row.mergeMatch && units.find(unit => unit.rows[0].mergeMatch?.id === row.mergeMatch!.id);
     if (pair) { pair.rows.push(row); continue; }
     units.push({ rows: [row], start: row.blks.map(block => block.startDate).filter(isComparisonDate).sort()[0]
       || (isComparisonDate(row.dateLbl) ? row.dateLbl : '') });
@@ -86,9 +87,11 @@ function sortMergedRows(rows: CohortRow[]): CohortRow[] {
 
 // Keep both sources inside one expandable programme on a shared date axis.
 // Source records and saved programme/cohort identities remain untouched.
-export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = []) {
+export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = [], mode: MergeMode = 'manual') {
   const lms = buildLmsTimelineLayout(records, currentProgrammes, currentModules);
-  const pairs = matchLmsPlans(currentProgrammes, records, currentModules).matched.filter(pair => pair.method === 'manual');
+  const matching = matchLmsPlans(currentProgrammes, records, currentModules);
+  // Automatic matching fills the remaining placements; saved manual choices keep priority.
+  const pairs = matching.matched.filter(pair => mode === 'automatic' || pair.method === 'manual');
   const pairedIds = new Set(pairs.map(pair => pair.lms.sourceModuleId));
   const lmsBlocks = new Map(lms.groups.flatMap(group => group.rows.flatMap(row => row.blks))
     .map(block => [block.moduleCatalogueId, block]));
@@ -99,18 +102,18 @@ export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentPro
   for (const programme of currentProgrammes) {
     const reference = remaining.get(`lms-programme:${programme.id}`);
     const programmePairs = pairs.filter(pair => pair.current.programme.id === programme.id);
-    const pairRows = programmePairs.flatMap(({ current, lms: record }): CohortRow[] => {
+    const pairRows = programmePairs.flatMap(({ current, lms: record, method }): CohortRow[] => {
       const id = JSON.stringify([programme.id, current.cohort.id, current.block.id, record.sourceModuleId]);
       const label = `${current.module} ↔ ${record.module || 'Module not provided'}`;
       const lmsBlock = lmsBlocks.get(record.sourceModuleId);
       const currentRow: CohortRow = { ...current.cohort, id: `merged-pair-current:${id}`, planSource: 'Current',
         dateLbl: current.block.startDate, blks: [current.block],
-        manualMatch: { id, label, moduleName: current.module } };
+        mergeMatch: { id, method, label, moduleName: current.module } };
       const lmsRow: CohortRow = {
         id: `merged-pair-lms:${id}`, planSource: 'LMS', label: lmsCohortDisplayName(record) || 'Cohort not provided',
         dateLbl: record.startDate || '', intake: '', quarter: '',
         blks: lmsBlock ? [{ ...lmsBlock, color: current.block.color || lmsBlock.color }] : [],
-        manualMatch: { id, label, moduleName: record.module || 'Module not provided',
+        mergeMatch: { id, method, label, moduleName: record.module || 'Module not provided',
           ...(!lmsBlock ? { dateWarning: `Missing or invalid dates: ${record.startDate || 'Not provided'} to ${record.endDate || 'Not provided'}` } : {}) },
       };
       return [currentRow, lmsRow];
@@ -135,5 +138,8 @@ export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentPro
     groups.push({ ...reference, id: `merged:${reference.id}`,
       rows: sortMergedRows(reference.rows.map(row => ({ ...row, planSource: 'LMS' as const }))) });
   }
-  return { groups, customModules: [...currentModules, ...lms.customModules], undrawableCount: lms.undrawableCount };
+  return { groups, customModules: [...currentModules, ...lms.customModules], undrawableCount: lms.undrawableCount,
+    manualPairCount: pairs.filter(pair => pair.method === 'manual').length,
+    automaticPairCount: pairs.filter(pair => pair.method === 'automatic').length,
+    reviewCount: matching.review.length };
 }

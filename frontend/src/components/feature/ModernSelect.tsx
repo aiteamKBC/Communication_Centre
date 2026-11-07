@@ -12,6 +12,7 @@ interface ModernSelectProps {
   options: ModernSelectOption[];
   onChange: (value: string) => void;
   placeholder?: string;
+  ariaLabel?: string;
   className?: string;
   buttonClassName?: string;
   menuClassName?: string;
@@ -27,6 +28,7 @@ export default function ModernSelect({
   options,
   onChange,
   placeholder = 'Select an option',
+  ariaLabel,
   className = '',
   buttonClassName = '',
   menuClassName = '',
@@ -72,12 +74,12 @@ export default function ModernSelect({
 
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleEscape);
-    window.addEventListener('modern-select-open', handleSelectOpen as EventListener);
+    window.addEventListener('modern-select-open', handleSelectOpen);
 
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleEscape);
-      window.removeEventListener('modern-select-open', handleSelectOpen as EventListener);
+      window.removeEventListener('modern-select-open', handleSelectOpen);
     };
   }, [selectId]);
 
@@ -161,19 +163,21 @@ export default function ModernSelect({
             : 'border-slate-200 bg-white shadow-sm shadow-slate-200/50 hover:border-slate-300 hover:shadow-md'
         } ${buttonClassName}`}
         aria-haspopup="listbox"
+        aria-label={ariaLabel}
+        aria-controls={open ? selectId : undefined}
         aria-expanded={open}
       >
         <span className={`min-w-0 flex-1 truncate text-sm font-medium ${selectedOption ? 'text-slate-700' : 'text-slate-400'}`}>
           {selectedValueContent}
         </span>
-        <span className={`flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-transform ${open ? 'rotate-180 bg-kbc-navy/5 text-kbc-navy' : ''}`}>
+        <span aria-hidden="true" className={`flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition-transform ${open ? 'rotate-180 bg-kbc-navy/5 text-kbc-navy' : ''}`}>
           <i className="ri-arrow-down-s-line text-lg" />
         </span>
       </button>
 
       {open && inlineMenu && (
         <div ref={menuRef} className={`relative z-10 mt-2 w-max min-w-full overflow-hidden rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_18px_45px_-22px_rgba(15,23,42,0.45)] backdrop-blur ${menuClassName}`}>
-          <div className="max-h-72 overflow-y-auto">
+          <div id={selectId} role="listbox" aria-label={ariaLabel} className="max-h-72 overflow-y-auto">
             {options.map(option => {
               const selected = option.value === value;
 
@@ -193,7 +197,7 @@ export default function ModernSelect({
                   role="option"
                   aria-selected={selected}
                 >
-                  <span className={`flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${
+                  <span aria-hidden="true" className={`flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${
                     selected
                       ? 'border-white/30 bg-white/15 text-white'
                       : 'border-slate-200 bg-white text-transparent'
@@ -222,7 +226,7 @@ export default function ModernSelect({
               width: menuPosition.width,
             }}
           >
-            <div style={{ maxHeight: menuPosition.maxHeight }} className="overflow-y-auto">
+            <div id={selectId} role="listbox" aria-label={ariaLabel} style={{ maxHeight: menuPosition.maxHeight }} className="overflow-y-auto">
               {options.map(option => {
                 const selected = option.value === value;
 
@@ -242,7 +246,7 @@ export default function ModernSelect({
                     role="option"
                     aria-selected={selected}
                   >
-                    <span className={`flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${
+                    <span aria-hidden="true" className={`flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${
                       selected
                         ? 'border-white/30 bg-white/15 text-white'
                         : 'border-slate-200 bg-white text-transparent'

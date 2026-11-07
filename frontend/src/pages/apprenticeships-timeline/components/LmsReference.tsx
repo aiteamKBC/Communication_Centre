@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Database, GitMerge, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Database, GitMerge, Hand, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
 import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
 import LmsReferenceTimeline, { type LmsReferenceTimelineProps } from './LmsReferenceTimeline';
 import { presentLmsRows } from '../lmsComparison';
 import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
 import MergedPlanTimeline from './MergedPlanTimeline';
+import type { SaveLmsModuleMatch } from './LmsModuleMatcher';
 
 export type TrainingPlanSource = 'current' | 'lms' | 'merged';
 
-export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, catalogModules, tutorProfiles, renderLmsOverview, onViewLmsModule, children, view, onViewChange: setView }: {
+export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, catalogModules, tutorProfiles, renderLmsOverview, onViewLmsModule, onViewMergedModule, onSaveManualMerge, children, view, onViewChange: setView, onManualMerge, manualMergeDisabled = false }: {
   canCapture: boolean;
   currentProgrammes: ProgrammeGroup[];
   customModules: CustomModule[];
@@ -17,9 +18,13 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
   tutorProfiles: TutorProfile[];
   renderLmsOverview: LmsReferenceTimelineProps['renderOverview'];
   onViewLmsModule: LmsReferenceTimelineProps['onViewModule'];
+  onViewMergedModule: LmsReferenceTimelineProps['onViewModule'];
+  onSaveManualMerge?: SaveLmsModuleMatch;
   children: ReactNode;
   view: TrainingPlanSource;
   onViewChange: (view: TrainingPlanSource) => void;
+  onManualMerge: () => void;
+  manualMergeDisabled?: boolean;
 }) {
   const visible = view !== 'current';
   const [loaded, setLoaded] = useState(false);
@@ -91,13 +96,19 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
           onClick={() => setView('merged')}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${view === 'merged' ? 'bg-kbc-navy text-white' : 'text-kbc-navy hover:bg-slate-50'}`}><GitMerge size={16} aria-hidden="true" />Merge</button>
       </div>
+      {view !== 'merged' && <button type="button" onClick={onManualMerge} disabled={manualMergeDisabled}
+        className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-4 py-2 text-xs font-semibold text-teal-900 disabled:opacity-40">
+        <Hand size={16} aria-hidden="true" />Manual Merge
+      </button>}
       </div>
       <div id="current-training-plan-panel" role="tabpanel" aria-labelledby="current-training-plan-tab" hidden={visible} className="min-w-0 space-y-4">
         <div className="space-y-4">{children}</div>
       </div>
       <section id="merged-training-plan-panel" role="tabpanel" aria-labelledby="merged-training-plan-tab" hidden={view !== 'merged'} className="min-w-0 space-y-4">
         {view === 'merged' && reference && <MergedPlanTimeline records={records} currentProgrammes={currentProgrammes}
-          customModules={customModules} holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles} />}
+          onViewModule={onViewMergedModule}
+          onSaveManualMerge={onSaveManualMerge}
+          customModules={customModules} holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles} onManualMerge={onManualMerge} />}
       </section>
       <section id="training-plan-lms-reference" role="tabpanel" aria-labelledby="lms-training-plan-tab" hidden={view !== 'lms'} className="min-w-0 space-y-4">
         <div className="tp-lms-heading training-plan-comparison-heading flex flex-wrap items-center justify-between gap-2">

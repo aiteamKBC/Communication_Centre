@@ -351,12 +351,12 @@ test('merge keeps manual pairs adjacent despite different dates, names and progr
   const before = JSON.stringify({ programme, records });
   const layout = buildMergedTimelineLayout(records, [programme]);
   const rows = layout.groups[0].rows;
-  const pair = rows.filter(row => row.manualMatch);
+  const pair = rows.filter(row => row.mergeMatch);
   expect(pair).toHaveLength(2);
   expect(pair.map(row => row.planSource)).toEqual(['Current', 'LMS']);
   expect(rows.indexOf(pair[1])).toBe(rows.indexOf(pair[0]) + 1);
-  expect(pair[0].manualMatch?.id).toBe(pair[1].manualMatch?.id);
-  expect(pair[0].manualMatch?.label).toBe('Local workshop ↔ Entirely different title');
+  expect(pair[0].mergeMatch?.id).toBe(pair[1].mergeMatch?.id);
+  expect(pair[0].mergeMatch?.label).toBe('Local workshop ↔ Entirely different title');
   expect(pair[0].blks[0]).toMatchObject({ id: 'paired', startDate: '2026-01-05' });
   expect(pair[1].blks[0]).toMatchObject({ source: 'LMS', moduleCatalogueId: 'chosen', startDate: '2024-01-01', endDate: '2024-02-01' });
   const blocks = layout.groups.flatMap(group => group.rows.flatMap(row => row.blks));
@@ -365,7 +365,40 @@ test('merge keeps manual pairs adjacent despite different dates, names and progr
   expect(blocks.filter(block => block.id === 'paired')).toHaveLength(1);
   expect(JSON.stringify({ programme, records })).toBe(before);
   programme.rows[0].blks[0].lmsSourceModuleId = '';
-  expect(buildMergedTimelineLayout(records, [programme]).groups.flatMap(group => group.rows).some(row => row.manualMatch)).toBe(false);
+  expect(buildMergedTimelineLayout(records, [programme]).groups.flatMap(group => group.rows).some(row => row.mergeMatch)).toBe(false);
+});
+
+test('automatic merge adds confirmed pairs, preserves manual choices and leaves ambiguous records unpaired', () => {
+  const programme = group([
+    block('saved', 'Local title', { lmsSourceModuleId: 'manual' }),
+    block('reserved', 'Source title'),
+    block('automatic', 'Unique module'),
+    block('ambiguous-one', 'Repeated'),
+    block('ambiguous-two', 'Repeated'),
+  ]);
+  const records = presentLmsRows([
+    source('manual', 'Source title'), source('automatic', 'Unique module'), source('ambiguous', 'Repeated'),
+  ], [programme]);
+  const before = JSON.stringify({ programme, records });
+  const manual = buildMergedTimelineLayout(records, [programme]);
+  expect(manual.manualPairCount).toBe(1);
+  expect(manual.automaticPairCount).toBe(0);
+  const automatic = buildMergedTimelineLayout(records, [programme], [], 'automatic');
+  expect(automatic.manualPairCount).toBe(1);
+  expect(automatic.automaticPairCount).toBe(1);
+  expect(automatic.reviewCount).toBe(2);
+  const rows = automatic.groups[0].rows;
+  for (const method of ['manual', 'automatic']) {
+    const pair = rows.filter(row => row.mergeMatch?.method === method);
+    expect(pair).toHaveLength(2);
+    expect(pair.map(row => row.planSource)).toEqual(['Current', 'LMS']);
+    expect(rows.indexOf(pair[1])).toBe(rows.indexOf(pair[0]) + 1);
+    expect(pair[0].mergeMatch?.id).toBe(pair[1].mergeMatch?.id);
+  }
+  const unpaired = rows.filter(row => !row.mergeMatch).flatMap(row => row.blks);
+  expect(unpaired.map(block => block.id)).toEqual(expect.arrayContaining(['reserved', 'ambiguous-one', 'ambiguous-two']));
+  expect(rows.flatMap(row => row.blks)).toHaveLength(8);
+  expect(JSON.stringify({ programme, records })).toBe(before);
 });
 
 test('merge retains a manually paired LMS module with invalid dates as a labelled empty lane', () => {
@@ -373,7 +406,7 @@ test('merge retains a manually paired LMS module with invalid dates as a labelle
   const records = presentLmsRows([source('invalid', 'Undated LMS workshop', { startDate: null, endDate: '2026-02-30' })], [programme]);
   const layout = buildMergedTimelineLayout(records, [programme]);
   expect(layout.groups[0].rows.map(row => row.planSource)).toEqual(['Current', 'LMS']);
-  expect(layout.groups[0].rows[1]).toMatchObject({ blks: [], manualMatch: {
+  expect(layout.groups[0].rows[1]).toMatchObject({ blks: [], mergeMatch: {
     moduleName: 'Undated LMS workshop', dateWarning: 'Missing or invalid dates: Not provided to 2026-02-30',
   } });
   expect(layout.undrawableCount).toBe(1);
@@ -780,22 +813,34 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await page.getByRole('tab', { name: 'Merge', exact: true }).click();
   const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
   await expect(merged.getByRole('heading', { name: 'Merged Training Plans', exact: true })).toBeVisible();
+  await expect(merged.getByRole('region', { name: 'LMS modules table', exact: true })).toHaveCount(0);
   await expect(current).toBeHidden();
   await expect(page.locator('#training-plan-lms-reference')).toBeHidden();
   await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
   await expect(merged.locator('[data-programme-target]')).toHaveCount(1);
   await expect(merged.getByTitle('ME L4', { exact: true })).toHaveCount(1);
   await expect(merged.getByTitle('Collapse programme', { exact: true })).toHaveCount(1);
-  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(2);
-  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(3);
-  expect(await merged.locator('[data-plan-source]').evaluateAll(rows => rows.map(row => row.getAttribute('data-plan-source'))))
-    .toEqual(['LMS', 'Current', 'Current', 'LMS', 'LMS']);
+  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(6);
+  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(6);
+  const cards = merged.locator('[data-merged-module-card]');
+  await expect(cards).toHaveCount(4);
+  expect(await cards.evaluateAll(nodes => nodes.map(node => Array.from(node.querySelectorAll('[data-plan-source]'), half => half.getAttribute('data-plan-source')))))
+    .toEqual(Array.from({ length: 4 }, () => ['Current', 'LMS']));
   const mergedCurrent = merged.locator('[data-source="Current"][data-timeline-block-id="b0"]');
   const mergedLms = merged.locator('[data-source="LMS"][title^="LMS: Same module."]');
   await expect(mergedCurrent).toHaveCount(1);
   await expect(mergedLms).toHaveCount(1);
   expect(await mergedCurrent.evaluate(element => element.style.left)).toBe(await mergedLms.evaluate(element => element.style.left));
   await expect(mergedLms).toHaveCSS('background-color', sourceColour);
+  await merged.getByRole('button', { name: 'View Current module details: Changed module', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Close module overview dialog', exact: true })).toBeVisible();
+  await expect(page.getByText('Plan Tutor Two', { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
+  await merged.getByRole('button', { name: 'View LMS module details: Changed module', exact: true }).click();
+  await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toContainText('LMS Tutor Two');
+  await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
+  await expect(merged.getByRole('button', { name: 'View LMS module details: Partial module', exact: true })).toBeDisabled();
   await expect(merged.locator('[data-source="LMS"][title*="2024-03-01"]')).toHaveCount(1);
   await expect(merged.getByRole('status')).toContainText('1 LMS module has missing or invalid dates');
   await expect(merged.getByTitle('Edit cohort', { exact: true })).toHaveCount(0);
@@ -817,17 +862,8 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await expect(lms.getByRole('button', { name: /Monthly Module Breakdown/ })).toHaveAttribute('aria-expanded', 'false');
   await expect(lms.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
   await lms.getByTitle('Expand programme', { exact: true }).click();
-  await expect(lms.locator('details').filter({ hasText: 'LMS modules' })).not.toHaveAttribute('open');
-  await lms.locator('summary').filter({ hasText: /^LMS modules/ }).click();
-  const moduleList = lms.getByRole('table', { name: 'All captured LMS modules, including missing or invalid dates', exact: true });
-  await expect(moduleList.locator('tbody tr')).toHaveCount(7);
-  await lms.getByLabel('LMS modules dates', { exact: true }).selectOption('missing');
-  await expect(moduleList.locator('tbody tr')).toHaveCount(1);
-  await expect(moduleList).toContainText('Partial module');
-  await lms.getByRole('button', { name: 'Reset modules filters', exact: true }).click();
-  await lms.getByLabel('Search LMS modules', { exact: true }).fill('LMS Tutor One');
-  await expect(moduleList.locator('tbody tr')).toHaveCount(1);
-  await lms.getByRole('button', { name: 'Reset modules filters', exact: true }).click();
+  await expect(lms.locator('summary').filter({ hasText: /^LMS modules/ })).toHaveCount(0);
+  await expect(lms.getByRole('region', { name: 'LMS modules table', exact: true })).toHaveCount(0);
   await expect(lms.locator('[data-source="LMS"][title^="LMS: Same module."]')).toHaveCSS('background-color', sourceColour);
   await expect(lms.getByText(/1 LMS module uses its creation date/)).toBeVisible();
   const downloading = page.waitForEvent('download');
@@ -848,8 +884,8 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
   await expect(merged.locator('[data-programme-target]')).toHaveCount(1);
   await expect(merged.getByTitle('Collapse programme', { exact: true })).toHaveCount(1);
-  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(2);
-  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(3);
+  await expect(merged.locator('[data-plan-source="Current"]')).toHaveCount(6);
+  await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(6);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('tab', { name: 'Current Training Plan', exact: true }).click();
   await expect(current).toBeVisible();

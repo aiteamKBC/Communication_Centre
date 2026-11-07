@@ -588,6 +588,7 @@ interface Props {
   zoom: ZoomLevel;
   onZoomChange: (z: ZoomLevel) => void;
   showZoomControls?: boolean;
+  toolbarControls?: ReactNode;
   beforeTimeline?: ReactNode;
   onManageHolidays?: () => void;
   onAddRow: (groupIdx: number) => void;
@@ -1114,7 +1115,7 @@ export default function GanttTimeline({
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
-  referenceSource, mergedSources = false, showZoomControls = true, beforeTimeline,
+  referenceSource, mergedSources = false, showZoomControls = true, toolbarControls, beforeTimeline,
 }: Props) {
   const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
   const fitModules = Boolean(referenceSource) || mergedSources;
@@ -1278,12 +1279,16 @@ export default function GanttTimeline({
   useEffect(() => () => {
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
+      headerScrollFrame.current = null;
     }
     if (floatingTipMoveFrame.current !== null) {
       window.cancelAnimationFrame(floatingTipMoveFrame.current);
+      floatingTipMoveFrame.current = null;
     }
     if (virtualViewportFrame.current !== null) {
       window.cancelAnimationFrame(virtualViewportFrame.current);
+      // Allow effects to schedule again after React's development cleanup.
+      virtualViewportFrame.current = null;
     }
   }, []);
 
@@ -1485,7 +1490,7 @@ export default function GanttTimeline({
     if (!el || !header) return;
 
     syncFixedScrollbarToTimeline();
-    if (zoom === 'week' || zoom === 'day') updateVirtualViewport();
+    updateVirtualViewport();
 
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
@@ -1495,7 +1500,7 @@ export default function GanttTimeline({
       header.style.transform = `translate3d(-${el.scrollLeft}px, 0, 0)`;
       headerScrollFrame.current = null;
     });
-  }, [syncFixedScrollbarToTimeline, updateVirtualViewport, zoom]);
+  }, [syncFixedScrollbarToTimeline, updateVirtualViewport]);
 
   const handleFixedScrollbarScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -1663,14 +1668,14 @@ export default function GanttTimeline({
     const rangeKey = `${zoom}:${cols[0]?.startDate}:${cols[0]?.widthPx}`;
     if (!referenceSource && initiallyPositionedRange.current === rangeKey) return;
     const firstProgramme = groups.find(group => group.rows.some(row => row.blks.length));
-    const firstDate = referenceSource ? getFirstDisplayedModuleDate(groups)
+    const firstDate = fitModules ? getFirstDisplayedModuleDate(groups)
       : firstProgramme?.rows.flatMap(row => row.blks.map(block => block.startDate)).sort()[0];
     const position = firstDate ? getBlockPosition(firstDate, firstDate, cols) : null;
     if (!position || !scrollRef.current) return;
     scrollRef.current.scrollLeft = Math.max(0, position.left - 24);
     initiallyPositionedRange.current = rangeKey;
     handleTimelineScroll();
-  }, [referenceSource, groups, cols, zoom, handleTimelineScroll]);
+  }, [referenceSource, fitModules, groups, cols, zoom, handleTimelineScroll]);
 
   useEffect(() => {
     updateFixedScrollbarBounds();
@@ -1715,7 +1720,7 @@ export default function GanttTimeline({
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
   const isZoomedGrid = zoom === 'day';
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
-  const shouldVirtualizeRows = zoom === 'week' || zoom === 'day';
+  const shouldVirtualizeRows = mergedSources || zoom === 'week' || zoom === 'day';
 
   const navigateToNow = useCallback(() => {
     const now = new Date();
@@ -1964,6 +1969,10 @@ export default function GanttTimeline({
   const virtualProgrammeMetrics = useMemo(() => {
     let cursor = 0;
     return groups.map(grp => {
+      const pairedRows = new Map<string, number>();
+      if (mergedSources) grp.rows.forEach((row, index) => {
+        if (row.mergeMatch) pairedRows.set(`${row.mergeMatch.id}:${row.planSource}`, index);
+      });
       const isCollapsed = collapsedGroups.has(grp.id);
       const programmeTop = cursor;
       cursor += PROGRAMME_HEADER_H;
@@ -1972,7 +1981,11 @@ export default function GanttTimeline({
         const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
         const ganttRows = buildGanttRows(row.blks, rowHolidays, row.referenceGroupNames);
         const totalModuleH = ganttRows.reduce((sum, ganttRow) => sum + rowHeight(ganttRow), 0);
-        const height = cohortHeaderHeight + (totalModuleH || MODULE_H);
+        const pairedRowIndex = mergedSources && row.mergeMatch
+          ? pairedRows.get(`${row.mergeMatch.id}:${row.planSource === 'LMS' ? 'Current' : 'LMS'}`) ?? -1
+          : -1;
+        const height = pairedRowIndex >= 0 ? (row.planSource === 'LMS' ? 0 : MODULE_H * 2)
+          : 1 + cohortHeaderHeight + (totalModuleH || MODULE_H);
         const top = cursor;
         if (!isCollapsed) cursor += height;
         return {
@@ -1982,6 +1995,8 @@ export default function GanttTimeline({
           rowHolidays,
           ganttRows,
           totalModuleH,
+          pairedRowIndex,
+          leftLabels: buildLeftLabelEntries(ganttRows, customModules),
         };
       });
       if (!isCollapsed && grp.rows.length === 0) {
@@ -1993,7 +2008,7 @@ export default function GanttTimeline({
         rows,
       };
     });
-  }, [collapsedGroups, groups, holidays, cohortHeaderHeight]);
+  }, [collapsedGroups, groups, holidays, cohortHeaderHeight, mergedSources, customModules]);
 
   const rowClashMarkers = useMemo(() => {
     const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
@@ -2272,7 +2287,7 @@ export default function GanttTimeline({
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', measureConnectors);
     };
-  }, [cols, crossRowTutorConflictPairs, leftW, timelineLayoutSignature, tutorConflictColorMap]);
+  }, [cols, crossRowTutorConflictPairs, leftW, timelineLayoutSignature, tutorConflictColorMap, virtualViewport]);
 
   // ── Header rows ───────────────────────────────────────────────────────
   const classSummaries = useMemo<ClassSummary[]>(() => {
@@ -2457,7 +2472,9 @@ export default function GanttTimeline({
       return next;
     });
 
-    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    const pairedRowIndex = virtualProgrammeMetrics[item.groupIdx]?.rows[item.rowIdx]?.pairedRowIndex ?? -1;
+    const rowIdx = groups[item.groupIdx]?.rows[item.rowIdx]?.planSource === 'LMS' && pairedRowIndex >= 0 ? pairedRowIndex : item.rowIdx;
+    const rowKey = `${item.groupIdx}-${rowIdx}`;
     setFocusedTimelineTarget({ rowKey, blockId: item.blockId });
 
     const [year, month, day] = item.targetDate.split('-').map(Number);
@@ -2481,7 +2498,7 @@ export default function GanttTimeline({
 
     setPendingTimelineNavigation({ rowKey, targetDate: item.targetDate });
     window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === item.blockId ? null : prev), 2200);
-  }, [groups, zoom]);
+  }, [groups, zoom, virtualProgrammeMetrics]);
 
   const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
     setLastClassSelection({ classKey: item.key, moduleKey });
@@ -2492,7 +2509,9 @@ export default function GanttTimeline({
       if (groupId) next.add(groupId);
       return next;
     });
-    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    const pairedRowIndex = virtualProgrammeMetrics[item.groupIdx]?.rows[item.rowIdx]?.pairedRowIndex ?? -1;
+    const rowIdx = groups[item.groupIdx]?.rows[item.rowIdx]?.planSource === 'LMS' && pairedRowIndex >= 0 ? pairedRowIndex : item.rowIdx;
+    const rowKey = `${item.groupIdx}-${rowIdx}`;
     setFocusedTimelineTarget({ rowKey, blockId });
 
     const targetDate = targetDateOverride || item.firstClashDate || item.targetDate;
@@ -2517,7 +2536,7 @@ export default function GanttTimeline({
     setPendingTimelineNavigation({ rowKey, targetDate: targetDate || item.targetDate || '' });
 
     window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === blockId ? null : prev), 2200);
-  }, [groups, zoom]);
+  }, [groups, zoom, virtualProgrammeMetrics]);
 
   const navigateToProgramme = useCallback((items: ClassSummary[]) => {
     const target = [...items].sort((a, b) => b.clashCount - a.clashCount || a.targetDate.localeCompare(b.targetDate))[0];
@@ -2992,7 +3011,7 @@ export default function GanttTimeline({
             return;
           }
           if (!canManageCohorts) {
-            if (barReferenceSource && onViewMonthlyBreakdown) {
+            if ((barReferenceSource || mergedSources) && onViewMonthlyBreakdown) {
               setTooltip(null);
               onViewMonthlyBreakdown(groupIdx, rowIdx, blk.id);
             }
@@ -3243,6 +3262,7 @@ export default function GanttTimeline({
         }}
       >
         {showZoomControls && <TimelineZoomControls zoom={zoom} onZoomChange={handleZoomChange} />}
+        {toolbarControls}
 
         <div className="flex items-center gap-1.5 ml-auto shrink-0">
           {(zoom === 'week' || zoom === 'day') && (
@@ -3736,18 +3756,18 @@ export default function GanttTimeline({
               onDragLeave={canManageCohorts ? handleDragLeave : undefined}
               onDrop={canManageCohorts ? (e) => handleGroupDrop(e, gi) : undefined}
               style={{
-                ...(mergedSources ? { outline: `2px solid ${grp.color}`, outlineOffset: '-2px' } : {}),
                 ...(isGroupDragOver ? { outline: `2px dashed ${grp.color}`, outlineOffset: '-2px' } : {}),
                 ...(isFocusedProgramme ? { boxShadow: 'inset 0 0 0 3px #DC2626, 0 0 0 2px rgba(220,38,38,0.12)' } : {}),
               }}
             >
               {/* ── Programme group header row ────────────────────────── */}
-              <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
+              <div className={`flex ${mergedSources ? 'tp-merged-programme-heading' : ''}`} style={{ height: PROGRAMME_HEADER_H, borderBottom: 'none', borderTop: 'none' }}>
                 <div
                   className="shrink-0 px-3.5 py-2.5"
                   style={{
                     width: leftW,
-                    background: grp.color,
+                    background: mergedSources ? '#1B2A4A' : grp.color,
+                    ...(mergedSources ? { borderLeft: `4px solid ${grp.color}` } : {}),
                     position: 'sticky',
                     left: 0,
                     zIndex: 20,
@@ -3771,7 +3791,7 @@ export default function GanttTimeline({
                     )}
                     <p
                       className="leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis flex-1"
-                      style={{ fontSize: '11px' }}
+                      style={{ fontSize: mergedSources ? '13px' : '11px' }}
                       title={grp.name.replace('\n', ' ')}
                     >
                       {grp.name.replace('\n', ' ')}
@@ -3791,7 +3811,7 @@ export default function GanttTimeline({
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
                         <i className="ri-book-open-line text-white" style={{ fontSize: '11px' }} />
                       </div>
-                      <p className={mergedSources ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: '8.5px' }}>
+                      <p className={mergedSources ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: mergedSources ? '10px' : '8.5px' }}>
                         {mergedSources ? `${programmeSources.length ? programmeSources.join(' + ') : 'Current'} Training Plan${programmeSources.length > 1 ? 's' : ''}` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
                       </p>
                     </div>
@@ -3837,10 +3857,12 @@ export default function GanttTimeline({
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
               {!isCollapsed && grp.rows.map((row, ri) => {
-                const rowColor = mergedSources && row.planSource ? (row.planSource === 'LMS' ? '#115E59' : '#1B2A4A') : row.color || grp.color;
-                const tunnelBg = `${rowColor}0D`;
-                const rowTargetKey = `${gi}-${ri}`;
                 const rowMetrics = programmeMetrics?.rows[ri];
+                const pairedRowIndex = rowMetrics?.pairedRowIndex ?? -1;
+                if (pairedRowIndex >= 0 && row.planSource === 'LMS') return null;
+                const rowColor = mergedSources && row.planSource ? (row.planSource === 'LMS' ? '#115E59' : '#1B2A4A') : row.color || grp.color;
+                const tunnelBg = `${rowColor}${mergedSources ? '04' : '0D'}`;
+                const rowTargetKey = `${gi}-${ri}`;
                 const rowHolidays = rowMetrics?.rowHolidays || [];
                 const ganttRows = rowMetrics?.ganttRows || [];
                 const totalModuleH = rowMetrics?.totalModuleH || 0;
@@ -3858,6 +3880,7 @@ export default function GanttTimeline({
                     <div
                       key={row.id}
                       data-row-target={rowTargetKey}
+                      data-virtual-placeholder="true"
                       style={{
                         height: rowHeightPx,
                         borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '18' : '0F'}`,
@@ -3865,6 +3888,70 @@ export default function GanttTimeline({
                       }}
                     />
                   );
+                }
+                if (pairedRowIndex >= 0) {
+                  const pairedRow = grp.rows[pairedRowIndex];
+                  const sources = [
+                    { sourceRow: row, rowIndex: ri, color: '#1B2A4A' },
+                    { sourceRow: pairedRow, rowIndex: pairedRowIndex, color: '#115E59' },
+                  ];
+                  const positions = sources.flatMap(({ sourceRow }) => sourceRow.blks.flatMap(blk => {
+                    const endDate = blk.source === 'LMS' ? blk.endDate : effectiveBlockEndDate(blk, rowHolidays);
+                    const pos = getBlockPosition(blk.startDate, endDate, cols);
+                    return pos ? [pos] : [];
+                  }));
+                  const cardLeft = positions.length ? Math.min(...positions.map(pos => pos.left)) : 0;
+                  const cardRight = positions.length ? Math.max(...positions.map(pos => pos.left + pos.width)) : cardLeft + 220;
+                  const cardWidth = Math.min(totalWidth - cardLeft, Math.max(180, cardRight - cardLeft));
+                  const cardMeta = resolveBlockMeta(row.blks[0], customModules);
+                  return <div key={row.id} data-row-target={rowTargetKey} className="flex relative border-t border-slate-200" style={{ height: MODULE_H * 2 }}>
+                    <div className="shrink-0 border-r border-slate-200 bg-white" style={{ width: leftW, position: 'sticky', left: 0, zIndex: 20 }}>
+                      {sources.map(({ sourceRow, color }) => <div key={sourceRow.id} className="flex flex-col justify-center gap-1 border-b border-slate-100 px-4" style={{ height: MODULE_H, borderLeft: `4px solid ${color}` }}>
+                        <span className="text-[8px] font-extrabold" style={{ color }}>{sourceRow.planSource} Training Plan · {row.mergeMatch!.method === 'manual' ? 'Manual' : 'Automatic'} match</span>
+                        <span className="truncate text-[10px] font-bold text-slate-800" title={sourceRow.label}>{sourceRow.label}</span>
+                        <span className="truncate text-[9px] text-slate-500">{sourceRow.blks[0]?.groupName || sourceRow.mergeMatch?.moduleName}</span>
+                      </div>)}
+                    </div>
+                    <div className="relative flex-1 overflow-hidden bg-teal-50/30">
+                      {zoom !== 'day' && <div className="pointer-events-none absolute inset-0 flex">
+                        {cols.map((column, index) => <div key={column.key} className="shrink-0 border-r" style={{ width: column.widthPx, ...getGridColumnStyle(column, index) }} />)}
+                      </div>}
+                      <div data-merged-module-card={row.mergeMatch!.id} aria-label={row.mergeMatch!.label}
+                        className="absolute z-10 overflow-hidden rounded-lg border border-teal-800 shadow-sm"
+                        style={{ left: cardLeft, width: cardWidth, top: 5, height: MODULE_H * 2 - 10, background: cardMeta.bg }}>
+                        {sources.map(({ sourceRow, rowIndex }, index) => {
+                          const blk = sourceRow.blks[0];
+                          const name = sourceRow.mergeMatch!.moduleName;
+                          const endDate = blk && (blk.source === 'LMS' ? blk.endDate : effectiveBlockEndDate(blk, rowHolidays));
+                          return <div key={sourceRow.id} data-plan-source={sourceRow.planSource}
+                            data-manual-match-id={row.mergeMatch!.method === 'manual' ? row.mergeMatch!.id : undefined}
+                            data-merge-match-id={row.mergeMatch!.id} data-merge-match-method={row.mergeMatch!.method}
+                            style={{ height: '50%' }}>
+                            <button type="button" disabled={!blk} data-timeline-block-id={blk?.id} data-source={sourceRow.planSource}
+                              data-start-date={blk?.startDate} data-end-date={endDate}
+                              aria-label={`View ${sourceRow.planSource} module details: ${name}`}
+                              title={blk?.source === 'LMS' ? `LMS: ${name}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${blk.tutor || 'Not assigned'}.` : `Current: ${name}`}
+                              className="flex h-full w-full cursor-pointer flex-col justify-center gap-0.5 px-3 text-left transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white disabled:cursor-default"
+                              style={{ color: cardMeta.tx, backgroundColor: cardMeta.bg,
+                                backgroundImage: index ? 'linear-gradient(rgba(15,23,42,0.08), rgba(15,23,42,0.08))' : undefined,
+                                boxShadow: index ? 'inset 0 1px 0 rgba(255,255,255,0.65)' : undefined }}
+                              onClick={() => {
+                                if (!blk) return;
+                                setTooltip(null);
+                                onViewMonthlyBreakdown?.(gi, rowIndex, blk.id);
+                              }}>
+                              <span className="text-[8px] font-extrabold tracking-wide opacity-80">{sourceRow.planSource} Training Plan · {row.mergeMatch!.method === 'manual' ? 'Manual' : 'Automatic'} match</span>
+                              <span className="w-full truncate text-[11px] font-extrabold">{name}</span>
+                              <span className="w-full truncate text-[9px] font-semibold opacity-90">{blk
+                                ? `${formatDateShort(blk.startDate)} → ${formatDateShort(endDate!)}${blk.startDateSource === 'created_at' ? ' · From created_at' : ''} · Tutor: ${blk.tutor || 'Not assigned'}`
+                                : sourceRow.mergeMatch!.dateWarning}</span>
+                            </button>
+                          </div>;
+                        })}
+                      </div>
+                      {nowPos && <div className="pointer-events-none absolute inset-y-0" style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }} />}
+                    </div>
+                  </div>;
                 }
                 const barPad = 5;
                 const moduleLayouts = (() => {
@@ -3966,6 +4053,7 @@ export default function GanttTimeline({
                   return connectors;
                 })();
 
+                const leftLabels = rowMetrics?.leftLabels || [];
                 const cohortDropShadow = isCohortDragOver
                   ? dragOver.position === 'after'
                     ? `inset 0 -2px 0 ${rowColor}`
@@ -3977,12 +4065,14 @@ export default function GanttTimeline({
                     key={row.id}
                     data-row-target={rowTargetKey}
                     data-plan-source={row.planSource}
-                    data-manual-match-id={row.manualMatch?.id}
+                    data-manual-match-id={row.mergeMatch?.method === 'manual' ? row.mergeMatch.id : undefined}
+                    data-merge-match-id={row.mergeMatch?.id}
+                    data-merge-match-method={row.mergeMatch?.method}
                     data-lms-cohort={referenceSource ? row.label : undefined}
                     data-lms-cohort-date={referenceSource ? row.dateLbl : undefined}
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
-                      ...(row.manualMatch ? { outline: '1px solid #0F766E', outlineOffset: '-1px' } : {}),
+                      ...(row.mergeMatch ? { outline: '1px solid #0F766E', outlineOffset: '-1px' } : {}),
                       ...(cohortDropShadow ? { boxShadow: cohortDropShadow } : {}),
                     }}
                     onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri, position: getCohortDropPosition(e) }) : undefined}
@@ -4019,7 +4109,7 @@ export default function GanttTimeline({
                               <i className="ri-draggable" style={{ fontSize: '12px' }} />
                             </span>
                           )}
-                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan{row.manualMatch && ' · Manual match'}</span>}
+                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan{row.mergeMatch && ` · ${row.mergeMatch.method === 'manual' ? 'Manual' : 'Automatic'} match`}</span>}
                           <div className="flex min-w-0 items-center gap-2">
                             <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }} title={row.label}>
                               {row.label}
@@ -4053,8 +4143,8 @@ export default function GanttTimeline({
                       </div>
                       {/* Timeline: cohort span indicator */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
-                        {row.manualMatch && <p className="truncate px-3 py-2 text-xs font-bold text-teal-900" title={row.manualMatch.label}>
-                          {row.manualMatch.label}
+                        {row.mergeMatch && <p className="truncate px-3 py-2 text-xs font-bold text-teal-900" title={row.mergeMatch.label}>
+                          {row.mergeMatch.label}
                         </p>}
                         {/* Now line */}
                         {nowPos && (
@@ -4073,7 +4163,7 @@ export default function GanttTimeline({
                           <div className="pl-6 flex items-center h-full">
                             <span className="text-xs text-gray-300 italic">No modules</span>
                           </div>
-                        ) : buildLeftLabelEntries(ganttRows, customModules).map(entry => (
+                        ) : leftLabels.map(entry => (
                           <div key={entry.key} className="absolute left-0 right-0 px-2" style={{ top: entry.top, height: entry.height }}>
                             <div
                               className={`h-full rounded-lg border bg-white/96 shadow-[0_1px_2px_rgba(15,23,42,0.05)] flex gap-1.5 pl-4 pr-2 ${referenceSource ? 'items-start py-3' : 'items-center'}`}
@@ -4105,8 +4195,8 @@ export default function GanttTimeline({
 
                       {/* Timeline area */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
-                        {row.manualMatch?.dateWarning && <p className="relative z-10 px-3 py-4 text-xs font-semibold text-amber-900">
-                          {row.manualMatch.moduleName} · {row.manualMatch.dateWarning}
+                        {row.mergeMatch?.dateWarning && <p className="relative z-10 px-3 py-4 text-xs font-semibold text-amber-900">
+                          {row.mergeMatch.moduleName} · {row.mergeMatch.dateWarning}
                         </p>}
 
                         {/* Column gridlines */}
@@ -4128,7 +4218,7 @@ export default function GanttTimeline({
 
                         {/* Continue each group boundary across its module bars. */}
                         <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
-                          {buildLeftLabelEntries(ganttRows, customModules).slice(1).map(entry => (
+                          {leftLabels.slice(1).map(entry => (
                             <div key={entry.key} className="absolute left-0 right-0 border-t border-slate-200/70" style={{ top: entry.top }} />
                           ))}
                         </div>

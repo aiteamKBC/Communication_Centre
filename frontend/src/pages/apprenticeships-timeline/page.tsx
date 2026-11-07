@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeftRight, BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
+import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
 import './training-plan.css';
 import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
@@ -6660,176 +6660,228 @@ export default function ApprenticeshipTimeline() {
             <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="tp-header-content flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="tp-title-icon w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
-                <GraduationCap size={25} aria-hidden="true" />
-              </div>
-              <div>
-                <p className="tp-eyebrow">Learning &amp; delivery</p>
-                <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
-                  Apprenticeships Training Plan
-                </h1>
-                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2025 – 2027</p>
-              </div>
-            </div>
-
-            <div className="tp-stat-grid" aria-label="Training Plan overview">
-              {[
-                { icon: BookOpen, value: groups.length, label: 'Programmes' },
-                { icon: GraduationCap, value: totalCohorts, label: 'Cohorts' },
-                { icon: Users, value: totalGroups, label: 'Groups' },
-                { icon: Layers3, value: totalModules, label: 'Modules' },
-                { icon: Clock3, value: totalSessions, label: 'Sessions' },
-                { icon: CalendarDays, value: holidayCount, label: 'Holidays' },
-              ].map((s, i) => (
-                <div key={i} className="tp-stat">
-                  <span className="tp-stat-icon"><s.icon size={18} aria-hidden="true" /></span>
-                  <span><strong>{isInitialProgrammesLoading ? '—' : s.value}</strong><span className="tp-stat-label">{s.label}</span></span>
+          <div className="tp-header-overview">
+            <div className="tp-header-summary">
+              <div className="tp-header-content flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
+                <div className="tp-title-row flex items-center gap-3 min-w-0">
+                  <div className="tp-title-icon w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                    <GraduationCap size={25} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="tp-eyebrow">Learning &amp; delivery</p>
+                    <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
+                      Apprenticeships Training Plan
+                    </h1>
+                    <p className="tp-title-meta">
+                      <span>Programme structure</span>
+                      <span className="tp-period-badge"><CalendarRange size={13} aria-hidden="true" />2025 – 2027</span>
+                    </p>
+                  </div>
                 </div>
-              ))}
-            </div>
 
-            <div className="hidden xl:flex items-center gap-2 ml-auto">
-              {showHiddenCohortActions && canManageCohorts && (
-                <button
-                  onClick={() => setShowHolidayMgr(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                  style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
-                  <i className="ri-calendar-event-line" />
-                  Holidays
-                </button>
-              )}
+                <div className="tp-stat-grid" role="group" aria-label="Training Plan overview" aria-busy={isInitialProgrammesLoading}>
+                  {[
+                    { icon: BookOpen, value: groups.length, label: 'Programmes' },
+                    { icon: GraduationCap, value: totalCohorts, label: 'Cohorts' },
+                    { icon: Users, value: totalGroups, label: 'Groups' },
+                    { icon: Layers3, value: totalModules, label: 'Modules' },
+                    { icon: Clock3, value: totalSessions, label: 'Sessions' },
+                    { icon: CalendarDays, value: holidayCount, label: 'Holidays' },
+                  ].map((s, i) => (
+                    <div key={i} className="tp-stat">
+                      <span className="tp-stat-icon"><s.icon size={18} aria-hidden="true" /></span>
+                      <span><strong>{isInitialProgrammesLoading ? '—' : s.value.toLocaleString('en-GB')}</strong><span className="tp-stat-label">{s.label}</span></span>
+                    </div>
+                  ))}
+                </div>
 
-              {showHiddenCohortActions && canManageCohorts && (
-                <div className="relative" ref={addDropdownRef}>
-                  <button
-                    onClick={() => setAddDropdownOpen(v => !v)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                    style={{ background: '#1B2A4A' }}>
-                    <i className="ri-add-line" />
-                    Add Cohort
-                    {addDropdownOpen ? (
-                      <i className="ri-arrow-up-s-line ml-0.5" />
-                    ) : (
-                      <i className="ri-arrow-down-s-line ml-0.5" />
-                    )}
-                  </button>
-                  {addDropdownOpen && (
-                    <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
-                      <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                        Select Programme
-                      </p>
-                      {groups.map((g, gi) => (
-                        <button
-                          key={gi}
-                          onClick={() => {
-                            setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-                            setAddDropdownOpen(false);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
-                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
-                          <div>
-                            <p className="text-xs font-bold text-gray-800 leading-tight">
-                              {g.name.split('\n')[0]}
-                            </p>
-                            <p className="text-xs text-gray-400 leading-tight">
-                              {g.name.split('\n')[1] || ''} Â· {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
-                            </p>
-                          </div>
-                        </button>
-                      ))}
+                <div className="hidden xl:flex items-center gap-2 ml-auto">
+                  {showHiddenCohortActions && canManageCohorts && (
+                    <button
+                      onClick={() => setShowHolidayMgr(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                      style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                      <i className="ri-calendar-event-line" />
+                      Holidays
+                    </button>
+                  )}
+
+                  {showHiddenCohortActions && canManageCohorts && (
+                    <div className="relative" ref={addDropdownRef}>
+                      <button
+                        onClick={() => setAddDropdownOpen(v => !v)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                        style={{ background: '#1B2A4A' }}>
+                        <i className="ri-add-line" />
+                        Add Cohort
+                        {addDropdownOpen ? (
+                          <i className="ri-arrow-up-s-line ml-0.5" />
+                        ) : (
+                          <i className="ri-arrow-down-s-line ml-0.5" />
+                        )}
+                      </button>
+                      {addDropdownOpen && (
+                        <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                          <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                            Select Programme
+                          </p>
+                          {groups.map((g, gi) => (
+                            <button
+                              key={gi}
+                              onClick={() => {
+                                setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                                setAddDropdownOpen(false);
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                              <div>
+                                <p className="text-xs font-bold text-gray-800 leading-tight">
+                                  {g.name.split('\n')[0]}
+                                </p>
+                                <p className="text-xs text-gray-400 leading-tight">
+                                  {g.name.split('\n')[1] || ''} Â· {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
 
-          {/* Action buttons */}
-          <div className="tp-header-secondary-actions training-plan-action-row mt-3 xl:hidden">
-            {canManageCohorts && (
-              <button
-                onClick={() => setShowHolidayMgr(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
-                <i className="ri-calendar-event-line" />
-                Holidays
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => setShowAddCatalogModule(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
-                <i className="ri-puzzle-line" />
-                Add Module
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => {
-                  setInitialManageModuleId(null);
-                  setShowManageModules(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
-                <i className="ri-list-check-2" />
-                View Added Modules
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => setProgramModal({ open: true, mode: 'add' })}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                style={{ background: '#1B2A4A' }}>
-                <i className="ri-add-circle-line" />
-                Add Programme
-              </button>
-            )}
+              {/* Action buttons */}
+              <div className="tp-header-secondary-actions training-plan-action-row mt-3 xl:hidden">
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setShowHolidayMgr(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                    <i className="ri-calendar-event-line" />
+                    Holidays
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setShowAddCatalogModule(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
+                    <i className="ri-puzzle-line" />
+                    Add Module
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => {
+                      setInitialManageModuleId(null);
+                      setShowManageModules(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
+                    <i className="ri-list-check-2" />
+                    View Added Modules
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                    style={{ background: '#1B2A4A' }}>
+                    <i className="ri-add-circle-line" />
+                    Add Programme
+                  </button>
+                )}
 
-            {showHiddenCohortActions && canManageCohorts && (
-              <div className="relative" ref={addDropdownRef}>
-                <button
-                  onClick={() => setAddDropdownOpen(v => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                  style={{ background: '#1B2A4A' }}>
-                  <i className="ri-add-line" />
-                  Add Cohort
-                  {addDropdownOpen ? (
-                    <i className="ri-arrow-up-s-line ml-0.5" />
-                  ) : (
-                    <i className="ri-arrow-down-s-line ml-0.5" />
-                  )}
-                </button>
-                {addDropdownOpen && (
-                  <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
-                    <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                      Select Programme
-                    </p>
-                    {groups.map((g, gi) => (
-                      <button
-                        key={gi}
-                        onClick={() => {
-                          setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-                          setAddDropdownOpen(false);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
-                        <div>
-                          <p className="text-xs font-bold text-gray-800 leading-tight">
-                            {g.name.split('\n')[0]}
-                          </p>
-                          <p className="text-xs text-gray-400 leading-tight">
-                            {g.name.split('\n')[1] || ''} · {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
-                          </p>
-                        </div>
-                      </button>
-                    ))}
+                {showHiddenCohortActions && canManageCohorts && (
+                  <div className="relative" ref={addDropdownRef}>
+                    <button
+                      onClick={() => setAddDropdownOpen(v => !v)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                      style={{ background: '#1B2A4A' }}>
+                      <i className="ri-add-line" />
+                      Add Cohort
+                      {addDropdownOpen ? (
+                        <i className="ri-arrow-up-s-line ml-0.5" />
+                      ) : (
+                        <i className="ri-arrow-down-s-line ml-0.5" />
+                      )}
+                    </button>
+                    {addDropdownOpen && (
+                      <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                        <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                          Select Programme
+                        </p>
+                        {groups.map((g, gi) => (
+                          <button
+                            key={gi}
+                            onClick={() => {
+                              setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                              setAddDropdownOpen(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                            <div>
+                              <p className="text-xs font-bold text-gray-800 leading-tight">
+                                {g.name.split('\n')[0]}
+                              </p>
+                              <p className="text-xs text-gray-400 leading-tight">
+                                {g.name.split('\n')[1] || ''} · {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
+            </div>
+
+            {/* Today's Sessions */}
+            <div className="tp-today-card bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
+              <div className="tp-section-heading">
+                <div className="flex items-center gap-3">
+                  <span className="tp-section-icon"><CalendarDays size={19} aria-hidden="true" /></span>
+                  <div><p className="tp-eyebrow">Daily overview</p><h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2></div>
+                </div>
+                <span className="tp-count-badge">{isInitialProgrammesLoading ? 'Loading…' : `${todaySessions.length} scheduled`}</span>
+              </div>
+              {isInitialProgrammesLoading ? (
+                <div className="mt-3 space-y-3 animate-pulse">
+                  {[0, 1, 2].map((item) => (
+                    <div key={item} className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 px-3 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="h-4 w-32 rounded-full bg-slate-200" />
+                        <div className="mt-2 h-3 w-48 rounded-full bg-slate-200" />
+                      </div>
+                      <div className="h-4 w-20 rounded-full bg-slate-200" />
+                    </div>
+                  ))}
+                </div>
+              ) : todaySessions.length === 0 ? (
+                <div className="tp-today-empty">
+                  <span className="tp-empty-icon"><CalendarDays size={20} aria-hidden="true" /></span>
+                  <p>No sessions scheduled for today.</p>
+                </div>
+              ) : (
+                <ul className="mt-3 max-h-60 overflow-y-auto divide-y">
+                  {todaySessions.map((s, i) => (
+                    <li key={i} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">{s.groupName}</p>
+                        <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
+                        <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
+                        <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
+                      </div>
+                      <div className="text-left sm:text-right">
+                        <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -6864,48 +6916,6 @@ export default function ApprenticeshipTimeline() {
             </div>
           </div>
         )}
-        {/* Today's Sessions */}
-        <div className="tp-today-card bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
-          <div className="tp-section-heading">
-            <div className="flex items-center gap-3">
-              <span className="tp-section-icon"><CalendarDays size={19} aria-hidden="true" /></span>
-              <div><p className="tp-eyebrow">Daily overview</p><h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2></div>
-            </div>
-            <span className="tp-count-badge">{isInitialProgrammesLoading ? 'Loading…' : `${todaySessions.length} scheduled`}</span>
-          </div>
-          {isInitialProgrammesLoading ? (
-            <div className="mt-3 space-y-3 animate-pulse">
-              {[0, 1, 2].map((item) => (
-                <div key={item} className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 px-3 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="h-4 w-32 rounded-full bg-slate-200" />
-                    <div className="mt-2 h-3 w-48 rounded-full bg-slate-200" />
-                  </div>
-                  <div className="h-4 w-20 rounded-full bg-slate-200" />
-                </div>
-              ))}
-            </div>
-          ) : todaySessions.length === 0 ? (
-            <p className="tp-today-empty text-xs text-gray-400 mt-2">No sessions scheduled for today.</p>
-          ) : (
-            <ul className="mt-3 divide-y">
-              {todaySessions.map((s, i) => (
-                <li key={i} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">{s.groupName}</p>
-                    <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
-                    <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
-                    <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
-                  </div>
-                  <div className="text-left sm:text-right">
-                    <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
         {/* Tab switcher */}
         <div className="tp-workspace-nav flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
           <div className="tp-view-tabs training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0" aria-label="Training Plan views">
@@ -6925,10 +6935,6 @@ export default function ApprenticeshipTimeline() {
                 {tab.label}
               </button>
             ))}
-            <button type="button" onClick={() => setShowModuleComparison(true)} disabled={isInitialProgrammesLoading}
-              className="flex items-center gap-1.5 rounded-md border border-teal-200 bg-teal-50 px-4 py-1.5 text-xs font-semibold text-teal-900 disabled:opacity-40">
-              <ArrowLeftRight size={16} aria-hidden="true" />Compare
-            </button>
           </div>
           {canManageCohorts && (
             <div className="tp-management-actions training-plan-action-row lg:overflow-visible lg:pb-0">
@@ -6978,8 +6984,19 @@ export default function ApprenticeshipTimeline() {
         {activeTab === 'gantt' && (
           <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
             view={trainingPlanSource} onViewChange={setTrainingPlanSource}
+            onManualMerge={() => setShowModuleComparison(true)}
+            manualMergeDisabled={isInitialProgrammesLoading}
+            onSaveManualMerge={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
             holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles}
             renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
+            onViewMergedModule={(programme, rowIndex, blockId, modules) => {
+              const row = programme.rows[rowIndex];
+              const isLms = row.planSource === 'LMS';
+              const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [row] }],
+                isLms ? [] : holidays, modules, isLms ? [] : catalogModules, isLms ? [] : ksbProfiles)
+                .find(item => item.moduleBlockId === blockId);
+              if (summary) setSelectedMonthlySummary({ summary, mode: 'monthly' });
+            }}
             onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
               const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [programme.rows[rowIndex]] }], [], lmsModules, [], [])
                 .find(item => item.moduleBlockId === blockId);
@@ -6991,7 +7008,6 @@ export default function ApprenticeshipTimeline() {
             <>
               <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200">
                 <GanttTimeline
-                  beforeTimeline={<div data-training-plan-overview><MonthlyModuleBreakdown summaries={monthlyModuleSummaries} /></div>}
                   groups={groups}
                   holidays={holidays}
                   customModules={customModules}
@@ -7028,6 +7044,9 @@ export default function ApprenticeshipTimeline() {
                   exportExcelDisabled={isInitialProgrammesLoading || exportRowCount === 0}
                   canManageCohorts={canEditTrainingPlan}
                 />
+              </div>
+              <div data-training-plan-overview>
+                <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
               </div>
             </>
           ) : (

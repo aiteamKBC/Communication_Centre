@@ -23,14 +23,15 @@ async function setup(page: Page, automatic = false, additionalModules: (Partial<
     const method = route.request().method();
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (method !== 'GET' && path.startsWith('/api/training-plan')) writes.push(path);
-    if (path === '/api/training-plan/modules/101/' && method === 'PATCH') {
+    const savedItem = items.find(item => path === `/api/training-plan/modules/${item.id}/`);
+    if (savedItem && method === 'PATCH') {
       if (rejectSave) return json({ detail: 'The match could not be saved.' }, 400);
       const payload = route.request().postDataJSON();
       expect(payload.version).toBe(version);
       expect(Object.keys(payload).sort()).toEqual(['notes', 'version']);
-      items[0].notes = payload.notes;
+      savedItem.notes = payload.notes;
       version = 'v2';
-      return json({ item: items[0], items, version, count: items.length });
+      return json({ item: savedItem, items, version, count: items.length });
     }
     if (path === '/api/auth/access/') return json(user);
     if (path === '/api/health/') return json({ status: 'ok' });
@@ -54,7 +55,7 @@ async function setup(page: Page, automatic = false, additionalModules: (Partial<
   });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  return { items, writes, errors, failSave: () => { rejectSave = true; } };
+  return { items, writes, errors, failSave: () => { rejectSave = true; }, allowSave: () => { rejectSave = false; } };
 }
 
 async function openMatcher(page: Page) {
@@ -103,7 +104,7 @@ test('LMS recommendations include a single shared word and keep unrelated module
 test('Compare filters current modules by group and resets from the search icon while keeping the selected module', async ({ page }) => {
   const api = await setup(page);
   await page.goto('/training-plan');
-  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+  await page.getByRole('button', { name: 'Add manual match', exact: true }).click();
   await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
   const options = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
   await expect(page.getByLabel('Current modules Cohort filter', { exact: true })).toBeDisabled();
@@ -144,7 +145,7 @@ test('LMS search combines programme, cohort, group and tutor and resets from the
   ]);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/training-plan');
-  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+  await page.getByRole('button', { name: 'Add manual match', exact: true }).click();
   await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
   await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
   await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
@@ -207,13 +208,22 @@ test('LMS search combines programme, cohort, group and tutor and resets from the
   expect(api.errors).toEqual([]);
 });
 
-test('standalone Compare browses all assignments and LMS programmes without saving on desktop and mobile', async ({ page }, testInfo) => {
+test('timeline Manual Merge browses all assignments and LMS programmes without saving on desktop and mobile', async ({ page }, testInfo) => {
   const api = await setup(page, false, [{ sourceModuleId: 'cross', module: 'Cross programme module', programme: 'Marketing Manager Level 6' }]);
   api.items[1].notes += '\n__lms_source_module_id:chosen';
   const originalItems = JSON.stringify(api.items);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/training-plan');
-  const trigger = page.getByRole('button', { name: 'Compare', exact: true });
+  const trigger = page.getByRole('button', { name: 'Add manual match', exact: true });
+  await expect(trigger).toBeVisible();
+  for (const name of ['Session Schedule', 'Tutor Profiles', 'Coach Profiles']) {
+    await page.getByRole('button', { name, exact: true }).click();
+    await expect(trigger).toHaveCount(0);
+  }
+  await page.getByRole('button', { name: 'Training Plan', exact: true }).click();
+  await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
+  await expect(trigger).toBeVisible();
+  await page.getByRole('tab', { name: 'Current Training Plan', exact: true }).click();
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
   await expect(dialog).toBeVisible();
@@ -256,6 +266,82 @@ test('standalone Compare browses all assignments and LMS programmes without savi
   expect(api.errors).toEqual([]);
 });
 
+test('Merge separates manual matching from display filters and preserves saved manual choices', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const api = await setup(page, true, [{ sourceModuleId: 'second', module: 'Marketing', startDate: '2026-01-12' }]);
+  await page.goto('/training-plan');
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+  const manual = merged.getByRole('button', { name: 'Manual Merge', exact: true });
+  const addMatch = merged.getByRole('button', { name: 'Add manual match', exact: true });
+  const filter = merged.getByRole('button', { name: 'Show merges', exact: true });
+  await expect(manual).toHaveCount(0);
+  await expect(filter).toHaveText('All merges');
+  const pairs = merged.locator('[data-merge-match-method="automatic"]');
+  await expect(pairs).toHaveCount(4);
+  await expect(pairs.nth(0)).toHaveAttribute('data-plan-source', 'Current');
+  await expect(pairs.nth(1)).toHaveAttribute('data-plan-source', 'LMS');
+  await expect(pairs.nth(0)).toContainText('Automatic match');
+  expect(await pairs.nth(0).evaluate(node => node.nextElementSibling?.getAttribute('data-merge-match-id')))
+    .toBe(await pairs.nth(0).getAttribute('data-merge-match-id'));
+  await filter.click();
+  await page.getByRole('option', { name: 'Manual only', exact: true }).click();
+  await expect(filter).toHaveText('Manual only');
+  await expect(merged.getByText('No manual matches to display. Use Add manual match to choose a pair.', { exact: true })).toBeVisible();
+  await expect(merged.locator('[data-merge-match-id]')).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Compare modules', exact: true })).toHaveCount(0);
+  await filter.click();
+  await page.getByRole('option', { name: 'Automatic only', exact: true }).click();
+  await expect(pairs).toHaveCount(4);
+  await expect(merged.locator('[data-plan-source]')).toHaveCount(4);
+  expect(api.writes).toEqual([]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(manual).toHaveCount(0);
+  await expect(filter).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('merge-display-filter-mobile.png'), fullPage: true });
+  await filter.click();
+  await page.getByRole('option', { name: 'Manual only', exact: true }).click();
+  await expect(pairs).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Compare modules', exact: true })).toHaveCount(0);
+  await addMatch.click();
+  const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').filter({ hasText: 'Group 1' }).click();
+  await expect(dialog.getByRole('button', { name: 'LMS module to match', exact: true })).toContainText('Marketing');
+  await dialog.getByRole('button', { name: 'Save manual match', exact: true }).click();
+  await expect(dialog.getByText('Manual match saved.', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'View in Merge', exact: true }).click();
+  await expect(filter).toHaveText('Manual only');
+  await expect(pairs).toHaveCount(0);
+  await expect(merged.locator('[data-merge-match-method="manual"]')).toHaveCount(2);
+  const savedItems = JSON.stringify(api.items);
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await filter.click();
+    await page.getByRole('option', { name: 'Automatic only', exact: true }).click();
+    await expect(merged.locator('[data-merge-match-method="manual"]')).toHaveCount(0);
+    await expect(pairs).toHaveCount(2);
+    await expect(merged.locator('[data-plan-source]')).toHaveCount(2);
+    await filter.click();
+    await page.getByRole('option', { name: 'Manual only', exact: true }).click();
+    await expect(merged.locator('[data-merge-match-method="manual"]')).toHaveCount(2);
+    await expect(pairs).toHaveCount(0);
+    await expect(merged.locator('[data-plan-source]')).toHaveCount(2);
+    await filter.click();
+    await page.getByRole('option', { name: 'All merges', exact: true }).click();
+    await expect(merged.locator('[data-merge-match-method="manual"]')).toHaveCount(2);
+    await expect(pairs).toHaveCount(2);
+    await expect(merged.locator('[data-plan-source]')).toHaveCount(5);
+    await expect(page.getByRole('dialog', { name: 'Compare modules', exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  expect(JSON.stringify(api.items)).toBe(savedItems);
+  expect(api.writes).toEqual(['/api/training-plan/modules/101/']);
+  expect(api.errors).toEqual([]);
+});
+
 for (const crossProgramme of [false, true]) {
   test(`Compare saves a manual pair ${crossProgramme ? 'across programmes' : 'within a programme'} and stacks it on the Merge timeline`, async ({ page }, testInfo) => {
     test.setTimeout(90_000);
@@ -263,7 +349,8 @@ for (const crossProgramme of [false, true]) {
       programme: 'Marketing Manager Level 6', cohortName: 'Different intake', groupName: 'Source group',
       startDate: '2024-01-01', endDate: '2024-02-01' }] : []);
     await page.goto('/training-plan');
-    await page.getByRole('button', { name: 'Compare', exact: true }).click();
+    await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+    await page.getByRole('button', { name: 'Add manual match', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
     await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
     await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').filter({ hasText: 'Group 1' }).click();
@@ -276,6 +363,10 @@ for (const crossProgramme of [false, true]) {
     expect(api.items[0].notes).toContain(`__lms_source_module_id:${crossProgramme ? 'cross' : 'chosen'}`);
     await dialog.getByRole('button', { name: 'View in Merge', exact: true }).click();
     const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+    const savedMerges = merged.getByRole('region', { name: 'Saved manual merges', exact: true });
+    await expect(savedMerges.getByRole('listitem')).toHaveCount(1);
+    await expect(savedMerges).toContainText(crossProgramme ? 'Independent source title' : 'LMS Marketing Workshop');
+    await expect(savedMerges).toContainText('January cohort');
     const pairs = merged.locator('[data-manual-match-id]');
     await expect(merged).toBeVisible();
     await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
@@ -290,32 +381,107 @@ for (const crossProgramme of [false, true]) {
     const lmsBar = pairs.nth(1).locator('[data-source="LMS"]');
     await expect(currentBar).toHaveCount(1);
     await expect(lmsBar).toHaveCount(1);
-    expect(await currentBar.evaluate(node => node.style.left)).not.toBe(await lmsBar.evaluate(node => node.style.left));
-    // Pair lanes share the same date axis and horizontal origin.
+    const card = merged.locator('[data-merged-module-card]');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('[data-plan-source]')).toHaveCount(2);
+    expect(await currentBar.getAttribute('data-start-date')).not.toBe(await lmsBar.getAttribute('data-start-date'));
+    // Both halves fill one card while retaining their independent source dates.
+    const currentBounds = await currentBar.boundingBox();
+    const lmsBounds = await lmsBar.boundingBox();
+    expect(currentBounds!.width).toBe(lmsBounds!.width);
+    expect(currentBounds!.height).toBeCloseTo(lmsBounds!.height, 0);
     expect(await currentBar.evaluate(node => node.parentElement!.getBoundingClientRect().left))
       .toBe(await lmsBar.evaluate(node => node.parentElement!.getBoundingClientRect().left));
     await page.screenshot({ path: testInfo.outputPath('manual-pair-in-merge.png'), fullPage: true });
+    await currentBar.click();
+    await expect(page.getByRole('button', { name: 'Close module overview dialog', exact: true })).toBeVisible();
+    await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toHaveCount(0);
+    await expect(page.getByText('Plan Tutor', { exact: true }).last()).toBeVisible();
+    await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
+    await lmsBar.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toBeVisible();
+    await expect(page.getByText(crossProgramme ? 'Independent source title' : 'LMS Marketing Workshop', { exact: true }).last()).toBeVisible();
+    await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
     await page.reload();
     await page.getByRole('tab', { name: 'Merge', exact: true }).click();
     await expect(pairs).toHaveCount(2);
+    await expect(savedMerges.getByRole('listitem')).toHaveCount(1);
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(pairs).toHaveCount(2);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await lmsBar.click();
+    await expect(page.getByRole('table', { name: 'LMS monthly delivery dates', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
     await page.screenshot({ path: testInfo.outputPath('manual-pair-in-merge-mobile.png') });
-    await page.getByRole('button', { name: 'Compare', exact: true }).click();
-    await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
-    await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').filter({ hasText: 'Group 1' }).click();
-    await expect(dialog.getByText('Saved manual match', { exact: true })).toBeVisible();
-    await dialog.getByRole('button', { name: 'Remove manual match', exact: true }).click();
-    await expect(dialog.getByText('Manual match removed. Automatic matching applies again.', { exact: true })).toBeVisible();
-    await dialog.getByRole('button', { name: 'Close module comparison', exact: true }).click();
+    if (!crossProgramme) await page.setViewportSize({ width: 1440, height: 900 });
+    await savedMerges.getByRole('button', { name: /^Remove manual merge:/ }).click();
+    await expect(savedMerges.getByRole('status')).toContainText('Manual merge removed.');
+    await expect(savedMerges.getByRole('listitem')).toHaveCount(0);
     await expect(pairs).toHaveCount(0);
     expect(api.items[0].startDate).toBe('2026-01-05');
     expect(api.items[0].notes).toContain('Original notes');
+    expect(api.items[0].notes).not.toContain('__lms_source_module_id:');
+    await page.reload();
+    await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+    await expect(savedMerges).toContainText('No saved manual merges yet.');
+    await expect(pairs).toHaveCount(0);
     expect(api.writes).toEqual(['/api/training-plan/modules/101/', '/api/training-plan/modules/101/']);
     expect(api.errors).toEqual([]);
   });
 }
+
+test('manual merge list retains failed removals, lists unavailable LMS links and restores automatic matching after removal', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const api = await setup(page, true);
+  api.items[0].notes = `__lms_source_module_id:chosen\n${api.items[0].notes}`;
+  api.items[1].notes = `__lms_source_module_id:unavailable\n${api.items[1].notes}`;
+  const originalItems = JSON.stringify(api.items);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/training-plan');
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+  const savedMerges = merged.getByRole('region', { name: 'Saved manual merges', exact: true });
+  await expect(savedMerges.getByRole('listitem')).toHaveCount(2);
+  await expect(savedMerges).toContainText('LMS module unavailable');
+  await expect(savedMerges).toContainText('Source ID: unavailable');
+  await expect(savedMerges).toContainText('Group 1');
+  await expect(savedMerges).toContainText('Group 2');
+  await page.screenshot({ path: testInfo.outputPath('manual-merges-list-mobile.png'), fullPage: true });
+  await merged.getByRole('button', { name: 'Show merges', exact: true }).click();
+  await page.getByRole('option', { name: 'Automatic only', exact: true }).click();
+  await expect(savedMerges.getByRole('listitem')).toHaveCount(2);
+  api.failSave();
+  const firstRemove = savedMerges.getByRole('button', { name: 'Remove manual merge: Marketing, January cohort, Group 1', exact: true });
+  await firstRemove.click();
+  await expect(page.getByText('Module Not Saved', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'OK', exact: true }).click();
+  await expect(savedMerges.getByRole('alert')).toContainText('The manual merge could not be removed.');
+  await expect(savedMerges.getByRole('listitem')).toHaveCount(2);
+  expect(JSON.stringify(api.items)).toBe(originalItems);
+  api.allowSave();
+  await firstRemove.click();
+  await expect(savedMerges.getByRole('listitem')).toHaveCount(1);
+  await expect(savedMerges.getByRole('alert')).toHaveCount(0);
+  await expect(merged.locator('[data-merge-match-method="automatic"]')).toHaveCount(2);
+  expect(api.items[0].notes).not.toContain('__lms_source_module_id:');
+  expect(api.items[1].notes).toContain('__lms_source_module_id:unavailable');
+  await savedMerges.getByRole('button', { name: 'Remove manual merge: Marketing, January cohort, Group 2', exact: true }).click();
+  await expect(savedMerges).toContainText('No saved manual merges yet.');
+  expect(api.items[1].notes).not.toContain('__lms_source_module_id:');
+  for (const item of api.items) {
+    expect(item.notes).toContain('Original notes');
+    expect(item.notes).toContain('__module_catalogue_id:');
+    expect(item.startDate).toBe(item.id === 102 ? '2026-01-12' : '2026-01-05');
+    expect(item.endDate).toBe('2026-01-19');
+  }
+  await page.reload();
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  await expect(savedMerges).toContainText('No saved manual merges yet.');
+  expect(api.writes).toEqual(['/api/training-plan/modules/101/', '/api/training-plan/modules/101/', '/api/training-plan/modules/102/']);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(api.errors).toEqual([]);
+});
 
 test('manual matching persists, reserves the LMS module, compares dates and can be removed after reload', async ({ page }) => {
   test.setTimeout(90_000);
