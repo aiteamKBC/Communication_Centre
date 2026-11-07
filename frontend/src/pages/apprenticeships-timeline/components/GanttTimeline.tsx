@@ -28,7 +28,7 @@ const VIRTUAL_ROW_BUFFER_PX = 1400;
 const VIRTUAL_VIEWPORT_STEP_PX = 256;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
-const MERGED_MODULE_H = 44;
+const MERGED_MODULE_H = 56;
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
 const NOW_LINE_Z_INDEX = 16;
 const NOW_LINE_STYLE = {
@@ -138,6 +138,24 @@ function extractGroup(label: string): string {
 
 function getBlockDisplayName(blk: ModuleBlock, customModules: CustomModule[]) {
   return resolveModuleMeta(blk.mod as string, customModules).lbl;
+}
+
+// Some LMS titles contain the tutor's name as a prefix or suffix. Keep source
+// titles intact and omit that duplicate name only on merged module cards.
+function getMergedCardLabel(name: string, tutor: string) {
+  const aliases = tutor.split(/[,;/&]/).flatMap(person => {
+    const full = person.trim().replace(/\s+/g, ' ');
+    const untitled = full.replace(/^(?:dr|prof|professor|mr|mrs|ms)\.?\s+/i, '');
+    return [full, untitled, untitled.split(' ')[0]];
+  }).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const alias of aliases) for (const separator of [' - ', '-', ' – ', '–', ' — ', '—', ': ', ':']) {
+    const label = name.trim();
+    const prefix = `${alias}${separator}`;
+    const suffix = `${separator}${alias}`;
+    if (label.toLowerCase().startsWith(prefix.toLowerCase()) && label.length > prefix.length) return label.slice(prefix.length).trim();
+    if (label.toLowerCase().endsWith(suffix.toLowerCase()) && label.length > suffix.length) return label.slice(0, -suffix.length).trim();
+  }
+  return name;
 }
 
 function parseLocalDateTime(isoDate: string, time24: string): Date {
@@ -1178,8 +1196,7 @@ export default function GanttTimeline({
   const virtualViewportFrame = useRef<number | null>(null);
   const suppressModuleClickRef = useRef(false);
   const sourceLabelW = viewportWidth < 640 ? (mergedSources ? 140 : 184) : viewportWidth < 1024 ? 210 : LEFT_W;
-  const tutorDatesW = mergedSources ? (viewportWidth < 640 ? 116 : 160) : 0;
-  const leftW = sourceLabelW + tutorDatesW;
+  const leftW = sourceLabelW;
 
   const scheduleFloatingTipMove = useCallback((type: 'tooltip' | 'badge' | 'extension' | 'holiday' | 'tutorConflict', x: number, y: number) => {
     if (typeof window === 'undefined') return;
@@ -3066,15 +3083,15 @@ export default function GanttTimeline({
             className="relative z-[1] min-w-0 w-full select-none"
             style={{ padding: `${0} ${hasTutorConflict ? 18 : 8}px 0 ${coverageItems.length > 0 ? 24 : 8}px`, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
           >
-            <div className="min-w-0 flex-1" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
+            <div className="min-w-0 flex-1" style={{ color: mod.tx, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
             {/* Module name */}
             <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
-              {mod.lbl}
+              {mergedSources ? getMergedCardLabel(mod.lbl, tutorLabel) : mod.lbl}
             </span>
 
             {/* Tutor/coach */}
-            {showPerson && !barReferenceSource && (
+            {showPerson && !barReferenceSource && !mergedSources && (
               <span
                 title={`${personRole}: ${personLabel}`}
                 style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 28, maxWidth: '46%', flexShrink: 1 }}
@@ -3084,7 +3101,9 @@ export default function GanttTimeline({
             )}
 
               </div>
-              {(showStackedSessionProgress || barReferenceSource) && (
+              {mergedSources && <MergedTutorDates tutor={barReferenceSource ? tutorLabel : tutorDisplayName(blk, tutorProfiles)}
+                startDate={renderBlk.startDate} endDate={displayEndDate} startDateSource={renderBlk.startDateSource} />}
+              {(barReferenceSource ? !mergedSources : showStackedSessionProgress) && (
                 <span
                   title={barReferenceSource ? sessionProgressLabel : `${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                   style={{
@@ -3842,10 +3861,6 @@ export default function GanttTimeline({
                     )}
                   </div>
                   </div>
-                  {mergedSources && <div className="tp-merged-tutor-heading" style={{ width: tutorDatesW }}>
-                    <Users size={16} aria-hidden="true" />
-                    <span>Tutor /<br />Start – End Date</span>
-                  </div>}
                 </div>
                 <div className="flex-1 relative" style={{ background: 'transparent' }}>
                   {nowPos && (
@@ -3900,7 +3915,7 @@ export default function GanttTimeline({
                   }));
                   const cardLeft = positions.length ? Math.min(...positions.map(pos => pos.left)) : 0;
                   const cardRight = positions.length ? Math.max(...positions.map(pos => pos.left + pos.width)) : cardLeft + 220;
-                  const cardWidth = Math.min(totalWidth - cardLeft, Math.max(180, cardRight - cardLeft));
+                  const cardWidth = Math.min(totalWidth - cardLeft, Math.max(220, cardRight - cardLeft));
                   const cardMeta = resolveBlockMeta(row.blks[0], customModules);
                   return <div key={row.id} data-row-target={rowTargetKey} className="flex relative border-t border-slate-200" style={{ height: MERGED_MODULE_H * 2 }}>
                     <div className="shrink-0 border-r border-slate-200 bg-white" style={{ width: leftW, position: 'sticky', left: 0, zIndex: 20 }}>
@@ -3908,15 +3923,6 @@ export default function GanttTimeline({
                         <div className="flex min-w-0 shrink-0 flex-col justify-center gap-0.5 px-3" style={{ width: sourceLabelW, borderLeft: `3px solid ${color}` }}>
                         <span className="text-[8px] font-extrabold" style={{ color }}>{sourceRow.planSource} Training Plan</span>
                         <span className="truncate text-[10px] font-semibold text-slate-700" title={sourceRow.label}>{sourceRow.label}<span className="font-normal text-slate-500"> · {sourceRow.blks[0]?.groupName || sourceRow.mergeMatch?.moduleName}</span></span>
-                        </div>
-                        <div className="min-w-0 flex-1" data-tutor-plan-source={sourceRow.planSource}>
-                          <MergedTutorDates startDate={sourceRow.blks[0]?.startDate || sourceRow.mergeMatch?.startDate}
-                            endDate={sourceRow.blks[0] ? sourceRow.planSource === 'LMS' ? sourceRow.blks[0].endDate
-                              : getHolidayPlan(sourceRow.blks[0], rowHolidays).effectiveEndDate || sourceRow.blks[0].endDate : sourceRow.mergeMatch?.endDate}
-                            startDateSource={sourceRow.blks[0]?.startDateSource}
-                            tutor={sourceRow.blks[0]
-                            ? sourceRow.planSource === 'Current' ? tutorDisplayName(sourceRow.blks[0], tutorProfiles) : sourceRow.blks[0].tutor
-                            : sourceRow.mergeMatch?.tutorName || ''} />
                         </div>
                       </div>)}
                     </div>
@@ -3930,6 +3936,7 @@ export default function GanttTimeline({
                         {sources.map(({ sourceRow, rowIndex }, index) => {
                           const blk = sourceRow.blks[0];
                           const name = sourceRow.mergeMatch!.moduleName;
+                          const cardLabel = getMergedCardLabel(name, blk?.tutor || sourceRow.mergeMatch?.tutorName || '');
                           const sessionCount = blk?.source === 'LMS' ? blk.lmsSessionCount : blk?.sessions;
                           const endDate = blk && (blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate);
                           return <div key={sourceRow.id} data-plan-source={sourceRow.planSource}
@@ -3950,15 +3957,17 @@ export default function GanttTimeline({
                                 onViewMonthlyBreakdown?.(gi, rowIndex, blk.id);
                               }}>
                               <span className="flex w-full items-center gap-2">
-                                <span className="tp-merged-card-title min-w-0 flex-1 truncate font-extrabold" title={name}>{name}</span>
+                                <span className="tp-merged-card-title min-w-0 flex-1 truncate font-extrabold" title={cardLabel}>{cardLabel}</span>
                                 <span className="tp-merged-card-sessions shrink-0 rounded bg-white/20 px-1.5 py-0.5 font-bold tabular-nums"
                                   title={sessionCount == null ? 'LMS session count is unavailable.' : 'Total planned sessions'}>
                                   {sessionCount == null ? 'Sessions: N/A' : `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}`}
                                 </span>
                               </span>
-                              <span className="tp-merged-card-details w-full truncate font-medium opacity-90">{blk
-                                ? `Tutor: ${blk.tutor || 'Not assigned'}`
-                                : 'Dates not provided'}</span>
+                              <MergedTutorDates tutor={blk
+                                ? sourceRow.planSource === 'Current' ? tutorDisplayName(blk, tutorProfiles) : blk.tutor
+                                : sourceRow.mergeMatch?.tutorName || ''}
+                                startDate={blk?.startDate || sourceRow.mergeMatch?.startDate}
+                                endDate={endDate || sourceRow.mergeMatch?.endDate} startDateSource={blk?.startDateSource} />
                             </button>
                           </div>;
                         })}
@@ -4108,7 +4117,6 @@ export default function GanttTimeline({
                       >
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
-                        {mergedSources && <div aria-hidden="true" className="absolute inset-y-0 right-0 border-l border-slate-200 bg-slate-50" style={{ width: tutorDatesW }} />}
                         <div className={`pl-2.5 flex min-w-0 flex-1 ${row.planSource ? 'flex-col items-start gap-0.5' : 'items-center gap-2'}`}
                           draggable={canManageCohorts}
                           onDragStart={canManageCohorts ? (e) => handleCohortDragStart(e, gi, ri) : undefined}
@@ -4179,7 +4187,7 @@ export default function GanttTimeline({
                             <span className="text-xs text-gray-300 italic">No modules</span>
                           </div>
                         ) : leftLabels.map(entry => (
-                          <div key={entry.key} className="absolute left-0 px-2" style={{ right: tutorDatesW, top: entry.top, height: entry.height }}>
+                          <div key={entry.key} className="absolute inset-x-0 px-2" style={{ top: entry.top, height: entry.height }}>
                             <div
                               className={`h-full rounded-lg border bg-white/96 shadow-[0_1px_2px_rgba(15,23,42,0.05)] flex gap-1.5 pl-4 pr-2 ${referenceSource ? 'items-start py-3' : 'items-center'}`}
                               style={{ borderColor: `${entry.color}24` }}
@@ -4206,19 +4214,6 @@ export default function GanttTimeline({
                             </div>
                           </div>
                         ))}
-                        {mergedSources && ganttRows.map((ganttRow, index) => {
-                          const entry = leftLabels[index];
-                          const names = Array.from(new Set(ganttRow.lanes.map(({ blk }) => row.planSource === 'LMS'
-                            ? blk.tutor.trim() : tutorDisplayName(blk, tutorProfiles).trim()).filter(Boolean)));
-                          const starts = ganttRow.lanes.map(({ blk }) => blk.startDate).filter(Boolean).sort();
-                          const ends = ganttRow.lanes.map(({ blk }) => row.planSource === 'LMS' ? blk.endDate
-                            : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate).filter(Boolean).sort();
-                          return <div key={`tutor-${entry.key}`} className="absolute right-0" data-tutor-plan-source={row.planSource}
-                            style={{ width: tutorDatesW, top: entry.top, height: entry.height }}>
-                            <MergedTutorDates tutor={names.join(', ')} startDate={starts[0]} endDate={ends.at(-1)}
-                              groupRange={ganttRow.lanes.length > 1} />
-                          </div>;
-                        })}
                       </div>
 
                       {/* Timeline area */}

@@ -150,7 +150,10 @@
 }
 
 @media (min-width: 1440px) {
-  .training-plan-page .tp-header-content { grid-template-columns: minmax(280px, .9fr) minmax(0, 1.8fr); align-items: center; gap: 16px; }
+  .training-plan-page .tp-header-overview { align-items: stretch; }
+  .training-plan-page .tp-header-summary { display: grid; }
+  .training-plan-page .tp-header-content { grid-template-columns: minmax(280px, .9fr) minmax(0, 1.8fr); align-items: stretch; gap: 16px; }
+  .training-plan-page .tp-title-row { align-self: center; }
   .training-plan-page .tp-stat-icon { display: none; }
   .training-plan-page .tp-stat { justify-content: center; padding: 0 8px; }
 }
@@ -261,14 +264,12 @@
 .training-plan-page .tp-merged-card-title { font-size: 11px; line-height: 14px; }
 .training-plan-page .tp-merged-card-sessions { font-size: 8px; line-height: 12px; }
 .training-plan-page .tp-merged-card-details { font-size: 9px; line-height: 12px; }
-.training-plan-page .tp-merged-tutor-heading { position: absolute; inset: 0 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 7px; border-left: 1px solid #dce5ee; border-right: 1px solid #dce5ee; background: #f1f5f9; color: #1b2a4a; font-size: 11px; font-weight: 800; line-height: 16px; text-align: center; }
-.training-plan-page .tp-merged-tutor-dates { display: flex; height: 100%; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; padding: 3px 10px; border-left: 1px solid #e2e8f0; background: #f8fafc; }
-.training-plan-page .tp-merged-tutor { display: flex; align-items: center; gap: 5px; max-width: 100%; color: #334155; font-size: 10px; font-weight: 600; line-height: 13px; }
-.training-plan-page .tp-merged-tutor svg { flex-shrink: 0; color: #64748b; }
+.training-plan-page .tp-merged-tutor-dates { display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px; color: inherit; }
+.training-plan-page .tp-merged-tutor { display: flex; flex: 1; min-width: 0; align-items: center; gap: 5px; max-width: 100%; font-size: 10px; font-weight: 600; line-height: 13px; }
+.training-plan-page .tp-merged-tutor svg { flex-shrink: 0; }
 .training-plan-page .tp-merged-tutor > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.training-plan-page .tp-merged-date-range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; color: #334155; font-size: 9px; font-weight: 600; line-height: 11px; }
-.training-plan-page .tp-merged-date-range > div { min-width: 0; white-space: nowrap; }
-.training-plan-page .tp-merged-date-label { display: block; color: #64748b; font-size: 7px; font-weight: 700; line-height: 9px; }
+.training-plan-page .tp-merged-date-range { display: flex; flex-shrink: 0; gap: 8px; font-size: 9px; font-weight: 600; line-height: 11px; opacity: .9; }
+.training-plan-page .tp-merged-date-range > span { min-width: 0; white-space: nowrap; }
 
 @media (max-width: 1100px) {
   .training-plan-page .tp-merged-summary { flex-wrap: wrap; }
@@ -290,7 +291,4 @@
   .training-plan-page .tp-merged-plan .tp-timeline-heading { padding: 12px 14px; }
   .training-plan-page .tp-merged-programme-sources > div > div { display: none; }
   .training-plan-page .tp-merged-programme-sources p { font-size: 9px !important; line-height: 13px; }
-  .training-plan-page .tp-merged-tutor-heading { gap: 5px; font-size: 10px; }
-  .training-plan-page .tp-merged-tutor-dates { padding-inline: 7px; }
-  .training-plan-page .tp-merged-date-range { gap: 5px; font-size: 7.5px; }
 }
