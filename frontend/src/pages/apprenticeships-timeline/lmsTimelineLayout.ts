@@ -114,7 +114,8 @@ export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentPro
         id: `merged-pair-lms:${id}`, planSource: 'LMS', label: lmsCohortDisplayName(record) || 'Cohort not provided',
         dateLbl: record.startDate || '', intake: '', quarter: '',
         blks: lmsBlock ? [{ ...lmsBlock, color: current.block.color || lmsBlock.color }] : [],
-        mergeMatch: { id, method, label, moduleName: record.module || 'Module not provided',
+        mergeMatch: { id, method, label, moduleName: record.module || 'Module not provided', tutorName: record.tutorName?.trim() || '',
+          startDate: record.startDate, endDate: record.endDate,
           ...(!lmsBlock ? { dateWarning: `Missing or invalid dates: ${record.startDate || 'Not provided'} to ${record.endDate || 'Not provided'}` } : {}) },
       };
       return [currentRow, lmsRow];

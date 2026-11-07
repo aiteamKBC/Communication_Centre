@@ -65,7 +65,7 @@ export interface ModuleBlock {
 export interface CohortRow {
   id: string;
   planSource?: 'Current' | 'LMS';
-  mergeMatch?: { id: string; method: 'manual' | 'automatic'; label: string; moduleName: string; dateWarning?: string };
+  mergeMatch?: { id: string; method: 'manual' | 'automatic'; label: string; moduleName: string; tutorName?: string; startDate?: string | null; endDate?: string | null; dateWarning?: string };
   label: string;
   dateLbl: string;
   endDateLbl?: string;

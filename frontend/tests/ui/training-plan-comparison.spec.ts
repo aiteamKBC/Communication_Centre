@@ -11,6 +11,7 @@ test.use({ channel: 'chrome' });
 const block = (id: string, mod: string, overrides: Partial<ModuleBlock> = {}): ModuleBlock => ({
   id, mod, tutor: '', sessions: 3, startDate: '2026-01-05', endDate: '2026-01-19', ...overrides,
 });
+
 const group = (blks: ModuleBlock[], id = 'me-lvl4'): ProgrammeGroup => ({
   id, name: id === 'me-lvl4' ? 'ME L4' : 'MM LVL6', sub: '', color: '#115E59',
   rows: [{ id: 'c1', label: 'January cohort', dateLbl: '', intake: '', quarter: '', blks }],
@@ -787,7 +788,7 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
       records: records.map(({ groupName: _groupName, ...row }) => row),
     } };
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: { '1': 'LMS Tutor One', '2': 'LMS Tutor Two' } };
-    if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: { '1': 14, '2': 0 } };
+    if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: { '1': 14, '2': 0, '7': 3 } };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: Object.fromEntries(records.map(row => [row.sourceModuleId, {
       cohortId: row.sourceModuleId === '6' ? 'old-lms-cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'feb-lms-cohort' : 'jan-lms-cohort',
       cohortName: row.sourceModuleId === '2' ? '' : row.sourceModuleId === '6' ? 'March 2024 LMS cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'February cohort' : 'January cohort',
@@ -825,6 +826,17 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await expect(merged.locator('[data-plan-source="LMS"]')).toHaveCount(6);
   const cards = merged.locator('[data-merged-module-card]');
   await expect(cards).toHaveCount(4);
+  await expect(merged.locator('.tp-merged-tutor-heading')).toContainText('Start – End Date');
+  const sameRow = merged.locator('[data-row-target]').filter({ has: page.locator('[data-source="Current"][data-timeline-block-id="b0"]') });
+  await expect(sameRow.locator('[data-tutor-plan-source="Current"]')).toContainText('LMS Tutor One');
+  await expect(sameRow.locator('[data-tutor-plan-source="LMS"]')).toContainText('LMS Tutor One');
+  await expect(sameRow.locator('[data-tutor-plan-source="Current"] [data-module-date="start"]')).toHaveAttribute('datetime', '2026-01-05');
+  await expect(sameRow.locator('[data-tutor-plan-source="LMS"] [data-module-date="end"]')).toHaveAttribute('datetime', '2026-01-19');
+  const partialRow = merged.locator('[data-row-target]').filter({ has: page.getByRole('button', { name: 'View LMS module details: Partial module', exact: true }) });
+  await expect(partialRow.locator('[data-tutor-plan-source="LMS"] [data-module-date="start"]')).toHaveAttribute('datetime', '2026-01-05');
+  await expect(partialRow.locator('[data-tutor-plan-source="LMS"] [data-module-date="end"]')).toHaveText('—');
+  await expect(merged.locator('[data-tutor-status], .tp-merged-status')).toHaveCount(0);
+  expect(await cards.locator('.tp-merged-card-details').allTextContents()).not.toEqual(expect.arrayContaining([expect.stringMatching(/→|\d{4}-\d{2}-\d{2}/)]));
   expect(await cards.evaluateAll(nodes => nodes.map(node => Array.from(node.querySelectorAll('[data-plan-source]'), half => half.getAttribute('data-plan-source')))))
     .toEqual(Array.from({ length: 4 }, () => ['Current', 'LMS']));
   const mergedCurrent = merged.locator('[data-source="Current"][data-timeline-block-id="b0"]');
