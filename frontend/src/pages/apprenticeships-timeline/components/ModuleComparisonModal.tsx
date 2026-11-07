@@ -1,15 +1,17 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
-import LmsModuleMatcher from './LmsModuleMatcher';
+import LmsModuleMatcher, { type SaveLmsModuleMatch } from './LmsModuleMatcher';
 import type { CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
 
-export default function ModuleComparisonModal({ groups, customModules, holidays, tutorProfiles, onClose }: {
+export default function ModuleComparisonModal({ groups, customModules, holidays, tutorProfiles, onClose, onSave, onViewMerge }: {
   groups: ProgrammeGroup[];
   customModules: CustomModule[];
   holidays: Holiday[];
   tutorProfiles: TutorProfile[];
   onClose: () => void;
+  onSave?: SaveLmsModuleMatch;
+  onViewMerge?: () => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -59,7 +61,8 @@ export default function ModuleComparisonModal({ groups, customModules, holidays,
           className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X size={20} aria-hidden="true" /></button>
       </div>
       <div className="min-h-0 overflow-y-auto p-3 sm:p-6">
-        <LmsModuleMatcher groups={groups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles} initialOpen comparisonOnly />
+        <LmsModuleMatcher groups={groups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles}
+          initialOpen comparisonOnly onSave={onSave} onViewMerge={onViewMerge} />
       </div>
     </div>
   </div>, document.body);

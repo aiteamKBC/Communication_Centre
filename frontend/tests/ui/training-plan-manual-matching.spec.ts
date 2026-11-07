@@ -237,7 +237,7 @@ test('standalone Compare browses all assignments and LMS programmes without savi
   await expect(table).toContainText('ME L4');
   await expect(table).toContainText('2026-02-02');
   await expect(dialog.getByText('Dates and tutor differ', { exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Save manual match', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Save manual match', exact: true })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath('standalone-module-comparison.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(dialog).toBeVisible();
@@ -255,6 +255,67 @@ test('standalone Compare browses all assignments and LMS programmes without savi
   expect(JSON.stringify(api.items)).toBe(originalItems);
   expect(api.errors).toEqual([]);
 });
+
+for (const crossProgramme of [false, true]) {
+  test(`Compare saves a manual pair ${crossProgramme ? 'across programmes' : 'within a programme'} and stacks it on the Merge timeline`, async ({ page }, testInfo) => {
+    test.setTimeout(90_000);
+    const api = await setup(page, false, crossProgramme ? [{ sourceModuleId: 'cross', module: 'Independent source title',
+      programme: 'Marketing Manager Level 6', cohortName: 'Different intake', groupName: 'Source group',
+      startDate: '2024-01-01', endDate: '2024-02-01' }] : []);
+    await page.goto('/training-plan');
+    await page.getByRole('button', { name: 'Compare', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
+    await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+    await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').filter({ hasText: 'Group 1' }).click();
+    await dialog.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+    await page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option')
+      .filter({ hasText: crossProgramme ? 'Independent source title' : 'LMS Marketing Workshop' }).click();
+    expect(api.writes).toEqual([]);
+    await dialog.getByRole('button', { name: 'Save manual match', exact: true }).click();
+    await expect(dialog.getByText('Manual match saved.', { exact: true })).toBeVisible();
+    expect(api.items[0].notes).toContain(`__lms_source_module_id:${crossProgramme ? 'cross' : 'chosen'}`);
+    await dialog.getByRole('button', { name: 'View in Merge', exact: true }).click();
+    const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+    const pairs = merged.locator('[data-manual-match-id]');
+    await expect(merged).toBeVisible();
+    await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+    await expect(pairs).toHaveCount(2);
+    await expect(pairs.nth(0)).toHaveAttribute('data-plan-source', 'Current');
+    await expect(pairs.nth(1)).toHaveAttribute('data-plan-source', 'LMS');
+    expect(await pairs.nth(0).getAttribute('data-manual-match-id')).toBe(await pairs.nth(1).getAttribute('data-manual-match-id'));
+    expect(await pairs.nth(0).evaluate(node => node.nextElementSibling?.getAttribute('data-plan-source'))).toBe('LMS');
+    await expect(pairs.nth(0)).toContainText('Marketing');
+    await expect(pairs.nth(1)).toContainText(crossProgramme ? 'Independent source title' : 'LMS Marketing Workshop');
+    const currentBar = pairs.nth(0).locator('[data-source="Current"]');
+    const lmsBar = pairs.nth(1).locator('[data-source="LMS"]');
+    await expect(currentBar).toHaveCount(1);
+    await expect(lmsBar).toHaveCount(1);
+    expect(await currentBar.evaluate(node => node.style.left)).not.toBe(await lmsBar.evaluate(node => node.style.left));
+    // Pair lanes share the same date axis and horizontal origin.
+    expect(await currentBar.evaluate(node => node.parentElement!.getBoundingClientRect().left))
+      .toBe(await lmsBar.evaluate(node => node.parentElement!.getBoundingClientRect().left));
+    await page.screenshot({ path: testInfo.outputPath('manual-pair-in-merge.png'), fullPage: true });
+    await page.reload();
+    await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+    await expect(pairs).toHaveCount(2);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(pairs).toHaveCount(2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('manual-pair-in-merge-mobile.png') });
+    await page.getByRole('button', { name: 'Compare', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+    await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').filter({ hasText: 'Group 1' }).click();
+    await expect(dialog.getByText('Saved manual match', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Remove manual match', exact: true }).click();
+    await expect(dialog.getByText('Manual match removed. Automatic matching applies again.', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Close module comparison', exact: true }).click();
+    await expect(pairs).toHaveCount(0);
+    expect(api.items[0].startDate).toBe('2026-01-05');
+    expect(api.items[0].notes).toContain('Original notes');
+    expect(api.writes).toEqual(['/api/training-plan/modules/101/', '/api/training-plan/modules/101/']);
+    expect(api.errors).toEqual([]);
+  });
+}
 
 test('manual matching persists, reserves the LMS module, compares dates and can be removed after reload', async ({ page }) => {
   test.setTimeout(90_000);

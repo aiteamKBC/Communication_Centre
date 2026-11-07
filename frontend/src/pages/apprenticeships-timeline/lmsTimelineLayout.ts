@@ -1,4 +1,4 @@
-import { isComparisonDate, lmsCohortDisplayName, lmsGroupDisplayName, type PresentedLmsRow } from './lmsComparison';
+import { isComparisonDate, lmsCohortDisplayName, lmsGroupDisplayName, matchLmsPlans, type PresentedLmsRow } from './lmsComparison';
 import { createLmsModuleColourResolver } from './lmsModuleColours';
 import type { CohortRow, CustomModule, ModuleBlock, ProgrammeGroup } from './types';
 
@@ -73,35 +73,65 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
 }
 
 function sortMergedRows(rows: CohortRow[]): CohortRow[] {
-  const datedRows = rows.map(row => ({
-    row,
-    start: row.blks.map(block => block.startDate).filter(isComparisonDate).sort()[0]
-      || (isComparisonDate(row.dateLbl) ? row.dateLbl : ''),
-  }));
-  // Interleave both sources by their first module date, newest first. Undated
-  // rows stay at the bottom; equal dates retain their existing relative order.
-  return datedRows.sort((left, right) => right.start.localeCompare(left.start)).map(item => item.row);
+  const units: { rows: CohortRow[]; start: string }[] = [];
+  for (const row of rows) {
+    const pair = row.manualMatch && units.find(unit => unit.rows[0].manualMatch?.id === row.manualMatch!.id);
+    if (pair) { pair.rows.push(row); continue; }
+    units.push({ rows: [row], start: row.blks.map(block => block.startDate).filter(isComparisonDate).sort()[0]
+      || (isComparisonDate(row.dateLbl) ? row.dateLbl : '') });
+  }
+  // Sort pairs as a unit so their independent source dates cannot separate them.
+  return units.sort((left, right) => right.start.localeCompare(left.start)).flatMap(unit => unit.rows);
 }
 
 // Keep both sources inside one expandable programme on a shared date axis.
 // Source records and saved programme/cohort identities remain untouched.
 export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = []) {
   const lms = buildLmsTimelineLayout(records, currentProgrammes, currentModules);
-  const remaining = new Map(lms.groups.map(group => [group.id, group]));
+  const pairs = matchLmsPlans(currentProgrammes, records, currentModules).matched.filter(pair => pair.method === 'manual');
+  const pairedIds = new Set(pairs.map(pair => pair.lms.sourceModuleId));
+  const lmsBlocks = new Map(lms.groups.flatMap(group => group.rows.flatMap(row => row.blks))
+    .map(block => [block.moduleCatalogueId, block]));
+  const remaining = new Map(lms.groups.map(group => [group.id, { ...group, rows: group.rows
+    .map(row => ({ ...row, blks: row.blks.filter(block => !pairedIds.has(block.moduleCatalogueId!)) }))
+    .filter(row => row.blks.length) }]));
   const groups: ProgrammeGroup[] = [];
   for (const programme of currentProgrammes) {
     const reference = remaining.get(`lms-programme:${programme.id}`);
+    const programmePairs = pairs.filter(pair => pair.current.programme.id === programme.id);
+    const pairRows = programmePairs.flatMap(({ current, lms: record }): CohortRow[] => {
+      const id = JSON.stringify([programme.id, current.cohort.id, current.block.id, record.sourceModuleId]);
+      const label = `${current.module} ↔ ${record.module || 'Module not provided'}`;
+      const lmsBlock = lmsBlocks.get(record.sourceModuleId);
+      const currentRow: CohortRow = { ...current.cohort, id: `merged-pair-current:${id}`, planSource: 'Current',
+        dateLbl: current.block.startDate, blks: [current.block],
+        manualMatch: { id, label, moduleName: current.module } };
+      const lmsRow: CohortRow = {
+        id: `merged-pair-lms:${id}`, planSource: 'LMS', label: lmsCohortDisplayName(record) || 'Cohort not provided',
+        dateLbl: record.startDate || '', intake: '', quarter: '',
+        blks: lmsBlock ? [{ ...lmsBlock, color: current.block.color || lmsBlock.color }] : [],
+        manualMatch: { id, label, moduleName: record.module || 'Module not provided',
+          ...(!lmsBlock ? { dateWarning: `Missing or invalid dates: ${record.startDate || 'Not provided'} to ${record.endDate || 'Not provided'}` } : {}) },
+      };
+      return [currentRow, lmsRow];
+    });
     groups.push({
       ...programme,
       id: `merged-programme:${programme.id}`,
       rows: sortMergedRows([
-        ...programme.rows.map(row => ({ ...row, id: `merged-current:${row.id}`, planSource: 'Current' as const })),
+        ...pairRows,
+        ...programme.rows.flatMap(row => {
+          const blks = row.blks.filter(block => !programmePairs.some(pair => pair.current.cohort.id === row.id && pair.current.block.id === block.id));
+          return blks.length || !row.blks.length
+            ? [{ ...row, id: `merged-current:${row.id}`, planSource: 'Current' as const, blks }] : [];
+        }),
         ...(reference?.rows ?? []).map(row => ({ ...row, planSource: 'LMS' as const })),
       ]),
     });
     if (reference) remaining.delete(reference.id);
   }
   for (const reference of remaining.values()) {
+    if (!reference.rows.length) continue;
     groups.push({ ...reference, id: `merged:${reference.id}`,
       rows: sortMergedRows(reference.rows.map(row => ({ ...row, planSource: 'LMS' as const }))) });
   }

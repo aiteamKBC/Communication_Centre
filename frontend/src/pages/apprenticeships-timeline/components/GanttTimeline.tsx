@@ -3977,10 +3977,12 @@ export default function GanttTimeline({
                     key={row.id}
                     data-row-target={rowTargetKey}
                     data-plan-source={row.planSource}
+                    data-manual-match-id={row.manualMatch?.id}
                     data-lms-cohort={referenceSource ? row.label : undefined}
                     data-lms-cohort-date={referenceSource ? row.dateLbl : undefined}
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
+                      ...(row.manualMatch ? { outline: '1px solid #0F766E', outlineOffset: '-1px' } : {}),
                       ...(cohortDropShadow ? { boxShadow: cohortDropShadow } : {}),
                     }}
                     onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri, position: getCohortDropPosition(e) }) : undefined}
@@ -4017,7 +4019,7 @@ export default function GanttTimeline({
                               <i className="ri-draggable" style={{ fontSize: '12px' }} />
                             </span>
                           )}
-                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan</span>}
+                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan{row.manualMatch && ' · Manual match'}</span>}
                           <div className="flex min-w-0 items-center gap-2">
                             <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }} title={row.label}>
                               {row.label}
@@ -4051,6 +4053,9 @@ export default function GanttTimeline({
                       </div>
                       {/* Timeline: cohort span indicator */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
+                        {row.manualMatch && <p className="truncate px-3 py-2 text-xs font-bold text-teal-900" title={row.manualMatch.label}>
+                          {row.manualMatch.label}
+                        </p>}
                         {/* Now line */}
                         {nowPos && (
                           <div className="absolute inset-y-0 pointer-events-none"
@@ -4100,6 +4105,9 @@ export default function GanttTimeline({
 
                       {/* Timeline area */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
+                        {row.manualMatch?.dateWarning && <p className="relative z-10 px-3 py-4 text-xs font-semibold text-amber-900">
+                          {row.manualMatch.moduleName} · {row.manualMatch.dateWarning}
+                        </p>}
 
                         {/* Column gridlines */}
                         {zoom !== 'day' && (

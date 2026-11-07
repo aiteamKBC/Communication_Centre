@@ -8,7 +8,7 @@ import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, CoachProfile, ModuleBlock } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
-import LmsReference from './components/LmsReference';
+import LmsReference, { type TrainingPlanSource } from './components/LmsReference';
 import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
 import ModuleComparisonModal from './components/ModuleComparisonModal';
 import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
@@ -3095,6 +3095,7 @@ export default function ApprenticeshipTimeline() {
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [showManageModules, setShowManageModules] = useState(false);
   const [showModuleComparison, setShowModuleComparison] = useState(false);
+  const [trainingPlanSource, setTrainingPlanSource] = useState<TrainingPlanSource>('current');
   const [showKsbProfiles, setShowKsbProfiles] = useState(false);
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
@@ -6976,6 +6977,7 @@ export default function ApprenticeshipTimeline() {
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
           <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
+            view={trainingPlanSource} onViewChange={setTrainingPlanSource}
             holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles}
             renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
             onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
@@ -7719,7 +7721,9 @@ export default function ApprenticeshipTimeline() {
       )}
 
       {showModuleComparison && <ModuleComparisonModal groups={groups} customModules={customModules} holidays={holidays}
-        tutorProfiles={tutorProfiles} onClose={() => setShowModuleComparison(false)} />}
+        tutorProfiles={tutorProfiles} onClose={() => setShowModuleComparison(false)}
+        onSave={canManageCohorts ? saveLmsModuleMatch : undefined}
+        onViewMerge={() => { setShowModuleComparison(false); setActiveTab('gantt'); setTrainingPlanSource('merged'); }} />}
 
       {canEditTrainingPlan && showManageModules && (
         <ManageModulesModal

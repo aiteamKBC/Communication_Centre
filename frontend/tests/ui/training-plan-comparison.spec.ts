@@ -321,7 +321,7 @@ test('manual matches reserve their LMS record and removal restores automatic mat
   expect(result.matched.map(pair => [pair.current.block.id, pair.method])).toEqual([['automatic', 'automatic']]);
 });
 
-test('duplicate, missing and cross-programme manual targets never silently fall back to automatic matching', () => {
+test('duplicate and missing manual targets never fall back automatically; explicit manual pairs can cross programmes', () => {
   const programme = group([block('one', 'Marketing', { lmsSourceModuleId: 'chosen' }), block('two', 'Marketing', { lmsSourceModuleId: 'chosen' })]);
   const records = presentLmsRows([matchingSource('chosen', 'Marketing')], [programme]);
   expect(matchLmsPlans([programme], records, []).matched).toEqual([]);
@@ -331,7 +331,52 @@ test('duplicate, missing and cross-programme manual targets never silently fall 
   expect(matchLmsPlans([programme], records, []).unmatchedCurrent[0].reason).toContain('saved LMS match is unavailable');
   programme.rows[0].blks[0].lmsSourceModuleId = 'chosen';
   const otherProgramme = presentLmsRows([matchingSource('chosen', 'Marketing', { programme: 'Marketing Manager Level 6' })], [programme]);
-  expect(matchLmsPlans([programme], otherProgramme, []).matched).toEqual([]);
+  expect(matchLmsPlans([programme], otherProgramme, []).matched).toMatchObject([
+    { method: 'manual', current: { block: { id: 'one' } }, lms: { sourceModuleId: 'chosen', planProgrammeId: 'mm-lvl6' } },
+  ]);
+});
+
+test('merge keeps manual pairs adjacent despite different dates, names and programmes, without duplicating blocks', () => {
+  const programme = group([
+    block('paired', 'Local workshop', { lmsSourceModuleId: 'chosen', groupName: 'G1' }),
+    block('other', 'Unpaired workshop', { startDate: '2025-06-01' }),
+    block('automatic', 'Same title'),
+  ]);
+  const records = presentLmsRows([
+    source('chosen', 'Entirely different title', { programme: 'Marketing Manager Level 6', cohortName: 'Different cohort',
+      groupName: 'Other group', startDate: '2024-01-01', endDate: '2024-02-01' }),
+    source('unpaired', 'Middle module', { startDate: '2025-01-01', endDate: '2025-02-01' }),
+    source('automatic', 'Same title'),
+  ], [programme]);
+  const before = JSON.stringify({ programme, records });
+  const layout = buildMergedTimelineLayout(records, [programme]);
+  const rows = layout.groups[0].rows;
+  const pair = rows.filter(row => row.manualMatch);
+  expect(pair).toHaveLength(2);
+  expect(pair.map(row => row.planSource)).toEqual(['Current', 'LMS']);
+  expect(rows.indexOf(pair[1])).toBe(rows.indexOf(pair[0]) + 1);
+  expect(pair[0].manualMatch?.id).toBe(pair[1].manualMatch?.id);
+  expect(pair[0].manualMatch?.label).toBe('Local workshop ↔ Entirely different title');
+  expect(pair[0].blks[0]).toMatchObject({ id: 'paired', startDate: '2026-01-05' });
+  expect(pair[1].blks[0]).toMatchObject({ source: 'LMS', moduleCatalogueId: 'chosen', startDate: '2024-01-01', endDate: '2024-02-01' });
+  const blocks = layout.groups.flatMap(group => group.rows.flatMap(row => row.blks));
+  expect(blocks).toHaveLength(6);
+  expect(blocks.filter(block => block.moduleCatalogueId === 'chosen')).toHaveLength(1);
+  expect(blocks.filter(block => block.id === 'paired')).toHaveLength(1);
+  expect(JSON.stringify({ programme, records })).toBe(before);
+  programme.rows[0].blks[0].lmsSourceModuleId = '';
+  expect(buildMergedTimelineLayout(records, [programme]).groups.flatMap(group => group.rows).some(row => row.manualMatch)).toBe(false);
+});
+
+test('merge retains a manually paired LMS module with invalid dates as a labelled empty lane', () => {
+  const programme = group([block('paired', 'Local workshop', { lmsSourceModuleId: 'invalid' })]);
+  const records = presentLmsRows([source('invalid', 'Undated LMS workshop', { startDate: null, endDate: '2026-02-30' })], [programme]);
+  const layout = buildMergedTimelineLayout(records, [programme]);
+  expect(layout.groups[0].rows.map(row => row.planSource)).toEqual(['Current', 'LMS']);
+  expect(layout.groups[0].rows[1]).toMatchObject({ blks: [], manualMatch: {
+    moduleName: 'Undated LMS workshop', dateWarning: 'Missing or invalid dates: Not provided to 2026-02-30',
+  } });
+  expect(layout.undrawableCount).toBe(1);
 });
 
 test('missing LMS cohort names use a uniquely confirmed Training Plan cohort for display', () => {

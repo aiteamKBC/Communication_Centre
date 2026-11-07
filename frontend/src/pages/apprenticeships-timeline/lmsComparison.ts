@@ -158,13 +158,13 @@ export function matchLmsPlans(groups: ProgrammeGroup[], records: PresentedLmsRow
         ? (byName.get(keyFor(programme.id, cohort.label, module, block.startDate)) ?? [])
           .filter(record => matchesGroup(record, block)) : [];
       const candidates = manualId
-        ? records.filter(record => record.sourceModuleId === manualId && record.planProgrammeId === programme.id)
+        ? records.filter(record => record.sourceModuleId === manualId)
         : strictCandidates;
       const fallbackCandidates = !manualId && validIdentity
         ? (byModuleStart.get(keyFor(programme.id, null, module, block.startDate)) ?? [])
           .filter(record => matchesGroup(record, block)) : [];
       const unmatchedReason = () => {
-        if (manualId) return 'The saved LMS match is unavailable or belongs to a different programme. Remove it or choose another LMS module.';
+        if (manualId) return 'The saved LMS match is unavailable. Remove it or choose another LMS module.';
         if (!isComparisonDate(block.startDate)) return 'Current start date is missing or invalid.';
         if (!moduleKey(module)) return 'Current module name is missing.';
         const programmeRecords = records.filter(record => record.planProgrammeId === programme.id);

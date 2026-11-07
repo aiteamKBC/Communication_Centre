@@ -24,7 +24,7 @@ export default function MergedPlanTimeline({ records, currentProgrammes, customM
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-4">
       <div>
         <h2 className="flex items-center gap-2 text-sm font-extrabold text-kbc-navy"><GitMerge size={18} aria-hidden="true" />Merged Training Plans</h2>
-        <p className="mt-1 text-xs text-gray-500">Both plans in each programme, ordered by first module date (newest first).</p>
+        <p className="mt-1 text-xs text-gray-500">Saved manual matches appear together: Current above LMS on one date axis. Use Compare to choose and save a pair.</p>
       </div>
       <div className="flex flex-wrap gap-2 text-xs font-bold" aria-label="Plan sources">
         <span className="rounded-full bg-kbc-navy px-3 py-1 text-white">Current Training Plan</span>

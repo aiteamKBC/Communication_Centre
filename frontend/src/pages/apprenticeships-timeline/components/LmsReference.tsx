@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Database, GitMerge, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
 import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
 import LmsReferenceTimeline, { type LmsReferenceTimelineProps } from './LmsReferenceTimeline';
@@ -6,7 +6,9 @@ import { presentLmsRows } from '../lmsComparison';
 import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
 import MergedPlanTimeline from './MergedPlanTimeline';
 
-export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, catalogModules, tutorProfiles, renderLmsOverview, onViewLmsModule, children }: {
+export type TrainingPlanSource = 'current' | 'lms' | 'merged';
+
+export default function LmsReference({ canCapture, currentProgrammes, customModules, holidays, catalogModules, tutorProfiles, renderLmsOverview, onViewLmsModule, children, view, onViewChange: setView }: {
   canCapture: boolean;
   currentProgrammes: ProgrammeGroup[];
   customModules: CustomModule[];
@@ -16,8 +18,9 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
   renderLmsOverview: LmsReferenceTimelineProps['renderOverview'];
   onViewLmsModule: LmsReferenceTimelineProps['onViewModule'];
   children: ReactNode;
+  view: TrainingPlanSource;
+  onViewChange: (view: TrainingPlanSource) => void;
 }) {
-  const [view, setView] = useState<'current' | 'lms' | 'merged'>('current');
   const visible = view !== 'current';
   const [loaded, setLoaded] = useState(false);
   const [reference, setReference] = useState<Reference | null>(null);
@@ -30,16 +33,16 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
     ...row, ...cohorts[row.sourceModuleId], tutorName: tutorNames[row.sourceModuleId] ?? row.tutorName,
   })), currentProgrammes, customModules), [reference, currentProgrammes, customModules, tutorNames, cohorts]);
 
-  const loadLmsLabels = async () => {
+  const loadLmsLabels = useCallback(async () => {
     const results = await Promise.allSettled([requestLmsTutorNames(), requestLmsCohorts()]);
     if (results[0].status === 'fulfilled') setTutorNames(results[0].value);
     if (results[1].status === 'fulfilled') setCohorts(results[1].value);
     const errors = results.flatMap(result => result.status === 'rejected'
       ? [result.reason instanceof Error ? result.reason.message : 'LMS labels could not be loaded.'] : []);
     if (errors.length) setError(errors.join(' '));
-  };
+  }, []);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setBusy(true);
     setError('');
     try {
@@ -50,7 +53,10 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The LMS reference could not be loaded.');
     } finally { setBusy(false); }
-  };
+  }, [loadLmsLabels]);
+  useEffect(() => {
+    if (view !== 'current' && !loaded && !busy && !error) void load();
+  }, [view, loaded, busy, error, load]);
   const capture = async () => {
     setBusy(true);
     setError('');
@@ -79,10 +85,10 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
           onClick={() => setView('current')}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${!visible ? 'bg-kbc-navy text-white' : 'text-gray-600 hover:bg-slate-50'}`}><Layers3 size={16} aria-hidden="true" />Current Training Plan</button>
         <button id="lms-training-plan-tab" type="button" role="tab" aria-selected={view === 'lms'} aria-controls="training-plan-lms-reference"
-          onClick={() => { if (!loaded && !busy) void load(); setView('lms'); }}
+          onClick={() => setView('lms')}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${view === 'lms' ? 'bg-teal-800 text-white' : 'text-teal-900 hover:bg-teal-50'}`}><Database size={16} aria-hidden="true" />LMS Training Plan</button>
         <button id="merged-training-plan-tab" type="button" role="tab" aria-selected={view === 'merged'} aria-controls="merged-training-plan-panel"
-          onClick={() => { if (!loaded && !busy) void load(); setView('merged'); }}
+          onClick={() => setView('merged')}
           className={`rounded-lg px-4 py-2 text-xs font-bold ${view === 'merged' ? 'bg-kbc-navy text-white' : 'text-kbc-navy hover:bg-slate-50'}`}><GitMerge size={16} aria-hidden="true" />Merge</button>
       </div>
       </div>
