@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Database, GitMerge, Hand, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
-import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, requestLmsSessionCounts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
+import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, requestLmsSessionCounts, requestLmsHolidays, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
 import type { LmsReferenceTimelineProps } from './LmsReferenceTimeline';
 import { presentLmsRows } from '../lmsComparison';
 import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
@@ -37,6 +37,10 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
   const [tutorNames, setTutorNames] = useState<Record<string, string>>({});
   const [cohorts, setCohorts] = useState<LmsCohortLabels>({});
   const [sessionCounts, setSessionCounts] = useState<Record<string, number | null>>({});
+  const [lmsHolidays, setLmsHolidays] = useState<Holiday[]>([]);
+  const [holidaysLoaded, setHolidaysLoaded] = useState(false);
+  const [holidaysBusy, setHolidaysBusy] = useState(false);
+  const [holidaysError, setHolidaysError] = useState('');
   const records = useMemo(() => presentLmsRows((reference?.records ?? []).map(row => ({
     ...row, ...cohorts[row.sourceModuleId], tutorName: tutorNames[row.sourceModuleId] ?? row.tutorName,
     sessionCount: sessionCounts[row.sourceModuleId],
@@ -68,6 +72,19 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
   useEffect(() => {
     if (view !== 'current' && !loaded && !busy && !error) void load();
   }, [view, loaded, busy, error, load]);
+  const loadHolidays = useCallback(async () => {
+    setHolidaysBusy(true);
+    setHolidaysError('');
+    try {
+      setLmsHolidays(await requestLmsHolidays());
+      setHolidaysLoaded(true);
+    } catch (failure) {
+      setHolidaysError(failure instanceof Error ? failure.message : 'LMS holidays could not be loaded. Please retry.');
+    } finally { setHolidaysBusy(false); }
+  }, []);
+  useEffect(() => {
+    if (view === 'lms' && reference && !holidaysLoaded && !holidaysBusy && !holidaysError) void loadHolidays();
+  }, [view, reference, holidaysLoaded, holidaysBusy, holidaysError, loadHolidays]);
   const capture = async () => {
     setBusy(true);
     setError('');
@@ -128,8 +145,13 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
           {reference && <p className="tp-capture-meta text-xs text-gray-500"><LockKeyhole size={13} aria-hidden="true" />Captured {new Date(reference.createdAt).toLocaleString()} · Read only</p>}
         </div>
         <Suspense fallback={<p role="status" className="px-4 py-6 text-sm text-gray-500">Loading timeline…</p>}>
-        {view === 'lms' && reference && <LmsReferenceTimeline rows={records} currentProgrammes={currentProgrammes} currentModules={customModules} renderOverview={renderLmsOverview} onViewModule={onViewLmsModule} />}
+        {view === 'lms' && reference && <LmsReferenceTimeline rows={records} currentProgrammes={currentProgrammes} currentModules={customModules} holidays={lmsHolidays} renderOverview={renderLmsOverview} onViewModule={onViewLmsModule} />}
         </Suspense>
+        {holidaysBusy && <p role="status" className="px-4 py-2 text-xs text-gray-500">Loading LMS holidays…</p>}
+        {holidaysError && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          <p>{holidaysError}</p>
+          <button type="button" disabled={holidaysBusy} onClick={() => void loadHolidays()} className="mt-2 font-bold underline">Retry loading holidays</button>
+        </div>}
       </section>
       {visible && <>
         {notice && <p role="status" className="m-4 rounded-lg bg-blue-50 p-3 text-xs text-blue-800">{notice}</p>}

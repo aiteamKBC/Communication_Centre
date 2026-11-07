@@ -789,6 +789,7 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
     } };
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: { '1': 'LMS Tutor One', '2': 'LMS Tutor Two' } };
     if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: { '1': 14, '2': 0, '7': 3 } };
+    if (path === '/api/training-plan/lms-reference/holidays/') body = { holidays: [] };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: Object.fromEntries(records.map(row => [row.sourceModuleId, {
       cohortId: row.sourceModuleId === '6' ? 'old-lms-cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'feb-lms-cohort' : 'jan-lms-cohort',
       cohortName: row.sourceModuleId === '2' ? '' : row.sourceModuleId === '6' ? 'March 2024 LMS cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'February cohort' : 'January cohort',

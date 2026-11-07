@@ -51,6 +51,7 @@ async function setup(page: Page, automatic = false, additionalModules: (Partial<
     } });
     if (path === '/api/training-plan/lms-reference/cohorts/') return json({ cohorts: { chosen: { cohortId: null, cohortName: '', groupName: '' } } });
     if (path === '/api/training-plan/lms-reference/tutors/') return json({ tutorNames: { chosen: 'LMS Tutor' } });
+    if (path === '/api/training-plan/lms-reference/holidays/') return json({ holidays: [] });
     return json([]);
   });
   const errors: string[] = [];

@@ -20,6 +20,10 @@ const EMPTY_CUSTOM_MODULES: CustomModule[] = [];
 const EMPTY_CATALOG_MODULES: CatalogModule[] = [];
 const EMPTY_TUTOR_PROFILES: TutorProfile[] = [];
 
+const holidayDateLabel = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', {
+  weekday: 'long', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC',
+});
+
 const LEFT_W    = 220;
 const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 52;
@@ -833,6 +837,10 @@ function ModuleTooltip({ data, currentDate, onClose }: { data: TooltipData; curr
                 {data.referenceSource ? data.blk.startDate : formatDate(data.blk.startDate)} &rarr; {data.referenceSource ? displayEndDate : formatDate(displayEndDate)}
               </p>
               {data.referenceSource && data.blk.startDateSource === 'created_at' && <p className="mt-1 text-xs font-semibold text-amber-800">From created_at (start_date missing)</p>}
+              {data.referenceSource && (data.blk.lmsHolidayDelayWeeks ?? 0) > 0 && <p className="mt-1 text-xs text-violet-700">
+                Original LMS dates: {data.blk.lmsOriginalStartDate} → {data.blk.lmsOriginalEndDate}.
+                {' '}Holiday delay: {data.blk.lmsHolidayDelayWeeks} week{data.blk.lmsHolidayDelayWeeks === 1 ? '' : 's'}.
+              </p>}
               <p className="text-xs text-gray-400">
                 {data.referenceSource ? `Source: LMS · Module ID: ${data.blk.moduleCatalogueId}` : <>{deliveryWeeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}</>}
               </p>
@@ -1673,7 +1681,12 @@ export default function GanttTimeline({
     return { start: base.start, end: effectiveEnd > base.end ? effectiveEnd : base.end };
   }, [viewWindow, zoom, effectiveEnd, fitModules]);
 
-  const cols       = useMemo(() => generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end), [zoom, effectiveViewWindow]);
+  const cols = useMemo(() => {
+    const columns = generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end);
+    return referenceSource && (zoom === 'week' || zoom === 'day')
+      ? columns.filter(column => { const day = new Date(column.startDate).getUTCDay(); return day >= 1 && day <= 5; })
+      : columns;
+  }, [zoom, effectiveViewWindow, referenceSource]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
 
   const initiallyPositionedRange = useRef('');
@@ -1963,6 +1976,12 @@ export default function GanttTimeline({
     holidays.map(h => ({ h, pos: getBlockPosition(h.startDate, h.endDate, cols) }))
       .filter(x => x.pos !== null),
   [holidays, cols]);
+
+  const holidayDayPositions = useMemo(() => holidays.flatMap(h => (h.sourceHolidays ?? []).map(day => ({
+    h, day,
+    pos: getBlockPosition(day.startDate > h.startDate ? day.startDate : h.startDate,
+      day.endDate < h.endDate ? day.endDate : h.endDate, cols),
+  }))).filter(item => item.pos !== null), [holidays, cols]);
 
   const getHolidayPlan = useMemo(() => {
     const cache = new Map<string, SessionPlan>();
@@ -2989,7 +3008,7 @@ export default function GanttTimeline({
         key={blk.id}
         data-timeline-block-id={blk.id}
         data-source={barReferenceSource ?? (mergedSources ? 'Current' : undefined)}
-        title={barReferenceSource ? `LMS: ${mod.lbl}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${tutorLabel || 'Not assigned'}.${blk.startDateSource === 'created_at' ? ' From created_at (start_date missing).' : ''}` : undefined}
+        title={barReferenceSource ? `LMS: ${mod.lbl}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${tutorLabel || 'Not assigned'}.${blk.startDateSource === 'created_at' ? ' From created_at (start_date missing).' : ''}${blk.lmsHolidayDelayWeeks ? ` Original LMS dates: ${blk.lmsOriginalStartDate} to ${blk.lmsOriginalEndDate}. Holiday delay: ${blk.lmsHolidayDelayWeeks} week${blk.lmsHolidayDelayWeeks === 1 ? '' : 's'}.` : ''}` : undefined}
         className={`absolute z-10 cursor-grab transition-all active:cursor-grabbing ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
         style={{
           left: pos.left,
@@ -3256,7 +3275,7 @@ export default function GanttTimeline({
           <span className={`tp-section-icon ${referenceSource ? 'tp-timeline-icon-lms' : ''}`}><CalendarRange size={19} aria-hidden="true" /></span>
           <div>
             <h3>{mergedSources ? 'Combined programme timeline' : referenceSource ? 'LMS reference timeline' : 'Programme timeline'}</h3>
-            <p>{mergedSources ? 'One date axis for Current and LMS modules.' : referenceSource ? 'Captured module dates, preserved for comparison.' : 'Explore delivery dates across programmes and cohorts.'}</p>
+            <p>{mergedSources ? 'One date axis for Current and LMS modules.' : referenceSource ? 'Module dates adjusted for Monday–Friday holiday weeks.' : 'Explore delivery dates across programmes and cohorts.'}</p>
           </div>
         </div>
         <span className="tp-timeline-hint">{referenceSource ? <LockKeyhole size={14} aria-hidden="true" /> : <Hand size={14} aria-hidden="true" />}{referenceSource ? 'Read only' : 'Drag to explore'}</span>
@@ -3621,6 +3640,8 @@ export default function GanttTimeline({
 
         <div className="flex shrink-0 items-center gap-3 text-xs font-semibold text-slate-400">
           <span className="flex items-center gap-1"><span className="inline-block h-5 shrink-0 rounded-full" style={{ width: 5, backgroundImage: 'repeating-linear-gradient(to bottom, #F7A800 0 8px, transparent 8px 12px)', boxShadow: '0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(247,168,0,0.35)' }} />Now</span>
+          {referenceSource && <span className="flex items-center gap-1 text-violet-700"><span className="inline-block h-3 w-3 rounded-sm bg-violet-500" />Holiday week</span>}
+          {referenceSource && <span className="flex items-center gap-1 text-violet-800"><span className="inline-block h-4 w-1 rounded-sm bg-violet-700" />Holiday day</span>}
           {referenceSource
             ? <span className="rounded bg-teal-100 px-2 py-1 font-bold text-teal-900">LMS · Read only</span>
             : <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>}
@@ -3666,6 +3687,9 @@ export default function GanttTimeline({
           {holidayPositions.map(({ h, pos }) => pos && (
             <div
               key={`band-${h.id}`}
+              data-holiday-id={h.id}
+              data-holiday-start={h.startDate}
+              data-holiday-end={h.endDate}
               className="absolute bottom-0"
               style={{
                 top: 0,
@@ -3679,6 +3703,22 @@ export default function GanttTimeline({
               onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
               onMouseMove={e => scheduleFloatingTipMove('holiday', e.clientX, e.clientY)}
               onMouseLeave={() => setHolidayTip(null)}
+            />
+          ))}
+
+          {holidayDayPositions.map(({ h, day, pos }) => pos && (
+            <button type="button" key={`${h.id}:${day.id}`}
+              data-holiday-day={day.startDate}
+              aria-label={`Holiday: ${day.label}. ${holidayDateLabel(day.startDate)}${day.endDate !== day.startDate ? ` to ${holidayDateLabel(day.endDate)}` : ''}. Holiday week: ${holidayDateLabel(h.startDate)} to ${holidayDateLabel(h.endDate)}.`}
+              className="absolute bottom-0 border-0 bg-violet-700 p-0 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-900"
+              style={{ top: 0, left: leftW + pos.left, width: Math.max(pos.width, 4), opacity: 0.8, zIndex: 3 }}
+              onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
+              onMouseMove={e => scheduleFloatingTipMove('holiday', e.clientX, e.clientY)}
+              onMouseLeave={e => { if (document.activeElement !== e.currentTarget) setHolidayTip(null); }}
+              onFocus={e => { const bounds = e.currentTarget.getBoundingClientRect(); setHolidayTip({ h, x: bounds.left, y: Math.max(80, bounds.top) }); }}
+              onClick={e => { e.stopPropagation(); setHolidayTip({ h, x: e.clientX, y: e.clientY }); }}
+              onBlur={() => setHolidayTip(null)}
+              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setHolidayTip(null); e.currentTarget.blur(); } }}
             />
           ))}
 
@@ -4487,24 +4527,35 @@ export default function GanttTimeline({
 
       {holidayTip && (
         <div
+          role="tooltip"
           className="fixed pointer-events-none z-50"
-          style={{ left: Math.min(holidayTip.x + 14, window.innerWidth - 220), top: Math.max(holidayTip.y - 8, 8) }}
+          style={{ left: Math.max(8, Math.min(holidayTip.x + 14, window.innerWidth - 320)), top: Math.max(8, Math.min(holidayTip.y - 8, window.innerHeight - 260)), maxWidth: 'calc(100vw - 16px)' }}
         >
-          <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden" style={{ minWidth: 180 }}>
+          <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden" style={{ width: 304, maxWidth: 'calc(100vw - 16px)' }}>
             <div className="px-3 py-2 flex items-center gap-2" style={{ background: holidayTip.h.color }}>
               <i className="ri-calendar-close-line text-sm" style={{ color: '#000' }} />
-              <span className="font-extrabold text-sm truncate" style={{ color: '#000' }}>{holidayTip.h.label}</span>
+              <span className="font-extrabold text-sm" style={{ color: '#000' }}>{holidayTip.h.label}</span>
             </div>
             <div className="px-3 py-2 flex flex-col gap-1">
               <div className="flex items-center gap-1.5">
                 <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: holidayTip.h.color }} />
                 <span className="text-xs" style={{ color: '#000' }}>{holidayTip.h.type}</span>
               </div>
-              <p className="text-xs font-semibold" style={{ color: '#000' }}>
+              {holidayTip.h.sourceHolidays?.length ? <>
+                <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-violet-700">Actual holiday{holidayTip.h.sourceHolidays.length > 1 ? 's' : ''}</p>
+                {holidayTip.h.sourceHolidays.map(day => <div key={day.id} className="text-xs text-gray-900">
+                  <p className="font-semibold">{day.label}</p>
+                  <p>{holidayDateLabel(day.startDate)}{day.endDate !== day.startDate && <> → {holidayDateLabel(day.endDate)}</>}</p>
+                </div>)}
+                <div className="mt-1 border-t border-violet-100 pt-2 text-xs text-violet-900">
+                  <p className="font-bold">Week off (Monday–Friday)</p>
+                  <p>{holidayDateLabel(holidayTip.h.startDate)} → {holidayDateLabel(holidayTip.h.endDate)}</p>
+                </div>
+              </> : <p className="text-xs font-semibold" style={{ color: '#000' }}>
                 {new Date(holidayTip.h.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                 {' → '}
                 {new Date(holidayTip.h.endDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </p>
+              </p>}
             </div>
           </div>
         </div>

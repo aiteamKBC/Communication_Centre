@@ -45,6 +45,7 @@ test('all timeline sources open at Now across zooms and screen sizes, including 
     if (path.endsWith('/tutors/')) body = { tutorNames: {} };
     if (path.endsWith('/cohorts/')) body = { cohorts: {} };
     if (path.endsWith('/session-counts/')) body = { sessionCounts: { lms1: 5 } };
+    if (path === '/api/training-plan/lms-reference/holidays/') body = { holidays: [] };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
   for (const width of [1440, 390]) {

@@ -1,5 +1,20 @@
 import { csrfToken } from '../../utils/apiSession';
 import { fetchWithTimeout } from '../../utils/fetchWithTimeout';
+import type { Holiday } from './types';
+
+export async function requestLmsHolidays(): Promise<Holiday[]> {
+  const response = await fetchWithTimeout('/api/training-plan/lms-reference/holidays/', {
+    credentials: 'same-origin', cache: 'no-store', timeoutMs: 30000,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(payload?.holidays) || !payload.holidays.every((holiday: Holiday | null) =>
+    holiday && typeof holiday.id === 'string' && typeof holiday.label === 'string'
+    && typeof holiday.startDate === 'string' && typeof holiday.endDate === 'string'
+    && typeof holiday.type === 'string' && typeof holiday.color === 'string')) {
+    throw new Error('LMS holidays could not be loaded. Please retry.');
+  }
+  return payload.holidays;
+}
 
 export interface LmsReferenceRow {
   sourceModuleId: string;

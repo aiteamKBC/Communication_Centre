@@ -1,5 +1,5 @@
 from django.urls import path
-from .training_plan_lms_reference import training_plan_lms_reference, training_plan_lms_tutors, training_plan_lms_cohorts, training_plan_lms_session_counts
+from .training_plan_lms_reference import training_plan_lms_reference, training_plan_lms_tutors, training_plan_lms_cohorts, training_plan_lms_session_counts, training_plan_lms_holidays
 
 from .views import aptem_learners, aptem_subprogrammes, audit_logs, coach_profile_detail, coach_profiles, documents_live, documents_summary, employee_detail, employees, event_detail, events, feedback, health, ksb_profile_detail, ksb_profiles, leadership_message, leadership_message_detail, module_detail, modules, news, news_detail, realtime, risk_register, support_tickets, training_plan, training_plan_add_module_for_tutor, training_plan_bootstrap, training_plan_archive_cohort, training_plan_archive_module, training_plan_cohort_detail, training_plan_create_cohort, training_plan_holiday_detail, training_plan_holiday_types, training_plan_holidays, training_plan_linked_module_rows, training_plan_linked_programme_rows, training_plan_module_assignment_learners, training_plan_module_definition_detail, training_plan_module_detail, training_plan_module_learners, training_plan_modules, training_plan_move_cohort, training_plan_program_config_detail, training_plan_program_configs, training_plan_reorder_cohorts, training_plan_reorder_programmes, training_plan_restore_cohort, training_plan_restore_module, training_plan_session_coverage, training_plan_session_detail, training_plan_session_ksb, tutor_profile_detail, tutor_profile_duplicates, tutor_profiles, upload_image, urgent_notice, urgent_notice_detail, urgent_tickets, user_activity
 
@@ -23,6 +23,7 @@ urlpatterns = [
     path('training-plan/lms-reference/tutors/', training_plan_lms_tutors, name='training-plan-lms-tutors'),
     path('training-plan/lms-reference/cohorts/', training_plan_lms_cohorts, name='training-plan-lms-cohorts'),
     path('training-plan/lms-reference/session-counts/', training_plan_lms_session_counts, name='training-plan-lms-session-counts'),
+    path('training-plan/lms-reference/holidays/', training_plan_lms_holidays, name='training-plan-lms-holidays'),
     path('training-plan-bootstrap/', training_plan_bootstrap, name='training-plan-bootstrap'),
     path('training-plan/sessions/<int:session_id>/', training_plan_session_detail, name='training-plan-session-detail'),
     path('training-plan/sessions/<int:session_id>/coverage/', training_plan_session_coverage, name='training-plan-session-coverage'),

@@ -25,7 +25,7 @@ class LmsReferenceSourceError(Exception):
 
 
 @contextmanager
-def lms_source_connection():
+def lms_source_connection(table=SOURCE_TABLE):
     source = getattr(settings, 'TRAINING_PLAN_LMS_REFERENCE_SOURCE', None)
     if source is None:
         url = os.getenv('TRAINING_PLAN_LMS_REFERENCE_DATABASE_URL', '').strip()
@@ -49,9 +49,9 @@ def lms_source_connection():
                 raise LmsReferenceSourceError('LMS reference source access must be read only.')
             selectable, writable = conn.execute(
                 "SELECT has_table_privilege(current_user,%s,'SELECT'), has_table_privilege(current_user,%s,'INSERT,UPDATE,DELETE,TRUNCATE')",
-                (SOURCE_TABLE, SOURCE_TABLE)).fetchone()
+                (table, table)).fetchone()
             if not selectable or writable:
-                raise LmsReferenceSourceError('The configured LMS account must have SELECT permission and no write permissions on modules.')
+                raise LmsReferenceSourceError('The configured LMS account must have SELECT permission and no write permissions on the source table.')
             yield conn
     except psycopg.Error:
         raise LmsReferenceSourceError('The LMS reference source is unavailable. No reference was saved.') from None
@@ -132,6 +132,40 @@ def read_lms_cohorts(module_ids):
                             'cohortName': (cohort_name or '').strip(),
                             'groupName': (group_name or '').strip()}
             for module_id, cohort_id, cohort_name, group_name in rows}
+
+
+def read_lms_holidays():
+    with lms_source_connection('curriculum.england_holidays') as conn:
+        rows = conn.execute(
+            'SELECT id,title,holiday_date FROM curriculum.england_holidays '
+            'ORDER BY holiday_date,id').fetchall()
+    holidays = []
+    for ident, title, holiday_date in rows:
+        if not isinstance(holiday_date, date) or isinstance(holiday_date, datetime):
+            raise LmsReferenceSourceError('LMS holiday dates must be date-only values.')
+        holidays.append({
+            'id': f'lms-holiday:{ident}', 'label': title,
+            'startDate': holiday_date.isoformat(), 'endDate': holiday_date.isoformat(),
+            'type': 'Bank holiday', 'color': '#8B5CF6',
+        })
+    return holidays
+
+
+@never_cache
+@vary_on_cookie
+def training_plan_lms_holidays(request):
+    """Live read-only holiday overlay, separate from the immutable module capture."""
+    user = getattr(request, 'user', None)
+    if user is None or not user.is_authenticated or not user.is_active:
+        return JsonResponse({'detail': 'Sign in to view LMS holidays.'}, status=401)
+    if request.method != 'GET':
+        response = JsonResponse({'detail': 'LMS holidays are read only.'}, status=405)
+        response['Allow'] = 'GET'
+        return response
+    try:
+        return JsonResponse({'holidays': read_lms_holidays()})
+    except LmsReferenceSourceError:
+        return JsonResponse({'detail': 'LMS holidays could not be loaded. Please retry.'}, status=503)
 
 
 def read_lms_session_counts(module_ids):

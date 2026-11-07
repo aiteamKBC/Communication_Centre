@@ -46,6 +46,7 @@ test('large merged timelines keep distant modules reachable across zooms and vie
     } };
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: {} };
     if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: {} };
+    if (path === '/api/training-plan/lms-reference/holidays/') body = { holidays: [] };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: {} };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
