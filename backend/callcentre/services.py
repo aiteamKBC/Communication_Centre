@@ -15,6 +15,7 @@ from .delegation import cover_of, work_rule
 from .do_not_call import emails as do_not_call_emails
 from .employer_desk import EMPLOYER, SATISFACTION, optional, scope_error, specialists
 from .models import Agent, CallIntent, CallMatch, CaseCall, CaseTicket, TicketEvent, ZoomPhoneCall
+from .recall import MAX_RECALLS, can_recall, states as recall_states
 from .rules import (FAILED_RESULTS, LONDON, OPTIONS, PROMISES, SATISFACTION_TYPES, SPECIALIST_CLOSES, waiting_on_support,
                     add_workdays, email_key, normalize_phone, parse_moment, promise_deadline, same_contact, working_day)
 from .voicemail_calls import SPECIALIST, effective_result, mark as mark_voicemail
@@ -176,7 +177,8 @@ REDIAL_AFTER = timedelta(seconds=30)
 
 
 @transaction.atomic(using=DB)
-def create_intent(ticket_id, agent, actor=None, contact_role=''):
+def create_intent(ticket_id, agent, actor=None, contact_role='', recall=False):
+    """Press Call for a case. ``recall``: call it again now, although it is held after an unanswered call (recall.py)."""
     now = timezone.now()
     ticket = CaseTicket.objects.get(pk=ticket_id)
     if ticket.source_type == 'satisfaction':
@@ -184,8 +186,15 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     from .inbound import waiting_for_callback
     # A learner who rang and was missed is called back now, whatever follow-up their cases wait for.
     rang = waiting_for_callback(ticket.learner_email)
-    if ticket.next_followup_at and ticket.next_followup_at > now and not rang:
+    held = bool(ticket.next_followup_at and ticket.next_followup_at > now and not rang)
+    if held and not recall:
         raise Conflict('The next follow-up is not due yet.')
+    if held:
+        state = recall_states([ticket], now).get(ticket.pk)
+        if not state:
+            raise Conflict('Only a case waiting after an unanswered call can be recalled.')
+        if not can_recall(state):
+            raise Conflict(f'Recalled {MAX_RECALLS} times already: the case comes back to the list on its follow-up date.')
     call_email, number = call_contact(ticket, contact_role)
     if email_key(call_email) in do_not_call_emails():
         raise Conflict('This person is on the do-not-call list: do not phone them. You can still email them.')
@@ -194,7 +203,7 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
     if not agent.zoom_email or not agent.zoom_account:
         raise ValueError('Configure the agent Zoom identity first.')
     # Claim every active issue included in the intent, or roll back the entire operation.
-    tickets = call_cases(ticket, now, rang)
+    tickets = call_cases(ticket, now, rang, recall=held)
     # An optional call is about that call alone; it is linked to the learner's open satisfaction review (not claimed,
     # so it stays on the other agents' lists) so feedback given on it can complete the review.
     linked = []
@@ -216,13 +225,16 @@ def create_intent(ticket_id, agent, actor=None, contact_role=''):
         # A case called for a director's task names it, for the task's summary.
         cover = cover_of(item)
         task = {'task_id': cover.task.pk} if cover and cover.direct and cover.task.to_agent_id == agent.pk else {}
-        event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number, **task}, agent=agent, actor=actor)
+        # A recall counts as a try on each case it calls before its follow-up (recall.py).
+        tried = {'recall': True} if held and item.next_followup_at and item.next_followup_at > now else {}
+        event(item, 'dial_requested', {'intent_id': intent.pk, 'number': number, **task, **tried}, agent=agent, actor=actor)
     return intent
 
 
-def call_cases(ticket, now, rang=False):
+def call_cases(ticket, now, rang=False, recall=False):
     """The cases one call to this contact covers: this one, and the person's other open cases that are due now (all of
-    them when ``rang``: the learner rang us and is waiting for a call back)."""
+    them when ``rang``: the learner rang us and is waiting for a call back; with ``recall``, also those held after the
+    same unanswered call that can still be recalled)."""
     candidates = CaseTicket.objects.open().exclude(source_type='satisfaction')
     person_id = ticket.source_data.get('person_id')
     if person_id and ticket.source_type != 'employer_feedback':
@@ -235,7 +247,11 @@ def call_cases(ticket, now, rang=False):
     # The clicked case, plus the person's other cases that are due now: one waiting on a callback or a promise
     # keeps its waiting state.
     if not rang:
-        candidates = candidates.filter(Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now))
+        due = Q(pk=ticket.pk) | Q(next_followup_at__isnull=True) | Q(next_followup_at__lte=now)
+        if recall:
+            held = recall_states(list(candidates.filter(next_followup_at__gt=now)), now)
+            due |= Q(pk__in=[pk for pk, state in held.items() if can_recall(state)])
+        candidates = candidates.filter(due)
     # A technical issue still with support is not part of another call: the call would send it back to the list.
     candidates = candidates.filter(Q(pk=ticket.pk) | ~waiting_on_support())
     return list(candidates.order_by('pk'))

@@ -269,6 +269,20 @@ class CallMatch(Retained):
         managed = False
 
 
+class EventsHubCall(Retained):
+    """A Zoom call a specialist made from the Events hub, matched to its press of Call there (events_hub.match_dials).
+    It counts towards their talk time and daily target as event calls (call_scope.event_call_list).
+    See docs/callcentre-port/event_calls.sql."""
+    call = models.OneToOneField(ZoomPhoneCall, on_delete=models.PROTECT, related_name='events_hub_call')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT)
+    events_dial_id = models.UUIDField(unique=True)
+    matched_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_event_call'
+        managed = False
+
+
 class CaseCall(Retained):
     ticket = models.ForeignKey(CaseTicket, on_delete=models.PROTECT, related_name='calls')
     match = models.ForeignKey(CallMatch, on_delete=models.PROTECT, related_name='cases')
@@ -606,14 +620,18 @@ class DelegationHistory(Retained):
 
 
 class DoNotCall(Retained):
-    """A learner a director took off every call list (``do_not_call``): no calls, emails still allowed. Removing them
-    ends the entry instead of deleting it, so the history is kept."""
+    """A learner a director or their coach took off every call list (``do_not_call``): no calls, emails still allowed.
+    Removing them ends the entry instead of deleting it, so the history is kept."""
     learner_email = models.EmailField()
     learner_name = models.CharField(max_length=255, blank=True)
     reason = models.CharField(max_length=20)
     note = models.TextField()
     added_by = models.CharField(max_length=255)
     added_at = models.DateTimeField(auto_now_add=True)
+    # The last day the learner is not called (London); null: until someone removes the entry.
+    until = models.DateField(null=True, blank=True)
+    # director or coach (coach_centre.py).
+    added_role = models.CharField(max_length=10, default='director')
     removed_by = models.CharField(max_length=255, blank=True)
     removed_at = models.DateTimeField(null=True, blank=True)
     removed_note = models.TextField(blank=True)
@@ -655,3 +673,54 @@ class AttendanceEdit(Retained):
     class Meta:
         db_table = 'callcenter_attendance_edit'
         managed = False
+
+
+class AuthorisedAbsence(Retained):
+    """A coming lecture a learner told their coach they will miss, with the reason (``authorised_absence``). When the
+    register then shows them absent, the missed-lecture case closes as soon as it is made (``ticket``)."""
+    learner_email = models.EmailField()
+    learner_name = models.CharField(max_length=255, blank=True)
+    coach_email = models.EmailField()
+    # occurrence:<curriculum.live_session_occurrences.id> or series:<curriculum.live_sessions.id> (a one-off session).
+    session_ref = models.CharField(max_length=80)
+    occurrence_id = models.CharField(max_length=64, blank=True)
+    session_date = models.DateField()
+    starts_at = models.DateTimeField()
+    module = models.CharField(max_length=255, blank=True)
+    module_id = models.CharField(max_length=64, blank=True)
+    reason = models.CharField(max_length=20)
+    note = models.TextField(blank=True)
+    added_by = models.CharField(max_length=255)
+    added_role = models.CharField(max_length=10)
+    created_at = models.DateTimeField(auto_now_add=True)
+    cancelled_by = models.CharField(max_length=255, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_note = models.TextField(blank=True)
+    ticket = models.ForeignKey(CaseTicket, null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'callcenter_authorised_absence'
+        managed = False
+
+
+class CoachLog(Retained):
+    """What was done on a coach's desk (coach_centre.py), by the coach or by a director: append-only."""
+    coach_email = models.EmailField()
+    actor = models.CharField(max_length=255)
+    actor_role = models.CharField(max_length=10)
+    action = models.CharField(max_length=30)
+    learner_email = models.EmailField(blank=True)
+    learner_name = models.CharField(max_length=255, blank=True)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = EventQuerySet.as_manager()
+
+    class Meta:
+        db_table = 'callcenter_coach_log'
+        managed = False
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError('The coach log is append-only.')
+        super().save(*args, **kwargs)

@@ -269,6 +269,12 @@ ZOOM_AI_TRANSCRIPTION_ENABLED = os.getenv('ZOOM_AI_TRANSCRIPTION_ENABLED', '').l
 # The KBC technical support (help-desk) site, e.g. https://technicalsupport.kentbusinesscollege.net. Empty: specialists
 # cannot raise technical issues and open ones are not followed up.
 CALLCENTRE_HELPDESK_URL = os.getenv('CALLCENTRE_HELPDESK_URL', '').strip().rstrip('/')
+# The Events hub, e.g. https://events.kentbusinesscollege.net, and the key both systems hold. Each cycle sends it
+# the active specialists and runs its Eventbrite import (callcentre/events_hub.py). Either empty: switched off.
+EVENTS_API_URL = os.getenv('EVENTS_API_URL', '').strip().rstrip('/')
+EVENTS_INTEGRATION_KEY = os.getenv('EVENTS_INTEGRATION_KEY', '').strip()
+# Signs the one-time passes that open Events from here; the Events server holds the same value. Empty: no Events buttons.
+EVENTS_ENTRY_SECRET = os.getenv('EVENTS_ENTRY_SECRET', '').strip()
 ZOOM_AI_TRANSCRIPTS_PER_SYNC = max(0, min(50, int(os.getenv('ZOOM_AI_TRANSCRIPTS_PER_SYNC', '10'))))
 # Transcript analysis sends learner call content to OpenAI: off unless explicitly enabled.
 CALLCENTRE_AI_ENABLED = os.getenv('CALLCENTRE_AI_ENABLED', '').lower() in ('1', 'true', 'yes')

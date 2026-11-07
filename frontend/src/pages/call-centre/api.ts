@@ -68,6 +68,8 @@ export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { bookin
   followup_agent_id: number | null; contact_sources?: Record<string, string>;
   /** A director's task covering this case: on the task's list (`direct`), or another case of a learner it covers. */
   cover?: CaseCover | null;
+  /** Held after an unanswered call (no answer, voicemail, or no call in Zoom): recallable from its list, `used` of `max` tries. */
+  recall?: { used: number; max: number } | null;
   /** Where the case sits on the desk being shown (set by the page, not the server): its own list; a task given to
    * this specialist; another specialist covers it (read-only); or it only comes along on a covered learner's call. */
   desk?: 'own' | 'task' | 'covered' | 'call' };
@@ -95,12 +97,15 @@ export type ReviewMeetingSummary = {
   learner_response: string; confirmed: boolean; organizer: string; cancellable: boolean;
 };
 
-export type DayStats = { day: string; attempts: number; connected: number; seconds: number };
+/** ``seconds`` is all talk time (it counts towards the target); ``event_seconds`` is the part from Events hub calls. */
+export type DayStats = { day: string; attempts: number; connected: number; seconds: number; event_seconds: number };
 export type AgentStats = {
   id: number; display_name: string; zoom_account: string; zoom_phone_number: string; target_seconds: number;
-  today: { attempts: number; connected: number; seconds: number };
+  // Calls, answered and seconds include the calls made from the Events hub; event_* is that part of them.
+  today: { attempts: number; connected: number; seconds: number; event_attempts: number; event_connected: number; event_seconds: number };
   month: {
-    attempts: number; connected: number; seconds: number; resolved: number; pending: number; sla_breaches: number;
+    attempts: number; connected: number; seconds: number; event_attempts: number; event_connected: number; event_seconds: number;
+    resolved: number; pending: number; sla_breaches: number;
     unique_learners: number; emails: number; daily: DayStats[];
   };
   sync: { last_success_at: string | null; error: string; recordings_error: string };

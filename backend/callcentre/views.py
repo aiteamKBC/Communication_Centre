@@ -41,6 +41,7 @@ from .lecture_details import add_lecture_times
 from .case_filters import add_filter_contexts
 from .rules import (LONDON, OPTIONS, PROMISES, REVIEW_CATEGORIES, SPECIALIST_CLOSES, contact_key, contact_keys, days_late, email_key, holidays_from,
                     is_late, late_cutoff, missed_call, next_workday, normalize_phone, parse_moment, priority, promise_missed, same_contact)
+from .recall import states as recall_states
 from .services import NOT_DISCUSSED, Conflict, agent_for, call_contact, can_work, claim, close, create_intent, event, open_call, operating_agent, plan_outcome, record_outcome, release, release_fields, reopen, resolve, save_call
 
 logger = logging.getLogger(__name__)
@@ -115,35 +116,43 @@ def epa_dates(ticket):
     }
 
 
-def authenticated(fn):
-    @wraps(fn)
-    def wrapper(request, *args, **kwargs):
-        if not request.user.is_authenticated or not request.user.is_active:
-            return JsonResponse({'detail': 'An active signed-in account is required.'}, status=401)
-        denied = refused(request.user)
-        if denied:
-            return denied
-        try:
-            return fn(request, *args, **kwargs)
-        except ObjectDoesNotExist:
-            return JsonResponse({'detail': 'Record not found.'}, status=404)
-        except PermissionDenied as exc:
-            return JsonResponse({'detail': str(exc)}, status=403)
-        except Conflict as exc:
-            return JsonResponse({'detail': str(exc)}, status=409)
-        except (ValueError, TypeError, KeyError) as exc:
-            # A FieldError names the form field to fix; the page shows the message next to it.
-            field = getattr(exc, 'field', '')
-            return JsonResponse({'detail': str(exc) or 'Invalid request.', **({'field': field} if field else {})}, status=400)
-        except ZoomError as exc:
-            return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
-        except DatabaseError:
-            return JsonResponse({'detail': 'Call Centre is temporarily unavailable. Check database connectivity.'}, status=503)
-        except (Http404, SuspiciousOperation):
-            raise   # Django answers these itself
-        except Exception as exc:  # noqa: BLE001 - always answer the page in JSON, with a reference to find it in the log
-            return server_error(request, exc)
-    return never_cache(wrapper)
+def guarded(refuse):
+    """A view for active signed-in accounts that ``refuse`` lets in (it answers None for them, else the response),
+    answering every error in JSON."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(request, *args, **kwargs):
+            if not request.user.is_authenticated or not request.user.is_active:
+                return JsonResponse({'detail': 'An active signed-in account is required.'}, status=401)
+            denied = refuse(request.user)
+            if denied:
+                return denied
+            try:
+                return fn(request, *args, **kwargs)
+            except ObjectDoesNotExist:
+                return JsonResponse({'detail': 'Record not found.'}, status=404)
+            except PermissionDenied as exc:
+                return JsonResponse({'detail': str(exc)}, status=403)
+            except Conflict as exc:
+                return JsonResponse({'detail': str(exc)}, status=409)
+            except (ValueError, TypeError, KeyError) as exc:
+                # A FieldError names the form field to fix; the page shows the message next to it.
+                field = getattr(exc, 'field', '')
+                return JsonResponse({'detail': str(exc) or 'Invalid request.', **({'field': field} if field else {})}, status=400)
+            except ZoomError as exc:
+                return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
+            except DatabaseError:
+                return JsonResponse({'detail': 'Call Centre is temporarily unavailable. Check database connectivity.'}, status=503)
+            except (Http404, SuspiciousOperation):
+                raise   # Django answers these itself
+            except Exception as exc:  # noqa: BLE001 - always answer the page in JSON, with a reference to find it in the log
+                return server_error(request, exc)
+        return never_cache(wrapper)
+    return decorator
+
+
+# Engagement Centre directors and specialists. ``refused`` is looked up on each request, so tests can replace it.
+authenticated = guarded(lambda user: refused(user))
 
 
 def server_error(request, exc):
@@ -354,6 +363,8 @@ def overview(request):
     # The director's tasks: which cases another specialist covers for now.
     coverage = delegation.Coverage(today=today)
     covers = coverage.resolve(tickets, {ticket.pk: ticket.followup_agent_id for ticket in tickets})
+    # Cases held after an unanswered call, which their list can recall now, with the tries used.
+    recalls = recall_states(listed, now)
     for ticket in listed:
         item = ticket_json(ticket)
         item['contact_key'] = keys[ticket.pk]
@@ -371,6 +382,7 @@ def overview(request):
             owner = learner_owner(ticket.learner_email, allocated)
         item['allocated_agent_id'] = owner if item['optional'] or owner not in team else None
         item['cover'] = delegation.cover_json(covers[ticket.pk]) if ticket.pk in covers else None
+        item['recall'] = recalls.get(ticket.pk)
         cases.append(item)
 
     add_lecture_times(cases)
@@ -381,13 +393,18 @@ def overview(request):
         agents.append({
             'id': row['id'], 'display_name': row['name'], 'zoom_account': row['account'],
             'zoom_phone_number': row['zoom_phone_number'], 'target_seconds': row['daily_target_minutes'] * 60,
-            'today': {'attempts': current['calls'], 'connected': current['answered'], 'seconds': current['seconds']} if current
-            else {'attempts': 0, 'connected': 0, 'seconds': 0},
+            # Calls, answered and seconds include calls made from the Events hub; event_* is that part of them.
+            'today': {'attempts': current['calls'], 'connected': current['answered'], 'seconds': current['seconds'],
+                      'event_attempts': current['event_calls'], 'event_connected': current['event_answered'],
+                      'event_seconds': current['event_seconds']} if current
+            else {'attempts': 0, 'connected': 0, 'seconds': 0, 'event_attempts': 0, 'event_connected': 0, 'event_seconds': 0},
             'month': {'attempts': row['calls'], 'connected': row['answered'], 'seconds': row['seconds'],
+                      'event_attempts': row['event_calls'], 'event_connected': row['event_answered'],
+                      'event_seconds': row['event_seconds'],
                       'resolved': row['resolved'], 'pending': row['pending'], 'sla_breaches': row['sla_breaches'],
                       'unique_learners': row['unique_learners'], 'emails': row['emails'],
                       'daily': [{'day': day['date'], 'attempts': day['calls'], 'connected': day['answered'],
-                                 'seconds': day['seconds']} for day in row['daily']]},
+                                 'seconds': day['seconds'], 'event_seconds': day['event_seconds']} for day in row['daily']]},
             'sync': row['sync'],
         })
 
@@ -563,7 +580,8 @@ def action(request, pk, command):
         if command == 'claim':
             ticket = claim(pk, agent, actor=request.user.get_username())
             return JsonResponse({'ticket': ticket_json(ticket)})
-        intent = create_intent(pk, agent, actor=request.user.get_username(), contact_role=str(data.get('call_role') or ''))
+        intent = create_intent(pk, agent, actor=request.user.get_username(), contact_role=str(data.get('call_role') or ''),
+                               recall=data.get('recall') is True)
         return JsonResponse(dial_json(intent, agent))
     if command == 'complete_feedback':
         completed = complete_learner_feedback(pk, request.user, score=data.get('score'), problem=data.get('problem'),

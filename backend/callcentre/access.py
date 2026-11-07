@@ -6,6 +6,8 @@ and Zoom line) unless **Call centre director** is ticked as well.
 Engagement specialists (call-centre agents) are the accounts with **Call centre agent** ticked: ticking it
 creates their specialist profile, unticking it switches the profile off (it is never deleted, so their call
 history stays).
+Coaches are the accounts with **Engagement Centre coach** ticked: they get the coaches' screen only (coach_centre.py),
+never the director or specialist pages, and see only their own learners.
 """
 from django.http import JsonResponse
 
@@ -16,6 +18,7 @@ from .models import Agent
 
 AGENT_GROUP = ACCESS_GROUPS['access_call_centre_agent']
 DIRECTOR_GROUP = ACCESS_GROUPS['access_call_centre_director']
+COACH_GROUP = ACCESS_GROUPS['access_call_centre_coach']
 # New specialists dial from the student Zoom account; a director can change it in Engagement Centre settings.
 DEFAULT_ZOOM_ACCOUNT = 'student'
 
@@ -33,6 +36,12 @@ def has_access(user):
     return is_director(user) or user.groups.using(DB).filter(name=AGENT_GROUP).exists()
 
 
+def is_coach(user):
+    if not user.is_authenticated or not user.is_active:
+        return False
+    return user.groups.using(DB).filter(name=COACH_GROUP).exists()
+
+
 def refused(user):
     """The response for a signed-in account without Engagement Centre access, or None when allowed."""
     if has_access(user):
@@ -40,6 +49,14 @@ def refused(user):
     return JsonResponse({'detail': 'Your account does not have Call centre access. Ask an administrator to tick '
                                    '“Call centre agent” or “Call centre director” on your account in Django admin.'},
                         status=403)
+
+
+def coach_refused(user):
+    """The response for a signed-in account without the coaches' screen, or None when allowed."""
+    if is_coach(user):
+        return None
+    return JsonResponse({'detail': 'Your account does not have the coaches’ Engagement Centre. Ask an administrator to '
+                                   'tick “Engagement Centre coach” on your account in Django admin.'}, status=403)
 
 
 def sync_agent(user, enabled):

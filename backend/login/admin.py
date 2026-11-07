@@ -56,6 +56,10 @@ class AccessCheckboxForm(forms.ModelForm):
 		required=False, label='Call centre director',
 		help_text='Engagement Centre director: the director overview, every desk, allocation and settings. Super admins are always directors.',
 	)
+	access_call_centre_coach = forms.BooleanField(
+		required=False, label='Engagement Centre coach',
+		help_text='The coaches’ screen of the Engagement Centre, nothing else: the coach sees only the learners whose coach email in the LMS is this account’s email.',
+	)
 
 	class Meta:
 		model = get_user_model()
@@ -110,6 +114,7 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 					'access_coach',
 					'access_call_centre_agent',
 					'access_call_centre_director',
+					'access_call_centre_coach',
 					'groups',
 					'user_permissions',
 				)

@@ -1,4 +1,7 @@
+import hashlib
 import logging
+import os
+import socket
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
@@ -9,10 +12,12 @@ from django.utils import timezone
 
 from .ai import process_ai
 from .attendance_edits import verify_pending as verify_attendance_edits
+from .authorised_absence import apply as apply_authorised_absences
 from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
 from .call_scope import system_calls
 from .emails import process_emails
+from .events_hub import sync as sync_events_hub
 from .evidence import EvidenceSnapshot, check_evidence
 from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
 from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
@@ -141,14 +146,45 @@ def match_calls():
     return matched
 
 
+HOST = hashlib.sha1(socket.gethostname().encode()).hexdigest()[:8]
+
+
+def lock_token():
+    """A new lock token naming this process: '<pid>:<host>:<random>' (fits the 36-character column)."""
+    return f'{os.getpid()}:{HOST}:{uuid.uuid4().hex[:16]}'
+
+
+def abandoned(token):
+    """Whether the lock holder was a process on this server that no longer exists. A worker killed mid-cycle (SIGKILL
+    after a stop timeout, out of memory) never releases the lock; without this every cycle skips until it expires."""
+    pid, _, rest = token.partition(':')
+    if os.name != 'posix' or not pid.isdigit() or rest.partition(':')[0] != HOST or int(pid) == os.getpid():
+        # Tokens from before this change, another server, or Windows (where os.kill would end the process): wait for
+        # the expiry as before.
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # It exists under another user.
+        return False
+    # Alive, or its pid was reused: wait for the expiry.
+    return False
+
+
 @contextmanager
 def cycle_lock(duration):
     """The cycle's database lock: yields its token, or None when another cycle holds it."""
-    token = str(uuid.uuid4())
+    token = lock_token()
     now = timezone.now()
-    CycleState.objects.get_or_create(name='cycle')
-    held = CycleState.objects.filter(Q(locked_until__isnull=True) | Q(locked_until__lt=now), name='cycle').update(
-        token=token, locked_until=now + duration)
+    state, _ = CycleState.objects.get_or_create(name='cycle')
+    free = Q(locked_until__isnull=True) | Q(locked_until__lt=now)
+    if state.token and state.locked_until and state.locked_until >= now and abandoned(state.token):
+        logger.warning('Taking over the Call Centre cycle lock of process %s, which no longer exists.', state.token.partition(':')[0])
+        # Only that token: if a live cycle took the lock meanwhile, this matches nothing.
+        free |= Q(token=state.token)
+    held = CycleState.objects.filter(free, name='cycle').update(token=token, locked_until=now + duration)
     try:
         yield token if held else None
     finally:
@@ -236,6 +272,8 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'contacts_refreshed', lambda: refresh_contacts(people))
             step(result, 'phone_directory', lambda: update_phone_directory(people))
             step(result, 'source_created', lambda: generate_risks(people))
+            # Straight after: a missed lecture the coach was told about beforehand never reaches a list.
+            step(result, 'authorised_absences', lambda: apply_authorised_absences(people))
             # Before the bookings: the next day's reviews and coaching meetings come from the stored Outlook meetings.
             step(result, 'review_meetings', lambda: review_meetings_step(people))
             bookings = get_source('bookings', lambda: load_bookings(people))
@@ -273,5 +311,7 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'attendance_checks', verify_attendance_edits)
         if not skip_emails and people is not None and people.sources_complete:
             step(result, 'emails_processed', process_emails)
+        # The Events hub has no worker: this cycle sends it the specialists and runs its Eventbrite import.
+        step(result, 'events_hub', sync_events_hub)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result

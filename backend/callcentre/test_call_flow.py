@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from .allocation import owners
 from .models import Agent, Allocation, CallIntent, CallMatch, CaseCall, CaseTicket, Setting, ZoomPhoneCall, ZoomSyncState
+from .recall import MAX_RECALLS, states as recall_states
 from .rules import FAILED_RESULTS, LONDON, add_workdays, missed_call, promise_deadline
 from .services import (Conflict, agent_for, allocated_owner, apply_call_result, apply_stale_outcomes, can_work, claim,
                        create_intent, event, open_call, plan_outcome, record_outcome, save_call)
@@ -164,6 +165,67 @@ class CallFlowTests(TestCase):
         self.assertEqual(CaseCall.objects.get(ticket=ann).outcome, 'no_answer')
         self.assertFalse(ann.events.filter(kind='outcome_call_mismatch').exists())
         self.assertEqual(ann.events.filter(kind='outcome').count(), 1)
+
+    # Recall: calling again now a case held after an unanswered call
+
+    def unanswered(self, ticket, recall=False):
+        """Press Call (or Recall) for the case, then save No answer; the press is aged past the double-click window."""
+        intent = create_intent(ticket.pk, self.agent, recall=recall)
+        CallIntent.objects.filter(pk=intent.pk).update(created_at=timezone.now() - timedelta(minutes=2))
+        plan_outcome(ticket.pk, self.user, 'no_answer')
+        return CaseTicket.objects.get(pk=ticket.pk)
+
+    def test_a_case_held_after_no_answer_can_be_recalled_three_times_then_waits_for_its_follow_up(self):
+        ann = self.unanswered(self.case('ann'))
+        self.assertGreater(ann.next_followup_at, timezone.now())
+        self.assertEqual(recall_states([ann], timezone.now()), {ann.pk: {'used': 0, 'max': MAX_RECALLS}})
+        # Call stays refused: only Recall calls a held case, so it never comes back by accident.
+        with self.assertRaisesMessage(Conflict, 'not due yet'):
+            create_intent(ann.pk, self.agent)
+        for tries in range(1, MAX_RECALLS + 1):
+            ann = self.unanswered(ann, recall=True)
+            self.assertEqual(recall_states([ann], timezone.now())[ann.pk]['used'], tries)
+        self.assertEqual((ann.status, ann.next_followup_at), ('new', self.morning()))
+        with self.assertRaisesMessage(Conflict, f'Recalled {MAX_RECALLS} times'):
+            create_intent(ann.pk, self.agent, recall=True)
+
+    def test_a_double_click_on_recall_is_one_try(self):
+        ann = self.unanswered(self.case('ann'))
+        first = create_intent(ann.pk, self.agent, recall=True)
+        self.assertEqual(create_intent(ann.pk, self.agent, recall=True), first)
+        ann.refresh_from_db()
+        self.assertEqual(recall_states([ann], timezone.now())[ann.pk]['used'], 1)
+
+    def test_only_a_case_held_after_no_answer_can_be_recalled(self):
+        ben = self.case('ben')
+        create_intent(ben.pk, self.agent)
+        CallIntent.objects.update(created_at=timezone.now() - timedelta(minutes=2))
+        plan_outcome(ben.pk, self.user, 'callback', note='Rings back after work', callback_at=self.morning(2))
+        ben.refresh_from_db()
+        self.assertEqual(recall_states([ben], timezone.now()), {})
+        with self.assertRaisesMessage(Conflict, 'Only a case waiting after an unanswered call'):
+            create_intent(ben.pk, self.agent, recall=True)
+        # A case that is due is simply called: recall changes nothing and counts no try.
+        cat = self.case('cat')
+        create_intent(cat.pk, self.agent, recall=True)
+        cat.refresh_from_db()
+        self.assertEqual(recall_states([cat], timezone.now()), {})
+
+    def test_an_ordinary_call_once_the_case_is_due_starts_a_fresh_count(self):
+        ann = self.unanswered(self.case('ann'))
+        ann = self.unanswered(ann, recall=True)
+        CaseTicket.objects.filter(pk=ann.pk).update(next_followup_at=timezone.now() - timedelta(minutes=1))
+        ann = self.unanswered(CaseTicket.objects.get(pk=ann.pk))
+        self.assertEqual(recall_states([ann], timezone.now())[ann.pk]['used'], 0)
+
+    def test_a_recall_covers_the_persons_other_cases_held_after_the_same_call(self):
+        first, second = self.learner_with('epa', 'manual')
+        CallIntent.objects.update(created_at=timezone.now() - timedelta(minutes=2))
+        save_call(first.pk, self.user, [{'id': first.pk, 'outcome': 'no_answer'}, {'id': second.pk, 'outcome': 'no_answer'}])
+        recalled = create_intent(first.pk, self.agent, recall=True)
+        self.assertEqual(set(recalled.tickets.values_list('pk', flat=True)), {first.pk, second.pk})
+        held = CaseTicket.objects.filter(pk__in=[first.pk, second.pk])
+        self.assertEqual({state['used'] for state in recall_states(held, timezone.now()).values()}, {1})
 
     # Which call an outcome belongs to: the specialist never picks it
 

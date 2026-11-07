@@ -18,6 +18,7 @@ const UrgentNoticePage = lazy(() => import("../pages/urgent-notice/page"));
 const LeadershipMessagePage = lazy(() => import("../pages/leadership-message/page"));
 const UserActivityPage = lazy(() => import("../pages/user-activity/page"));
 const CallCentrePage = lazy(() => import("../pages/call-centre/page"));
+const CoachCentrePage = lazy(() => import("../pages/coach-centre/page"));
 
 function RouteFallback() {
   return (
@@ -54,6 +55,10 @@ const routes: RouteObject[] = [
   {
     path: "/dashboard/call-centre",
     element: routeElement(CallCentrePage),
+  },
+  {
+    path: "/dashboard/coach-centre",
+    element: routeElement(CoachCentrePage),
   },
   {
     path: "/user-activity",

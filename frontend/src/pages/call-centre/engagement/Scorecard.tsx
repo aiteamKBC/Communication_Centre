@@ -8,6 +8,8 @@ type Card = {
   agent: { id: number; name: string };
   calls: number; answered: number; not_answered: number; reach_rate: number | null; learners_reached: number;
   talk_seconds: number; talk_out_seconds: number; incoming_answered: number; talk_in_seconds: number; target_seconds: number; working_days: number;
+  /** Calls made from the Events hub: in calls and talk_seconds already (they count towards the target). */
+  event_calls: number; event_talk_seconds: number;
   short_answered: number; wrap_up_median_seconds: number | null; forms_saved: number; forms_missing: number; closed: number;
   callbacks: { received: number; done: number; open: number; median_minutes: number | null } | null;
   recordings_missing: number; reviews: { excellent: number; good: number; bad: number; not_rated?: number };
@@ -68,7 +70,8 @@ export function Scorecard({ manager, revision, agentId }: { manager: boolean; re
                     <td><strong>{card.agent.name}</strong><small>{card.working_days} working days</small></td>
                     <td>{card.calls}<small>{card.answered} answered{card.reach_rate !== null ? ` · ${card.reach_rate}%` : ''}</small></td>
                     <td>{duration(card.talk_seconds)}<small>Target {duration(card.target_seconds)}</small>
-                      {card.incoming_answered > 0 && <small>incl. {duration(card.talk_in_seconds)} with {card.incoming_answered} who rang</small>}</td>
+                      {card.incoming_answered > 0 && <small>incl. {duration(card.talk_in_seconds)} with {card.incoming_answered} who rang</small>}
+                      {card.event_calls > 0 && <small>incl. {duration(card.event_talk_seconds)} on {card.event_calls} event {card.event_calls === 1 ? 'call' : 'calls'}</small>}</td>
                     <td>{card.learners_reached}<small>{card.closed} cases closed</small></td>
                     <td>{card.callbacks ? <>{card.callbacks.done} of {card.callbacks.received}<small>{card.callbacks.median_minutes !== null ? `typically ${card.callbacks.median_minutes} min` : 'none yet'}</small></> : '—'}</td>
                     <td>{card.wrap_up_median_seconds !== null ? clock(card.wrap_up_median_seconds) : '—'}<small>typical time to save</small></td>

@@ -198,3 +198,6 @@
 .ec .ed-zoom-numbers h4{margin:0 0 .2rem;font-size:1rem}
 .ec .ed-zoom-numbers input[type=search]{width:16rem}
 .ec audio.ed-recording-audio{display:block;width:100%;min-width:16rem;margin-top:.5rem}
+/* Recall: a held case's call again now, with its tries as dots (CallSheet, Follow-ups, Full case). Anchored on the page's
+   id: the portal's primary-button rule would otherwise win. */
+#engagement-centre button.ed-recall{background:#268a8b;border-color:#268a8b;color:#fff}#engagement-centre button.ed-recall:hover:not(:disabled){background:#1f6f70;border-color:#1f6f70}#engagement-centre .ed-recall-tries{display:inline-flex;flex-direction:column;align-items:center;gap:.2rem;margin:0;font-size:.75rem;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums}#engagement-centre .ed-recall-tries>span{display:flex;gap:.25rem;margin:0}#engagement-centre .ed-recall-tries i{width:.55rem;height:.55rem;border-radius:50%;border:1.5px solid #268a8b}#engagement-centre .ed-recall-tries i.used{background:#268a8b}#engagement-centre .lf-call .ed-recall-tries{color:#e7dcf5}#engagement-centre .lf-call .ed-recall-tries i{border-color:#8fd6d6}#engagement-centre .lf-call .ed-recall-tries i.used{background:#8fd6d6}

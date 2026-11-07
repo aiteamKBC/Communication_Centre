@@ -1,8 +1,13 @@
 from django.urls import path
 
-from . import manage_views, views
+from . import coach_views, events_views, manage_views, views
 
 urlpatterns = [
+    path('events/open/', events_views.events_open),
+    path('events/my-calls/', events_views.events_my_calls),
+    path('events/summary/', events_views.events_summary),
+    path('events/allocations/', events_views.events_allocations),
+    path('events/recordings/<str:token>/audio/', events_views.events_recording_audio),
     path('config/', views.config),
     path('call-sync/', views.call_sync),
     path('overview/', views.overview),
@@ -48,4 +53,14 @@ urlpatterns = [
     path('zoom-accounts/', manage_views.zoom_account_list),
     path('delegation/', manage_views.task_delegation),
     path('delegation/seen/', views.delegation_seen),
+    path('coach/', coach_views.coach_home),
+    path('coach/caught-up/', coach_views.coach_caught_up),
+    path('coach/do-not-call/', coach_views.coach_do_not_call),
+    path('coach/absence/', coach_views.coach_absence),
+    path('coaches/', coach_views.coaches),
+    path('coaches/log/', coach_views.coach_log),
+    path('coaches/desk/', coach_views.coach_desk),
+    path('coaches/desk/caught-up/', coach_views.coach_desk_caught_up),
+    path('coaches/desk/do-not-call/', coach_views.coach_desk_do_not_call),
+    path('coaches/desk/absence/', coach_views.coach_desk_absence),
 ]

@@ -8,7 +8,7 @@ from datetime import datetime, time, timedelta
 from django.utils import timezone
 
 from .call_log import SHORT_ANSWER_SECONDS
-from .call_scope import system_calls
+from .call_scope import event_call_list, system_calls
 from .models import Agent, CallIntent, CaseTicket, TicketEvent, ZoomPhoneRecording
 from .rules import FAILED_RESULTS, LONDON, working_day
 from .voicemail_calls import effective_result, reached
@@ -61,12 +61,17 @@ def card(agent, lower, upper, now=None):
     now = now or timezone.now()
     calls = list(system_calls().filter(callmatch__agent=agent, started_at__gte=lower, started_at__lt=min(upper, now))
                  .select_related('callmatch'))
-    made = [call for call in calls if call.direction == 'outbound']
+    # Calls made from the Events hub count towards calls made, talk time and the target, shown apart.
+    event_calls = event_call_list(events_hub_call__agent=agent, direction='outbound', started_at__gte=lower,
+                                  started_at__lt=min(upper, now))
+    made = [call for call in calls if call.direction == 'outbound'] + event_calls
     # Talk time is everything Zoom reports as answered; a voicemail that picked up is not an answered call.
     answered = [call for call in made if call.result == 'answered']
     spoke = [call for call in answered if reached(call)]
     incoming = [call for call in calls if call.direction == 'inbound' and call.result == 'answered']
     talk_out = sum(call.duration_seconds or 0 for call in answered)
+    event_talk = sum(call.duration_seconds or 0 for call in event_calls if call.result == 'answered')
+    event_ids = {call.pk for call in event_calls}
     talk_in = sum(call.duration_seconds or 0 for call in incoming)
     # The target counts the working days so far: a week in progress is not judged on days still to come.
     first = lower.astimezone(LONDON).date()
@@ -82,8 +87,10 @@ def card(agent, lower, upper, now=None):
         'agent': {'id': agent.pk, 'name': agent.display_name},
         'calls': len(made), 'answered': len(spoke), 'not_answered': sum(effective_result(call) in FAILED_RESULTS for call in made),
         'reach_rate': round(100 * len(spoke) / len(made)) if made else None,
-        'learners_reached': len({call.callmatch.learner_email for call in spoke + incoming}),
+        # Learners only: an event call reaches an event booking, not a learner.
+        'learners_reached': len({call.callmatch.learner_email for call in spoke + incoming if call.pk not in event_ids}),
         'talk_seconds': talk_out + talk_in, 'talk_out_seconds': talk_out, 'incoming_answered': len(incoming), 'talk_in_seconds': talk_in,
+        'event_calls': len(event_calls), 'event_talk_seconds': event_talk,
         'target_seconds': agent.daily_talk_target_minutes * 60 * days, 'working_days': days,
         'short_answered': sum(call.duration_seconds is not None and call.duration_seconds < SHORT_ANSWER_SECONDS for call in answered),
         'wrap_up_median_seconds': _median(wraps), 'forms_saved': len(wraps), 'forms_missing': len(intents) - len(saved),

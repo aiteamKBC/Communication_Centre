@@ -22,6 +22,7 @@ import { liveSeconds, useLive } from './live';
 import MissedCalls from './MissedCalls';
 import MonthlyHistory from './MonthlyHistory';
 import { MissingRecordings, Scorecard, TranscriptSearch } from './Scorecard';
+import { TalkMeter } from './Switchboard';
 import {
   CALL_TABS, DESK_PAGES, DOING_TABS, ISSUE_LABELS, casePurpose, activeCase, badges, contactKey, downloadBlob, dueForCall,
   duration, human, issueLabel, listCount, listLabel, longDate, matchesSearch, ownWork, points, ratedCalls, shortDate, taskCases, taskOf,
@@ -36,16 +37,16 @@ type Props = {
 
 function ProgressStrip({ agent, overview, onCall = 0 }: { agent: AgentStats | undefined; overview: Overview; onCall?: number }) {
   // Zoom-confirmed calls, plus the call in progress (Zoom's webhook) so the bar moves while the specialist talks.
-  const confirmed = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
+  const confirmed = agent?.today || { attempts: 0, connected: 0, seconds: 0, event_attempts: 0, event_connected: 0, event_seconds: 0 };
   const today = { ...confirmed, seconds: confirmed.seconds + onCall };
   const target = agent?.target_seconds || 0;
   const reviews = agent ? overview.call_reviews?.agents[agent.id] : undefined;
   return (
     <div className="ed-score">
       <div className="ed-target">
-        <span title="Only Zoom-verified calls started from this system count.">Connected call time</span>
-        <strong>{duration(today.seconds)} <small>/ {duration(target)}</small></strong>
-        <progress max={target || 1} value={Math.min(today.seconds, target || 1)} aria-label="Daily connected call time" />
+        <span title="Only Zoom-verified calls started from this system or the Events hub count.">Connected call time</span>
+        <strong>{duration(today.seconds)} <small>/ {duration(target)}{today.event_seconds ? ` · ${duration(today.event_seconds)} events` : ''}</small></strong>
+        <TalkMeter seconds={today.seconds} eventSeconds={today.event_seconds} target={target} label="Daily connected call time" />
       </div>
       <div><span>Connections</span><strong>{today.connected}</strong></div>
       <div><span>Points today</span><strong>{points(today, target)}<small> / 300</small></strong></div>
@@ -168,7 +169,7 @@ export default function Desk({ overview, agent, session, section, page, lists, r
   } else if (section === 'bookings') {
     body = <BookingLinksView overview={overview} />;
   } else if (section === 'achievements') {
-    const today = agent?.today || { attempts: 0, connected: 0, seconds: 0 };
+    const today = agent?.today || { attempts: 0, connected: 0, seconds: 0, event_attempts: 0, event_connected: 0, event_seconds: 0 };
     const earned = badges(today, agent?.target_seconds || 0);
     body = (
       <div className="dk-stack">
@@ -211,7 +212,8 @@ export default function Desk({ overview, agent, session, section, page, lists, r
         <div className="dd-figures">
           <Figure label="Calls made" value={totals.attempts} hint={`${totals.connected} answered`} />
           <Figure label="Answer rate" value={totals.answerRate === null ? '—' : `${totals.answerRate}%`} hint="Answered of calls made" />
-          <Figure label="Talk time" value={duration(totals.seconds)} hint={`Target ${duration(agent?.target_seconds)} a day`} />
+          <Figure label="Talk time" value={duration(totals.seconds)}
+            hint={`Target ${duration(agent?.target_seconds)} a day${agent?.month.event_seconds ? ` · ${duration(agent.month.event_seconds)} event calls` : ''}`} />
           <Figure label="Learners reached" value={totals.learners} />
           <Figure label="Cases resolved" value={totals.resolved} hint={`${month?.pending || 0} worked, still open`} />
         </div>

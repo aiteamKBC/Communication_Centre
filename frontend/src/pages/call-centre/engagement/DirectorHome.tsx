@@ -2,6 +2,8 @@ import { useCallCentre } from '../api';
 import type { Overview } from '../api';
 import { CallsByDay, QualityStrip, TalkByDay } from './charts';
 import { caseload, monthTotals, ranked, rate, sharedQueueLearners } from './dashboard';
+import { eventDay, eventPath, eventsLink } from './events';
+import type { EventsPanelData } from './events';
 import type { Live } from './live';
 import { liveSeconds } from './live';
 import { duration, failingSources } from './model';
@@ -53,7 +55,76 @@ function NeedsYou({ overview, go }: { overview: Overview; go: Go }) {
   );
 }
 
-/** The director's overview: the board live, what needs attention, the month in figures and graphs, and the team ranked. */
+/** The Events hub at a glance: the next week's bookings and how far the calls have got, events nobody is allocated
+ * to, the last event's show-up and recent feedback. The full picture is on the Events dashboard. */
+function EventsPanel() {
+  const { data } = useCallCentre<EventsPanelData>('events/summary/');
+  if (!data?.enabled) return null;
+  const summary = data.summary;
+  const next = summary?.upcoming_7_days;
+  const last = summary?.last_event;
+  const feedback = summary?.feedback_30_days;
+  const calls = summary?.calls_7_days;
+  return (
+    <section className="dd-section" aria-labelledby="dd-events">
+      <header className="dd-section-head">
+        <div><p className="dd-eyebrow">Events hub · the next 7 days</p><h2 id="dd-events">Event calls</h2></div>
+        {data.can_open && <a className="ec-button" href={eventsLink('/dashboard')} target="_blank" rel="noopener">Open Events dashboard</a>}
+      </header>
+      {data.error && <p className="dd-muted">{data.error}</p>}
+      {summary && next && feedback && (
+        <>
+          <div className="dd-figures">
+            <Figure label="Upcoming events" value={next.events} hint={`${next.booked} booked`} />
+            <Figure label="Contacted" value={`${next.contacted_rate}%`} hint="Of the bookings, by phone" />
+            <Figure label="Confirmed" value={`${next.confirmed_rate}%`} hint="Said they will attend" />
+            <Figure label="Last event show-up" value={last ? `${last.show_up_rate}%` : '—'}
+              hint={last ? `${last.event_name} · ${last.attended} of ${last.booked} attended` : 'No event has finished yet'} />
+            <Figure label="Feedback, 30 days" value={feedback.average_rating ?? '—'} hint={`Average of 5 · ${feedback.answered} answered`} />
+            {calls && (
+              <Figure label="Event calls, 7 days" value={calls.dialled}
+                hint={`${calls.answered} answered (${calls.answer_rate}%) · ${duration(calls.talk_seconds)} talk`} />
+            )}
+          </div>
+          {calls && calls.by_agent.length > 0 && (
+            <div className="dd-panel dd-flush">
+              <div className="ec-table-wrap">
+                <table className="dd-table">
+                  <thead><tr><th>Specialist</th><th>Event calls</th><th>Answered</th><th>Answer rate</th><th>Talk time</th></tr></thead>
+                  <tbody>
+                    {calls.by_agent.map(row => (
+                      <tr key={row.name}>
+                        <td>{row.name}</td><td>{row.dialled}</td><td>{row.answered}</td>
+                        <td>{row.answer_rate}%</td><td>{duration(row.talk_seconds)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {(summary.unallocated_events.length > 0 || summary.calls_open_now.length > 0) && (
+            <ul className="dd-events">
+              {summary.unallocated_events.map(event => (
+                <li key={`a-${event.event_id}`} className="bad">
+                  <span><strong>{event.event_name}</strong> · {eventDay(event.start_at)} · calls are open but no agent is allocated</span>
+                </li>
+              ))}
+              {summary.calls_open_now.map(event => (
+                <li key={`c-${event.event_id}`}>
+                  <span><strong>{event.event_name}</strong> · {eventDay(event.start_at)} · {event.to_call} of {event.booked} still to call</span>
+                  {data.can_open && <a className="ec-button" href={eventsLink(eventPath(event.event_id))} target="_blank" rel="noopener">Open</a>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** The director's overview: the board live, what needs attention, events, the month in figures and graphs, and the team ranked. */
 export default function DirectorHome({ overview, live, now, go, onMonth }: {
   overview: Overview; live: Live | null; now: number; go: Go; onMonth: (month: string) => void;
 }) {
@@ -67,6 +138,7 @@ export default function DirectorHome({ overview, live, now, go, onMonth }: {
     <div className="dd">
       <Switchboard agents={agents} live={live} now={now} onOpen={openSpecialist} />
       <NeedsYou overview={overview} go={go} />
+      <EventsPanel />
 
       <section className="dd-section" aria-labelledby="dd-month">
         <header className="dd-section-head">
@@ -116,10 +188,11 @@ export default function DirectorHome({ overview, live, now, go, onMonth }: {
                   return (
                     <tr key={agent.id}>
                       <td><button type="button" className="dd-name" onClick={() => openSpecialist(agent.id)}><i>{index + 1}</i>{agent.display_name}</button></td>
-                      <td>{duration(today)}<small>of {duration(agent.target_seconds)}</small></td>
+                      <td>{duration(today)}<small>of {duration(agent.target_seconds)}</small>
+                        {agent.today.event_seconds > 0 && <small>incl. {duration(agent.today.event_seconds)} event calls</small>}</td>
                       <td>{agent.month.attempts}<small>{agent.month.connected} answered</small></td>
                       <td>{rate(agent.month.connected, agent.month.attempts) ?? '—'}{agent.month.attempts ? '%' : ''}</td>
-                      <td>{duration(agent.month.seconds)}</td>
+                      <td>{duration(agent.month.seconds)}{agent.month.event_seconds > 0 && <small>incl. {duration(agent.month.event_seconds)} event calls</small>}</td>
                       <td>{agent.month.resolved}</td>
                       <td><QualityStrip counts={reviews[agent.id]} /></td>
                       <td>{mine.open}<small className={mine.late ? 'dd-bad' : undefined}>{mine.late} past their date</small></td>

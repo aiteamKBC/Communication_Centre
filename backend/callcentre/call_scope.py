@@ -5,10 +5,15 @@ of an in-system call. A matched dial request and the same attributed agent are
 required for progress, recordings and ticket actions. An answered incoming call from
 a learner on their specialist's own number gets the same (inbound.link_call); counts
 of calls made filter on direction='outbound'.
+
+Calls made from the Events hub are matched by its own rules (events_hub.match_dials) and kept apart: they are never
+system calls, and count only towards talk time, calls made and the daily target (event_call_list).
 """
+from django.db import ProgrammingError, transaction
 from django.db.models import Exists, F, OuterRef, Q
 
-from .models import CallMatch, CaseCall, ZoomPhoneCall, ZoomPhoneRecording
+from .db import DB
+from .models import CallMatch, CaseCall, EventsHubCall, ZoomPhoneCall, ZoomPhoneRecording
 
 
 def system_calls(queryset=None):
@@ -17,6 +22,21 @@ def system_calls(queryset=None):
         callmatch__manual=False,
         callintent__agent_id=F('callmatch__agent_id'),
     )
+
+
+def event_call_list(*filters, **lookups):
+    """The Zoom calls made from the Events hub that match these filters (``events_hub_call__agent=`` names the
+    specialist), oldest first. A call that is also a system call counts there instead. Empty until
+    docs/callcentre-port/event_calls.sql has run."""
+    calls = ZoomPhoneCall.objects.filter(*filters, events_hub_call__isnull=False, **lookups).exclude(
+        pk__in=system_calls().values('pk'))
+    try:
+        # The savepoint keeps a missing table from breaking the caller's transaction.
+        with transaction.atomic(using=DB):
+            # Loaded with the call, so reached() (the voicemail mark on a match) asks no query per call.
+            return list(calls.select_related('callmatch').order_by('started_at', 'pk'))
+    except ProgrammingError:
+        return []
 
 
 def system_matches(queryset=None):

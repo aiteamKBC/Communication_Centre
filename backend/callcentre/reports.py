@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from .models import Agent, CallMatch, CaseTicket, TicketEvent, ZoomSyncState
 from .rules import FAILED_RESULTS, LONDON, working_day
-from .call_scope import system_calls
+from .call_scope import event_call_list, system_calls
 from .voicemail_calls import effective_result, reached
 from .zoom_phone import account_config
 from .zoom_views import current_account_filter
@@ -29,6 +29,27 @@ def gaps_for_day(calls, day, now):
     return result, False
 
 
+def on_day(calls, day):
+    return [call for call in calls if call.started_at.astimezone(LONDON).date() == day]
+
+
+def day_figures(day, learner_calls, event_calls, now):
+    """One day's calls: everything counts towards calls made, answered and talk time (the daily target), and the
+    ``event_`` figures say how much of it came from the Events hub."""
+    current = sorted(learner_calls + event_calls, key=lambda call: call.started_at)
+    # Talk time is everything Zoom reports as answered; a voicemail that picked up is not an answered call.
+    answered = [call for call in current if call.result == 'answered']
+    gaps, unknown = gaps_for_day(current, day, now)
+    return {'date': day.isoformat(), 'calls': len(current), 'answered': sum(reached(c) for c in current),
+            'not_answered': sum(effective_result(c) in FAILED_RESULTS for c in current),
+            'seconds': sum(c.duration_seconds or 0 for c in answered),
+            'event_calls': len(event_calls), 'event_answered': sum(reached(c) for c in event_calls),
+            'event_seconds': sum(c.duration_seconds or 0 for c in event_calls if c.result == 'answered'),
+            'missing_duration': sum(c.duration_seconds is None for c in answered),
+            'first_call': current[0].started_at if current else None, 'last_call': current[-1].started_at if current else None,
+            'gaps': gaps, 'gaps_unknown': unknown}
+
+
 def performance(start, end):
     lower = datetime.combine(start, time.min, tzinfo=LONDON)
     upper = datetime.combine(end + timedelta(days=1), time.min, tzinfo=LONDON)
@@ -43,19 +64,13 @@ def performance(start, end):
         calls = list(system_calls().filter(current_account_filter(), callmatch__agent=agent, source_account=agent.zoom_account,
                      direction='outbound', started_at__gte=lower, started_at__lt=upper)
                      .select_related('callmatch').order_by('started_at'))
+        # Calls made from the Events hub count towards the same calls, talk time and target, shown apart.
+        event_calls = event_call_list(current_account_filter(), events_hub_call__agent=agent, source_account=agent.zoom_account,
+                                      direction='outbound', started_at__gte=lower, started_at__lt=upper)
         daily = []
         day = start
         while day <= end:
-            current = [call for call in calls if call.started_at.astimezone(LONDON).date() == day]
-            # Talk time is everything Zoom reports as answered; a voicemail that picked up is not an answered call.
-            answered = [call for call in current if call.result == 'answered']
-            gaps, unknown = gaps_for_day(current, day, now)
-            daily.append({'date': day.isoformat(), 'calls': len(current), 'answered': sum(reached(c) for c in current),
-                'not_answered': sum(effective_result(c) in FAILED_RESULTS for c in current),
-                'seconds': sum(c.duration_seconds or 0 for c in answered),
-                'missing_duration': sum(c.duration_seconds is None for c in answered),
-                'first_call': current[0].started_at if current else None, 'last_call': current[-1].started_at if current else None,
-                'gaps': gaps, 'gaps_unknown': unknown})
+            daily.append(day_figures(day, on_day(calls, day), on_day(event_calls, day), now))
             day += timedelta(days=1)
         state = ZoomSyncState.objects.filter(source_account=agent.zoom_account,
                                             zoom_account_id=account_config(agent.zoom_account)['account_id']).first()
@@ -64,10 +79,12 @@ def performance(start, end):
             'id': agent.pk, 'name': agent.display_name, 'account': agent.zoom_account,
             'zoom_phone_number': agent.zoom_phone_number,
             'daily_target_minutes': agent.daily_talk_target_minutes, 'daily': daily,
-            'calls': len(calls), 'answered': sum(d['answered'] for d in daily),
+            'calls': len(calls) + len(event_calls), 'answered': sum(d['answered'] for d in daily),
             'not_answered': sum(d['not_answered'] for d in daily),
             'seconds': sum(d['seconds'] for d in daily),
-            'missing_duration': sum(c.duration_seconds is None for c in calls),
+            'event_calls': len(event_calls), 'event_answered': sum(d['event_answered'] for d in daily),
+            'event_seconds': sum(d['event_seconds'] for d in daily),
+            'missing_duration': sum(c.duration_seconds is None for c in calls + event_calls),
             'answered_missing_duration': sum(d['missing_duration'] for d in daily),
             'unique_learners': CallMatch.objects.filter(agent=agent, call_id__in=[c.pk for c in calls if reached(c)])
                 .exclude(cases__outcome='wrong_number').values('learner_email').distinct().count(),

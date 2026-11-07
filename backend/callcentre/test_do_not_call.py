@@ -14,7 +14,8 @@ class DoNotCallTests(SimpleTestCase):
         with patch('callcentre.sources.on_break_emails', return_value=frozenset()), \
                 patch('callcentre.sources.active_case_contacts', return_value=Q()):
             sql = str(CaseTicket.objects.open().query)
-        self.assertIn('FROM "callcenter_do_not_call" U0 WHERE U0."removed_at" IS NULL', sql)
+        self.assertIn('FROM "callcenter_do_not_call" U0 WHERE ((U0."until" IS NULL OR U0."until" >= ', sql)
+        self.assertIn('AND U0."removed_at" IS NULL)', sql)
         self.assertIn('employer_signature_missing', sql)   # the employer's own signature call stays
 
     def test_nobody_is_taken_off_until_the_table_exists(self):

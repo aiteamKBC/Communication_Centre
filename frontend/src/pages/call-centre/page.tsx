@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
+import { readStoredAuthUser } from '../../utils/authStorage';
 import { useCallCentre } from './api';
 import type { Config, Overview, OverviewCase } from './api';
 import type { Session } from './engagement/actions';
@@ -8,6 +8,7 @@ import Allocation from './engagement/Allocation';
 import AttendanceEdits from './engagement/AttendanceEdits';
 import BookingLinksView from './engagement/BookingLinksView';
 import CoachPages from './engagement/CoachPages';
+import Coaches from './engagement/Coaches';
 import LearnerWorkspace from './engagement/LearnerWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
@@ -15,6 +16,7 @@ import { CallsPage, ScorecardsPage } from './engagement/Director';
 import DirectorHome from './engagement/DirectorHome';
 import DoNotCall from './engagement/DoNotCall';
 import EmployerSpecialists from './engagement/EmployerSpecialists';
+import EventAllocation from './engagement/EventAllocation';
 import Imports from './engagement/Imports';
 import { useLive } from './engagement/live';
 import type { InboundListing } from './engagement/inbound';
@@ -29,6 +31,7 @@ import type { NavGroup } from './engagement/Shell';
 import { MissingRecordings } from './engagement/Scorecard';
 import { SpecialistIndex, SpecialistPage } from './engagement/Specialists';
 import ZoomPhone from './engagement/ZoomPhone';
+import { signOut } from './signOut';
 import './styles/engagement.css';
 import './styles/director.css';
 import './styles/desk.css';
@@ -36,34 +39,24 @@ import './styles/full-case.css';
 
 // The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
-  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['scorecards', 'Scorecards', 'chart'],
+  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['coaches', 'Coaches', 'people'],
+    ['scorecards', 'Scorecards', 'chart'],
     ['meetings', 'Review meetings', 'calendar']]],
   ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
     ['delegation', 'Task delegation', 'people'],
     ['operator', 'Calling desk', 'phone']]],
-  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['bookings', 'Coach booking links', 'calendar'],
+  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['event-allocation', 'Event allocation', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
     ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', scorecards: 'Scorecards', calls: 'Calls',
-  bookings: 'Coach booking links', allocations: 'Learner allocation',
+  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', coaches: 'Coaches', scorecards: 'Scorecards', calls: 'Calls',
+  bookings: 'Coach booking links', allocations: 'Learner allocation', 'event-allocation': 'Event allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
   delegation: 'Task delegation', attendance: 'Attendance edits',
 };
 // Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
 const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
 const LIVE_VIEWS = new Set(['director', 'specialists', 'specialist']);
-
-function signOut(navigate: ReturnType<typeof useNavigate>) {
-  const user = readStoredAuthUser();
-  const body = JSON.stringify({
-    trackingSessionId: String(user?.trackingSessionId || ''), userId: String(user?.id || ''),
-    email: String(user?.email || ''), username: String(user?.username || ''), reason: 'logout_button',
-  });
-  void fetch('/api/auth/logout/', { method: 'POST', keepalive: true, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body }).catch(() => undefined);
-  clearAuthStorage();
-  navigate('/login', { replace: true });
-}
 
 /** The Engagement Centre: the director workspace and each specialist's calling desk. */
 export default function CallCentrePage() {
@@ -163,7 +156,7 @@ export default function CallCentrePage() {
   }
 
   function go(next: string, extra: Record<string, string> = {}) {
-    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null });
+    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null, coach: null, learner: null });
     window.scrollTo({ top: 0 });
   }
 
@@ -231,6 +224,8 @@ export default function CallCentrePage() {
               <DoNotCall session={session} onChanged={refresh} notify={notify} />
               <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             </>
+          ) : view === 'event-allocation' ? (
+            <EventAllocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
           ) : view === 'phone' ? (
             <>
               <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
@@ -245,6 +240,10 @@ export default function CallCentrePage() {
                   <Imports overview={overview} onAllocate={() => go('allocations')} />
                 </>
               ) : view === 'specialists' ? <SpecialistIndex overview={overview} live={live} now={now} go={go} />
+                : view === 'coaches' ? (
+                  <Coaches coach={params.get('coach')} onOpen={email => setParam({ coach: email, learner: null })}
+                    onBack={() => setParam({ coach: null, learner: null })} />
+                )
                 : view === 'specialist' && specialistId ? (
                   <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go}
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
