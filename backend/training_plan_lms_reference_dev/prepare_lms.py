@@ -9,7 +9,7 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 PRIVATE = Path(__file__).resolve().parent / 'private'
-FIELDS = 'module_catalogue_id, programme_id, programme_name, title, start_date, end_date'
+FIELDS = 'module_catalogue_id, programme_id, programme_name, title, start_date, end_date, sessions_number'
 DBNAME = 'tp_lms_reference_source'
 READER = 'tp_lms_reference_reader'
 
@@ -25,7 +25,7 @@ def main():
         assert conn.execute('SHOW transaction_read_only').fetchone()[0] == 'on'
         rows = conn.execute(f'SELECT {FIELDS} FROM curriculum.modules ORDER BY module_catalogue_id').fetchall()
         assert len(rows) == conn.execute('SELECT count(*) FROM curriculum.modules').fetchone()[0]
-        records = [list(row[:4]) + [v.isoformat() if v is not None else None for v in row[4:]] for row in rows]
+        records = [list(row[:4]) + [v.isoformat() if v is not None else None for v in row[4:6]] + [row[6]] for row in rows]
     # The selected projection excludes descriptions, staff, learners and notes.
     backup = json.dumps({'schema': 'curriculum', 'table': 'modules', 'fields': FIELDS.split(', '), 'records': records}, ensure_ascii=False, indent=2)
     (PRIVATE / 'lms-modules-backup.json').write_text(backup, encoding='utf-8')
@@ -48,9 +48,9 @@ def main():
         fixture.execute('CREATE SCHEMA curriculum')
         fixture.execute('''CREATE TABLE curriculum.modules (
             module_catalogue_id varchar PRIMARY KEY, programme_id varchar,
-            programme_name varchar, title text, start_date date, end_date date)''')
+            programme_name varchar, title text, start_date date, end_date date, sessions_number integer)''')
         with fixture.cursor() as cur:
-            cur.executemany(f'INSERT INTO curriculum.modules ({FIELDS}) VALUES (%s,%s,%s,%s,%s,%s)', records)
+            cur.executemany(f'INSERT INTO curriculum.modules ({FIELDS}) VALUES (%s,%s,%s,%s,%s,%s,%s)', records)
         fixture.execute(sql.SQL('GRANT USAGE ON SCHEMA curriculum TO {}').format(sql.Identifier(READER)))
         fixture.execute(sql.SQL('GRANT SELECT ON curriculum.modules TO {}').format(sql.Identifier(READER)))
     reader = dict(host='127.0.0.1', port=55432, dbname=DBNAME, user=READER, password=password)

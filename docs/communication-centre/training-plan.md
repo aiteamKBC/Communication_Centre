@@ -2231,6 +2231,12 @@ Use this checklist before approving, publishing, or relying on a Training Plan:
 
 ## 22. LMS Reference — Read only
 
+The session badge on matched LMS cards in Merge reads `curriculum.modules.sessions_number` through `GET /api/training-plan/lms-reference/session-counts/`, scoped to captured module IDs. This uses the existing module reader and does not require lecture-table permissions. The count is separate from captured dates and never generates session dates or completion figures. Zero displays as `0 sessions`; a missing value remains `Sessions: N/A`.
+
+Current, LMS and merged timelines open at the Now line automatically. Changing zoom starts at the current date; Week and Day use the current week/day even for historical plans. Broad date ranges include the current year so Now remains reachable. Ordinary data updates and expanding or collapsing programmes preserve manual scrolling; the location button returns to Now after browsing away.
+
+Older isolated previews were created without `sessions_number`. From `backend`, run `venv/Scripts/python.exe -m training_plan_lms_reference_dev.restore_lms_session_counts` to check the source ID mapping, then repeat with `--apply` to add and populate that field in the local copy. The original LMS connection stays read only; the captured reference and other local module fields are preserved. Restart the preview backend on port 8101 after adding the session-count endpoint, then reload the browser. New copies include this field in `prepare_lms.py`.
+
 The Training Plan has two independent source tabs: **Current Training Plan** opens by default with the existing Monthly Breakdown, timeline and editing controls; **LMS Training Plan** shows the saved LMS capture. Both timelines stay mounted when switching tabs, preserving their separate zoom, collapse and scroll state. Switching tabs only reads data. The Session Schedule and other existing plan tools continue to use the live Training Plan.
 
 **Current Training Plan** and **LMS Training Plan** remain separate source tabs, with one timeline visible at a time. Comparison is available inside **Edit Module → Compare with LMS modules**, rather than a page-level view of stacked timelines.

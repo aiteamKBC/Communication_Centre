@@ -787,6 +787,7 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
       records: records.map(({ groupName: _groupName, ...row }) => row),
     } };
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: { '1': 'LMS Tutor One', '2': 'LMS Tutor Two' } };
+    if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: { '1': 14, '2': 0 } };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: Object.fromEntries(records.map(row => [row.sourceModuleId, {
       cohortId: row.sourceModuleId === '6' ? 'old-lms-cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'feb-lms-cohort' : 'jan-lms-cohort',
       cohortName: row.sourceModuleId === '2' ? '' : row.sourceModuleId === '6' ? 'March 2024 LMS cohort' : ['4', '5'].includes(row.sourceModuleId) ? 'February cohort' : 'January cohort',
@@ -828,6 +829,8 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
     .toEqual(Array.from({ length: 4 }, () => ['Current', 'LMS']));
   const mergedCurrent = merged.locator('[data-source="Current"][data-timeline-block-id="b0"]');
   const mergedLms = merged.locator('[data-source="LMS"][title^="LMS: Same module."]');
+  await expect(merged.getByRole('button', { name: 'View LMS module details: Same module', exact: true })).toContainText('14 sessions');
+  await expect(merged.getByRole('button', { name: 'View LMS module details: Changed module', exact: true })).toContainText('0 sessions');
   await expect(mergedCurrent).toHaveCount(1);
   await expect(mergedLms).toHaveCount(1);
   expect(await mergedCurrent.evaluate(element => element.style.left)).toBe(await mergedLms.evaluate(element => element.style.left));
@@ -842,7 +845,7 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await page.getByRole('button', { name: 'Close module overview dialog', exact: true }).click();
   await expect(merged.getByRole('button', { name: 'View LMS module details: Partial module', exact: true })).toBeDisabled();
   await expect(merged.locator('[data-source="LMS"][title*="2024-03-01"]')).toHaveCount(1);
-  await expect(merged.getByRole('status')).toContainText('1 LMS module has missing or invalid dates');
+  await expect(merged.getByText(/missing or invalid dates/)).toHaveCount(0);
   await expect(merged.getByTitle('Edit cohort', { exact: true })).toHaveCount(0);
   await merged.getByTitle('Collapse programme', { exact: true }).click();
   await expect(mergedCurrent).toHaveCount(0);

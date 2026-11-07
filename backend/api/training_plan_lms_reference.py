@@ -134,6 +134,42 @@ def read_lms_cohorts(module_ids):
             for module_id, cohort_id, cohort_name, group_name in rows}
 
 
+def read_lms_session_counts(module_ids):
+    if not module_ids:
+        return {}
+    with lms_source_connection() as conn:
+        column = conn.execute("SELECT data_type FROM information_schema.columns "
+                              "WHERE table_schema='curriculum' AND table_name='modules' "
+                              "AND column_name='sessions_number'").fetchone()
+        if not column:
+            return {}
+        if column[0] not in ('smallint', 'integer', 'bigint'):
+            raise LmsReferenceSourceError('The LMS session count field has an unsupported format.')
+        rows = conn.execute('SELECT module_catalogue_id,sessions_number FROM curriculum.modules '
+                            'WHERE module_catalogue_id::text = ANY(%s)', (module_ids,)).fetchall()
+    return {str(module_id): count if count is not None and count >= 0 else None
+            for module_id, count in rows}
+
+
+@never_cache
+@vary_on_cookie
+def training_plan_lms_session_counts(request):
+    """Read module counts separately, without changing the immutable date capture."""
+    user = getattr(request, 'user', None)
+    if user is None or not user.is_authenticated or not user.is_active:
+        return JsonResponse({'detail': 'Sign in to view LMS session counts.'}, status=401)
+    if request.method != 'GET':
+        response = JsonResponse({'detail': 'LMS session counts are read only.'}, status=405)
+        response['Allow'] = 'GET'
+        return response
+    try:
+        reference = TrainingPlanLmsReference.objects.filter(pk=1).first()
+        module_ids = [str(row['sourceModuleId']) for row in reference.records] if reference else []
+        return JsonResponse({'sessionCounts': read_lms_session_counts(module_ids)})
+    except (LmsReferenceSourceError, DatabaseError):
+        return JsonResponse({'detail': 'LMS session counts could not be loaded. Please retry.'}, status=503)
+
+
 @never_cache
 @vary_on_cookie
 def training_plan_lms_cohorts(request):

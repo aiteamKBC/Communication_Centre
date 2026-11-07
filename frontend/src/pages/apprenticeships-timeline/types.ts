@@ -39,6 +39,7 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 export interface ModuleBlock {
   id: string;
   source?: 'LMS';
+  lmsSessionCount?: number | null;
   startDateSource?: 'created_at';
   trainingPlanId?: string;
   moduleCatalogueId?: string;

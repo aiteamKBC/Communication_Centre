@@ -45,6 +45,7 @@ test('large merged timelines keep distant modules reachable across zooms and vie
         { ...records[0], sourceModuleId: 'undated', module: 'Undated workshop', startDate: null }],
     } };
     if (path === '/api/training-plan/lms-reference/tutors/') body = { tutorNames: {} };
+    if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: {} };
     if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: {} };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
@@ -60,15 +61,17 @@ test('large merged timelines keep distant modules reachable across zooms and vie
   await expect(current.locator('.training-plan-gantt-scroll')).toHaveCount(0);
   await expect(page.locator('.training-plan-gantt-scroll')).toHaveCount(1);
   await expect(merged.locator('.tp-merged-stats > div').nth(1)).toContainText('150');
-  await expect(merged.getByRole('status')).toContainText('1 LMS module has missing or invalid dates');
+  await expect(merged.getByText(/missing or invalid dates/)).toHaveCount(0);
+  await expect(merged.getByText('How matching works', { exact: true })).toHaveCount(0);
   const firstModule = merged.getByRole('button', { name: 'View Current module details: Marketing module 1', exact: true });
   await expect(firstModule).toBeAttached();
-  // Historical records must not place the first displayed card off screen.
-  const placement = await firstModule.evaluate(element => {
-    const card = element.getBoundingClientRect();
+  // Historical modules must not move the initial viewport away from today.
+  const placement = await merged.locator('[data-timeline-now]').first().evaluate(element => {
+    const line = element.getBoundingClientRect();
     const viewport = element.closest('.training-plan-gantt-scroll')!.getBoundingClientRect();
-    return { left: card.left, right: viewport.right };
+    return { left: line.left, viewportLeft: viewport.left, right: viewport.right };
   });
+  expect(placement.left).toBeGreaterThan(placement.viewportLeft);
   expect(placement.left).toBeLessThan(placement.right);
   expect(await merged.locator('[data-timeline-block-id]').count()).toBeLessThan(100);
   await expect(merged.locator('[data-virtual-placeholder]').first()).toBeAttached();

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Database, GitMerge, Hand, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
-import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
+import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, requestLmsSessionCounts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
 import type { LmsReferenceTimelineProps } from './LmsReferenceTimeline';
 import { presentLmsRows } from '../lmsComparison';
 import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
@@ -36,14 +36,18 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
   const [notice, setNotice] = useState('');
   const [tutorNames, setTutorNames] = useState<Record<string, string>>({});
   const [cohorts, setCohorts] = useState<LmsCohortLabels>({});
+  const [sessionCounts, setSessionCounts] = useState<Record<string, number | null>>({});
   const records = useMemo(() => presentLmsRows((reference?.records ?? []).map(row => ({
     ...row, ...cohorts[row.sourceModuleId], tutorName: tutorNames[row.sourceModuleId] ?? row.tutorName,
-  })), currentProgrammes, customModules), [reference, currentProgrammes, customModules, tutorNames, cohorts]);
+    sessionCount: sessionCounts[row.sourceModuleId],
+  })), currentProgrammes, customModules), [reference, currentProgrammes, customModules, tutorNames, cohorts, sessionCounts]);
 
   const loadLmsLabels = useCallback(async () => {
-    const results = await Promise.allSettled([requestLmsTutorNames(), requestLmsCohorts()]);
+    const results = await Promise.allSettled([requestLmsTutorNames(), requestLmsCohorts(), requestLmsSessionCounts()]);
     if (results[0].status === 'fulfilled') setTutorNames(results[0].value);
     if (results[1].status === 'fulfilled') setCohorts(results[1].value);
+    if (results[2].status === 'fulfilled') setSessionCounts(results[2].value);
+    else setSessionCounts({});
     const errors = results.flatMap(result => result.status === 'rejected'
       ? [result.reason instanceof Error ? result.reason.message : 'LMS labels could not be loaded.'] : []);
     if (errors.length) setError(errors.join(' '));

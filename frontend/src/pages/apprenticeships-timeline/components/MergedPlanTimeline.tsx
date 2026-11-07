@@ -29,8 +29,6 @@ export default function MergedPlanTimeline({ records, currentProgrammes, customM
   const visibleGroups = useMemo(() => filter === 'all' ? layout.groups : layout.groups
     .map(group => ({ ...group, rows: group.rows.filter(row => row.mergeMatch?.method === filter) }))
     .filter(group => group.rows.length), [layout.groups, filter]);
-  const undrawableCount = filter === 'all' ? layout.undrawableCount
-    : visibleGroups.reduce((total, group) => total + group.rows.filter(row => row.mergeMatch?.dateWarning).length, 0);
 
   return <div className="tp-merged-plan training-plan-gantt-shell overflow-visible rounded-xl border border-gray-200 bg-white">
     <div className="tp-merged-overview">
@@ -56,16 +54,7 @@ export default function MergedPlanTimeline({ records, currentProgrammes, customM
           <span className="tp-merged-readonly"><LockKeyhole size={11} aria-hidden="true" />Read only</span>
         </div>
       </div>
-      <div className="tp-merged-help">
-        <p>{filter === 'all'
-        ? 'Showing all manual and automatic matches, plus unpaired modules.'
-        : `Showing ${filter} matches only.`}</p>
-        <details><summary>How matching works</summary><p>Use Show merges to filter the timeline. Use Add manual match to choose and link two modules. Automatic matches use the same name and start date in the same programme.</p></details>
-      </div>
     </div>
-    {undrawableCount > 0 && <p role="status" className="tp-merged-warning">
-      <AlertCircle size={16} aria-hidden="true" /><span>{undrawableCount} LMS module{undrawableCount === 1 ? ' has' : 's have'} missing or invalid dates and cannot be displayed on the timeline.</span>
-    </p>}
     <GanttTimeline groups={visibleGroups} customModules={layout.customModules} holidays={holidays}
       onViewMonthlyBreakdown={(groupIndex, rowIndex, blockId) => onViewModule(visibleGroups[groupIndex], rowIndex, blockId, layout.customModules)}
       catalogModules={catalogModules} tutorProfiles={tutorProfiles} zoom={zoom} onZoomChange={setZoom}

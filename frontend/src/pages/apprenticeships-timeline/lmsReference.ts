@@ -13,6 +13,19 @@ export interface LmsReferenceRow {
   startDate: string | null;
   startDateSource?: 'created_at';
   endDate: string | null;
+  sessionCount?: number | null;
+}
+
+export async function requestLmsSessionCounts(): Promise<Record<string, number | null>> {
+  const response = await fetchWithTimeout('/api/training-plan/lms-reference/session-counts/', {
+    credentials: 'same-origin', cache: 'no-store', timeoutMs: 15000,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.sessionCounts || typeof payload.sessionCounts !== 'object' || Array.isArray(payload.sessionCounts)) {
+    throw new Error('LMS session counts could not be loaded. Please retry.');
+  }
+  return Object.fromEntries(Object.entries(payload.sessionCounts).filter((entry): entry is [string, number | null] =>
+    entry[1] === null || (typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0)));
 }
 
 export interface LmsReference {

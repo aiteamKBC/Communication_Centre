@@ -31,7 +31,8 @@ export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgra
     return {
       id: JSON.stringify(['lms', record.sourceModuleId, placement]), source: 'LMS',
       moduleCatalogueId: record.sourceModuleId, mod, groupName, color: module.bg,
-      startDate: record.startDate!, endDate: record.endDate!, tutor: record.tutorName?.trim() || '', sessions: 0,
+      startDate: record.startDate!, endDate: record.endDate!, tutor: record.tutorName?.trim() || '',
+      sessions: 0, lmsSessionCount: record.sessionCount,
       startDateSource: record.startDateSource,
     };
   };
