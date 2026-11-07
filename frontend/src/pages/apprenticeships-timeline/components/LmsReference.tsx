@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Database, GitMerge, Hand, Layers3, LockKeyhole, RefreshCw, TriangleAlert } from 'lucide-react';
 import { LmsReferenceError, requestLmsReference, requestLmsTutorNames, requestLmsCohorts, type LmsCohortLabels, type LmsReference as Reference } from '../lmsReference';
-import LmsReferenceTimeline, { type LmsReferenceTimelineProps } from './LmsReferenceTimeline';
+import type { LmsReferenceTimelineProps } from './LmsReferenceTimeline';
 import { presentLmsRows } from '../lmsComparison';
 import type { CatalogModule, CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
-import MergedPlanTimeline from './MergedPlanTimeline';
 import type { SaveLmsModuleMatch } from './LmsModuleMatcher';
+
+const LmsReferenceTimeline = lazy(() => import('./LmsReferenceTimeline'));
+const MergedPlanTimeline = lazy(() => import('./MergedPlanTimeline'));
 
 export type TrainingPlanSource = 'current' | 'lms' | 'merged';
 
@@ -102,13 +104,15 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
       </button>}
       </div>
       <div id="current-training-plan-panel" role="tabpanel" aria-labelledby="current-training-plan-tab" hidden={visible} className="min-w-0 space-y-4">
-        <div className="space-y-4">{children}</div>
+        {!visible && <div className="space-y-4">{children}</div>}
       </div>
       <section id="merged-training-plan-panel" role="tabpanel" aria-labelledby="merged-training-plan-tab" hidden={view !== 'merged'} className="min-w-0 space-y-4">
+        <Suspense fallback={<p role="status" className="px-4 py-6 text-sm text-gray-500">Loading timeline…</p>}>
         {view === 'merged' && reference && <MergedPlanTimeline records={records} currentProgrammes={currentProgrammes}
           onViewModule={onViewMergedModule}
           onSaveManualMerge={onSaveManualMerge}
           customModules={customModules} holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles} onManualMerge={onManualMerge} />}
+        </Suspense>
       </section>
       <section id="training-plan-lms-reference" role="tabpanel" aria-labelledby="lms-training-plan-tab" hidden={view !== 'lms'} className="min-w-0 space-y-4">
         <div className="tp-lms-heading training-plan-comparison-heading flex flex-wrap items-center justify-between gap-2">
@@ -119,7 +123,9 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
           </div>
           {reference && <p className="tp-capture-meta text-xs text-gray-500"><LockKeyhole size={13} aria-hidden="true" />Captured {new Date(reference.createdAt).toLocaleString()} · Read only</p>}
         </div>
-        {reference && <LmsReferenceTimeline rows={records} currentProgrammes={currentProgrammes} currentModules={customModules} renderOverview={renderLmsOverview} onViewModule={onViewLmsModule} />}
+        <Suspense fallback={<p role="status" className="px-4 py-6 text-sm text-gray-500">Loading timeline…</p>}>
+        {view === 'lms' && reference && <LmsReferenceTimeline rows={records} currentProgrammes={currentProgrammes} currentModules={customModules} renderOverview={renderLmsOverview} onViewModule={onViewLmsModule} />}
+        </Suspense>
       </section>
       {visible && <>
         {notice && <p role="status" className="m-4 rounded-lg bg-blue-50 p-3 text-xs text-blue-800">{notice}</p>}

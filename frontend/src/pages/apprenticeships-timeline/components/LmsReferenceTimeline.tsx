@@ -3,7 +3,6 @@ import { lmsCohortDisplayName, type PresentedLmsRow } from '../lmsComparison';
 import { buildLmsTimelineLayout, lmsRecordGroup } from '../lmsTimelineLayout';
 import type { CustomModule, ProgrammeGroup, ZoomLevel } from '../types';
 import GanttTimeline from './GanttTimeline';
-import * as XLSX from 'xlsx';
 
 const noEdit = () => {};
 
@@ -18,7 +17,8 @@ export interface LmsReferenceTimelineProps {
 
 export default function LmsReferenceTimeline({ rows, currentProgrammes, currentModules, comparisonZoom, renderOverview, onViewModule }: LmsReferenceTimelineProps) {
   const [zoom, setZoom] = useState<ZoomLevel>('month');
-  const exportReference = () => {
+  const exportReference = async () => {
+    const XLSX = await import('xlsx');
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows.map(row => ({
       Source: 'LMS', Programme: row.programme ?? '', Module: row.module ?? '',

@@ -1,8 +1,7 @@
-import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
 import './training-plan.css';
-import * as XLSX from 'xlsx';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, CoachProfile, ModuleBlock } from './types';
@@ -10,18 +9,8 @@ import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
 import LmsReference, { type TrainingPlanSource } from './components/LmsReference';
 import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
-import ModuleComparisonModal from './components/ModuleComparisonModal';
-import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
-import HolidayManager from './components/HolidayManager';
-import AddModuleModal from './components/AddModuleModal';
-import AddModuleCatalogModal from './components/AddModuleCatalogModal';
-import ManageModulesModal from './components/ManageModulesModal';
-import AddProgramModal from './components/AddProgramModal';
-import ManageProgramModal from './components/ManageProgramModal';
-import KsbProfilesManager from './components/KsbProfilesManager';
-import ScheduleTable, { type SessionScheduleUpdatePayload } from '@/pages/apprenticeships-timeline/components/ScheduleTable';
-import TutorProfiles from './components/TutorProfiles';
-import CoachProfiles from './components/CoachProfiles';
+import type { ModulePartialUpdatePayload } from './components/CohortModal';
+import type { SessionScheduleUpdatePayload } from './components/ScheduleTable';
 import DateField from './components/DateField';
 import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
@@ -31,6 +20,19 @@ import { useRealtimeResource, type RealtimeUpdateDetail } from '@/hooks/useRealt
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 import { buildCoachProfilesFromGroups } from './coachProfiles';
 import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
+
+const ModuleComparisonModal = lazy(() => import('./components/ModuleComparisonModal'));
+const CohortModal = lazy(() => import('./components/CohortModal'));
+const HolidayManager = lazy(() => import('./components/HolidayManager'));
+const AddModuleModal = lazy(() => import('./components/AddModuleModal'));
+const AddModuleCatalogModal = lazy(() => import('./components/AddModuleCatalogModal'));
+const ManageModulesModal = lazy(() => import('./components/ManageModulesModal'));
+const AddProgramModal = lazy(() => import('./components/AddProgramModal'));
+const ManageProgramModal = lazy(() => import('./components/ManageProgramModal'));
+const KsbProfilesManager = lazy(() => import('./components/KsbProfilesManager'));
+const ScheduleTable = lazy(() => import('./components/ScheduleTable'));
+const TutorProfiles = lazy(() => import('./components/TutorProfiles'));
+const CoachProfiles = lazy(() => import('./components/CoachProfiles'));
 
 type ModalState =
   | { open: false }
@@ -931,7 +933,8 @@ function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: Cu
   );
 }
 
-function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+async function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+  const XLSX = await import('xlsx');
   const rows = buildTrainingPlanExportRows(groups, customModules, ksbProfiles);
   const worksheet = XLSX.utils.json_to_sheet(rows);
   worksheet['!cols'] = [
@@ -2199,11 +2202,12 @@ function ModuleOverviewStudentsTab({
     return () => onRegisterSave?.(null);
   });
 
-  const exportLearnerMappingExcel = () => {
+  const exportLearnerMappingExcel = async () => {
     const exportLearners = selectedLearnerIds.size
       ? liveLearners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner)))
       : learners;
     if (!exportLearners.length) return;
+    const XLSX = await import('xlsx');
 
     const headers = [
       'Module',
@@ -2635,6 +2639,20 @@ function KsbBadges({ mapping }: { mapping: SessionKsbMapping }) {
       ))}
     </div>
   );
+}
+
+function MonthlyPlanOverview({ groups, holidays, customModules, catalogModules, ksbProfiles }: {
+  groups: ProgrammeGroup[];
+  holidays: Holiday[];
+  customModules: CustomModule[];
+  catalogModules: CatalogModule[];
+  ksbProfiles: KsbProfile[];
+}) {
+  const summaries = useMemo(
+    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
+    [groups, holidays, customModules, catalogModules, ksbProfiles],
+  );
+  return <MonthlyModuleBreakdown summaries={summaries} />;
 }
 
 function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
@@ -6551,7 +6569,7 @@ export default function ApprenticeshipTimeline() {
 
     const today = new Date();
     const stamp = `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, '0')}-${`${today.getDate()}`.padStart(2, '0')}`;
-    downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
+    await downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
   };
   const selectedProgram = programModal.open && programModal.mode === 'edit'
     ? (() => {
@@ -6596,6 +6614,8 @@ export default function ApprenticeshipTimeline() {
     [resolveEditChoiceDetails, visibleEditChoice],
   );
 
+  const resolvedTutorProfiles = useMemo(() => buildTutorProfilesFromGroups(groups, tutorProfiles), [groups, tutorProfiles]);
+  const resolvedCoachProfiles = useMemo(() => buildCoachProfilesFromGroups(groups, coachProfiles), [groups, coachProfiles]);
   const todaySessions = useMemo(() => {
     const today = new Date();
     const todayKey = DAY_NAMES[today.getDay()];
@@ -6625,13 +6645,13 @@ export default function ApprenticeshipTimeline() {
 
     return sessions;
   }, [groups]);
-  const monthlyModuleSummaries = useMemo(
-    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
-    [catalogModules, customModules, groups, holidays, ksbProfiles],
-  );
   const openMonthlySummary = (groupId: string, rowId: string, blockId: string, mode: ModuleOverviewMode = 'monthly', overviewChoiceDetails?: ModuleOverviewChoiceDetails) => {
-    const targetKey = `${groupId}-${rowId}-${blockId}`;
-    const summary = monthlyModuleSummaries.find(item => item.key === targetKey);
+    const group = groups.find(item => item.id === groupId);
+    const row = group?.rows.find(item => item.id === rowId);
+    const block = row?.blks.find(item => item.id === blockId);
+    if (!group || !row || !block) return;
+    const [summary] = buildMonthlyModuleSummaries([{ ...group, rows: [{ ...row, blks: [block] }] }],
+      holidays, customModules, catalogModules, ksbProfiles);
     if (summary) {
       setSelectedMonthlySummary({ summary, mode, overviewChoiceDetails });
     }
@@ -6980,6 +7000,7 @@ export default function ApprenticeshipTimeline() {
           )}
         </div>
 
+        <Suspense fallback={<TrainingPlanPanelSkeleton />}>
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
           <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
@@ -6988,7 +7009,7 @@ export default function ApprenticeshipTimeline() {
             manualMergeDisabled={isInitialProgrammesLoading}
             onSaveManualMerge={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
             holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles}
-            renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyModuleBreakdown summaries={buildMonthlyModuleSummaries(lmsGroups, [], lmsModules, [], [])} />}
+            renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyPlanOverview groups={lmsGroups} holidays={[]} customModules={lmsModules} catalogModules={[]} ksbProfiles={[]} />}
             onViewMergedModule={(programme, rowIndex, blockId, modules) => {
               const row = programme.rows[rowIndex];
               const isLms = row.planSource === 'LMS';
@@ -7012,7 +7033,7 @@ export default function ApprenticeshipTimeline() {
                   holidays={holidays}
                   customModules={customModules}
                   catalogModules={catalogModules}
-                  tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+                  tutorProfiles={resolvedTutorProfiles}
                   zoom={zoom}
                   onZoomChange={setZoom}
                   onManageHolidays={() => setShowHolidayMgr(true)}
@@ -7046,7 +7067,7 @@ export default function ApprenticeshipTimeline() {
                 />
               </div>
               <div data-training-plan-overview>
-                <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
+                <MonthlyPlanOverview groups={groups} holidays={holidays} customModules={customModules} catalogModules={catalogModules} ksbProfiles={ksbProfiles} />
               </div>
             </>
           ) : (
@@ -7079,8 +7100,8 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <ScheduleTable
               groups={groups}
-              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
-              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+              tutorProfiles={resolvedTutorProfiles}
+              coachProfiles={resolvedCoachProfiles}
               catalogModules={catalogModules}
               holidays={holidays}
               ksbProfiles={ksbProfiles}
@@ -7107,7 +7128,7 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <TutorProfiles
               groups={groups}
-              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+              tutorProfiles={resolvedTutorProfiles}
               catalogModules={catalogModules}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
@@ -7131,7 +7152,7 @@ export default function ApprenticeshipTimeline() {
           ) : (
             <CoachProfiles
               groups={groups}
-              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+              coachProfiles={resolvedCoachProfiles}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
@@ -7143,6 +7164,7 @@ export default function ApprenticeshipTimeline() {
           )
         )}
 
+        </Suspense>
       </main>
       <Footer />
 
@@ -7627,6 +7649,7 @@ export default function ApprenticeshipTimeline() {
         </div>
       )}
 
+      <Suspense fallback={<div role="status" className="fixed bottom-4 right-4 z-[60] rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-kbc-navy shadow-lg">Loading…</div>}>
       {canEditTrainingPlan && modal.open && (
         <CohortModal
           mode={modal.mode}
@@ -7635,8 +7658,8 @@ export default function ApprenticeshipTimeline() {
           customModules={customModules}
           catalogModules={catalogModules}
           ksbProfiles={ksbProfiles}
-          tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
-          coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+          tutorProfiles={resolvedTutorProfiles}
+          coachProfiles={resolvedCoachProfiles}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
@@ -7763,6 +7786,7 @@ export default function ApprenticeshipTimeline() {
           }}
         />
       )}
+      </Suspense>
     </div>
   );
 }

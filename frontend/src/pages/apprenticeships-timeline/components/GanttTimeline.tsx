@@ -13,11 +13,17 @@ import {
 
 type SessionPlan = ReturnType<typeof buildHolidayAdjustedSessionPlan>;
 
+// Stable defaults keep memoized layouts and conflict checks intact on hover.
+const EMPTY_CUSTOM_MODULES: CustomModule[] = [];
+const EMPTY_CATALOG_MODULES: CatalogModule[] = [];
+const EMPTY_TUTOR_PROFILES: TutorProfile[] = [];
+
 const LEFT_W    = 220;
 const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 52;
 const PROGRAMME_HEADER_H = 76;
 const VIRTUAL_ROW_BUFFER_PX = 1400;
+const VIRTUAL_VIEWPORT_STEP_PX = 256;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
@@ -64,18 +70,17 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
 }
 
-function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []): boolean {
-  const aEnd = effectiveBlockEndDate(a, holidays);
-  const bEnd = effectiveBlockEndDate(b, holidays);
-  return a.startDate <= bEnd && b.startDate <= aEnd;
-}
-
 // One row per distinct groupName.
 // Sequential modules share a lane; overlapping modules each get a free lane.
 function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = [], groupNames: string[] = []): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
   const blocksByGroup = new Map<string, ModuleBlock[]>();
+  const endDates = new Map<ModuleBlock, string>();
+  const endDate = (blk: ModuleBlock) => {
+    if (!endDates.has(blk)) endDates.set(blk, effectiveBlockEndDate(blk, holidays));
+    return endDates.get(blk)!;
+  };
 
   for (const name of groupNames) {
     if (rowMap.has(name)) continue;
@@ -99,7 +104,8 @@ function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = [], groupName
     for (const blk of sortedGroupBlocks) {
 
       let lane = 0;
-      while (row.lanes.some(item => item.lane === lane && datesOverlap(item.blk, blk, holidays))) lane += 1;
+      while (row.lanes.some(item => item.lane === lane
+        && item.blk.startDate <= endDate(blk) && blk.startDate <= endDate(item.blk))) lane += 1;
       row.lanes.push({ blk, lane });
       row.laneCount = Math.max(row.laneCount, lane + 1);
     }
@@ -1111,7 +1117,7 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
 }
 
 export default function GanttTimeline({
-  groups, holidays, customModules = [], catalogModules = [], tutorProfiles = [], zoom, onZoomChange,
+  groups, holidays, customModules = EMPTY_CUSTOM_MODULES, catalogModules = EMPTY_CATALOG_MODULES, tutorProfiles = EMPTY_TUTOR_PROFILES, zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
@@ -1298,14 +1304,14 @@ export default function GanttTimeline({
     virtualViewportFrame.current = window.requestAnimationFrame(() => {
       virtualViewportFrame.current = null;
       const surface = timelineSurfaceRef.current;
-      if (!surface) return;
+      if (!surface || !surface.getClientRects().length) return;
       const rect = surface.getBoundingClientRect();
       const next = {
-        top: Math.max(0, -rect.top - VIRTUAL_ROW_BUFFER_PX),
-        bottom: Math.max(0, -rect.top + window.innerHeight + VIRTUAL_ROW_BUFFER_PX),
+        top: Math.max(0, Math.floor(-rect.top / VIRTUAL_VIEWPORT_STEP_PX) * VIRTUAL_VIEWPORT_STEP_PX - VIRTUAL_ROW_BUFFER_PX),
+        bottom: Math.max(0, Math.ceil((-rect.top + window.innerHeight) / VIRTUAL_VIEWPORT_STEP_PX) * VIRTUAL_VIEWPORT_STEP_PX + VIRTUAL_ROW_BUFFER_PX),
       };
       setVirtualViewport(prev => (
-        Math.abs(prev.top - next.top) < 24 && Math.abs(prev.bottom - next.bottom) < 24 ? prev : next
+        prev.top === next.top && prev.bottom === next.bottom ? prev : next
       ));
     });
   }, []);
@@ -1720,7 +1726,6 @@ export default function GanttTimeline({
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
   const isZoomedGrid = zoom === 'day';
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
-  const shouldVirtualizeRows = mergedSources || zoom === 'week' || zoom === 'day';
 
   const navigateToNow = useCallback(() => {
     const now = new Date();
@@ -1979,7 +1984,7 @@ export default function GanttTimeline({
       const rows = grp.rows.map(row => {
         const selectedHolidayIds = new Set(row.holidayIds || []);
         const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
-        const ganttRows = buildGanttRows(row.blks, rowHolidays, row.referenceGroupNames);
+        const ganttRows = isCollapsed ? [] : buildGanttRows(row.blks, rowHolidays, row.referenceGroupNames);
         const totalModuleH = ganttRows.reduce((sum, ganttRow) => sum + rowHeight(ganttRow), 0);
         const pairedRowIndex = mergedSources && row.mergeMatch
           ? pairedRows.get(`${row.mergeMatch.id}:${row.planSource === 'LMS' ? 'Current' : 'LMS'}`) ?? -1
@@ -2232,9 +2237,10 @@ export default function GanttTimeline({
     const measureConnectors = () => {
       const surface = timelineSurfaceRef.current;
       if (!surface || crossRowTutorConflictPairs.length === 0) {
-        setCrossRowTutorConnectors([]);
+        setCrossRowTutorConnectors(previous => previous.length ? [] : previous);
         return;
       }
+      if (!surface.getClientRects().length) return;
 
       const surfaceRect = surface.getBoundingClientRect();
       const blockElements = new Map<string, HTMLElement>();
@@ -3870,11 +3876,9 @@ export default function GanttTimeline({
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
                 const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
                 const isFocusedRow = focusedTimelineTarget?.rowKey === rowTargetKey || pendingTimelineNavigation?.rowKey === rowTargetKey;
-                const isRowInVirtualWindow = !shouldVirtualizeRows
-                  ? true
-                  : rowMetrics
-                    ? rowMetrics.bottom >= virtualViewport.top && rowMetrics.top <= virtualViewport.bottom
-                    : true;
+                const isRowInVirtualWindow = rowMetrics
+                  ? rowMetrics.bottom >= virtualViewport.top && rowMetrics.top <= virtualViewport.bottom
+                  : true;
                 if (!isRowInVirtualWindow && !isFocusedRow && !isCohortDragOver) {
                   return (
                     <div
@@ -3896,7 +3900,7 @@ export default function GanttTimeline({
                     { sourceRow: pairedRow, rowIndex: pairedRowIndex, color: '#115E59' },
                   ];
                   const positions = sources.flatMap(({ sourceRow }) => sourceRow.blks.flatMap(blk => {
-                    const endDate = blk.source === 'LMS' ? blk.endDate : effectiveBlockEndDate(blk, rowHolidays);
+                    const endDate = blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate;
                     const pos = getBlockPosition(blk.startDate, endDate, cols);
                     return pos ? [pos] : [];
                   }));
@@ -3922,7 +3926,7 @@ export default function GanttTimeline({
                         {sources.map(({ sourceRow, rowIndex }, index) => {
                           const blk = sourceRow.blks[0];
                           const name = sourceRow.mergeMatch!.moduleName;
-                          const endDate = blk && (blk.source === 'LMS' ? blk.endDate : effectiveBlockEndDate(blk, rowHolidays));
+                          const endDate = blk && (blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate);
                           return <div key={sourceRow.id} data-plan-source={sourceRow.planSource}
                             data-manual-match-id={row.mergeMatch!.method === 'manual' ? row.mergeMatch!.id : undefined}
                             data-merge-match-id={row.mergeMatch!.id} data-merge-match-method={row.mergeMatch!.method}

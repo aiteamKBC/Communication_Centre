@@ -19,7 +19,11 @@ test('large merged timelines keep distant modules reachable across zooms and vie
   const programmes = [{ id: 'me-lvl4', name: 'ME L4', sub: '', color: '#E8D000' }];
   const writes: string[] = [];
   const errors: string[] = [];
+  const scripts: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => {
+    if (request.resourceType() === 'script') scripts.push(request.url());
+  });
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== 'GET' && path.startsWith('/api/training-plan')) writes.push(path);
@@ -46,9 +50,15 @@ test('large merged timelines keep distant modules reachable across zooms and vie
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/training-plan');
+  const current = page.locator('#current-training-plan-panel');
+  await expect(current.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+  // Export libraries, management dialogs and other tabs load only when used.
+  expect(scripts.filter(url => /xlsx|CohortModal|ScheduleTable|TutorProfiles|CoachProfiles|LmsReferenceTimeline|MergedPlanTimeline/.test(url))).toEqual([]);
   await page.getByRole('tab', { name: 'Merge', exact: true }).click();
   const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
   await expect(merged.getByRole('heading', { name: 'Merged Training Plans', exact: true })).toBeVisible();
+  await expect(current.locator('.training-plan-gantt-scroll')).toHaveCount(0);
+  await expect(page.locator('.training-plan-gantt-scroll')).toHaveCount(1);
   await expect(merged.locator('.tp-merged-stats > div').nth(1)).toContainText('150');
   await expect(merged.getByRole('status')).toContainText('1 LMS module has missing or invalid dates');
   const firstModule = merged.getByRole('button', { name: 'View Current module details: Marketing module 1', exact: true });
@@ -88,6 +98,28 @@ test('large merged timelines keep distant modules reachable across zooms and vie
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     if (width === 390) await merged.locator('.tp-merged-overview').screenshot({ path: testInfo.outputPath('merged-overview-mobile.png') });
   }
+  // Changing sources removes the previous timeline and its scroll listeners.
+  await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();
+  await expect(merged.locator('.training-plan-gantt-scroll')).toHaveCount(0);
+  await expect(page.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+  // A stationary LMS view must not continuously recompute layouts in the background.
+  const profiler = await page.context().newCDPSession(page);
+  await profiler.send('Performance.enable');
+  const scriptDuration = async () => {
+    const { metrics } = await profiler.send('Performance.getMetrics');
+    return metrics.find(metric => metric.name === 'ScriptDuration')!.value;
+  };
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const idleScriptStart = await scriptDuration();
+  // This interval measures idle CPU work; it is not a UI readiness delay.
+  await page.waitForTimeout(1500);
+  expect((await scriptDuration()) - idleScriptStart).toBeLessThan(0.5);
+  await profiler.detach();
+  await page.getByRole('tab', { name: 'Current Training Plan', exact: true }).click();
+  await expect(current.locator('.training-plan-gantt-scroll')).toHaveCount(1);
+  await expect(page.locator('#training-plan-lms-reference .training-plan-gantt-scroll')).toHaveCount(0);
+  expect(scripts.filter(url => /xlsx/.test(url))).toEqual([]);
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });
