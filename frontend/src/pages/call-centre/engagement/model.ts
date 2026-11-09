@@ -67,6 +67,7 @@ const PROMISE_LABELS: Record<string, string> = {
   attended_other_group: 'Attended this lecture with another group (covering lecture)',
   caught_up_with_coach: 'Already caught up in a catch-up session with their coach',
   authorised_absence: 'Authorised absence: told their coach beforehand',
+  lms_absence_report: 'Absence reported by the learner in the LMS',
   book_pr: 'Book the progress review', book_mcm: 'Book the monthly coaching meeting', log_hours: 'Log off-the-job hours',
   epa_step: 'Complete the EPA step', sign_review: 'Sign the review', other: 'Other',
 };

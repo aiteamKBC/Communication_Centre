@@ -12,7 +12,11 @@ from .sources import rows, upsert_case
 
 
 def adopt_lms_bookings(people):
-    """Also honour bookings made directly in the LMS, linked to the exact lecture."""
+    """Also honour bookings made directly in the LMS, linked to the exact lecture.
+
+    A case from the legacy register finds its report by the register key's LMS report id. A case from the LMS live
+    register finds its catch-up through ``curriculum.live_session_absences`` (the row for its occurrence and learner
+    profile names the booked event), and the report linked to that event is the one checked."""
     from .lms_booking import kbc_report_id
     pending = list(CaseTicket.objects.filter(source_type='attendance', archived=False)
                    .exclude(status='resolved').exclude(source_data__has_key='catchup_booking'))
@@ -32,19 +36,35 @@ def adopt_lms_bookings(people):
         WHERE r.status = 'approved' AND e.event_type = 'catch-up'
           AND e.status IN ('scheduled', 'completed') AND e.scheduled_time IS NOT NULL
           AND e.scheduled_date IS NOT NULL AND coalesce(e.sync_state, '') NOT IN ('failed', 'syncing')''')
+    keys = sorted({str(t.source_data.get('attendance_key') or '') for t in pending} - {''})
+    live = {str(r['key']): r for r in rows(LMS, '''SELECT la.id::text AS key, lower(trim(la.learner_email)) AS email,
+            (o.scheduled_start)::date AS day, a.recovery_reference AS event_key
+        FROM curriculum.live_session_learner_attendance la
+        JOIN curriculum.live_session_occurrences o ON o.id = la.occurrence_id
+        JOIN curriculum.live_session_absences a
+          ON a.occurrence_id = la.occurrence_id AND a.learner_profile_id = la.learner_profile_id
+        WHERE la.id::text = ANY(%s) AND a.recovery_method = 'catch-up' AND a.recovery_reference <> '' ''',
+                                                [keys])} if keys else {}
     closed = 0
     for ticket in pending:
         person = people.resolve(email=ticket.learner_email)
         if not person:
             continue
-        register_keys = {str(r['key']) for r in registers if r['key']
-                         and email_key(r['Email']) in person['emails']
-                         and r['date'] == ticket.overdue_since
-                         and str(r['module'] or '').strip() == str(ticket.source_data.get('module') or '').strip()}
-        if len(register_keys) != 1:
-            continue
-        report_id = kbc_report_id(next(iter(register_keys)))
-        matches = [r for r in reports if r['attendance_id'] == report_id
+        lecture = live.get(str(ticket.source_data.get('attendance_key') or ''))
+        if lecture and lecture['email'] in person['emails'] and lecture['day'] == ticket.overdue_since:
+            def lecture_report(r, key=lecture['event_key']):
+                return r['event_key'] == key
+        else:
+            register_keys = {str(r['key']) for r in registers if r['key']
+                             and email_key(r['Email']) in person['emails']
+                             and r['date'] == ticket.overdue_since
+                             and str(r['module'] or '').strip() == str(ticket.source_data.get('module') or '').strip()}
+            if len(register_keys) != 1:
+                continue
+
+            def lecture_report(r, report_id=kbc_report_id(next(iter(register_keys)))):
+                return r['attendance_id'] == report_id
+        matches = [r for r in reports if lecture_report(r)
                    and email_key(r['report_email']) in person['emails']
                    and people.calendar_person(r) is person
                    and r['event_key'] != (ticket.source_data.get('catchup_no_show') or {}).get('event_key')]

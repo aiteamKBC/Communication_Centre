@@ -283,6 +283,30 @@ class IdentityWorkflowTests(TestCase):
         followup.refresh_from_db()
         self.assertEqual(followup.status, 'new')
 
+    def test_direct_lms_booking_closes_a_live_register_lecture_through_its_absence_row(self):
+        from . import catchup
+        from .models import CaseTicket
+        people = identity.build([lms()], [aptem()])
+        day = (timezone.now()-timedelta(days=8)).date()
+        ticket = CaseTicket.objects.create(source_type='attendance', learner_email='learner@example.org',
+            due_at=timezone.now(), reason_key='live-booking', overdue_since=day,
+            source_data={'module': 'Lecture', 'attendance_key': '77'})
+        report = {'report_id': 4, 'attendance_id': 123, 'report_email': 'learner@example.org', 'id': 22,
+                  'event_key': 'booked-in-lms', 'learner_id': 1, 'learner_email': 'learner@example.org',
+                  'scheduled_date': day, 'scheduled_time': timezone.now().time(), 'owner_name': 'Coach',
+                  'meeting_link': ''}
+        lecture = {'key': '77', 'email': 'learner@example.org', 'day': day, 'event_key': 'booked-in-lms'}
+        # The absence row names another booking, or the lecture is another day's: nothing closes.
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [{**lecture, 'event_key': 'other'}]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 0)
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [{**lecture, 'day': day - timedelta(days=1)}]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 0)
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [lecture]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 1)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, 'resolved')
+        self.assertEqual(ticket.source_data['catchup_booking']['event_key'], 'booked-in-lms')
+
     def test_catchup_no_show_creates_new_case_once_and_keeps_history(self):
         from . import catchup
         from .models import CaseTicket

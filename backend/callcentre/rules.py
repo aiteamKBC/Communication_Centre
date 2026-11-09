@@ -78,6 +78,8 @@ CAUGHT_UP_WITH_COACH = 'caught_up_with_coach'
 # A missed lecture the learner told their coach beforehand they would miss (authorised_absence.py): the case closes as
 # soon as it is made.
 AUTHORISED_ABSENCE = 'authorised_absence'
+# A missed lecture the learner reported in the LMS, pending or approved (reported_absence.py): closes the same way.
+LMS_ABSENCE_REPORT = 'lms_absence_report'
 PROMISES = {
     'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None, CAUGHT_UP_WITH_COACH: None},
     'pr': {'book_pr': None},
