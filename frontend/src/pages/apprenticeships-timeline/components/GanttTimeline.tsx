@@ -1,23 +1,38 @@
-import { MouseEvent as ReactMouseEvent, useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { MouseEvent as ReactMouseEvent, type ReactNode, useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { Bell, CalendarRange, ChevronLeft, ChevronRight, FileSpreadsheet, Hand, Layers3, LocateFixed, LockKeyhole, Users } from 'lucide-react';
+import TimelineZoomControls from './TimelineZoomControls';
+import MergedTutorDates from './MergedTutorDates';
+import { tutorDisplayName } from '../tutorProfiles';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import {
   generateColumns, getBlockPosition, getTotalWidth,
   formatDate, formatDateShort, startOfWeek,
-  buildHolidayAdjustedSessionPlan, rangesOverlap, ZOOM_LEVELS, zoomIn, zoomOut, getZoomLabel, toLocalIsoDate,
+  buildHolidayAdjustedSessionPlan, rangesOverlap, toLocalIsoDate,
 } from '../utils';
 
 type SessionPlan = ReturnType<typeof buildHolidayAdjustedSessionPlan>;
+
+// Stable defaults keep memoized layouts and conflict checks intact on hover.
+const EMPTY_CUSTOM_MODULES: CustomModule[] = [];
+const EMPTY_CATALOG_MODULES: CatalogModule[] = [];
+const EMPTY_TUTOR_PROFILES: TutorProfile[] = [];
+
+const holidayDateLabel = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', {
+  weekday: 'long', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC',
+});
 
 const LEFT_W    = 220;
 const TOP_NAV_H = 56;
 const ZOOM_BAR_H = 52;
 const PROGRAMME_HEADER_H = 76;
 const VIRTUAL_ROW_BUFFER_PX = 1400;
+const VIRTUAL_VIEWPORT_STEP_PX = 256;
 const COHORT_H  = 32;  // thin cohort header strip
 const MODULE_H  = 64;  // full-height module row (no overlap)
+const MERGED_MODULE_H = 56;
 const LANE_H    = MODULE_H;  // keep stacked modules visually consistent with single modules
 const NOW_LINE_Z_INDEX = 16;
 const NOW_LINE_STYLE = {
@@ -29,13 +44,13 @@ const NOW_LINE_STYLE = {
 // ── Lane / row types ──────────────────────────────────────────────────────
 interface LanedBlock {
   blk: ModuleBlock;
-  lane: number; // 0 = top lane, 1 = bottom lane
+  lane: number;
 }
 
 interface GanttRow {
   groupName: string;
   lanes: LanedBlock[]; // all blocks with their assigned lane
-  laneCount: number;   // 1 = single full-height row, 2 = two half-height lanes
+  laneCount: number;
 }
 
 function effectiveBlockEndDate(blk: ModuleBlock, holidays: Holiday[] = []): string {
@@ -62,20 +77,23 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
 }
 
-function datesOverlap(a: ModuleBlock, b: ModuleBlock, holidays: Holiday[] = []): boolean {
-  const aEnd = effectiveBlockEndDate(a, holidays);
-  const bEnd = effectiveBlockEndDate(b, holidays);
-  return a.startDate <= bEnd && b.startDate <= aEnd;
-}
-
 // One row per distinct groupName.
-// Within a group, sequential modules share lane 0. If a module overlaps with
-// an existing lane-0 block it is placed in lane 1 (bottom). This way non-
-// overlapping modules sit side-by-side on one row, and overlapping pairs stack.
-function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = []): GanttRow[] {
+// Sequential modules share a lane; overlapping modules each get a free lane.
+function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = [], groupNames: string[] = []): GanttRow[] {
   const rowMap = new Map<string, GanttRow>();
   const order: string[] = [];
   const blocksByGroup = new Map<string, ModuleBlock[]>();
+  const endDates = new Map<ModuleBlock, string>();
+  const endDate = (blk: ModuleBlock) => {
+    if (!endDates.has(blk)) endDates.set(blk, effectiveBlockEndDate(blk, holidays));
+    return endDates.get(blk)!;
+  };
+
+  for (const name of groupNames) {
+    if (rowMap.has(name)) continue;
+    rowMap.set(name, { groupName: name, lanes: [], laneCount: 1 });
+    order.push(name);
+  }
 
   for (const blk of blks) {
     const key = (blk.groupName || '').trim();
@@ -92,17 +110,11 @@ function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = []): GanttRow
 
     for (const blk of sortedGroupBlocks) {
 
-      // Try to fit in lane 0 first, then lane 1
-      const overlapsLane0 = row.lanes
-        .filter(lb => lb.lane === 0)
-        .some(lb => datesOverlap(lb.blk, blk, holidays));
-
-      if (overlapsLane0) {
-        row.lanes.push({ blk, lane: 1 });
-        row.laneCount = 2;
-      } else {
-        row.lanes.push({ blk, lane: 0 });
-      }
+      let lane = 0;
+      while (row.lanes.some(item => item.lane === lane
+        && item.blk.startDate <= endDate(blk) && blk.startDate <= endDate(item.blk))) lane += 1;
+      row.lanes.push({ blk, lane });
+      row.laneCount = Math.max(row.laneCount, lane + 1);
     }
   }
 
@@ -110,7 +122,7 @@ function buildGanttRows(blks: ModuleBlock[], holidays: Holiday[] = []): GanttRow
 }
 
 function rowHeight(row: GanttRow): number {
-  return row.laneCount === 2 ? LANE_H * 2 : MODULE_H;
+  return row.laneCount * LANE_H;
 }
 
 function getDateCenter(pos: { left: number; width: number }): number {
@@ -130,6 +142,24 @@ function extractGroup(label: string): string {
 
 function getBlockDisplayName(blk: ModuleBlock, customModules: CustomModule[]) {
   return resolveModuleMeta(blk.mod as string, customModules).lbl;
+}
+
+// Some LMS titles contain the tutor's name as a prefix or suffix. Keep source
+// titles intact and omit that duplicate name only on merged module cards.
+function getMergedCardLabel(name: string, tutor: string) {
+  const aliases = tutor.split(/[,;/&]/).flatMap(person => {
+    const full = person.trim().replace(/\s+/g, ' ');
+    const untitled = full.replace(/^(?:dr|prof|professor|mr|mrs|ms)\.?\s+/i, '');
+    return [full, untitled, untitled.split(' ')[0]];
+  }).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const alias of aliases) for (const separator of [' - ', '-', ' – ', '–', ' — ', '—', ': ', ':']) {
+    const label = name.trim();
+    const prefix = `${alias}${separator}`;
+    const suffix = `${separator}${alias}`;
+    if (label.toLowerCase().startsWith(prefix.toLowerCase()) && label.length > prefix.length) return label.slice(prefix.length).trim();
+    if (label.toLowerCase().endsWith(suffix.toLowerCase()) && label.length > suffix.length) return label.slice(0, -suffix.length).trim();
+  }
+  return name;
 }
 
 function parseLocalDateTime(isoDate: string, time24: string): Date {
@@ -313,7 +343,7 @@ function getCurrentSessionSummary(
   activeHolidays: Holiday[] = [],
   holidayPlan?: SessionPlan,
 ) {
-  const plannedTotal = Math.max(1, blk.sessions || 1);
+  const plannedTotal = blk.source === 'LMS' ? 0 : Math.max(1, blk.sessions || 1);
   const now = new Date();
   const endTime = blk.sessionEndTime || '11:00';
   const plan = holidayPlan || buildHolidayAdjustedSessionPlan(blk, activeHolidays);
@@ -392,7 +422,7 @@ function buildLeftLabelEntries(ganttRows: GanttRow[], customModules: CustomModul
     const firstBlk = row.lanes[0]?.blk;
     const label = row.groupName || (firstBlk ? getBlockDisplayName(firstBlk, customModules) : '');
     const color = firstBlk ? resolveBlockMeta(firstBlk, customModules).bg : '#4A6DB0';
-    entries.push({ key: `row-${idx}`, label, meta: '', color, top: offsetY, height: rh });
+    entries.push({ key: `row-${idx}`, label, meta: firstBlk ? '' : 'No matching LMS dates', color, top: offsetY, height: rh });
     offsetY += rh;
   });
 
@@ -427,6 +457,7 @@ function resolveBlockMeta(blk: ModuleBlock, customModules: CustomModule[]) {
 }
 
 interface TooltipData {
+  referenceSource?: 'LMS';
   blk: ModuleBlock;
   cohortLabel: string;
   cohortColor: string;
@@ -587,6 +618,9 @@ interface Props {
   tutorProfiles?: TutorProfile[];
   zoom: ZoomLevel;
   onZoomChange: (z: ZoomLevel) => void;
+  showZoomControls?: boolean;
+  toolbarControls?: ReactNode;
+  beforeTimeline?: ReactNode;
   onManageHolidays?: () => void;
   onAddRow: (groupIdx: number) => void;
   onEditRow: (groupIdx: number, rowIdx: number, blockId?: string, returnToChoice?: boolean) => void;
@@ -605,6 +639,8 @@ interface Props {
   onExportExcel?: () => void;
   exportExcelDisabled?: boolean;
   canManageCohorts?: boolean;
+  referenceSource?: 'LMS';
+  mergedSources?: boolean;
 }
 
 // ── View window per zoom level ────────────────────────────────────────────
@@ -627,9 +663,12 @@ function getMaxModuleEndDate(groups: ProgrammeGroup[], holidays: Holiday[] = [])
   return max;
 }
 
-function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holidays: Holiday[] = []): { start: Date; end: Date } {
+function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holidays: Holiday[] = [], fitModules = false): { start: Date; end: Date } {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
+  if (zoom === 'week') return getNormalizedWeekWindow(now);
+  if (zoom === 'day') return { start: shiftDateByDays(now, -14), end: shiftDateByDays(now, 28) };
+  const currentYearEnd = new Date(now.getFullYear(), 11, 31);
 
   // Compute end from last module end date, padded to end of that year
   const maxEnd = groups ? getMaxModuleEndDate(groups, holidays) : null;
@@ -637,18 +676,17 @@ function getDefaultViewWindow(zoom: ZoomLevel, groups?: ProgrammeGroup[], holida
     ? new Date(maxEnd.getFullYear(), 11, 31)   // Dec 31 of last module's year
     : null;
 
-  if (zoom === 'year') {
-    const end = dynamicEnd ?? new Date('2027-12-31');
-    return { start: new Date('2025-01-01'), end };
+  if (fitModules && groups?.length) {
+    const starts = groups.flatMap(group => group.rows.flatMap(row => row.blks.map(block => block.startDate))).sort();
+    const first = starts[0] ? parseLocalDateOnly(starts[0]) : null;
+    if (first && dynamicEnd) return {
+      start: new Date(Math.min(first.getFullYear(), now.getFullYear()), 0, 1),
+      end: dynamicEnd > currentYearEnd ? dynamicEnd : currentYearEnd,
+    };
   }
-  if (zoom === 'intake' || zoom === 'month') {
-    const end = dynamicEnd ?? new Date('2027-07-31');
-    return { start: new Date('2025-01-01'), end };
-  }
-  if (zoom === 'week') return getNormalizedWeekWindow(now);
-  const s = new Date(now); s.setDate(s.getDate() - 14);
-  const e = new Date(now); e.setDate(e.getDate() + 28);
-  return { start: s, end: e };
+
+  const end = dynamicEnd ?? new Date(2027, zoom === 'year' ? 11 : 6, 31);
+  return { start: new Date(Math.min(2025, now.getFullYear()), 0, 1), end: end > currentYearEnd ? end : currentYearEnd };
 }
 
 function getNormalizedWeekWindow(anchor: Date): { start: Date; end: Date } {
@@ -777,7 +815,7 @@ function ModuleTooltip({ data, currentDate, onClose }: { data: TooltipData; curr
             </div>
             <div>
               <p className="text-xs text-gray-400 leading-none">Tutor / Lecturer</p>
-              <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.tutor || '—'}</p>
+              <p className="text-xs font-bold text-gray-800 mt-0.5">{data.blk.tutor || (data.referenceSource ? 'Not assigned in LMS' : '—')}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -796,10 +834,15 @@ function ModuleTooltip({ data, currentDate, onClose }: { data: TooltipData; curr
             <div>
               <p className="text-xs text-gray-400 leading-none">Dates</p>
               <p className="text-xs font-bold text-gray-800 mt-0.5">
-                {formatDate(data.blk.startDate)} &rarr; {formatDate(displayEndDate)}
+                {data.referenceSource ? data.blk.startDate : formatDate(data.blk.startDate)} &rarr; {data.referenceSource ? displayEndDate : formatDate(displayEndDate)}
               </p>
+              {data.referenceSource && data.blk.startDateSource === 'created_at' && <p className="mt-1 text-xs font-semibold text-amber-800">From created_at (start_date missing)</p>}
+              {data.referenceSource && (data.blk.lmsHolidayDelayWeeks ?? 0) > 0 && <p className="mt-1 text-xs text-violet-700">
+                Original LMS dates: {data.blk.lmsOriginalStartDate} → {data.blk.lmsOriginalEndDate}.
+                {' '}Holiday delay: {data.blk.lmsHolidayDelayWeeks} week{data.blk.lmsHolidayDelayWeeks === 1 ? '' : 's'}.
+              </p>}
               <p className="text-xs text-gray-400">
-                {deliveryWeeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}
+                {data.referenceSource ? `Source: LMS · Module ID: ${data.blk.moduleCatalogueId}` : <>{deliveryWeeks} weeks{sessionSummary.extensionDays > 0 ? ' including holiday weeks' : ''}</>}
               </p>
             </div>
           </div>
@@ -1088,11 +1131,15 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
 }
 
 export default function GanttTimeline({
-  groups, holidays, customModules = [], catalogModules = [], tutorProfiles = [], zoom, onZoomChange,
+  groups, holidays, customModules = EMPTY_CUSTOM_MODULES, catalogModules = EMPTY_CATALOG_MODULES, tutorProfiles = EMPTY_TUTOR_PROFILES, zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
-  onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts = true,
+  onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
+  referenceSource, mergedSources = false, showZoomControls = true, toolbarControls, beforeTimeline,
 }: Props) {
+  const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
+  const fitModules = Boolean(referenceSource) || mergedSources;
+  const cohortHeaderHeight = COHORT_H;
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
   const [clashTip, setClashTip] = useState<{ marker: ClashMarker; x: number; y: number } | null>(null);
@@ -1108,7 +1155,7 @@ export default function GanttTimeline({
   const [classesPopupPosition, setClassesPopupPosition] = useState({ left: 12, top: 12, width: 360, maxHeight: 520 });
   const [notificationsPopupPosition, setNotificationsPopupPosition] = useState({ left: 12, top: 12, width: 380, maxHeight: 520 });
   const [focusedTimelineTarget, setFocusedTimelineTarget] = useState<{ groupIdx?: number; rowKey?: string; blockId?: string } | null>(null);
-  const [pendingTimelineNavigation, setPendingTimelineNavigation] = useState<{ groupIdx?: number; rowKey?: string; targetDate: string } | null>(null);
+  const [pendingTimelineNavigation, setPendingTimelineNavigation] = useState<{ groupIdx?: number; rowKey?: string; targetDate: string; centerDate?: boolean } | null>(null);
   const [moduleDateDrag, setModuleDateDrag] = useState<{
     groupIdx: number;
     rowIdx: number;
@@ -1127,8 +1174,12 @@ export default function GanttTimeline({
     rowIdx: number;
     catalogModule?: CatalogModule;
   } | null>(null);
-  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays));
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays, fitModules));
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(mergedSources ? groups.map(group => group.id) : []));
+  const collapsedGroups = useMemo(
+    () => new Set(groups.filter(group => !expandedGroups.has(group.id)).map(group => group.id)),
+    [groups, expandedGroups],
+  );
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
   const [virtualViewport, setVirtualViewport] = useState(() => ({ top: 0, bottom: typeof window === 'undefined' ? 900 : window.innerHeight }));
@@ -1141,7 +1192,8 @@ export default function GanttTimeline({
   const headerTrackRef = useRef<HTMLDivElement>(null);
   const headerScrollFrame = useRef<number | null>(null);
   const fixedScrollbarSyncing = useRef(false);
-  const panState = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; windowY: number } | null>(null);
+  const fixedScrollbarSyncedLeft = useRef<number | null>(null);
+  const panState = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; scrollTop: number; localScroll: boolean; windowY: number } | null>(null);
   const timelineSurfaceRef = useRef<HTMLDivElement>(null);
   const classesButtonRef = useRef<HTMLButtonElement>(null);
   const classesPopupRef = useRef<HTMLDivElement>(null);
@@ -1151,7 +1203,8 @@ export default function GanttTimeline({
   const pendingFloatingTipMove = useRef<{ type: 'tooltip' | 'badge' | 'extension' | 'holiday' | 'tutorConflict'; x: number; y: number } | null>(null);
   const virtualViewportFrame = useRef<number | null>(null);
   const suppressModuleClickRef = useRef(false);
-  const leftW = viewportWidth < 640 ? 184 : viewportWidth < 1024 ? 210 : LEFT_W;
+  const sourceLabelW = viewportWidth < 640 ? (mergedSources ? 140 : 184) : viewportWidth < 1024 ? 210 : LEFT_W;
+  const leftW = sourceLabelW;
 
   const scheduleFloatingTipMove = useCallback((type: 'tooltip' | 'badge' | 'extension' | 'holiday' | 'tutorConflict', x: number, y: number) => {
     if (typeof window === 'undefined') return;
@@ -1247,12 +1300,16 @@ export default function GanttTimeline({
   useEffect(() => () => {
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
+      headerScrollFrame.current = null;
     }
     if (floatingTipMoveFrame.current !== null) {
       window.cancelAnimationFrame(floatingTipMoveFrame.current);
+      floatingTipMoveFrame.current = null;
     }
     if (virtualViewportFrame.current !== null) {
       window.cancelAnimationFrame(virtualViewportFrame.current);
+      // Allow effects to schedule again after React's development cleanup.
+      virtualViewportFrame.current = null;
     }
   }, []);
 
@@ -1262,14 +1319,14 @@ export default function GanttTimeline({
     virtualViewportFrame.current = window.requestAnimationFrame(() => {
       virtualViewportFrame.current = null;
       const surface = timelineSurfaceRef.current;
-      if (!surface) return;
+      if (!surface || !surface.getClientRects().length) return;
       const rect = surface.getBoundingClientRect();
       const next = {
-        top: Math.max(0, -rect.top - VIRTUAL_ROW_BUFFER_PX),
-        bottom: Math.max(0, -rect.top + window.innerHeight + VIRTUAL_ROW_BUFFER_PX),
+        top: Math.max(0, Math.floor(-rect.top / VIRTUAL_VIEWPORT_STEP_PX) * VIRTUAL_VIEWPORT_STEP_PX - VIRTUAL_ROW_BUFFER_PX),
+        bottom: Math.max(0, Math.ceil((-rect.top + window.innerHeight) / VIRTUAL_VIEWPORT_STEP_PX) * VIRTUAL_VIEWPORT_STEP_PX + VIRTUAL_ROW_BUFFER_PX),
       };
       setVirtualViewport(prev => (
-        Math.abs(prev.top - next.top) < 24 && Math.abs(prev.bottom - next.bottom) < 24 ? prev : next
+        prev.top === next.top && prev.bottom === next.bottom ? prev : next
       ));
     });
   }, []);
@@ -1400,6 +1457,7 @@ export default function GanttTimeline({
     if (Math.abs(fixed.scrollLeft - el.scrollLeft) <= 1) return;
 
     fixedScrollbarSyncing.current = true;
+    fixedScrollbarSyncedLeft.current = el.scrollLeft;
     fixed.scrollLeft = el.scrollLeft;
     window.requestAnimationFrame(() => {
       fixedScrollbarSyncing.current = false;
@@ -1415,6 +1473,15 @@ export default function GanttTimeline({
     }
 
     const rect = el.getBoundingClientRect();
+    if (!rect.width) {
+      setClassesOpen(false);
+      setNotificationsOpen(false);
+      setTooltip(null);
+      setClashTip(null);
+      setBadgeTip(null);
+      setExtensionTip(null);
+      setTutorConflictTip(null);
+    }
     const containerRect = ganttContainerRef.current?.getBoundingClientRect();
     const surfaceRect = timelineSurfaceRef.current?.getBoundingClientRect();
     const ganttBottom = Math.min(
@@ -1444,6 +1511,7 @@ export default function GanttTimeline({
     if (!el || !header) return;
 
     syncFixedScrollbarToTimeline();
+    updateVirtualViewport();
 
     if (headerScrollFrame.current !== null) {
       window.cancelAnimationFrame(headerScrollFrame.current);
@@ -1453,12 +1521,14 @@ export default function GanttTimeline({
       header.style.transform = `translate3d(-${el.scrollLeft}px, 0, 0)`;
       headerScrollFrame.current = null;
     });
-  }, [syncFixedScrollbarToTimeline]);
+  }, [syncFixedScrollbarToTimeline, updateVirtualViewport]);
 
   const handleFixedScrollbarScroll = useCallback(() => {
     const el = scrollRef.current;
     const fixed = fixedScrollbarRef.current;
     if (!el || !fixed || fixedScrollbarSyncing.current) return;
+    // An echoed scroll event must not interrupt navigation's smooth animation.
+    if (fixedScrollbarSyncedLeft.current !== null && Math.abs(fixed.scrollLeft - fixedScrollbarSyncedLeft.current) <= 1) return;
     el.scrollLeft = fixed.scrollLeft;
     handleTimelineScroll();
   }, [handleTimelineScroll]);
@@ -1476,7 +1546,12 @@ export default function GanttTimeline({
 
     if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
       if (event.cancelable) event.preventDefault();
-      window.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
+      if (el.closest('.training-plan-comparison')) {
+        el.scrollTop += event.deltaY;
+        handleTimelineScroll();
+      } else {
+        window.scrollBy({ top: event.deltaY, left: 0, behavior: 'auto' });
+      }
     }
   }, [handleTimelineScroll]);
 
@@ -1515,6 +1590,8 @@ export default function GanttTimeline({
       x: event.clientX,
       y: event.clientY,
       scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+      localScroll: Boolean(el.closest('.training-plan-comparison')),
       windowY: window.scrollY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1529,7 +1606,8 @@ export default function GanttTimeline({
 
     event.preventDefault();
     el.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
-    window.scrollTo({ top: pan.windowY - (event.clientY - pan.y), left: window.scrollX, behavior: 'auto' });
+    if (pan.localScroll) el.scrollTop = pan.scrollTop - (event.clientY - pan.y);
+    else window.scrollTo({ top: pan.windowY - (event.clientY - pan.y), left: window.scrollX, behavior: 'auto' });
     handleTimelineScroll();
   }, [handleTimelineScroll]);
 
@@ -1566,7 +1644,7 @@ export default function GanttTimeline({
   }, []);
 
   const toggleGroupCollapse = useCallback((groupId: string) => {
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
@@ -1584,17 +1662,44 @@ export default function GanttTimeline({
 
   const handleZoomChange = useCallback((z: ZoomLevel) => {
     onZoomChange(z);
-    setViewWindow(getDefaultViewWindow(z, groups, holidays));
+    setViewWindow(getDefaultViewWindow(z, groups, holidays, fitModules));
     setTooltip(null);
-  }, [onZoomChange, groups, holidays]);
+  }, [onZoomChange, groups, holidays, fitModules]);
+
+  // A comparison toolbar can change zoom without using this timeline's buttons.
+  const previousZoom = useRef(zoom);
+  useEffect(() => {
+    if (previousZoom.current === zoom) return;
+    previousZoom.current = zoom;
+    setViewWindow(getDefaultViewWindow(zoom, groups, holidays, fitModules));
+    setTooltip(null);
+  }, [zoom, groups, holidays, fitModules]);
 
   const effectiveViewWindow = useMemo(() => {
     const base = zoom === 'week' ? getNormalizedWeekWindow(viewWindow.start) : viewWindow;
+    if (fitModules && (zoom === 'week' || zoom === 'day')) return base;
     return { start: base.start, end: effectiveEnd > base.end ? effectiveEnd : base.end };
-  }, [viewWindow, zoom, effectiveEnd]);
+  }, [viewWindow, zoom, effectiveEnd, fitModules]);
 
-  const cols       = useMemo(() => generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end), [zoom, effectiveViewWindow]);
+  const cols = useMemo(() => {
+    const columns = generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end);
+    return referenceSource && (zoom === 'week' || zoom === 'day')
+      ? columns.filter(column => { const day = new Date(column.startDate).getUTCDay(); return day >= 1 && day <= 5; })
+      : columns;
+  }, [zoom, effectiveViewWindow, referenceSource]);
   const totalWidth = useMemo(() => getTotalWidth(cols), [cols]);
+
+  const initiallyPositionedRange = useRef('');
+  useEffect(() => {
+    const rangeKey = `${zoom}:${cols[0]?.startDate}:${cols[0]?.widthPx}`;
+    if (initiallyPositionedRange.current === rangeKey) return;
+    const position = getBlockPosition(todayKey, todayKey, cols);
+    const el = scrollRef.current;
+    if (!position || !el || !el.clientWidth) return;
+    el.scrollLeft = Math.max(0, position.left - Math.max(0, el.clientWidth - leftW) / 2);
+    initiallyPositionedRange.current = rangeKey;
+    handleTimelineScroll();
+  }, [cols, zoom, todayKey, leftW, handleTimelineScroll]);
 
   useEffect(() => {
     updateFixedScrollbarBounds();
@@ -1602,7 +1707,11 @@ export default function GanttTimeline({
     const el = scrollRef.current;
     let resizeObserver: ResizeObserver | undefined;
     if (el && typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(updateFixedScrollbarBounds);
+      resizeObserver = new ResizeObserver(() => {
+        updateFixedScrollbarBounds();
+        updateVirtualViewport();
+        handleTimelineScroll();
+      });
       resizeObserver.observe(el);
     }
 
@@ -1613,7 +1722,7 @@ export default function GanttTimeline({
       window.removeEventListener('resize', updateFixedScrollbarBounds);
       window.removeEventListener('scroll', updateFixedScrollbarBounds, true);
     };
-  }, [leftW, totalWidth, updateFixedScrollbarBounds]);
+  }, [leftW, totalWidth, updateFixedScrollbarBounds, updateVirtualViewport, handleTimelineScroll]);
 
   useEffect(() => {
     if (fixedScrollbarBounds.visible) {
@@ -1635,17 +1744,51 @@ export default function GanttTimeline({
   const nowPos  = getBlockPosition(nowDate, nowDate, cols);
   const isZoomedGrid = zoom === 'day';
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
-  const shouldVirtualizeRows = zoom === 'week' || zoom === 'day';
+
+  const navigateToNow = useCallback(() => {
+    const now = new Date();
+    const targetDate = toLocalIsoDate(now);
+    setTodayKey(targetDate);
+    setClassesOpen(false);
+    setNotificationsOpen(false);
+    setTooltip(null);
+    setPendingTimelineNavigation({ targetDate, centerDate: true });
+    if (!getBlockPosition(targetDate, targetDate, cols)) {
+      setViewWindow(previous => {
+        if (zoom === 'week') return getNormalizedWeekWindow(now);
+        if (zoom === 'day') return { start: shiftDateByDays(now, -14), end: shiftDateByDays(now, 28) };
+        return {
+          start: new Date(Math.min(previous.start.getTime(), new Date(now.getFullYear(), 0, 1).getTime())),
+          end: new Date(Math.max(previous.end.getTime(), new Date(now.getFullYear(), 11, 31).getTime())),
+        };
+      });
+    }
+  }, [cols, zoom]);
 
   useEffect(() => {
     if (!pendingTimelineNavigation) return;
 
+    if (pendingTimelineNavigation.centerDate) {
+      const frame = window.requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        const pos = getBlockPosition(pendingTimelineNavigation.targetDate, pendingTimelineNavigation.targetDate, cols);
+        if (el && pos) {
+          el.scrollTo({
+            left: Math.max(0, pos.left - Math.max(0, el.clientWidth - leftW) / 2),
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+          });
+        }
+        setPendingTimelineNavigation(current => current === pendingTimelineNavigation ? null : current);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+
     const { groupIdx, rowKey, targetDate } = pendingTimelineNavigation;
     const scrollToTarget = () => {
       const targetEl = rowKey
-        ? document.querySelector(`[data-row-target="${rowKey}"]`)
+        ? ganttContainerRef.current?.querySelector(`[data-row-target="${rowKey}"]`)
         : groupIdx !== undefined
-          ? document.querySelector(`[data-programme-target="${groupIdx}"]`)
+          ? ganttContainerRef.current?.querySelector(`[data-programme-target="${groupIdx}"]`)
           : null;
       targetEl?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
 
@@ -1671,7 +1814,7 @@ export default function GanttTimeline({
       window.cancelAnimationFrame(frame);
       window.clearTimeout(clear);
     };
-  }, [cols, pendingTimelineNavigation]);
+  }, [cols, leftW, pendingTimelineNavigation]);
 
   const isCurrentColumn = useCallback((startDate: string, endDate: string) => (
     startDate <= nowDate && endDate >= nowDate
@@ -1834,6 +1977,12 @@ export default function GanttTimeline({
       .filter(x => x.pos !== null),
   [holidays, cols]);
 
+  const holidayDayPositions = useMemo(() => holidays.flatMap(h => (h.sourceHolidays ?? []).map(day => ({
+    h, day,
+    pos: getBlockPosition(day.startDate > h.startDate ? day.startDate : h.startDate,
+      day.endDate < h.endDate ? day.endDate : h.endDate, cols),
+  }))).filter(item => item.pos !== null), [holidays, cols]);
+
   const getHolidayPlan = useMemo(() => {
     const cache = new Map<string, SessionPlan>();
     return (blk: ModuleBlock, activeHolidays: Holiday[] = []) => {
@@ -1849,15 +1998,23 @@ export default function GanttTimeline({
   const virtualProgrammeMetrics = useMemo(() => {
     let cursor = 0;
     return groups.map(grp => {
+      const pairedRows = new Map<string, number>();
+      if (mergedSources) grp.rows.forEach((row, index) => {
+        if (row.mergeMatch) pairedRows.set(`${row.mergeMatch.id}:${row.planSource}`, index);
+      });
       const isCollapsed = collapsedGroups.has(grp.id);
       const programmeTop = cursor;
       cursor += PROGRAMME_HEADER_H;
       const rows = grp.rows.map(row => {
         const selectedHolidayIds = new Set(row.holidayIds || []);
         const rowHolidays = holidays.filter(holiday => selectedHolidayIds.has(holiday.id));
-        const ganttRows = buildGanttRows(row.blks, rowHolidays);
+        const ganttRows = isCollapsed ? [] : buildGanttRows(row.blks, rowHolidays, row.referenceGroupNames);
         const totalModuleH = ganttRows.reduce((sum, ganttRow) => sum + rowHeight(ganttRow), 0);
-        const height = COHORT_H + (totalModuleH || MODULE_H);
+        const pairedRowIndex = mergedSources && row.mergeMatch
+          ? pairedRows.get(`${row.mergeMatch.id}:${row.planSource === 'LMS' ? 'Current' : 'LMS'}`) ?? -1
+          : -1;
+        const height = pairedRowIndex >= 0 ? (row.planSource === 'LMS' ? 0 : MERGED_MODULE_H * 2)
+          : 1 + cohortHeaderHeight + (totalModuleH || MODULE_H);
         const top = cursor;
         if (!isCollapsed) cursor += height;
         return {
@@ -1867,6 +2024,8 @@ export default function GanttTimeline({
           rowHolidays,
           ganttRows,
           totalModuleH,
+          pairedRowIndex,
+          leftLabels: buildLeftLabelEntries(ganttRows, customModules),
         };
       });
       if (!isCollapsed && grp.rows.length === 0) {
@@ -1878,7 +2037,7 @@ export default function GanttTimeline({
         rows,
       };
     });
-  }, [collapsedGroups, groups, holidays]);
+  }, [collapsedGroups, groups, holidays, cohortHeaderHeight, mergedSources, customModules]);
 
   const rowClashMarkers = useMemo(() => {
     const moduleName = (blk: ModuleBlock) => getBlockDisplayName(blk, customModules);
@@ -2102,9 +2261,10 @@ export default function GanttTimeline({
     const measureConnectors = () => {
       const surface = timelineSurfaceRef.current;
       if (!surface || crossRowTutorConflictPairs.length === 0) {
-        setCrossRowTutorConnectors([]);
+        setCrossRowTutorConnectors(previous => previous.length ? [] : previous);
         return;
       }
+      if (!surface.getClientRects().length) return;
 
       const surfaceRect = surface.getBoundingClientRect();
       const blockElements = new Map<string, HTMLElement>();
@@ -2157,7 +2317,7 @@ export default function GanttTimeline({
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', measureConnectors);
     };
-  }, [cols, crossRowTutorConflictPairs, leftW, timelineLayoutSignature, tutorConflictColorMap]);
+  }, [cols, crossRowTutorConflictPairs, leftW, timelineLayoutSignature, tutorConflictColorMap, virtualViewport]);
 
   // ── Header rows ───────────────────────────────────────────────────────
   const classSummaries = useMemo<ClassSummary[]>(() => {
@@ -2169,7 +2329,7 @@ export default function GanttTimeline({
         const rowHolidays = selectedHolidayIds.size ? holidays.filter(holiday => selectedHolidayIds.has(holiday.id)) : [];
         row.blks.forEach(blk => {
           const className = (blk.groupName || row.label || 'Unnamed class').trim();
-          const key = `${grp.id}|${row.id}|${className}`;
+          const key = `${grp.id}|${row.id}|${blk.source === 'LMS' ? blk.id : className}`;
           const moduleLabel = getBlockDisplayName(blk, customModules);
           const modulePlan = getHolidayPlan(blk, rowHolidays);
           const moduleSessionSummary = getCurrentSessionSummary(blk, customModules, catalogModules, rowHolidays, modulePlan);
@@ -2335,14 +2495,16 @@ export default function GanttTimeline({
   const navigateToExpiringModule = useCallback((item: ExpiringModuleSummary) => {
     setNotificationsOpen(false);
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
 
-    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    const pairedRowIndex = virtualProgrammeMetrics[item.groupIdx]?.rows[item.rowIdx]?.pairedRowIndex ?? -1;
+    const rowIdx = groups[item.groupIdx]?.rows[item.rowIdx]?.planSource === 'LMS' && pairedRowIndex >= 0 ? pairedRowIndex : item.rowIdx;
+    const rowKey = `${item.groupIdx}-${rowIdx}`;
     setFocusedTimelineTarget({ rowKey, blockId: item.blockId });
 
     const [year, month, day] = item.targetDate.split('-').map(Number);
@@ -2366,18 +2528,20 @@ export default function GanttTimeline({
 
     setPendingTimelineNavigation({ rowKey, targetDate: item.targetDate });
     window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === item.blockId ? null : prev), 2200);
-  }, [groups, zoom]);
+  }, [groups, zoom, virtualProgrammeMetrics]);
 
   const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
     setLastClassSelection({ classKey: item.key, moduleKey });
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
-    const rowKey = `${item.groupIdx}-${item.rowIdx}`;
+    const pairedRowIndex = virtualProgrammeMetrics[item.groupIdx]?.rows[item.rowIdx]?.pairedRowIndex ?? -1;
+    const rowIdx = groups[item.groupIdx]?.rows[item.rowIdx]?.planSource === 'LMS' && pairedRowIndex >= 0 ? pairedRowIndex : item.rowIdx;
+    const rowKey = `${item.groupIdx}-${rowIdx}`;
     setFocusedTimelineTarget({ rowKey, blockId });
 
     const targetDate = targetDateOverride || item.firstClashDate || item.targetDate;
@@ -2402,16 +2566,16 @@ export default function GanttTimeline({
     setPendingTimelineNavigation({ rowKey, targetDate: targetDate || item.targetDate || '' });
 
     window.setTimeout(() => setFocusedTimelineTarget(prev => prev?.rowKey === rowKey && prev.blockId === blockId ? null : prev), 2200);
-  }, [groups, zoom]);
+  }, [groups, zoom, virtualProgrammeMetrics]);
 
   const navigateToProgramme = useCallback((items: ClassSummary[]) => {
     const target = [...items].sort((a, b) => b.clashCount - a.clashCount || a.targetDate.localeCompare(b.targetDate))[0];
     if (!target) return;
     setClassesOpen(false);
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[target.groupIdx]?.id;
-      if (groupId) next.delete(groupId);
+      if (groupId) next.add(groupId);
       return next;
     });
     setFocusedTimelineTarget({ groupIdx: target.groupIdx });
@@ -2688,6 +2852,7 @@ export default function GanttTimeline({
     topPx: number,
     heightPx: number,
   ) => {
+    const barReferenceSource = blk.source ?? referenceSource;
     const rowTargetKey = `${groupIdx}-${rowIdx}`;
     const isFocusedModule = focusedTimelineTarget?.rowKey === rowTargetKey && focusedTimelineTarget.blockId === blk.id;
     const activeDateDrag = moduleDateDrag?.groupIdx === groupIdx && moduleDateDrag.rowIdx === rowIdx && moduleDateDrag.blockId === blk.id ? moduleDateDrag : null;
@@ -2700,7 +2865,7 @@ export default function GanttTimeline({
       : blk;
     const holidayPlan = getHolidayPlan(renderBlk, activeHolidays);
     const sessionSummary = getCurrentSessionSummary(renderBlk, customModules, catalogModules, activeHolidays, holidayPlan);
-    const displayEndDate = sessionSummary.effectiveEndDate || renderBlk.endDate;
+    const displayEndDate = barReferenceSource ? renderBlk.endDate : sessionSummary.effectiveEndDate || renderBlk.endDate;
     const pos = getBlockPosition(renderBlk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
@@ -2744,8 +2909,8 @@ export default function GanttTimeline({
         left: clampMarkerCenter(left, pos.width),
       };
     });
-    const personLabel = tutorLabel || coachLabel;
-    const personRole = tutorLabel ? 'Tutor' : coachLabel ? 'Coach' : '';
+    const personLabel = tutorLabel || (barReferenceSource ? 'Tutor not assigned' : coachLabel);
+    const personRole = tutorLabel || barReferenceSource ? 'Tutor' : coachLabel ? 'Coach' : '';
     const showPerson = pos.width > 78 && Boolean(personLabel);
     const expiryWarning = sessionSummary.isFinished ? null : getModuleExpiryWarning(displayEndDate, currentDate);
     const sessionLabel = sessionSummary.isFinished
@@ -2755,7 +2920,7 @@ export default function GanttTimeline({
       : sessionSummary.hasRealName
       ? `S${sessionSummary.number}: ${sessionSummary.name}`
       : `S${sessionSummary.number}: no saved name`;
-    const sessionProgressLabel = sessionSummary.total === 0
+    const sessionProgressLabel = barReferenceSource ? `Tutor: ${tutorLabel || 'Not assigned'}` : sessionSummary.total === 0
       ? 'No sessions'
       : sessionSummary.isFinished
       ? `${sessionSummary.total}/${sessionSummary.total} sessions complete`
@@ -2842,6 +3007,8 @@ export default function GanttTimeline({
       <div
         key={blk.id}
         data-timeline-block-id={blk.id}
+        data-source={barReferenceSource ?? (mergedSources ? 'Current' : undefined)}
+        title={barReferenceSource ? `LMS: ${mod.lbl}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${tutorLabel || 'Not assigned'}.${blk.startDateSource === 'created_at' ? ' From created_at (start_date missing).' : ''}${blk.lmsHolidayDelayWeeks ? ` Original LMS dates: ${blk.lmsOriginalStartDate} to ${blk.lmsOriginalEndDate}. Holiday delay: ${blk.lmsHolidayDelayWeeks} week${blk.lmsHolidayDelayWeeks === 1 ? '' : 's'}.` : ''}` : undefined}
         className={`absolute z-10 cursor-grab transition-all active:cursor-grabbing ${coverageItems.length > 0 ? 'overflow-visible' : 'overflow-hidden'}`}
         style={{
           left: pos.left,
@@ -2850,9 +3017,9 @@ export default function GanttTimeline({
           height: heightPx,
           background: mod.bg,
           borderRadius: 3,
-          outline: isFocusedModule ? '3px solid #DC2626' : hasTutorConflict ? '2px solid #F7A800' : 'none',
-          outlineOffset: isFocusedModule ? '2px' : hasTutorConflict ? '1px' : '0',
-          boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : undefined,
+          outline: isFocusedModule ? '3px solid #DC2626' : hasTutorConflict ? '2px solid #F7A800' : barReferenceSource === 'LMS' ? '2px solid #115e59' : 'none',
+          outlineOffset: isFocusedModule ? '2px' : hasTutorConflict || barReferenceSource === 'LMS' ? '1px' : '0',
+          boxShadow: isFocusedModule ? '0 0 0 4px rgba(220,38,38,0.16), 0 8px 18px rgba(15,23,42,0.22)' : barReferenceSource === 'LMS' ? '0 0 0 1px #FFFFFF' : undefined,
           display: 'flex',
           alignItems: 'center',
           opacity: activeDateDrag ? 0.9 : 1,
@@ -2862,7 +3029,7 @@ export default function GanttTimeline({
           if (moduleDateDrag) return;
           setClashTip(null);
           setExtensionTip(null);
-          setTooltip({ blk: renderBlk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, holidayPlan, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
+          setTooltip({ referenceSource: barReferenceSource, blk: renderBlk, cohortLabel, cohortColor, programmeName: grp.name, programmeColor: grp.color, holidays: overlaps, holidayPlan, x: e.clientX, y: e.clientY, customModules, tutorProfiles });
         }}
         onMouseLeave={() => {
           setTooltip(null);
@@ -2874,6 +3041,10 @@ export default function GanttTimeline({
             return;
           }
           if (!canManageCohorts) {
+            if ((barReferenceSource || mergedSources) && onViewMonthlyBreakdown) {
+              setTooltip(null);
+              onViewMonthlyBreakdown(groupIdx, rowIdx, blk.id);
+            }
             return;
           }
           setTooltip(null);
@@ -2931,15 +3102,15 @@ export default function GanttTimeline({
             className="relative z-[1] min-w-0 w-full select-none"
             style={{ padding: `${0} ${hasTutorConflict ? 18 : 8}px 0 ${coverageItems.length > 0 ? 24 : 8}px`, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}
           >
-            <div className="min-w-0 flex-1" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
+            <div className="min-w-0 flex-1" style={{ color: mod.tx, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: showStackedSessionProgress ? 2 : 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
             {/* Module name */}
             <span style={{ color: mod.tx, fontSize: '11px', fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
-              {mod.lbl}
+              {mergedSources ? getMergedCardLabel(mod.lbl, tutorLabel) : mod.lbl}
             </span>
 
             {/* Tutor/coach */}
-            {showPerson && (
+            {showPerson && !barReferenceSource && !mergedSources && (
               <span
                 title={`${personRole}: ${personLabel}`}
                 style={{ color: mod.tx, fontSize: '9px', fontWeight: 700, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 28, maxWidth: '46%', flexShrink: 1 }}
@@ -2949,9 +3120,11 @@ export default function GanttTimeline({
             )}
 
               </div>
-              {showStackedSessionProgress && (
+              {mergedSources && <MergedTutorDates tutor={barReferenceSource ? tutorLabel : tutorDisplayName(blk, tutorProfiles)}
+                startDate={renderBlk.startDate} endDate={displayEndDate} startDateSource={renderBlk.startDateSource} />}
+              {(barReferenceSource ? !mergedSources : showStackedSessionProgress) && (
                 <span
-                  title={`${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
+                  title={barReferenceSource ? sessionProgressLabel : `${sessionSummary.isFinished ? 'Finished module' : sessionSummary.total === 0 ? 'No sessions' : `Current session ${sessionSummary.number}/${sessionSummary.total}`} - ${sessionSummary.completed}/${sessionSummary.total} completed${sessionSummary.allAffected ? ` - ${sessionSummary.allAffected} holiday clash${sessionSummary.allAffected !== 1 ? 'es' : ''}` : ''}${expiryWarning ? ` - ${expiryWarning.title}` : ''} - ${sessionSummary.date}${coachLabel ? ` - Coach: ${coachLabel}` : ''}${tutorLabel ? ` - Tutor: ${tutorLabel}` : ''}`}
                   style={{
                     color: mod.tx,
                     fontSize: '9px',
@@ -2968,7 +3141,7 @@ export default function GanttTimeline({
             </div>
 
             {/* Dates */}
-            {pos.width > 180 && renderBlk.startDate && displayEndDate && (
+            {!mergedSources && pos.width > 180 && renderBlk.startDate && displayEndDate && (
               <span
                 style={{
                   color: mod.tx,
@@ -2985,7 +3158,7 @@ export default function GanttTimeline({
                   marginLeft: 2,
                 }}
               >
-                {formatDateShort(renderBlk.startDate)} → {formatDateShort(displayEndDate)}
+                {barReferenceSource ? renderBlk.startDate : formatDateShort(renderBlk.startDate)}{barReferenceSource && renderBlk.startDateSource === 'created_at' ? ' (From created_at)' : ''} → {barReferenceSource ? displayEndDate : formatDateShort(displayEndDate)}
               </span>
             )}
 
@@ -3096,7 +3269,17 @@ export default function GanttTimeline({
   };
 
   return (
-    <div ref={ganttContainerRef} className="relative">
+    <div ref={ganttContainerRef} className="tp-timeline-canvas relative">
+      <div className="tp-timeline-heading">
+        <div className="tp-timeline-heading-title">
+          <span className={`tp-section-icon ${referenceSource ? 'tp-timeline-icon-lms' : ''}`}><CalendarRange size={19} aria-hidden="true" /></span>
+          <div>
+            <h3>{mergedSources ? 'Combined programme timeline' : referenceSource ? 'LMS reference timeline' : 'Programme timeline'}</h3>
+            <p>{mergedSources ? 'One date axis for Current and LMS modules.' : referenceSource ? 'Module dates adjusted for Monday–Friday holiday weeks.' : 'Explore delivery dates across programmes and cohorts.'}</p>
+          </div>
+        </div>
+        <span className="tp-timeline-hint">{referenceSource ? <LockKeyhole size={14} aria-hidden="true" /> : <Hand size={14} aria-hidden="true" />}{referenceSource ? 'Read only' : 'Drag to explore'}</span>
+      </div>
       {/* Zoom controls */}
       <div
         className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
@@ -3110,32 +3293,14 @@ export default function GanttTimeline({
           boxShadow: '0 12px 24px -22px rgba(15,23,42,0.6)',
         }}
       >
-        <span className="shrink-0 text-xs font-extrabold uppercase text-slate-500" style={{ letterSpacing: '0.05em' }}>Zoom:</span>
-        <div className="flex h-8 shrink-0 items-center overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
-          {ZOOM_LEVELS.map(z => (
-            <button key={z} onClick={() => handleZoomChange(z)}
-              className="flex h-7 min-w-14 items-center justify-center rounded-md px-3 text-xs font-bold cursor-pointer transition-all whitespace-nowrap"
-              style={{ background: zoom === z ? '#1B2A4A' : 'transparent', color: zoom === z ? '#fff' : '#64748B', boxShadow: zoom === z ? '0 1px 2px rgba(15,23,42,0.16)' : 'none' }}>
-              {getZoomLabel(z)}
-            </button>
-          ))}
-        </div>
-        <div className="flex shrink-0 items-center gap-1 ml-1">
-          <button onClick={() => handleZoomChange(zoomOut(zoom))} disabled={zoom === 'year'}
-            className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
-            <i className="ri-zoom-out-line text-sm" />
-          </button>
-          <button onClick={() => handleZoomChange(zoomIn(zoom))} disabled={zoom === 'day'}
-            className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer disabled:opacity-30 transition-all">
-            <i className="ri-zoom-in-line text-sm" />
-          </button>
-        </div>
+        {showZoomControls && <TimelineZoomControls zoom={zoom} onZoomChange={handleZoomChange} />}
+        {toolbarControls}
 
         <div className="flex items-center gap-1.5 ml-auto shrink-0">
           {(zoom === 'week' || zoom === 'day') && (
             <button
               onClick={() => {
-                setViewWindow(getDefaultViewWindow(zoom, groups, holidays));
+                setViewWindow(getDefaultViewWindow(zoom, groups, holidays, fitModules));
               }}
               className="px-3 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
             >
@@ -3159,7 +3324,7 @@ export default function GanttTimeline({
                 title="Modules ending within 14 days"
                 aria-label="Modules ending within 14 days"
               >
-                <i className={expiringModuleSummaries.length ? 'ri-notification-3-fill text-sm' : 'ri-notification-3-line text-sm'} />
+                <Bell size={15} fill={expiringModuleSummaries.length ? 'currentColor' : 'none'} aria-hidden="true" />
                 {expiringModuleSummaries.length > 0 && (
                   <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-600 px-1 text-[9px] font-extrabold leading-none text-white shadow-sm">
                     {expiringModuleSummaries.length > 99 ? '99+' : expiringModuleSummaries.length}
@@ -3239,8 +3404,8 @@ export default function GanttTimeline({
                 }}
                 className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer transition-all text-xs font-bold"
               >
-                <i className="ri-group-line text-sm" />
-                Classes
+                {referenceSource ? <Layers3 size={15} aria-hidden="true" /> : <Users size={15} aria-hidden="true" />}
+                {referenceSource ? 'Modules' : 'Classes'}
                 <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] font-extrabold text-slate-500">{classSummaries.length}</span>
               </button>
               {classesOpen && typeof document !== 'undefined' && createPortal(
@@ -3256,9 +3421,9 @@ export default function GanttTimeline({
                 >
                   <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2">
                     <div>
-                      <p className="text-xs font-extrabold text-kbc-navy">Classes</p>
+                      <p className="text-xs font-extrabold text-kbc-navy">{referenceSource ? 'Modules' : 'Classes'}</p>
                       <p className="text-[11px] font-semibold text-gray-400">
-                        {filteredClassSummaries.length} of {classSummaries.length} class{classSummaries.length === 1 ? '' : 'es'}
+                        {filteredClassSummaries.length} of {classSummaries.length} {referenceSource ? 'modules' : `class${classSummaries.length === 1 ? '' : 'es'}`}
                       </p>
                     </div>
                     <button type="button" onClick={() => setClassesOpen(false)} className="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700">
@@ -3430,9 +3595,9 @@ export default function GanttTimeline({
               onClick={onExportExcel}
               disabled={exportExcelDisabled}
               className="px-3 h-8 flex items-center gap-1.5 justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 transition-all text-xs font-bold"
-              title="Export the full training plan table as Excel"
+              title={referenceSource ? 'Export the captured LMS records as Excel' : 'Export the full training plan table as Excel'}
             >
-              <i className="ri-file-excel-2-line text-sm" />
+              <FileSpreadsheet size={15} aria-hidden="true" />
               Export
             </button>
           )}
@@ -3447,8 +3612,9 @@ export default function GanttTimeline({
                     : { start: shiftDateByDays(prev.start, -days), end: shiftDateByDays(prev.end, -days) }
                 ));
               }}
+              aria-label="Previous date range"
               className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer transition-all">
-              <i className="ri-arrow-left-s-line text-sm" />
+              <ChevronLeft size={16} aria-hidden="true" />
             </button>
             <span className="text-xs text-slate-500 font-bold px-2 whitespace-nowrap">
               {effectiveViewWindow.start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
@@ -3464,8 +3630,9 @@ export default function GanttTimeline({
                     : { start: shiftDateByDays(prev.start, days), end: shiftDateByDays(prev.end, days) }
                 ));
               }}
+              aria-label="Next date range"
               className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 cursor-pointer transition-all">
-              <i className="ri-arrow-right-s-line text-sm" />
+              <ChevronRight size={16} aria-hidden="true" />
             </button>
             </>
           )}
@@ -3473,9 +3640,15 @@ export default function GanttTimeline({
 
         <div className="flex shrink-0 items-center gap-3 text-xs font-semibold text-slate-400">
           <span className="flex items-center gap-1"><span className="inline-block h-5 shrink-0 rounded-full" style={{ width: 5, backgroundImage: 'repeating-linear-gradient(to bottom, #F7A800 0 8px, transparent 8px 12px)', boxShadow: '0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(247,168,0,0.35)' }} />Now</span>
-          <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>
+          {referenceSource && <span className="flex items-center gap-1 text-violet-700"><span className="inline-block h-3 w-3 rounded-sm bg-violet-500" />Holiday week</span>}
+          {referenceSource && <span className="flex items-center gap-1 text-violet-800"><span className="inline-block h-4 w-1 rounded-sm bg-violet-700" />Holiday day</span>}
+          {referenceSource
+            ? <span className="rounded bg-teal-100 px-2 py-1 font-bold text-teal-900">LMS · Read only</span>
+            : <span className="flex items-center gap-1"><span className="inline-block shrink-0 rounded-sm" style={{ width: 12, height: 10, background: '#DBEAFE' }} />Workshop</span>}
         </div>
       </div>
+
+      {beforeTimeline && <div className="border-b border-gray-200 bg-slate-50/50 p-3">{beforeTimeline}</div>}
 
       <div
         className="sticky overflow-hidden"
@@ -3514,6 +3687,9 @@ export default function GanttTimeline({
           {holidayPositions.map(({ h, pos }) => pos && (
             <div
               key={`band-${h.id}`}
+              data-holiday-id={h.id}
+              data-holiday-start={h.startDate}
+              data-holiday-end={h.endDate}
               className="absolute bottom-0"
               style={{
                 top: 0,
@@ -3527,6 +3703,22 @@ export default function GanttTimeline({
               onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
               onMouseMove={e => scheduleFloatingTipMove('holiday', e.clientX, e.clientY)}
               onMouseLeave={() => setHolidayTip(null)}
+            />
+          ))}
+
+          {holidayDayPositions.map(({ h, day, pos }) => pos && (
+            <button type="button" key={`${h.id}:${day.id}`}
+              data-holiday-day={day.startDate}
+              aria-label={`Holiday: ${day.label}. ${holidayDateLabel(day.startDate)}${day.endDate !== day.startDate ? ` to ${holidayDateLabel(day.endDate)}` : ''}. Holiday week: ${holidayDateLabel(h.startDate)} to ${holidayDateLabel(h.endDate)}.`}
+              className="absolute bottom-0 border-0 bg-violet-700 p-0 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-900"
+              style={{ top: 0, left: leftW + pos.left, width: Math.max(pos.width, 4), opacity: 0.8, zIndex: 3 }}
+              onMouseEnter={e => setHolidayTip({ h, x: e.clientX, y: e.clientY })}
+              onMouseMove={e => scheduleFloatingTipMove('holiday', e.clientX, e.clientY)}
+              onMouseLeave={e => { if (document.activeElement !== e.currentTarget) setHolidayTip(null); }}
+              onFocus={e => { const bounds = e.currentTarget.getBoundingClientRect(); setHolidayTip({ h, x: bounds.left, y: Math.max(80, bounds.top) }); }}
+              onClick={e => { e.stopPropagation(); setHolidayTip({ h, x: e.clientX, y: e.clientY }); }}
+              onBlur={() => setHolidayTip(null)}
+              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setHolidayTip(null); e.currentTarget.blur(); } }}
             />
           ))}
 
@@ -3607,6 +3799,7 @@ export default function GanttTimeline({
             const isGroupDragOver = dragOver?.type === 'group' && dragOver.groupIdx === gi;
             const isFocusedProgramme = focusedTimelineTarget?.groupIdx === gi && !focusedTimelineTarget.rowKey;
             const programmeMetrics = virtualProgrammeMetrics[gi];
+            const programmeSources = Array.from(new Set(grp.rows.map(row => row.planSource ?? 'Current')));
             return (
             <div
               key={grp.id}
@@ -3621,12 +3814,13 @@ export default function GanttTimeline({
               }}
             >
               {/* ── Programme group header row ────────────────────────── */}
-              <div className="flex" style={{ borderBottom: 'none', borderTop: 'none' }}>
+              <div className={`flex ${mergedSources ? 'tp-merged-programme-heading' : ''}`} style={{ height: PROGRAMME_HEADER_H, borderBottom: 'none', borderTop: 'none' }}>
                 <div
                   className="shrink-0 px-3.5 py-2.5"
                   style={{
                     width: leftW,
-                    background: grp.color,
+                    background: mergedSources ? '#1B2A4A' : grp.color,
+                    ...(mergedSources ? { borderLeft: `4px solid ${grp.color}` } : {}),
                     position: 'sticky',
                     left: 0,
                     zIndex: 20,
@@ -3637,6 +3831,7 @@ export default function GanttTimeline({
                   onDragStart={canManageCohorts ? (e) => handleGroupDragStart(e, gi) : undefined}
                   onDragEnd={handleDragEnd}
                 >
+                  <div style={mergedSources ? { width: sourceLabelW - 32 } : undefined}>
                   <div className="flex items-center justify-between gap-1">
                     {canManageCohorts && (
                       <span
@@ -3650,13 +3845,14 @@ export default function GanttTimeline({
                     )}
                     <p
                       className="leading-tight text-white font-extrabold whitespace-nowrap overflow-hidden text-ellipsis flex-1"
-                      style={{ fontSize: '11px' }}
+                      style={{ fontSize: mergedSources ? '13px' : '11px' }}
                       title={grp.name.replace('\n', ' ')}
                     >
                       {grp.name.replace('\n', ' ')}
                     </p>
                     <button
                       onClick={() => toggleGroupCollapse(grp.id)}
+                      aria-expanded={!isCollapsed}
                       title={isCollapsed ? 'Expand programme' : 'Collapse programme'}
                       className="w-5 h-5 flex items-center justify-center rounded shrink-0 cursor-pointer transition-all hover:scale-110"
                       style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}
@@ -3664,13 +3860,13 @@ export default function GanttTimeline({
                       <i className={isCollapsed ? 'ri-arrow-down-s-line' : 'ri-arrow-up-s-line'} style={{ fontSize: '11px' }} />
                     </button>
                   </div>
-                  <div className="mt-2.5 flex items-center justify-between gap-2.5 min-w-0">
+                  <div className={`mt-2.5 flex items-center justify-between gap-2.5 min-w-0 ${mergedSources ? 'tp-merged-programme-sources' : ''}`}>
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.18)' }}>
                         <i className="ri-book-open-line text-white" style={{ fontSize: '11px' }} />
                       </div>
-                      <p className="text-white/50 min-w-0" style={{ fontSize: '8.5px' }}>
-                        {grp.rows.length} cohort{grp.rows.length !== 1 ? 's' : ''}
+                      <p className={mergedSources ? 'min-w-0 font-bold text-white' : 'text-white/50 min-w-0'} style={{ fontSize: mergedSources ? '10px' : '8.5px' }}>
+                        {mergedSources ? `${programmeSources.length ? programmeSources.join(' + ') : 'Current'} Training Plan${programmeSources.length > 1 ? 's' : ''}` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
                       </p>
                     </div>
                     {canManageCohorts && (
@@ -3704,10 +3900,11 @@ export default function GanttTimeline({
                       </div>
                     )}
                   </div>
+                  </div>
                 </div>
                 <div className="flex-1 relative" style={{ background: 'transparent' }}>
                   {nowPos && (
-                    <div className="absolute inset-y-0 pointer-events-none"
+                    <div data-timeline-now={todayKey} className="absolute inset-y-0 pointer-events-none"
                       style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }} />
                   )}
                 </div>
@@ -3715,27 +3912,28 @@ export default function GanttTimeline({
 
               {/* ── Cohort rows ──────────────────────────────────────── */}
               {!isCollapsed && grp.rows.map((row, ri) => {
-                const rowColor = row.color || grp.color;
-                const tunnelBg = `${grp.color}0D`;
-                const rowTargetKey = `${gi}-${ri}`;
                 const rowMetrics = programmeMetrics?.rows[ri];
+                const pairedRowIndex = rowMetrics?.pairedRowIndex ?? -1;
+                if (pairedRowIndex >= 0 && row.planSource === 'LMS') return null;
+                const rowColor = mergedSources && row.planSource ? (row.planSource === 'LMS' ? '#115E59' : '#1B2A4A') : row.color || grp.color;
+                const tunnelBg = `${rowColor}${mergedSources ? '04' : '0D'}`;
+                const rowTargetKey = `${gi}-${ri}`;
                 const rowHolidays = rowMetrics?.rowHolidays || [];
                 const ganttRows = rowMetrics?.ganttRows || [];
                 const totalModuleH = rowMetrics?.totalModuleH || 0;
-                const rowHeightPx = rowMetrics?.height || (COHORT_H + (totalModuleH || MODULE_H));
+                const rowHeightPx = rowMetrics?.height || (cohortHeaderHeight + (totalModuleH || MODULE_H));
                 const isCohortDragOver = dragOver?.type === 'cohort' && dragOver.groupIdx === gi && dragOver.rowIdx === ri;
                 const isFocusedCohort = focusedTimelineTarget?.rowKey === rowTargetKey && !focusedTimelineTarget.blockId;
                 const isFocusedRow = focusedTimelineTarget?.rowKey === rowTargetKey || pendingTimelineNavigation?.rowKey === rowTargetKey;
-                const isRowInVirtualWindow = !shouldVirtualizeRows
-                  ? true
-                  : rowMetrics
-                    ? rowMetrics.bottom >= virtualViewport.top && rowMetrics.top <= virtualViewport.bottom
-                    : true;
+                const isRowInVirtualWindow = rowMetrics
+                  ? rowMetrics.bottom >= virtualViewport.top && rowMetrics.top <= virtualViewport.bottom
+                  : true;
                 if (!isRowInVirtualWindow && !isFocusedRow && !isCohortDragOver) {
                   return (
                     <div
                       key={row.id}
                       data-row-target={rowTargetKey}
+                      data-virtual-placeholder="true"
                       style={{
                         height: rowHeightPx,
                         borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '18' : '0F'}`,
@@ -3744,6 +3942,80 @@ export default function GanttTimeline({
                     />
                   );
                 }
+                if (pairedRowIndex >= 0) {
+                  const pairedRow = grp.rows[pairedRowIndex];
+                  const sources = [
+                    { sourceRow: row, rowIndex: ri, color: '#1B2A4A' },
+                    { sourceRow: pairedRow, rowIndex: pairedRowIndex, color: '#115E59' },
+                  ];
+                  const positions = sources.flatMap(({ sourceRow }) => sourceRow.blks.flatMap(blk => {
+                    const endDate = blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate;
+                    const pos = getBlockPosition(blk.startDate, endDate, cols);
+                    return pos ? [pos] : [];
+                  }));
+                  const cardLeft = positions.length ? Math.min(...positions.map(pos => pos.left)) : 0;
+                  const cardRight = positions.length ? Math.max(...positions.map(pos => pos.left + pos.width)) : cardLeft + 220;
+                  const cardWidth = Math.min(totalWidth - cardLeft, Math.max(220, cardRight - cardLeft));
+                  const cardMeta = resolveBlockMeta(row.blks[0], customModules);
+                  return <div key={row.id} data-row-target={rowTargetKey} className="flex relative border-t border-slate-200" style={{ height: MERGED_MODULE_H * 2 }}>
+                    <div className="shrink-0 border-r border-slate-200 bg-white" style={{ width: leftW, position: 'sticky', left: 0, zIndex: 20 }}>
+                      {sources.map(({ sourceRow, color }) => <div key={sourceRow.id} className="flex border-b border-slate-100" style={{ height: MERGED_MODULE_H }}>
+                        <div className="flex min-w-0 shrink-0 flex-col justify-center gap-0.5 px-3" style={{ width: sourceLabelW, borderLeft: `3px solid ${color}` }}>
+                        <span className="text-[8px] font-extrabold" style={{ color }}>{sourceRow.planSource} Training Plan</span>
+                        <span className="truncate text-[10px] font-semibold text-slate-700" title={sourceRow.label}>{sourceRow.label}<span className="font-normal text-slate-500"> · {sourceRow.blks[0]?.groupName || sourceRow.mergeMatch?.moduleName}</span></span>
+                        </div>
+                      </div>)}
+                    </div>
+                    <div className="relative flex-1 overflow-hidden bg-teal-50/30">
+                      {zoom !== 'day' && <div className="pointer-events-none absolute inset-0 flex">
+                        {cols.map((column, index) => <div key={column.key} className="shrink-0 border-r" style={{ width: column.widthPx, ...getGridColumnStyle(column, index) }} />)}
+                      </div>}
+                      <div data-merged-module-card={row.mergeMatch!.id} aria-label={row.mergeMatch!.label}
+                        className="absolute z-10 overflow-hidden rounded-lg border border-slate-900/15 shadow-sm"
+                        style={{ left: cardLeft, width: cardWidth, top: 4, height: MERGED_MODULE_H * 2 - 8, background: cardMeta.bg }}>
+                        {sources.map(({ sourceRow, rowIndex }, index) => {
+                          const blk = sourceRow.blks[0];
+                          const name = sourceRow.mergeMatch!.moduleName;
+                          const cardLabel = getMergedCardLabel(name, blk?.tutor || sourceRow.mergeMatch?.tutorName || '');
+                          const sessionCount = blk?.source === 'LMS' ? blk.lmsSessionCount : blk?.sessions;
+                          const endDate = blk && (blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate);
+                          return <div key={sourceRow.id} data-plan-source={sourceRow.planSource}
+                            data-manual-match-id={row.mergeMatch!.method === 'manual' ? row.mergeMatch!.id : undefined}
+                            data-merge-match-id={row.mergeMatch!.id} data-merge-match-method={row.mergeMatch!.method}
+                            style={{ height: '50%' }}>
+                            <button type="button" disabled={!blk} data-timeline-block-id={blk?.id} data-source={sourceRow.planSource}
+                              data-start-date={blk?.startDate} data-end-date={endDate}
+                              aria-label={`View ${sourceRow.planSource} module details: ${name}`}
+                              title={blk?.source === 'LMS' ? `LMS: ${name}. Start: ${blk.startDate}. End: ${blk.endDate}. Source module ID: ${blk.moduleCatalogueId}. Tutor: ${blk.tutor || 'Not assigned'}.` : `Current: ${name}`}
+                              className="flex h-full w-full cursor-pointer flex-col justify-center gap-0.5 px-2.5 text-left transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white disabled:cursor-default"
+                              style={{ color: cardMeta.tx, backgroundColor: cardMeta.bg,
+                                backgroundImage: index ? 'linear-gradient(rgba(15,23,42,0.08), rgba(15,23,42,0.08))' : undefined,
+                                boxShadow: index ? 'inset 0 1px 0 rgba(255,255,255,0.65)' : undefined }}
+                              onClick={() => {
+                                if (!blk) return;
+                                setTooltip(null);
+                                onViewMonthlyBreakdown?.(gi, rowIndex, blk.id);
+                              }}>
+                              <span className="flex w-full items-center gap-2">
+                                <span className="tp-merged-card-title min-w-0 flex-1 truncate font-extrabold" title={cardLabel}>{cardLabel}</span>
+                                <span className="tp-merged-card-sessions shrink-0 rounded bg-white/20 px-1.5 py-0.5 font-bold tabular-nums"
+                                  title={sessionCount == null ? 'LMS session count is unavailable.' : 'Total planned sessions'}>
+                                  {sessionCount == null ? 'Sessions: N/A' : `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}`}
+                                </span>
+                              </span>
+                              <MergedTutorDates tutor={blk
+                                ? sourceRow.planSource === 'Current' ? tutorDisplayName(blk, tutorProfiles) : blk.tutor
+                                : sourceRow.mergeMatch?.tutorName || ''}
+                                startDate={blk?.startDate || sourceRow.mergeMatch?.startDate}
+                                endDate={endDate || sourceRow.mergeMatch?.endDate} startDateSource={blk?.startDateSource} />
+                            </button>
+                          </div>;
+                        })}
+                      </div>
+                      {nowPos && <div className="pointer-events-none absolute inset-y-0" style={{ left: nowPos.left, zIndex: NOW_LINE_Z_INDEX, ...NOW_LINE_STYLE }} />}
+                    </div>
+                  </div>;
+                }
                 const barPad = 5;
                 const moduleLayouts = (() => {
                   const layouts: { blk: ModuleBlock; top: number; height: number; centerY: number }[] = [];
@@ -3751,7 +4023,7 @@ export default function GanttTimeline({
                   for (const ganttRow of ganttRows) {
                     const h = rowHeight(ganttRow);
                     for (const { blk, lane } of ganttRow.lanes) {
-                      const laneH = ganttRow.laneCount === 2 ? LANE_H : MODULE_H;
+                      const laneH = LANE_H;
                       const laneTop = offsetY + lane * LANE_H;
                       const top = laneTop + barPad;
                       const height = laneH - barPad * 2;
@@ -3844,6 +4116,7 @@ export default function GanttTimeline({
                   return connectors;
                 })();
 
+                const leftLabels = rowMetrics?.leftLabels || [];
                 const cohortDropShadow = isCohortDragOver
                   ? dragOver.position === 'after'
                     ? `inset 0 -2px 0 ${rowColor}`
@@ -3854,8 +4127,15 @@ export default function GanttTimeline({
                   <div
                     key={row.id}
                     data-row-target={rowTargetKey}
+                    data-plan-source={row.planSource}
+                    data-manual-match-id={row.mergeMatch?.method === 'manual' ? row.mergeMatch.id : undefined}
+                    data-merge-match-id={row.mergeMatch?.id}
+                    data-merge-match-method={row.mergeMatch?.method}
+                    data-lms-cohort={referenceSource ? row.label : undefined}
+                    data-lms-cohort-date={referenceSource ? row.dateLbl : undefined}
                     style={{
                       borderTop: `1px solid ${rowColor}${emphasizeCohortBounds ? '2A' : '14'}`,
+                      ...(row.mergeMatch ? { outline: '1px solid #0F766E', outlineOffset: '-1px' } : {}),
                       ...(cohortDropShadow ? { boxShadow: cohortDropShadow } : {}),
                     }}
                     onDragOver={canManageCohorts ? (e) => handleDragOver(e, { type: 'cohort', groupIdx: gi, rowIdx: ri, position: getCohortDropPosition(e) }) : undefined}
@@ -3877,11 +4157,11 @@ export default function GanttTimeline({
                       >
                         {/* Coloured left accent */}
                         <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: rowColor }} />
-                        <div className="pl-2.5 flex items-center gap-2 min-w-0 flex-1"
+                        <div className={`pl-2.5 flex min-w-0 flex-1 ${row.planSource ? 'flex-col items-start gap-0.5' : 'items-center gap-2'}`}
                           draggable={canManageCohorts}
                           onDragStart={canManageCohorts ? (e) => handleCohortDragStart(e, gi, ri) : undefined}
                           onDragEnd={handleDragEnd}
-                          style={{ cursor: canManageCohorts ? 'grab' : undefined }}
+                          style={{ cursor: canManageCohorts ? 'grab' : undefined, ...(mergedSources ? { maxWidth: sourceLabelW - 24 } : {}) }}
                         >
                           {canManageCohorts && (
                             <span
@@ -3892,12 +4172,15 @@ export default function GanttTimeline({
                               <i className="ri-draggable" style={{ fontSize: '12px' }} />
                             </span>
                           )}
-                          <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }}>
-                            {row.label}
-                          </p>
-                          <span className="text-gray-400 whitespace-nowrap shrink-0" style={{ fontSize: '7.5px' }}>
-                            {row.dateLbl}
-                          </span>
+                          {row.planSource && <span className="font-extrabold leading-none" style={{ color: rowColor, fontSize: '8px' }}>{row.planSource} Training Plan{row.mergeMatch && ` · ${row.mergeMatch.method === 'manual' ? 'Manual' : 'Automatic'} match`}</span>}
+                          <div className="flex min-w-0 items-center gap-2">
+                            <p className="font-extrabold text-gray-800 truncate leading-tight" style={{ fontSize: '10px' }} title={row.label}>
+                              {row.label}
+                            </p>
+                            <span className="text-gray-400 whitespace-nowrap shrink-0" style={{ fontSize: '7.5px' }}>
+                              {row.dateLbl}
+                            </span>
+                          </div>
                         </div>
                         {canManageCohorts && (
                           <div className="flex items-center gap-1 ml-1 shrink-0">
@@ -3923,6 +4206,9 @@ export default function GanttTimeline({
                       </div>
                       {/* Timeline: cohort span indicator */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
+                        {row.mergeMatch && <p className="truncate px-3 py-2 text-xs font-bold text-teal-900" title={row.mergeMatch.label}>
+                          {row.mergeMatch.label}
+                        </p>}
                         {/* Now line */}
                         {nowPos && (
                           <div className="absolute inset-y-0 pointer-events-none"
@@ -3940,19 +4226,19 @@ export default function GanttTimeline({
                           <div className="pl-6 flex items-center h-full">
                             <span className="text-xs text-gray-300 italic">No modules</span>
                           </div>
-                        ) : buildLeftLabelEntries(ganttRows, customModules).map(entry => (
-                          <div key={entry.key} className="absolute left-0 right-0 px-2" style={{ top: entry.top, height: entry.height }}>
+                        ) : leftLabels.map(entry => (
+                          <div key={entry.key} className="absolute inset-x-0 px-2" style={{ top: entry.top, height: entry.height }}>
                             <div
-                              className="h-full rounded-lg border bg-white/96 shadow-[0_1px_2px_rgba(15,23,42,0.05)] flex items-center gap-1.5 pl-4 pr-2"
+                              className={`h-full rounded-lg border bg-white/96 shadow-[0_1px_2px_rgba(15,23,42,0.05)] flex gap-1.5 pl-4 pr-2 ${referenceSource ? 'items-start py-3' : 'items-center'}`}
                               style={{ borderColor: `${entry.color}24` }}
                             >
                               <span className="shrink-0 rounded-sm" style={{ width: 8, height: 8, background: entry.color }} />
                               <div className="min-w-0 flex-1">
-                                <p className="font-bold text-gray-800 truncate leading-tight" style={{ fontSize: '9px' }}>
+                                <p className={`font-bold text-gray-800 leading-tight ${referenceSource ? 'whitespace-normal break-words' : 'truncate'}`} style={{ fontSize: referenceSource ? '11px' : '9px' }} title={entry.label}>
                                   {entry.label}
                                 </p>
                                 {entry.meta && (
-                                  <p className="text-gray-400 leading-none" style={{ fontSize: '7.5px' }}>{entry.meta}</p>
+                                  <p className="mt-1 text-gray-400 leading-tight" style={{ fontSize: referenceSource ? '9px' : '7.5px' }}>{entry.meta}</p>
                                 )}
                               </div>
                               {canManageCohorts && onCloneGroup && entry.label && (
@@ -3972,6 +4258,9 @@ export default function GanttTimeline({
 
                       {/* Timeline area */}
                       <div className="flex-1 relative overflow-hidden" style={{ background: tunnelBg }}>
+                        {row.mergeMatch?.dateWarning && <p className="relative z-10 px-3 py-4 text-xs font-semibold text-amber-900">
+                          {row.mergeMatch.moduleName} · {row.mergeMatch.dateWarning}
+                        </p>}
 
                         {/* Column gridlines */}
                         {zoom !== 'day' && (
@@ -3989,6 +4278,13 @@ export default function GanttTimeline({
                             ))}
                           </div>
                         )}
+
+                        {/* Continue each group boundary across its module bars. */}
+                        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+                          {leftLabels.slice(1).map(entry => (
+                            <div key={entry.key} className="absolute left-0 right-0 border-t border-slate-200/70" style={{ top: entry.top }} />
+                          ))}
+                        </div>
 
                         {/* Module bars */}
                         {moduleLayouts.map(layout => renderBar(
@@ -4109,6 +4405,20 @@ export default function GanttTimeline({
         </div>
       </div>
 
+      <div className="pointer-events-none absolute inset-0 z-30 p-4 pb-7">
+        <div className="sticky ml-auto w-fit" style={{ top: 'calc(100dvh - 88px - env(safe-area-inset-bottom, 0px))' }}>
+          <button
+            type="button"
+            onClick={navigateToNow}
+            aria-label="Go to today's line"
+            title={`Go to today: ${formatDate(todayKey)}`}
+            className="pointer-events-auto flex h-12 w-12 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-kbc-navy text-white shadow-lg transition-colors hover:bg-kbc-navy-light focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kbc-amber"
+          >
+            <LocateFixed size={22} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
       {fixedScrollbarBounds.visible && (
         <div
           className="training-plan-gantt-fixed-scrollbar"
@@ -4217,24 +4527,35 @@ export default function GanttTimeline({
 
       {holidayTip && (
         <div
+          role="tooltip"
           className="fixed pointer-events-none z-50"
-          style={{ left: Math.min(holidayTip.x + 14, window.innerWidth - 220), top: Math.max(holidayTip.y - 8, 8) }}
+          style={{ left: Math.max(8, Math.min(holidayTip.x + 14, window.innerWidth - 320)), top: Math.max(8, Math.min(holidayTip.y - 8, window.innerHeight - 260)), maxWidth: 'calc(100vw - 16px)' }}
         >
-          <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden" style={{ minWidth: 180 }}>
+          <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden" style={{ width: 304, maxWidth: 'calc(100vw - 16px)' }}>
             <div className="px-3 py-2 flex items-center gap-2" style={{ background: holidayTip.h.color }}>
               <i className="ri-calendar-close-line text-sm" style={{ color: '#000' }} />
-              <span className="font-extrabold text-sm truncate" style={{ color: '#000' }}>{holidayTip.h.label}</span>
+              <span className="font-extrabold text-sm" style={{ color: '#000' }}>{holidayTip.h.label}</span>
             </div>
             <div className="px-3 py-2 flex flex-col gap-1">
               <div className="flex items-center gap-1.5">
                 <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: holidayTip.h.color }} />
                 <span className="text-xs" style={{ color: '#000' }}>{holidayTip.h.type}</span>
               </div>
-              <p className="text-xs font-semibold" style={{ color: '#000' }}>
+              {holidayTip.h.sourceHolidays?.length ? <>
+                <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-violet-700">Actual holiday{holidayTip.h.sourceHolidays.length > 1 ? 's' : ''}</p>
+                {holidayTip.h.sourceHolidays.map(day => <div key={day.id} className="text-xs text-gray-900">
+                  <p className="font-semibold">{day.label}</p>
+                  <p>{holidayDateLabel(day.startDate)}{day.endDate !== day.startDate && <> → {holidayDateLabel(day.endDate)}</>}</p>
+                </div>)}
+                <div className="mt-1 border-t border-violet-100 pt-2 text-xs text-violet-900">
+                  <p className="font-bold">Week off (Monday–Friday)</p>
+                  <p>{holidayDateLabel(holidayTip.h.startDate)} → {holidayDateLabel(holidayTip.h.endDate)}</p>
+                </div>
+              </> : <p className="text-xs font-semibold" style={{ color: '#000' }}>
                 {new Date(holidayTip.h.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                 {' → '}
                 {new Date(holidayTip.h.endDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </p>
+              </p>}
             </div>
           </div>
         </div>

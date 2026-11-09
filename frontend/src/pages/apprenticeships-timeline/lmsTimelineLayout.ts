@@ -1,0 +1,147 @@
+import { isComparisonDate, lmsCohortDisplayName, lmsGroupDisplayName, matchLmsPlans, type PresentedLmsRow } from './lmsComparison';
+import { createLmsModuleColourResolver } from './lmsModuleColours';
+import type { CohortRow, CustomModule, ModuleBlock, ProgrammeGroup } from './types';
+
+export function hasLmsDateRange(row: PresentedLmsRow): boolean {
+  return isComparisonDate(row.startDate) && isComparisonDate(row.endDate) && row.startDate! <= row.endDate!;
+}
+
+const groupNumber = (value?: string | null) => value?.match(/\b(?:g|group)\s*[-:]?\s*(\d+)\b/i)?.[1];
+export type MergeMode = 'manual' | 'automatic';
+
+// Plan names are supplied only by confirmed display matches. A title's explicit
+// group number remains usable even when no current plan placement is confirmed.
+export function lmsRecordGroup(record: PresentedLmsRow) {
+  const name = lmsGroupDisplayName(record);
+  if (name) return name;
+  const number = groupNumber(record.module);
+  return number ? `G${number}` : 'Group not provided';
+}
+
+// Arrange captured dates within LMS cohorts, newest first, with a separate lane
+// for each group just like the current Training Plan.
+export function buildLmsTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = []) {
+  const customModules: CustomModule[] = [];
+  const moduleColour = createLmsModuleColourResolver(currentProgrammes, currentModules);
+  const groups: ProgrammeGroup[] = [];
+  const validRecords = records.filter(hasLmsDateRange);
+  const blockFor = (record: PresentedLmsRow, placement: string, groupName: string): ModuleBlock => {
+    const mod = `lms-module:${record.sourceModuleId}`;
+    const module = customModules.find(item => item.id === mod)!;
+    return {
+      id: JSON.stringify(['lms', record.sourceModuleId, placement]), source: 'LMS',
+      moduleCatalogueId: record.sourceModuleId, mod, groupName, color: module.bg,
+      startDate: record.startDate!, endDate: record.endDate!, tutor: record.tutorName?.trim() || '',
+      sessions: 0, lmsSessionCount: record.sessionCount,
+      startDateSource: record.startDateSource,
+    };
+  };
+  validRecords.forEach(record => {
+    customModules.push({ id: `lms-module:${record.sourceModuleId}`, name: record.module?.trim() || 'Module not provided',
+      defaultSessions: 0, bg: moduleColour(record.module, record.planProgrammeId), tx: '#FFFFFF' });
+  });
+
+  for (const programmeId of new Set(records.map(record => record.planProgrammeId))) {
+    const programmeRecords = records.filter(record => record.planProgrammeId === programmeId);
+    const drawable = programmeRecords.filter(hasLmsDateRange);
+    if (!drawable.length) continue;
+    const current = currentProgrammes.find(programme => programme.id === programmeId);
+    const byCohort = new Map<string, PresentedLmsRow[]>();
+    for (const record of [...drawable].sort((left, right) => (
+      left.startDate!.localeCompare(right.startDate!)
+      || left.endDate!.localeCompare(right.endDate!)
+      || left.sourceModuleId.localeCompare(right.sourceModuleId)
+    ))) {
+      const name = lmsCohortDisplayName(record).replace(/\s+/g, ' ');
+      const key = record.cohortId?.trim() ? `id:${record.cohortId.trim()}`
+        : record.matchedPlanCohort ? `plan:${record.matchedPlanCohort.id}`
+          : name ? `name:${name.toLowerCase()}` : `missing:${record.startDate!.slice(0, 7)}`;
+      byCohort.set(key, [...(byCohort.get(key) ?? []), record]);
+    }
+    const rows: CohortRow[] = [];
+    for (const [cohort, entries] of byCohort) {
+      const cohortName = entries.map(lmsCohortDisplayName).find(Boolean) || 'Cohort not provided';
+      rows.push({
+        id: `lms-cohort:${programmeId}:${cohort}`, label: cohortName,
+        dateLbl: entries[0].startDate!, intake: '', quarter: '',
+        blks: entries.map(record => blockFor(record, cohort, lmsRecordGroup(record))),
+      });
+    }
+    rows.sort((left, right) => right.dateLbl.localeCompare(left.dateLbl) || left.id.localeCompare(right.id));
+    groups.push({ id: `lms-programme:${programmeId}`, name: current?.name || programmeRecords[0].programme || 'Programme not provided',
+      sub: 'LMS reference', color: '#115E59', rows });
+  }
+  return { groups, customModules, undrawableCount: records.length - validRecords.length };
+}
+
+function sortMergedRows(rows: CohortRow[]): CohortRow[] {
+  const units: { rows: CohortRow[]; start: string }[] = [];
+  for (const row of rows) {
+    const pair = row.mergeMatch && units.find(unit => unit.rows[0].mergeMatch?.id === row.mergeMatch!.id);
+    if (pair) { pair.rows.push(row); continue; }
+    units.push({ rows: [row], start: row.blks.map(block => block.startDate).filter(isComparisonDate).sort()[0]
+      || (isComparisonDate(row.dateLbl) ? row.dateLbl : '') });
+  }
+  // Sort pairs as a unit so their independent source dates cannot separate them.
+  return units.sort((left, right) => right.start.localeCompare(left.start)).flatMap(unit => unit.rows);
+}
+
+// Keep both sources inside one expandable programme on a shared date axis.
+// Source records and saved programme/cohort identities remain untouched.
+export function buildMergedTimelineLayout(records: PresentedLmsRow[], currentProgrammes: ProgrammeGroup[], currentModules: CustomModule[] = [], mode: MergeMode = 'manual') {
+  const lms = buildLmsTimelineLayout(records, currentProgrammes, currentModules);
+  const matching = matchLmsPlans(currentProgrammes, records, currentModules);
+  // Automatic matching fills the remaining placements; saved manual choices keep priority.
+  const pairs = matching.matched.filter(pair => mode === 'automatic' || pair.method === 'manual');
+  const pairedIds = new Set(pairs.map(pair => pair.lms.sourceModuleId));
+  const lmsBlocks = new Map(lms.groups.flatMap(group => group.rows.flatMap(row => row.blks))
+    .map(block => [block.moduleCatalogueId, block]));
+  const remaining = new Map(lms.groups.map(group => [group.id, { ...group, rows: group.rows
+    .map(row => ({ ...row, blks: row.blks.filter(block => !pairedIds.has(block.moduleCatalogueId!)) }))
+    .filter(row => row.blks.length) }]));
+  const groups: ProgrammeGroup[] = [];
+  for (const programme of currentProgrammes) {
+    const reference = remaining.get(`lms-programme:${programme.id}`);
+    const programmePairs = pairs.filter(pair => pair.current.programme.id === programme.id);
+    const pairRows = programmePairs.flatMap(({ current, lms: record, method }): CohortRow[] => {
+      const id = JSON.stringify([programme.id, current.cohort.id, current.block.id, record.sourceModuleId]);
+      const label = `${current.module} ↔ ${record.module || 'Module not provided'}`;
+      const lmsBlock = lmsBlocks.get(record.sourceModuleId);
+      const currentRow: CohortRow = { ...current.cohort, id: `merged-pair-current:${id}`, planSource: 'Current',
+        dateLbl: current.block.startDate, blks: [current.block],
+        mergeMatch: { id, method, label, moduleName: current.module } };
+      const lmsRow: CohortRow = {
+        id: `merged-pair-lms:${id}`, planSource: 'LMS', label: lmsCohortDisplayName(record) || 'Cohort not provided',
+        dateLbl: record.startDate || '', intake: '', quarter: '',
+        blks: lmsBlock ? [{ ...lmsBlock, color: current.block.color || lmsBlock.color }] : [],
+        mergeMatch: { id, method, label, moduleName: record.module || 'Module not provided', tutorName: record.tutorName?.trim() || '',
+          startDate: record.startDate, endDate: record.endDate,
+          ...(!lmsBlock ? { dateWarning: `Missing or invalid dates: ${record.startDate || 'Not provided'} to ${record.endDate || 'Not provided'}` } : {}) },
+      };
+      return [currentRow, lmsRow];
+    });
+    groups.push({
+      ...programme,
+      id: `merged-programme:${programme.id}`,
+      rows: sortMergedRows([
+        ...pairRows,
+        ...programme.rows.flatMap(row => {
+          const blks = row.blks.filter(block => !programmePairs.some(pair => pair.current.cohort.id === row.id && pair.current.block.id === block.id));
+          return blks.length || !row.blks.length
+            ? [{ ...row, id: `merged-current:${row.id}`, planSource: 'Current' as const, blks }] : [];
+        }),
+        ...(reference?.rows ?? []).map(row => ({ ...row, planSource: 'LMS' as const })),
+      ]),
+    });
+    if (reference) remaining.delete(reference.id);
+  }
+  for (const reference of remaining.values()) {
+    if (!reference.rows.length) continue;
+    groups.push({ ...reference, id: `merged:${reference.id}`,
+      rows: sortMergedRows(reference.rows.map(row => ({ ...row, planSource: 'LMS' as const }))) });
+  }
+  return { groups, customModules: [...currentModules, ...lms.customModules], undrawableCount: lms.undrawableCount,
+    manualPairCount: pairs.filter(pair => pair.method === 'manual').length,
+    automaticPairCount: pairs.filter(pair => pair.method === 'automatic').length,
+    reviewCount: matching.review.length };
+}

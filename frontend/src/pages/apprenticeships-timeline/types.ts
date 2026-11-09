@@ -38,8 +38,15 @@ export type WeekDayKey = 'saturday' | 'monday' | 'tuesday' | 'wednesday' | 'thur
 
 export interface ModuleBlock {
   id: string;
+  source?: 'LMS';
+  lmsSessionCount?: number | null;
+  lmsOriginalStartDate?: string;
+  lmsOriginalEndDate?: string;
+  lmsHolidayDelayWeeks?: number;
+  startDateSource?: 'created_at';
   trainingPlanId?: string;
   moduleCatalogueId?: string;
+  lmsSourceModuleId?: string;
   groupId?: string;
   mod: ModuleValue;
   groupName?: string;
@@ -60,6 +67,8 @@ export interface ModuleBlock {
 
 export interface CohortRow {
   id: string;
+  planSource?: 'Current' | 'LMS';
+  mergeMatch?: { id: string; method: 'manual' | 'automatic'; label: string; moduleName: string; tutorName?: string; startDate?: string | null; endDate?: string | null; dateWarning?: string };
   label: string;
   dateLbl: string;
   endDateLbl?: string;
@@ -69,6 +78,8 @@ export interface CohortRow {
   holidayIds?: string[];
   ksbProfileId?: string;
   blks: ModuleBlock[];
+  // Display-only group slots when arranging LMS dates against the current plan.
+  referenceGroupNames?: string[];
 }
 
 export interface ProgrammeGroup {
@@ -79,13 +90,17 @@ export interface ProgrammeGroup {
   rows: CohortRow[];
 }
 
-export interface Holiday {
+export interface HolidayDateRange {
   id: string;
   label: string;
   startDate: string;   // ISO
   endDate: string;     // ISO
+}
+
+export interface Holiday extends HolidayDateRange {
   type: string;
   color: string;
+  sourceHolidays?: HolidayDateRange[];
 }
 
 export type ZoomLevel = 'year' | 'intake' | 'month' | 'week' | 'day';

@@ -980,7 +980,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
   }
 
   return (
-    <div className="grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="tp-profiles-layout grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-w-0 rounded-xl border border-gray-200 bg-white">
         <div className="border-b border-gray-100 px-4 py-3">
           <div className="flex items-start justify-between gap-3">
@@ -1001,6 +1001,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
               value={tutorSearch}
               onChange={event => setTutorSearch(event.target.value)}
               placeholder="Search tutor..."
+              aria-label="Search tutors"
               className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400"
             />
             {tutorSearch && (
@@ -1024,6 +1025,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
                   setSelectedTutor(profileId);
                   setSessionBreakdownPage(1);
                 }}
+                aria-pressed={selected}
                 className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-all"
                 style={{ background: selected ? '#1B2A4A' : '#FFFFFF', color: selected ? '#FFFFFF' : '#1F2937' }}
               >

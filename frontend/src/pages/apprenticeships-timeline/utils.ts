@@ -130,6 +130,12 @@ function parseIsoLocal(dateStr: string): Date {
   return new Date(year || 1970, (month || 1) - 1, day || 1);
 }
 
+// Date-only coordinates must count calendar days, including across DST changes.
+function calendarDaysBetween(start: Date, end: Date): number {
+  const dayNumber = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+  return dayNumber(end) - dayNumber(start);
+}
+
 export function buildHolidayAdjustedSessionPlan(
   block: { startDate: string; endDate: string; sessions: number; days?: string[] },
   holidays: Holiday[] = [],
@@ -294,7 +300,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const e = new Date(y, 11, 31);
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
-      const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
+      const days = calendarDaysBetween(clampS, clampE) + 1;
       cols.push({ key: `y${y}`, label: String(y), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 1.15 });
     }
   } else if (zoom === 'intake') {
@@ -314,7 +320,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
         if (e < viewStart || s > viewEnd) return;
         const clampS = s < viewStart ? viewStart : s;
         const clampE = e > viewEnd   ? viewEnd   : e;
-        const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
+        const days = calendarDaysBetween(clampS, clampE) + 1;
         cols.push({ key: `i${y}-${ii}`, label: `${y} ${intake.label}`, subLabel: `${MONTH_NAMES[intake.months[0]]}–${MONTH_NAMES[lastM]}`, startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: days * 1.2 });
       });
     }
@@ -325,7 +331,7 @@ export function generateColumns(zoom: ZoomLevel, viewStart: Date, viewEnd: Date)
       const e = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
       const clampS = s < viewStart ? viewStart : s;
       const clampE = e > viewEnd   ? viewEnd   : e;
-      const days = Math.ceil((clampE.getTime() - clampS.getTime()) / 86400000) + 1;
+      const days = calendarDaysBetween(clampS, clampE) + 1;
       cols.push({ key: `m${cur.getFullYear()}-${cur.getMonth()}`, label: MONTH_NAMES[cur.getMonth()], subLabel: String(cur.getFullYear()), startDate: toLocalIsoDate(clampS), endDate: toLocalIsoDate(clampE), widthPx: Math.max(days * 2.8, 28) });
       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
     }
@@ -372,18 +378,17 @@ export function getBlockPosition(
   const blockStart = parseIsoLocal(startDate);
   const blockEnd   = parseIsoLocal(endDate);
 
-  if (blockEnd < viewStart || blockStart > viewEnd) return null;
+  if (blockEnd < blockStart || blockEnd < viewStart || blockStart > viewEnd) return null;
 
   const clampStart = blockStart < viewStart ? viewStart : blockStart;
   const clampEnd   = blockEnd   > viewEnd   ? viewEnd   : blockEnd;
 
-  const dayMs = 86400000;
   const boundaryOffset = (date: Date): number => {
     let offset = 0;
     for (const col of cols) {
       const colStart = parseIsoLocal(col.startDate);
       const colEndExclusive = addDays(parseIsoLocal(col.endDate), 1);
-      const colDays = Math.max(1, Math.round((colEndExclusive.getTime() - colStart.getTime()) / dayMs));
+      const colDays = Math.max(1, calendarDaysBetween(colStart, colEndExclusive));
       if (date >= colEndExclusive) {
         offset += col.widthPx;
         continue;
@@ -391,7 +396,7 @@ export function getBlockPosition(
       if (date <= colStart) {
         return offset;
       }
-      const daysIntoColumn = (date.getTime() - colStart.getTime()) / dayMs;
+      const daysIntoColumn = calendarDaysBetween(colStart, date);
       return offset + (daysIntoColumn / colDays) * col.widthPx;
     }
     return offset;
@@ -399,7 +404,7 @@ export function getBlockPosition(
 
   const left = boundaryOffset(clampStart);
   const right = boundaryOffset(addDays(clampEnd, 1));
-  const width = Math.max(right - left, 4);
+  const width = right - left;
 
   return { left, width };
 }
