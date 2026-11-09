@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from .db import DB, LMS
 from .models import CaseTicket
-from .rules import LONDON, email_key
+from .rules import LONDON, MISSED_LECTURES_SINCE, email_key
 from .services import close, event
 from .sources import rows, upsert_case
 
@@ -18,7 +18,8 @@ def adopt_lms_bookings(people):
     register finds its catch-up through ``curriculum.live_session_absences`` (the row for its occurrence and learner
     profile names the booked event), and the report linked to that event is the one checked."""
     from .lms_booking import kbc_report_id
-    pending = list(CaseTicket.objects.filter(source_type='attendance', archived=False)
+    pending = list(CaseTicket.objects.filter(source_type='attendance', archived=False,
+                                             overdue_since__gte=MISSED_LECTURES_SINCE)
                    .exclude(status='resolved').exclude(source_data__has_key='catchup_booking'))
     if not pending:
         return 0

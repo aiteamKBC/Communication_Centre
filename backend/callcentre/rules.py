@@ -14,7 +14,8 @@ BANK_HOLIDAYS = {
 # The system cutoff: missed lectures and reviews dated before it are too old to call about. No case is opened
 # for them and older open cases are left out of every list. Change the date here; the database is not touched.
 SYSTEM_CUTOFF = date(2026, 9, 1)
-MISSED_LECTURES_SINCE = SYSTEM_CUTOFF
+# Missed lectures start later: only lectures from 1 November 2026 are called about.
+MISSED_LECTURES_SINCE = date(2026, 11, 1)
 REVIEWS_SINCE = SYSTEM_CUTOFF
 # Cases made from the LMS reviews (lms_reviews.py): overdue, missed and unsigned reviews.
 REVIEW_CATEGORIES = {'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature'}

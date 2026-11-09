@@ -27,7 +27,7 @@ from django.db import transaction
 from .db import DB, LMS
 from .lms_booking import kbc_report_id
 from .models import CaseTicket
-from .rules import LMS_ABSENCE_REPORT, email_key
+from .rules import LMS_ABSENCE_REPORT, MISSED_LECTURES_SINCE, email_key
 from .services import close
 from .sources import rows
 
@@ -76,7 +76,7 @@ def legacy_report(case, emails, register_keys, reports):
 def apply(people):
     """Close the open missed-lecture cases of lectures the learner reported missing in the LMS. Returns how many."""
     cases = [case for case in CaseTicket.objects.filter(source_type='attendance', archived=False,
-                                                        overdue_since__isnull=False).exclude(status='resolved')
+                                                        overdue_since__gte=MISSED_LECTURES_SINCE).exclude(status='resolved')
              if not (case.source_data or {}).get('lms_absence_report')]
     if not cases:
         return 0
