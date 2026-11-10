@@ -130,7 +130,8 @@ class ScopeTests(SimpleTestCase):
             sql = str(CaseTicket.objects.open().query)
         self.assertIn('NOT "callcenter_case"."archived"', sql)
         self.assertIn('otj', sql)
-        self.assertIn('2026-09-01', sql)
+        self.assertIn('2026-09-01', sql)    # reviews
+        self.assertIn('2026-11-01', sql)    # missed lectures
         self.assertIn('resting@example.com', sql)
         self.assertIn('review_type', sql)   # old Aptem-table review cases are left out
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useCallCentre } from '../api';
 import type { CallRating } from '../api';
 import { RatingTag } from './CallReview';
+import CallSnapshot from './CallSnapshot';
 import TranscriptPanel from './TranscriptPanel';
 import { PageNumbers } from './MonthlyHistory';
 import { FAILED_RESULTS, ISSUE_LABELS, callResult, human, outcomeLabel, promiseLabel, shortDate, when } from './model';
@@ -13,7 +14,7 @@ type Feedback = {
   /** Zoom's result for the call, when it was not answered (e.g. cut off): the feedback stands, for a manager to check. */
   mismatch?: string;
 };
-type LoggedCase = {
+export type LoggedCase = {
   id: number; source_type: string; organisation: string; status: string; resolution_option: string; next_followup_at: string | null;
   outcome: { state: 'applied' | 'waiting' | 'dropped' | 'not_discussed'; outcome: string; option: string; note: string;
     callback_at: string | null; promised_at: string | null; reason?: string;
@@ -23,7 +24,7 @@ type LoggedCase = {
   bookings: { session_type: string; start: string; coach: string; join_url: string; link_warning: string }[];
   feedback: Feedback | null;
 };
-type LoggedCall = {
+export type LoggedCall = {
   id: number; pressed_at: string; agent: { id: number; name: string }; learner_name: string; learner_email: string; number: string;
   zoom: { state: string; id: number | null; started_at: string | null; duration_seconds: number | null; transcript: string; short?: boolean;
     /** Zoom says answered but a voicemail picked up: the specialist saved No answer, or the transcript is a greeting. */
@@ -51,7 +52,7 @@ const STATUS_NAMES: Record<string, string> = {
 
 const minutes = (seconds: number | null) => (seconds === null ? '' : `${Math.floor(seconds / 60)}m ${seconds % 60}s`);
 
-function ZoomResult({ zoom }: { zoom: LoggedCall['zoom'] }) {
+export function ZoomResult({ zoom }: { zoom: LoggedCall['zoom'] }) {
   if (zoom.state === 'waiting') return <span className="ed-history-result" title="Zoom reports a call about 10 minutes after it ends.">Waiting for Zoom</span>;
   if (zoom.state === 'not_matched') {
     return <span className="ed-history-result ed-log-bad" title="Zoom never reported a call for this Call press: dialled from the Zoom app, another number, or not made.">Zoom has no call</span>;
@@ -60,7 +61,7 @@ function ZoomResult({ zoom }: { zoom: LoggedCall['zoom'] }) {
     {callResult(zoom.state)}{zoom.state === 'answered' && zoom.duration_seconds !== null ? ` · ${minutes(zoom.duration_seconds)}` : ''}</span>;
 }
 
-function Outcome({ item }: { item: LoggedCase }) {
+export function Outcome({ item }: { item: Pick<LoggedCase, 'outcome'> }) {
   const outcome = item.outcome;
   if (!outcome) return <p className="ec-muted">No outcome saved for this case.</p>;
   const what = outcome.state === 'not_discussed' ? 'Not discussed'
@@ -78,7 +79,7 @@ function Outcome({ item }: { item: LoggedCase }) {
   );
 }
 
-function FeedbackBox({ feedback }: { feedback: Feedback }) {
+export function FeedbackBox({ feedback }: { feedback: Feedback }) {
   const state = {
     completed: `Review completed${feedback.next_due_at ? ` · next due ${shortDate(feedback.next_due_at)}` : ''}`,
     waiting: 'Saved, completes the review when Zoom reports the call answered',
@@ -99,6 +100,24 @@ function FeedbackBox({ feedback }: { feedback: Feedback }) {
   );
 }
 
+export function Bookings({ bookings }: { bookings: LoggedCase['bookings'] }) {
+  return (
+    <>
+      {bookings.map(booking => (
+        <div key={`${booking.start}-${booking.session_type}`} className="ed-log-box good">
+          <span>Booked · {SESSION_NAMES[booking.session_type] || human(booking.session_type)}</span>
+          <strong>{when(booking.start)}</strong>
+          <dl>
+            <dt>Coach</dt><dd>{booking.coach || 'Not recorded'}</dd>
+            {booking.join_url && <><dt>Join link</dt><dd><a href={booking.join_url} target="_blank" rel="noreferrer">{booking.join_url}</a></dd></>}
+            {booking.link_warning && <><dt>Link</dt><dd>{booking.link_warning}</dd></>}
+          </dl>
+        </div>
+      ))}
+    </>
+  );
+}
+
 function CaseImpact({ item, onOpen }: { item: LoggedCase; onOpen: (id: number) => void }) {
   return (
     <div className="ed-log-case">
@@ -111,17 +130,7 @@ function CaseImpact({ item, onOpen }: { item: LoggedCase; onOpen: (id: number) =
       </div>
       <Outcome item={item} />
       {item.closed && <p className="ed-log-closed">Closed by this call{item.closed.note && !item.feedback ? `: ${item.closed.note}` : ''}</p>}
-      {item.bookings.map(booking => (
-        <div key={`${booking.start}-${booking.session_type}`} className="ed-log-box good">
-          <span>Booked · {SESSION_NAMES[booking.session_type] || human(booking.session_type)}</span>
-          <strong>{when(booking.start)}</strong>
-          <dl>
-            <dt>Coach</dt><dd>{booking.coach || 'Not recorded'}</dd>
-            {booking.join_url && <><dt>Join link</dt><dd><a href={booking.join_url} target="_blank" rel="noreferrer">{booking.join_url}</a></dd></>}
-            {booking.link_warning && <><dt>Link</dt><dd>{booking.link_warning}</dd></>}
-          </dl>
-        </div>
-      ))}
+      <Bookings bookings={item.bookings} />
       {item.feedback && <FeedbackBox feedback={item.feedback} />}
     </div>
   );
@@ -129,7 +138,9 @@ function CaseImpact({ item, onOpen }: { item: LoggedCase; onOpen: (id: number) =
 
 /** One call as an accordion. Closed: when, who, what Zoom reported, the AI rating and the recording to play straight away.
  * Open: what the call did to each case (with the learner's case to open) and, per recording, the transcript and AI review. */
-function CallRow({ call, manager, onOpen }: { call: LoggedCall; manager: boolean; onOpen: (id: number) => void }) {
+function CallRow({ call, manager, onOpen, onReview }: {
+  call: LoggedCall; manager: boolean; onOpen: (id: number) => void; onReview: (callId: number) => void;
+}) {
   const [open, setOpen] = useState(false);
   const recordings = call.recordings || [];
   const rating = recordings.map(item => item.rating).find(Boolean) || null;
@@ -170,7 +181,12 @@ function CallRow({ call, manager, onOpen }: { call: LoggedCall; manager: boolean
               {call.zoom.voicemail === 'specialist' ? 'Voicemail: saved as No answer' : 'Voicemail: the transcript is a greeting'} · counted as not answered
             </span>}
             {call.wrap_up_seconds != null && <span>Form saved {minutes(call.wrap_up_seconds)} after the call</span>}
-            {call.cases[0] && <button type="button" className="primary" onClick={() => onOpen(call.cases[0].id)}>Open the learner’s case</button>}
+            {call.cases[0] && (manager ? (
+              <span className="ec-buttons">
+                <button type="button" className="primary" onClick={() => onReview(call.id)}>See the full case at this call</button>
+                <button type="button" onClick={() => onOpen(call.cases[0].id)}>Open the case now</button>
+              </span>
+            ) : <button type="button" className="primary" onClick={() => onOpen(call.cases[0].id)}>Open the learner’s case</button>)}
           </div>
           <div className="ed-log-cases">
             {call.cases.map(item => <CaseImpact key={item.id} item={item} onOpen={onOpen} />)}
@@ -200,6 +216,8 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
   const [days, setDays] = useState(7);
   const [page, setPage] = useState(1);
   const [who, setWho] = useState('');
+  // A manager's read-only review of one call's cases as they were then.
+  const [reviewing, setReviewing] = useState<number | null>(null);
   const params = new URLSearchParams({ days: String(days), page: String(page) });
   // A manager picks a specialist, unless the page is about one already.
   const chosen = manager && agentId === null ? who : agentId === null ? '' : String(agentId);
@@ -248,12 +266,13 @@ export default function CallLog({ agentId, manager = false, revision, onOpen }: 
       {data && (
         <section className="ec-card">
           <div className="cl-list">
-            {data.calls.map(call => <CallRow key={call.id} call={call} manager={manager} onOpen={onOpen} />)}
+            {data.calls.map(call => <CallRow key={call.id} call={call} manager={manager} onOpen={onOpen} onReview={setReviewing} />)}
             {!data.calls.length && <p>No calls in this period.</p>}
           </div>
           <PageNumbers page={page} total={Math.max(1, Math.ceil(data.total / data.page_size))} disabled={loading} onPage={setPage} />
         </section>
       )}
+      {manager && <CallSnapshot callId={reviewing} onClose={() => setReviewing(null)} />}
     </section>
   );
 }

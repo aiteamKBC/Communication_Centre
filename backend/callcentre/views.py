@@ -29,7 +29,7 @@ from .employer_desk import optional, specialists
 from .booking_email import (NO_BOOKING_EMAIL, employer_signature_missing, readiness as booking_email_readiness,
                             recipient_for, render as render_booking_email, send as send_booking_email, send_confirmation)
 from .booking_links import booking_links
-from .call_log import call_log
+from .call_log import call_log, call_snapshot
 from .db import DB
 from .zoom_phone import ZoomError
 from .evidence import satisfaction_evidence
@@ -961,6 +961,15 @@ def call_log_view(request):
     if manager:
         payload['agents'] = list(Agent.objects.filter(active=True).order_by('display_name').values('id', 'display_name'))
     return JsonResponse(payload)
+
+
+@authenticated
+@require_GET
+def call_snapshot_view(request, pk):
+    """One call and its cases as they were when the specialist called: a manager's review, read only."""
+    if not is_director(request.user):
+        raise PermissionDenied('Only a manager can review a call this way.')
+    return JsonResponse(call_snapshot(pk))
 
 
 @authenticated

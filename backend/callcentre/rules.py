@@ -14,7 +14,8 @@ BANK_HOLIDAYS = {
 # The system cutoff: missed lectures and reviews dated before it are too old to call about. No case is opened
 # for them and older open cases are left out of every list. Change the date here; the database is not touched.
 SYSTEM_CUTOFF = date(2026, 9, 1)
-MISSED_LECTURES_SINCE = SYSTEM_CUTOFF
+# Missed lectures start later: only lectures from 1 November 2026 are called about.
+MISSED_LECTURES_SINCE = date(2026, 11, 1)
 REVIEWS_SINCE = SYSTEM_CUTOFF
 # Cases made from the LMS reviews (lms_reviews.py): overdue, missed and unsigned reviews.
 REVIEW_CATEGORIES = {'pr', 'mcm', 'pr_missed', 'mcm_missed', 'signature'}
@@ -78,6 +79,8 @@ CAUGHT_UP_WITH_COACH = 'caught_up_with_coach'
 # A missed lecture the learner told their coach beforehand they would miss (authorised_absence.py): the case closes as
 # soon as it is made.
 AUTHORISED_ABSENCE = 'authorised_absence'
+# A missed lecture the learner reported in the LMS, pending or approved (reported_absence.py): closes the same way.
+LMS_ABSENCE_REPORT = 'lms_absence_report'
 PROMISES = {
     'attendance': {'catch_up_session': 7, OTHER_GROUP: None, ATTENDED_OTHER_GROUP: None, CAUGHT_UP_WITH_COACH: None},
     'pr': {'book_pr': None},
