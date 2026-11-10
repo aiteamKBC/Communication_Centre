@@ -138,6 +138,107 @@ test('Compare filters current modules by group and resets from the search icon w
   expect(api.errors).toEqual([]);
 });
 
+test('filter dates display day month year from left to right and still support the calendar', async ({ page }, testInfo) => {
+  const api = await setup(page);
+  api.items[1].startDate = '2026-02-02'; api.items[1].endDate = '2026-02-16';
+  api.items[2].startDate = '2026-03-01'; api.items[2].endDate = '2026-03-20';
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+  await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  const from = page.getByLabel('Current modules From', { exact: true });
+  const to = page.getByLabel('Current modules To', { exact: true });
+  const options = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
+  await expect(from).toHaveAttribute('placeholder', 'DD/MM/YYYY');
+  await from.fill('05/01/2026');
+  await to.fill('19/01/2026');
+  await expect(from).toHaveValue('05/01/2026');
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText('Group 1');
+  await page.evaluate(() => { document.documentElement.dir = 'rtl'; });
+  expect(await from.evaluate(node => getComputedStyle(node).direction)).toBe('ltr');
+  expect(await from.evaluate(node => getComputedStyle(node).textAlign)).toBe('left');
+  await page.evaluate(() => { document.documentElement.dir = 'ltr'; });
+  await from.fill('02022026');
+  await to.fill('16022026');
+  await expect(from).toHaveValue('02/02/2026');
+  await expect(to).toHaveValue('16/02/2026');
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText('Group 2');
+  await from.locator('..').locator('input[type="date"]').fill('2026-03-01');
+  await to.locator('..').locator('input[type="date"]').fill('2026-03-20');
+  await expect(from).toHaveValue('01/03/2026');
+  await expect(to).toHaveValue('20/03/2026');
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toContainText('Group 3');
+  await from.fill('31/02/2026');
+  await from.press('Tab');
+  await expect(page.getByRole('alert')).toHaveText('Enter a valid date as DD/MM/YYYY.');
+  await page.getByRole('button', { name: 'Clear Current modules dates', exact: true }).click();
+  await expect(from).toHaveValue('');
+  await expect(to).toHaveValue('');
+  await expect(options).toHaveCount(3);
+  await from.fill('10/11/2026');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(from).toHaveValue('10/11/2026');
+  await expect(from).toBeInViewport();
+  for (const field of [from, to]) {
+    expect(await field.evaluate((node: HTMLInputElement) => {
+      const style = getComputedStyle(node);
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.font = style.font;
+      return context.measureText(node.value || node.placeholder).width
+        + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) <= node.clientWidth;
+    })).toBe(true);
+  }
+  await page.screenshot({ path: testInfo.outputPath('day-month-year-mobile.png') });
+  expect(api.writes).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+for (const side of ['Current', 'LMS'] as const) {
+  test(`${side} comparison dates exclude modules extending outside the selected period`, async ({ page }, testInfo) => {
+    const api = await setup(page, false, [
+      { sourceModuleId: 'impact', module: 'Marketing Impact', startDate: '2026-10-06', endDate: '2027-02-09' },
+      { sourceModuleId: 'social', module: 'Social', startDate: '2026-10-07', endDate: '2027-01-06' },
+      { sourceModuleId: 'inside', module: 'Inside period', startDate: '2026-11-10', endDate: '2026-11-11' },
+      { sourceModuleId: 'early', module: 'Starts too early', startDate: '2026-11-09', endDate: '2026-11-10' },
+      { sourceModuleId: 'late', module: 'Ends too late', startDate: '2026-11-11', endDate: '2026-11-12' },
+    ]);
+    api.items[0].startDate = '2026-10-06'; api.items[0].endDate = '2027-02-09';
+    api.items[1].startDate = '2026-10-07'; api.items[1].endDate = '2027-01-06';
+    api.items[1].notes += '\n__lms_source_module_id:social';
+    api.items[2].startDate = '2026-11-10'; api.items[2].endDate = '2026-11-11';
+    await page.goto('/training-plan');
+    await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+    await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+    if (side === 'LMS') {
+      await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
+      await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+    }
+    const label = `${side} modules`;
+    const options = page.getByRole('listbox', { name: label, exact: true }).getByRole('option');
+    await page.getByLabel(`${label} From`, { exact: true }).fill('10/11/2026');
+    await page.getByLabel(`${label} To`, { exact: true }).fill('11/11/2026');
+    await expect(options).toHaveCount(1);
+    await expect(options.first()).toContainText(side === 'Current' ? 'Group 3' : 'Inside period');
+    await expect(page.getByRole('status', { name: `${label} date filter results` })).toContainText('within the selected dates');
+    await page.getByLabel(`${label} From`, { exact: true }).fill('');
+    await expect(options).toHaveCount(side === 'Current' ? 1 : 3);
+    await page.getByLabel(`${label} From`, { exact: true }).fill('10/11/2026');
+    await page.getByLabel(`${label} To`, { exact: true }).fill('');
+    await expect(options).toHaveCount(side === 'Current' ? 1 : 2);
+    await page.getByLabel(`${label} To`, { exact: true }).fill('11/11/2026');
+    await expect(options).toHaveCount(1);
+    await page.getByLabel(`${label} To`, { exact: true }).fill('10/11/2026');
+    await expect(options).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('comparison-dates-within-period.png') });
+    await page.getByRole('button', { name: `Clear ${label} dates`, exact: true }).click();
+    await expect(options).toHaveCount(side === 'Current' ? 3 : 6);
+    expect(api.writes).toEqual([]);
+    expect(api.errors).toEqual([]);
+  });
+}
+
 test('manual compare filters both sides by inclusive and open date ranges without changing the saved selection', async ({ page }, testInfo) => {
   const api = await setup(page, false, [
     { sourceModuleId: 'march', module: 'March module', startDate: '2026-03-01', endDate: '2026-03-20' },
@@ -150,7 +251,7 @@ test('manual compare filters both sides by inclusive and open date ranges withou
   const current = page.getByRole('button', { name: 'Current module to compare', exact: true });
   await current.click();
   const currentOptions = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
-  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-19');
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-05');
   await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-19');
   await expect(currentOptions).toHaveCount(1);
   await expect(currentOptions.first()).toContainText('Group 1');
@@ -166,7 +267,7 @@ test('manual compare filters both sides by inclusive and open date ranges withou
   const lms = page.getByRole('button', { name: 'LMS module to match', exact: true });
   await lms.click();
   const lmsOptions = page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option');
-  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-16');
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-02');
   await page.getByLabel('LMS modules To', { exact: true }).fill('2026-02-16');
   await expect(lmsOptions).toHaveCount(1);
   await expect(lmsOptions.first()).toContainText('LMS Marketing Workshop');
@@ -182,6 +283,94 @@ test('manual compare filters both sides by inclusive and open date ranges withou
   expect(api.writes).toEqual([]);
   expect(api.errors).toEqual([]);
 });
+
+test('date and search filters narrow the programme cohort group and tutor choices on both sides', async ({ page }) => {
+  const api = await setup(page, false, [
+    { sourceModuleId: 'march', module: 'Marketing March', cohortName: 'March LMS cohort', groupName: 'March group', tutorName: 'March tutor', startDate: '2026-03-02', endDate: '2026-03-16' },
+    { sourceModuleId: 'may', module: 'Marketing May', cohortName: 'May LMS cohort', groupName: 'May group', tutorName: 'May tutor', startDate: '2026-05-04', endDate: '2026-05-18' },
+  ]);
+  for (const [index, month] of [[1, 'February'], [2, 'March']] as const) {
+    const item = api.items[index];
+    item.cohortName = `${month} cohort`; item.cohortId = month.toLowerCase();
+    item.notes = item.notes.replace('__cohort_id:c1', `__cohort_id:${item.cohortId}`);
+    item.startDate = index === 1 ? '2026-02-02' : '2026-03-02';
+    item.endDate = index === 1 ? '2026-02-16' : '2026-03-16';
+  }
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+  await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-03-01');
+  await page.getByLabel('Current modules To', { exact: true }).fill('2026-03-31');
+  await page.getByLabel('Current modules Programme filter', { exact: true }).selectOption({ label: 'ME L4' });
+  await expect(page.getByLabel('Current modules Cohort filter').locator('option')).toHaveText(['All', 'March cohort']);
+  await page.getByLabel('Current modules Cohort filter').selectOption({ label: 'March cohort' });
+  await expect(page.getByLabel('Current modules Group filter').locator('option')).toHaveText(['All', 'Group 3']);
+  await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
+  await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-03-01');
+  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-03-31');
+  await page.getByLabel('LMS modules Programme filter').selectOption({ label: 'ME L4' });
+  await expect(page.getByLabel('LMS modules Cohort filter').locator('option')).toHaveText(['All', 'March LMS cohort']);
+  await page.getByLabel('LMS modules Cohort filter').selectOption({ label: 'March LMS cohort' });
+  await expect(page.getByLabel('LMS modules Group filter').locator('option')).toHaveText(['All', 'March group']);
+  await expect(page.getByLabel('LMS modules Tutor filter').locator('option')).toHaveText(['All', 'March tutor']);
+  await expect(page.getByLabel('LMS modules From', { exact: true })).not.toHaveAttribute('max');
+  await expect(page.getByLabel('LMS modules To', { exact: true })).not.toHaveAttribute('min');
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-05-01');
+  await expect(page.getByRole('alert')).toHaveText('From must be on or before To.');
+  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-05-31');
+  await expect(page.getByLabel('LMS modules Programme filter')).toHaveValue(JSON.stringify('me l4'));
+  await expect(page.getByLabel('LMS modules Cohort filter')).toHaveValue(JSON.stringify('march lms cohort'));
+  await expect(page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option')).toHaveCount(0);
+  await expect(page.getByRole('status', { name: 'LMS modules date filter results' })).toContainText('Showing 0 of 3 options');
+  await page.getByLabel('LMS modules Cohort filter').selectOption('');
+  await expect(page.getByLabel('LMS modules Cohort filter').locator('option')).toHaveText(['All', 'May LMS cohort']);
+  await expect(page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('status', { name: 'LMS modules date filter results' })).toContainText('Showing 1 of 3 options');
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Search LMS match modules', exact: true }).fill('May');
+  await page.getByLabel('LMS modules Programme filter').selectOption({ label: 'ME L4' });
+  await expect(page.getByLabel('LMS modules Cohort filter').locator('option')).toHaveText(['All', 'May LMS cohort']);
+  expect(api.writes).toEqual([]);
+});
+
+for (const side of ['Current', 'LMS'] as const) {
+  test(`${side} date changes keep every selected filter when only unrelated modules match the dates`, async ({ page }) => {
+    const api = await setup(page, false, [
+      { sourceModuleId: 'winter', module: 'Winter workshop', cohortName: 'Winter cohort', groupName: 'Winter group', tutorName: 'Winter tutor' },
+      { sourceModuleId: 'spring', module: 'Spring workshop', programme: 'Marketing Manager Level 6', cohortName: 'Spring cohort', groupName: 'Spring group', tutorName: 'Spring tutor', startDate: '2026-03-02', endDate: '2026-03-16' },
+    ]);
+    api.items[1].startDate = '2026-03-02'; api.items[1].endDate = '2026-03-16';
+    await page.goto('/training-plan');
+    await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+    await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
+    if (side === 'LMS') {
+      await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
+      await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
+    }
+    const label = `${side} modules`;
+    const selected = {
+      Programme: 'ME L4', Cohort: side === 'Current' ? 'January cohort' : 'Winter cohort',
+      Group: side === 'Current' ? 'Group 1' : 'Winter group', Tutor: side === 'Current' ? 'Plan Tutor' : 'Winter tutor',
+    };
+    for (const [field, value] of Object.entries(selected)) {
+      await page.getByLabel(`${label} ${field} filter`, { exact: true }).selectOption({ label: value });
+    }
+    const options = page.getByRole('listbox', { name: label, exact: true }).getByRole('option');
+    await expect(options).toHaveCount(1);
+    await page.getByLabel(`${label} From`, { exact: true }).fill('2026-03-01');
+    await page.getByLabel(`${label} To`, { exact: true }).fill('2026-03-31');
+    await expect(options).toHaveCount(0);
+    for (const [field, value] of Object.entries(selected)) {
+      await expect(page.getByLabel(`${label} ${field} filter`, { exact: true })).toHaveValue(JSON.stringify(value.toLowerCase()));
+    }
+    await page.getByRole('button', { name: `Clear ${label} dates`, exact: true }).click();
+    await expect(options).toHaveCount(1);
+    await expect(options.first()).toContainText(side === 'Current' ? 'Group 1' : 'Winter workshop');
+    expect(api.writes).toEqual([]);
+    expect(api.errors).toEqual([]);
+  });
+}
 
 test('LMS and Merge date filters hide out-of-range modules and retain matched pairs on boundary dates', async ({ page }) => {
   const api = await setup(page);
@@ -288,7 +477,7 @@ test('timeline Manual Merge browses all assignments and LMS programmes without s
   const originalItems = JSON.stringify(api.items);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/training-plan');
-  const trigger = page.getByRole('button', { name: 'Add manual match', exact: true });
+  const trigger = page.getByRole('button', { name: 'Manual Merge', exact: true });
   await expect(trigger).toBeVisible();
   for (const name of ['Session Schedule', 'Tutor Profiles', 'Coach Profiles']) {
     await page.getByRole('button', { name, exact: true }).click();
@@ -355,7 +544,7 @@ test('Merge separates manual matching from display filters and preserves saved m
   await expect(pairs).toHaveCount(4);
   await expect(pairs.nth(0)).toHaveAttribute('data-plan-source', 'Current');
   await expect(pairs.nth(1)).toHaveAttribute('data-plan-source', 'LMS');
-  await expect(pairs.nth(0)).toContainText('Automatic match');
+  await expect(pairs.nth(0).getByRole('button', { name: 'View Current module details: Marketing', exact: true })).toBeVisible();
   expect(await pairs.nth(0).evaluate(node => node.nextElementSibling?.getAttribute('data-merge-match-id')))
     .toBe(await pairs.nth(0).getAttribute('data-merge-match-id'));
   await filter.click();

@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { verifyTimelineUndo, type TimelineUndoEntry } from '../../src/pages/apprenticeships-timeline/timelineUndo';
 import { matchesDateRange } from '../../src/pages/apprenticeships-timeline/components/selectFilters';
+import { filterTimelineGroups } from '../../src/pages/apprenticeships-timeline/timelineDateFilter';
 import type { ProgrammeGroup } from '../../src/pages/apprenticeships-timeline/types';
 
 test.use({ channel: 'chrome', timezoneId: 'Africa/Cairo' });
@@ -39,6 +40,11 @@ async function setup(page: Page) {
         for (const item of items.filter(row => row.programmeId === payload.programmeId)) item.cohortDisplayOrder = payload.cohortIds.indexOf(item.cohortId);
       } else if (path.endsWith('/move/')) {
         const cohortId = path.split('/')[4];
+        // Mirror the backend's cohort membership validation, including hidden rows.
+        const expectedSource = [...new Set(items.filter(row => row.programmeId === payload.fromProgrammeId && row.cohortId !== cohortId).map(row => row.cohortId))].sort();
+        const expectedTarget = [...new Set([...items.filter(row => row.programmeId === payload.toProgrammeId).map(row => row.cohortId), cohortId])].sort();
+        expect([...payload.sourceCohortIds].sort()).toEqual(expectedSource);
+        expect([...payload.targetCohortIds].sort()).toEqual(expectedTarget);
         for (const item of items.filter(row => row.cohortId === cohortId && row.programmeId === payload.fromProgrammeId)) {
           item.programmeId = payload.toProgrammeId; item.program = payload.toProgrammeName;
           item.notes = item.notes.replace(/^__program_id:.*$/m, `__program_id:${payload.toProgrammeId}`);
@@ -74,8 +80,8 @@ async function expand(page: Page) {
   while (await buttons.count()) await buttons.first().click();
 }
 
-async function moveModule(page: Page) {
-  const bar = page.locator('[data-timeline-block-id="b101"]');
+async function moveModule(page: Page, blockId = 'b101') {
+  const bar = page.locator(`[data-timeline-block-id="${blockId}"]`);
   await bar.scrollIntoViewIfNeeded();
   // Month zoom is 2.8 pixels per calendar day. Dispatch pointer events to the
   // real drag handlers, including React's rerender between move and release.
@@ -181,6 +187,10 @@ test('timeline, monthly breakdown and schedule share date filtering and reset wi
   await expect(bars).toHaveCount(3);
   await page.getByLabel('Programme timeline From', { exact: true }).fill('2026-02-01');
   await expect(bars).toHaveCount(0);
+  await expect(page.locator('[data-programme-target]')).toHaveCount(0);
+  await expect(page.locator('[data-row-target]')).toHaveCount(0);
+  await expect(page.getByText('No modules match the selected dates.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Programme timeline filter results', exact: true })).toContainText('Showing 0 of 3 modules');
   await page.getByRole('button', { name: 'Clear Programme timeline dates', exact: true }).click();
   await expect(bars).toHaveCount(3);
   const monthly = page.getByRole('button', { name: /Monthly Module Breakdown/ });
@@ -196,6 +206,74 @@ test('timeline, monthly breakdown and schedule share date filtering and reset wi
   await page.getByLabel('Schedule module dates To', { exact: true }).fill('2026-01-19');
   await expect(page.getByText('3 modules overlapping the selected dates', { exact: true })).toBeVisible();
   expect(api.writes).toEqual([]);
+});
+
+test('filtering removes whole rows and programmes while move and Undo still target the original module', async ({ page }, testInfo) => {
+  const api = await setup(page);
+  api.items[1].startDate = '2026-02-02'; api.items[1].endDate = '2026-02-16';
+  api.items[2].startDate = '2026-03-02'; api.items[2].endDate = '2026-03-16';
+  await page.reload();
+  await page.getByLabel('Programme timeline From', { exact: true }).fill('2026-03-01');
+  await page.getByLabel('Programme timeline To', { exact: true }).fill('2026-03-31');
+  await expand(page);
+  await expect(page.locator('[data-programme-target]')).toHaveCount(1);
+  await expect(page.locator('[data-programme-target]').first()).toContainText('Programme Two');
+  await expect(page.locator('[data-row-target]')).toHaveCount(1);
+  await expect(page.locator('[data-timeline-block-id]')).toHaveCount(1);
+  await moveModule(page, 'b201');
+  const undo = page.getByRole('button', { name: 'Undo timeline move', exact: true });
+  await expect(undo).toBeEnabled();
+  expect(api.writes[0].path).toBe('/api/training-plan/sessions/201/');
+  expect(api.items[2].startDate).toBe('2026-03-09');
+  expect(api.items[0].startDate).toBe('2026-01-05');
+  await undo.click();
+  await expect(undo).toBeDisabled();
+  expect(api.items[2].startDate).toBe('2026-03-02');
+  expect(api.items[2].notes).toContain('__lms_source_module_id:lms-201');
+  await page.screenshot({ path: testInfo.outputPath('filtered-programme-and-module.png') });
+  await page.getByRole('button', { name: 'Clear Programme timeline dates', exact: true }).click();
+  await expect(page.locator('[data-programme-target]')).toHaveCount(2);
+});
+
+test('date filtering removes unrelated modules, empty cohorts and placeholders without changing stored groups', () => {
+  const groups = [{ id: 'p1', rows: [
+    { id: 'c1', referenceGroupNames: ['January group', 'March group'], blks: [
+      { id: 'jan', startDate: '2026-01-05', endDate: '2026-01-19', sessions: 3, days: ['monday'], groupName: 'January group' },
+      { id: 'march', startDate: '2026-03-02', endDate: '2026-03-16', sessions: 3, days: ['monday'], groupName: 'March group', lmsSourceModuleId: 'saved-link' },
+    ] },
+    { id: 'empty', blks: [] },
+  ] }, { id: 'p2', rows: [{ id: 'unrelated', blks: [{ id: 'old', startDate: '2025-01-01', endDate: '2025-01-01', sessions: 1 }] }] }] as ProgrammeGroup[];
+  const original = JSON.stringify(groups);
+  const filtered = filterTimelineGroups(groups, [], { from: '2026-03-01', to: '2026-03-31' });
+  expect(filtered.map(group => group.id)).toEqual(['p1']);
+  expect(filtered[0].rows.map(row => row.id)).toEqual(['c1']);
+  expect(filtered[0].rows[0].blks.map(block => block.id)).toEqual(['march']);
+  expect(filtered[0].rows[0].referenceGroupNames).toBeUndefined();
+  expect(filtered[0].rows[0].blks[0].lmsSourceModuleId).toBe('saved-link');
+  expect(JSON.stringify(groups)).toBe(original);
+  expect(filterTimelineGroups(groups, [], { from: '', to: '' })).toBe(groups);
+});
+
+test('moving a filtered cohort preserves hidden cohorts and Undo restores its original programme', async ({ page }) => {
+  const api = await setup(page);
+  for (const item of api.items.slice(1)) { item.startDate = '2026-03-02'; item.endDate = '2026-03-16'; }
+  await page.reload();
+  await page.getByLabel('Programme timeline From', { exact: true }).fill('2026-03-01');
+  await page.getByLabel('Programme timeline To', { exact: true }).fill('2026-03-31');
+  await expand(page);
+  await expect(page.locator('[data-row-target]')).toHaveCount(2);
+  await drag(page, page.locator('[data-row-target="0-0"] [draggable="true"]').first(), page.locator('[data-row-target="1-0"]'));
+  const undo = page.getByRole('button', { name: 'Undo timeline move', exact: true });
+  await expect(undo).toBeEnabled();
+  expect(api.items[0].programmeId).toBe('p1');
+  expect(api.items[1].programmeId).toBe('p2');
+  expect(api.writes[0].path).toBe('/api/training-plan/cohorts/c2/move/');
+  expect(api.writes[0].payload.sourceCohortIds).toEqual(['c1']);
+  await undo.click();
+  await expect(undo).toBeDisabled();
+  expect(api.items[1].programmeId).toBe('p1');
+  expect(api.items[1].cohortDisplayOrder).toBe(1);
+  expect(api.items[0].cohortDisplayOrder).toBe(0);
 });
 
 test('Undo verifies affected fields while allowing unrelated notes and blocks to change', () => {

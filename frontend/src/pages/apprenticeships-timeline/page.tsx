@@ -5684,7 +5684,8 @@ export default function ApprenticeshipTimeline() {
     const visibleTargetCohortIds = targetGroup.rows
       .map(row => resolveCohortOrderId(row, targetGroup?.id || '', latestItems))
       .filter(Boolean);
-    const sourceCohortIds = completeProgrammeCohortOrder(visibleSourceCohortIds, sourceGroup?.id || '', latestItems);
+    const sourceCohortIds = completeProgrammeCohortOrder(visibleSourceCohortIds, sourceGroup?.id || '', latestItems)
+      .filter(id => sourceGroup?.id === targetGroup?.id || id !== movedCohortId);
     let targetCohortIds = completeProgrammeCohortOrder(visibleTargetCohortIds, targetGroup?.id || '', latestItems);
     if (sourceGroup?.id !== targetGroup?.id && movedCohortId && !targetCohortIds.includes(movedCohortId)) {
       const desiredMovedIndex = Math.max(0, visibleTargetCohortIds.indexOf(movedCohortId));

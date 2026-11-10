@@ -4,7 +4,8 @@ import { Bell, CalendarRange, ChevronLeft, ChevronRight, FileSpreadsheet, Hand, 
 import TimelineZoomControls from './TimelineZoomControls';
 import MergedTutorDates from './MergedTutorDates';
 import DateRangeFilter from './DateRangeFilter';
-import { emptyDateRange, matchesDateRange } from './selectFilters';
+import { emptyDateRange, matchesDateRange, type DateRangeValue } from './selectFilters';
+import { filterTimelineGroups } from '../timelineDateFilter';
 import { tutorDisplayName } from '../tutorProfiles';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
@@ -1132,16 +1133,41 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
   );
 }
 
-export default function GanttTimeline({
+export default function GanttTimeline(props: Props) {
+  const [dates, setDates] = useState(emptyDateRange);
+  const groups = useMemo(() => filterTimelineGroups(props.groups, props.holidays, dates, props.referenceSource),
+    [props.groups, props.holidays, dates, props.referenceSource]);
+  // Display positions change when rows are filtered. All mutations must still
+  // address the original programme/cohort, including those hidden by the filter.
+  const originalGroupIndex = (gi: number) => props.groups.findIndex(group => group.id === groups[gi]?.id);
+  const originalRowIndex = (gi: number, ri: number) => props.groups[originalGroupIndex(gi)]?.rows.findIndex(row => row.id === groups[gi]?.rows[ri]?.id) ?? -1;
+  const originalRow = (gi: number, ri: number): [number, number] => [originalGroupIndex(gi), originalRowIndex(gi, ri)];
+  return <TimelineCanvas {...props} groups={groups} dates={dates} onDatesChange={setDates}
+    dateResultCounts={{ shown: groups.reduce((sum, group) => sum + group.rows.reduce((count, row) => count + row.blks.length, 0), 0),
+      total: props.groups.reduce((sum, group) => sum + group.rows.reduce((count, row) => count + row.blks.length, 0), 0) }}
+    beforeTimeline={<>{props.beforeTimeline}{(dates.from || dates.to) && !groups.length && <p role="status" className="px-4 py-8 text-center text-sm text-gray-500">No modules match the selected dates.</p>}</>}
+    onAddRow={gi => props.onAddRow(originalGroupIndex(gi))}
+    onEditRow={(gi, ri, ...args) => props.onEditRow(...originalRow(gi, ri), ...args)}
+    onDeleteRow={(gi, ri) => props.onDeleteRow(...originalRow(gi, ri))}
+    onViewMonthlyBreakdown={props.onViewMonthlyBreakdown && ((gi, ri, blockId) => props.onViewMonthlyBreakdown!(...originalRow(gi, ri), blockId))}
+    onCloneRow={props.onCloneRow && ((gi, ri) => props.onCloneRow!(...originalRow(gi, ri)))}
+    onCloneGroup={props.onCloneGroup && ((gi, ri, name) => props.onCloneGroup!(...originalRow(gi, ri), name))}
+    onCloneModule={props.onCloneModule && ((gi, ri, blockId) => props.onCloneModule!(...originalRow(gi, ri), blockId))}
+    onMoveModuleDates={props.onMoveModuleDates && ((gi, ri, ...args) => props.onMoveModuleDates!(...originalRow(gi, ri), ...args))}
+    onReorderRow={props.onReorderRow && ((fromGi, fromRi, toGi, toRi, position) => props.onReorderRow!(...originalRow(fromGi, fromRi), ...originalRow(toGi, toRi), position))}
+    onReorderGroup={props.onReorderGroup && ((fromGi, toGi) => props.onReorderGroup!(originalGroupIndex(fromGi), originalGroupIndex(toGi)))} />;
+}
+
+function TimelineCanvas({
   groups, holidays, customModules = EMPTY_CUSTOM_MODULES, catalogModules = EMPTY_CATALOG_MODULES, tutorProfiles = EMPTY_TUTOR_PROFILES, zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
   referenceSource, mergedSources = false, showZoomControls = true, toolbarControls, beforeTimeline,
-}: Props) {
+  dates, onDatesChange: setDates, dateResultCounts,
+}: Props & { dates: DateRangeValue; onDatesChange: (value: DateRangeValue) => void; dateResultCounts: { shown: number; total: number } }) {
   const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
   const fitModules = Boolean(referenceSource) || mergedSources;
-  const [dates, setDates] = useState(emptyDateRange);
   const dateFilterLabel = referenceSource ? 'LMS timeline' : mergedSources ? 'Merged timeline' : 'Programme timeline';
   const cohortHeaderHeight = COHORT_H;
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
@@ -1771,7 +1797,7 @@ export default function GanttTimeline({
         };
       });
     }
-  }, [cols, zoom]);
+  }, [cols, zoom, setDates]);
 
   useEffect(() => {
     if (!pendingTimelineNavigation) return;
@@ -3297,6 +3323,9 @@ export default function GanttTimeline({
       {/* Zoom controls */}
       <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2">
         <DateRangeFilter label={dateFilterLabel} value={dates} onChange={value => { setDates(value); setTooltip(null); }} className="max-w-lg" />
+        {(dates.from || dates.to) && <p role="status" aria-label={`${dateFilterLabel} filter results`} className="mt-2 text-xs font-semibold text-teal-800">
+          Showing {dateResultCounts.shown} of {dateResultCounts.total} modules overlapping the selected dates.
+        </p>}
       </div>
       <div
         className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
