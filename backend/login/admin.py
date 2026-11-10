@@ -48,6 +48,18 @@ class AccessCheckboxForm(forms.ModelForm):
 	access_marketing = forms.BooleanField(required=False, label='Marketing access')
 	access_support = forms.BooleanField(required=False, label='Support access')
 	access_coach = forms.BooleanField(required=False, label='Coach access')
+	access_call_centre_agent = forms.BooleanField(
+		required=False, label='Call centre agent',
+		help_text='Engagement Centre specialist with their own calling desk. Saving creates (or switches off) their specialist profile.',
+	)
+	access_call_centre_director = forms.BooleanField(
+		required=False, label='Call centre director',
+		help_text='Engagement Centre director: the director overview, every desk, allocation and settings. Super admins are always directors.',
+	)
+	access_call_centre_coach = forms.BooleanField(
+		required=False, label='Engagement Centre coach',
+		help_text='The coaches’ screen of the Engagement Centre, nothing else: the coach sees only the learners whose coach email in the LMS is this account’s email.',
+	)
 
 	class Meta:
 		model = get_user_model()
@@ -100,6 +112,9 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 					'access_marketing',
 					'access_support',
 					'access_coach',
+					'access_call_centre_agent',
+					'access_call_centre_director',
+					'access_call_centre_coach',
 					'groups',
 					'user_permissions',
 				)
@@ -205,6 +220,11 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 
 		final_groups = list(Group.objects.using(self.using).filter(id__in=final_group_ids))
 		user.groups.set(final_groups)
+
+		from callcentre.access import sync_agent
+		warning = sync_agent(user, bool(form.cleaned_data.get('access_call_centre_agent')))
+		if warning:
+			admin_messages.warning(request, warning)
 
 
 @admin.register(Group)

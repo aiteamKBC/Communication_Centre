@@ -1,6 +1,6 @@
 """Zoom Phone ingestion. Credentials stay on the server; reports read stored calls."""
 
-import os
+import logging
 import time
 import uuid
 from datetime import timedelta
@@ -14,37 +14,35 @@ from django.utils.dateparse import parse_datetime
 from .db import DB
 from .models import ZoomPhoneCall, ZoomSyncState
 
-
-ACCOUNT_LABELS = {'student': 'Student', 'office': 'Office (Accountant)'}
-CREDENTIAL_FIELDS = ('ACCOUNT_ID', 'CLIENT_ID', 'CLIENT_SECRET')
+logger = logging.getLogger(__name__)
 
 
 class ZoomError(Exception):
     """Public error text must never contain Zoom responses or credentials."""
 
 
+# The Zoom accounts are the ones a director added on the Zoom Phone page (zoom_accounts).
+def account_labels():
+    from .zoom_accounts import labels
+    return labels()
+
+
 def account_config(key):
-    if key not in ACCOUNT_LABELS:
-        raise ZoomError('Unknown Zoom account.')
-    return {field.lower(): os.getenv(f'ZOOM_{key.upper()}_{field}', '').strip()
-            for field in CREDENTIAL_FIELDS}
+    """The account's credentials; empty values for an account that is not in the list."""
+    from .zoom_accounts import config
+    return config(key)
 
 
 def missing_credentials(key):
-    config = account_config(key)
-    return [f'ZOOM_{key.upper()}_{field}' for field in CREDENTIAL_FIELDS
-            if not config[field.lower()]]
+    from .zoom_accounts import missing
+    return missing(key)
 
 
 def validate_config(key):
     missing = missing_credentials(key)
     if missing:
-        raise ZoomError('Missing settings: ' + ', '.join(missing))
-    config = account_config(key)
-    other = 'office' if key == 'student' else 'student'
-    if config['account_id'] == account_config(other)['account_id']:
-        raise ZoomError('Student and Office (Accountant) must use different Zoom account IDs.')
-    return config
+        raise ZoomError('Zoom account setup is incomplete: ' + ', '.join(missing) + '.')
+    return account_config(key)
 
 
 class ZoomClient:
@@ -117,14 +115,17 @@ class ZoomClient:
         self.expires_at = time.monotonic() + lifetime
 
     def api_get(self, path, **kwargs):
+        return self.api('GET', path, **kwargs)
+
+    def api(self, method, path, **kwargs):
         if time.monotonic() >= self.expires_at:
             self._authorize()
-        response = self._request('GET', 'https://api.zoom.us/v2' + path,
+        response = self._request(method, 'https://api.zoom.us/v2' + path,
                                  headers={'Authorization': f'Bearer {self.token}'}, **kwargs)
         if response.status_code == 401:
             response.close()
             self._authorize()
-            response = self._request('GET', 'https://api.zoom.us/v2' + path,
+            response = self._request(method, 'https://api.zoom.us/v2' + path,
                                      headers={'Authorization': f'Bearer {self.token}'}, **kwargs)
         return response
 
@@ -172,6 +173,19 @@ def mapped_result(value):
     }.get(value, 'other')
 
 
+# An outgoing call "answered" for less than this was cut off: voicemail or a network message picking up, or the learner
+# hanging up at once (Zoom cannot tell which). It counts as not answered.
+CUT_OFF_SECONDS = 10
+CUT_OFF = 'cut_off'
+
+
+def call_result(direction, row, duration):
+    result = mapped_result(row.get('call_result') or row.get('result'))
+    if direction == 'outbound' and result == 'answered' and duration is not None and duration < CUT_OFF_SECONDS:
+        return CUT_OFF
+    return result
+
+
 def call_datetime(value, required=False):
     if value in (None, '') and not required:
         return None
@@ -214,7 +228,7 @@ def normalize_call(key, account_id, row):
         'ended_at': call_datetime(row.get('end_time')),
         'duration_seconds': duration,
         'raw_result': str(row.get('call_result') or row.get('result') or ''),
-        'result': mapped_result(row.get('call_result') or row.get('result')),
+        'result': call_result(row['direction'], row, duration),
     }
     for field in ZoomPhoneCall._meta.fields:
         if field.max_length and len(str(values.get(field.name, ''))) > field.max_length:
@@ -260,7 +274,12 @@ def sync_account(key, start=None, end=None, include_recordings=False):
                     raise ZoomError('Sync lease expired; another sync has taken over.')
                 unique = {}
                 for row in rows:
-                    values = normalize_call(key, config['account_id'], row)
+                    try:
+                        values = normalize_call(key, config['account_id'], row)
+                    except ZoomError as exc:
+                        # Skipped and logged, so one malformed record cannot stop every later sync.
+                        logger.warning('Skipped a Zoom %s call record: %s', key, exc)
+                        continue
                     unique[values['history_id']] = ZoomPhoneCall(**values)
                 fields = [field.name for field in ZoomPhoneCall._meta.fields
                           if field.name not in ('id', 'zoom_account_id', 'history_id')]

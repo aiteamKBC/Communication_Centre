@@ -24,7 +24,23 @@ class DashboardCard(models.Model):
 	soft_color = models.CharField(max_length=32, default='#eef2ff')
 	text_color = models.CharField(max_length=32, default='#2E4482')
 	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_AVAILABLE)
+	# Who can see the card. 'admins_and_call_centre', 'call_centre' and 'coaches' carry the Engagement Centre
+	# access rules (call-centre agents/directors and Engagement Centre coaches) from login.access.
+	AUDIENCE_EVERYONE = 'everyone'
+	AUDIENCE_ADMINS = 'admins'
+	AUDIENCE_ADMINS_AND_CALL_CENTRE = 'admins_and_call_centre'
+	AUDIENCE_CALL_CENTRE = 'call_centre'
+	AUDIENCE_COACHES = 'coaches'
+	AUDIENCE_CHOICES = (
+		(AUDIENCE_EVERYONE, 'Everyone'),
+		(AUDIENCE_ADMINS, 'Admins only'),
+		(AUDIENCE_ADMINS_AND_CALL_CENTRE, 'Admins and call-centre staff'),
+		(AUDIENCE_CALL_CENTRE, 'Call-centre agents and directors only'),
+		(AUDIENCE_COACHES, 'Engagement Centre coaches only'),
+	)
+
 	is_admin_only = models.BooleanField(default=False)
+	audience = models.CharField(max_length=32, choices=AUDIENCE_CHOICES, default=AUDIENCE_EVERYONE)
 	sort_order = models.PositiveIntegerField(default=0)
 	created_at = models.DateTimeField(auto_now_add=True)
 	updated_at = models.DateTimeField(auto_now=True)

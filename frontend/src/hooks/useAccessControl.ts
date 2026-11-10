@@ -11,6 +11,16 @@ export interface AccessControl {
   canManageEvents: boolean;
   canManageCohorts: boolean;
   canManageNews: boolean;
+  /** Engagement Centre specialist ("Call centre agent" in Django admin). */
+  callCentreAgent: boolean;
+  /** Engagement Centre director ("Call centre director" in Django admin, or a super admin). */
+  callCentreDirector: boolean;
+  /** Either Engagement Centre role: opens the Engagement Centre and every dashboard. */
+  callCentreAccess: boolean;
+  /** The coaches' screen of the Engagement Centre ("Engagement Centre coach" in Django admin); nothing else. */
+  callCentreCoach: boolean;
+  /** Django super admin. */
+  superuser: boolean;
   sessionInvalid: boolean;
 }
 
@@ -23,6 +33,11 @@ const EMPTY_ACCESS: AccessControl = {
   canManageEvents: false,
   canManageCohorts: false,
   canManageNews: false,
+  callCentreAgent: false,
+  callCentreDirector: false,
+  callCentreAccess: false,
+  callCentreCoach: false,
+  superuser: false,
   sessionInvalid: false,
 };
 
@@ -65,6 +80,12 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
     ? (adminAccess || groups.has('Marketing Access'))
     : (adminAccess || Boolean(access.marketingAccess));
 
+  const superuser = Boolean(user.isSuperuser) || Boolean(access.isSuperuser);
+  const callCentreAgent = hasGroupData ? groups.has('Call Centre Agent Access') : Boolean(access.callCentreAgentAccess);
+  const callCentreDirector = superuser
+    || (hasGroupData ? groups.has('Call Centre Director Access') : Boolean(access.callCentreDirectorAccess));
+  const callCentreCoach = hasGroupData ? groups.has('Call Centre Coach Access') : Boolean(access.callCentreCoachAccess);
+
   return {
     adminAccess,
     eventManagerAccess,
@@ -74,6 +95,11 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
     canManageEvents: eventManagerAccess,
     canManageCohorts: operationsAccess,
     canManageNews: adminAccess || itAccess || marketingAccess,
+    callCentreAgent,
+    callCentreDirector,
+    callCentreAccess: callCentreAgent || callCentreDirector,
+    callCentreCoach,
+    superuser,
     sessionInvalid: false,
   };
 }

@@ -1,34 +1,40 @@
 """Call-centre endpoints that replace legacy dashboard pieces not ported as-is.
 
 * ``agents`` / ``agent_detail`` replace the Django admin page managers used to set up
-  Zoom agent profiles (``is_staff`` only, as in the legacy admin).
+  Zoom agent profiles (directors only: Django super admins). Profiles are created by ticking
+  Call centre access in Django admin (``access.sync_agent``).
 * ``activity_log`` replaces ``GET /api/coaches/all``: instead of shipping every
   ``coaches_data`` column to the browser, it returns one month of outbound Zoom calls
   already matched to learners and coaches.
 * ``learners`` / ``call_requests`` back the director's "Request a call": a manager picks a
   learner from the merged LMS + Aptem directory and adds a call to the calling register.
 """
+from collections import Counter
 import json
 import uuid
 from datetime import date, datetime, time, timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import Count, Max, Min
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Q
 from django.db.models.functions import TruncMonth
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import email_settings, mailer
+from . import attendance_edits, booking_links, delegation, do_not_call, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
+from .access import is_director
+from .allocation import owners
+from .call_scope import system_calls
 from .db import DB
-from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, ZoomPhoneCall
+from .errors import FieldError
+from .models import Agent, Allocation, AllocationHistory, CallMatch, CaseTicket, CoachBookingPage, ZoomPhoneCall
 from .rules import LONDON, email_key, normalize_phone
-from .services import Conflict, event
-from .sources import learner_directory, rows
+from .services import Conflict, event, expire_claims
+from .sources import coach_email, learner_directory, rows
 from .views import authenticated, body
 
 AGENT_FIELDS = ('display_name', 'zoom_email', 'zoom_user_id', 'zoom_phone_number', 'zoom_account',
@@ -36,7 +42,7 @@ AGENT_FIELDS = ('display_name', 'zoom_email', 'zoom_user_id', 'zoom_phone_number
 
 
 def require_manager(user):
-    if not user.is_staff:
+    if not is_director(user):
         raise PermissionDenied('Only managers can manage agents.')
 
 
@@ -46,15 +52,42 @@ def agent_json(agent):
 
 
 def save_agent(agent, data):
+    account = str(data.get('zoom_account') or '') if 'zoom_account' in data else agent.zoom_account
+    if account != agent.zoom_account and account not in zoom_accounts.labels():
+        raise FieldError('zoom_account', 'Choose one of the Zoom accounts on this page.')
     for field in AGENT_FIELDS:
         if field in data:
             setattr(agent, field, data[field])
+    check_line(agent)
     try:
         agent.full_clean()
     except ValidationError as exc:
-        raise ValueError('; '.join(f'{field}: {" ".join(errors)}' for field, errors in exc.message_dict.items())) from None
+        field, errors = next(iter(exc.message_dict.items()))
+        raise FieldError(field, ' '.join(errors)) from None
     agent.save()
+    if not agent.active:
+        # Switched off: the cases they were working on go back to the list now, not after the 30-minute claim.
+        expire_claims(timezone.now(), agent)
     return agent
+
+
+def check_line(agent):
+    """One listed number per specialist: a number from the Phone numbers list, held by no other active specialist,
+    whose Zoom account the specialist then takes, so a call on it can only be theirs."""
+    number = normalize_phone(agent.zoom_phone_number) if agent.zoom_phone_number else ''
+    agent.zoom_phone_number = number
+    if not number:
+        return
+    lines = {line['number']: line for line in zoom_lines.stored()}
+    if lines and number not in lines:
+        raise FieldError('zoom_phone_number', 'Choose the phone number from the Phone numbers list (add it there first).')
+    if lines.get(number, {}).get('account'):
+        agent.zoom_account = lines[number]['account']
+    if agent.active:
+        other = Agent.objects.filter(active=True, zoom_phone_number=number).exclude(pk=agent.pk).first()
+        if other:
+            raise FieldError('zoom_phone_number', f'{other.display_name} already has {number}: one number per specialist. '
+                             'Give them another number first.')
 
 
 @authenticated
@@ -139,7 +172,7 @@ def activity_log(request):
     month = request.GET.get('month') or today.strftime('%Y-%m')
     start = date.fromisoformat(month + '-01')
     end = date(start.year + start.month // 12, start.month % 12 + 1, 1)
-    outbound = ZoomPhoneCall.objects.filter(direction='outbound')
+    outbound = system_calls().filter(direction='outbound')
     # order_by() clears the model's default ordering, which would otherwise defeat DISTINCT.
     months = sorted({value.astimezone(LONDON).strftime('%Y-%m') for value in outbound.order_by().annotate(
         month=TruncMonth('started_at', tzinfo=LONDON)).values_list('month', flat=True).distinct()} | {today.strftime('%Y-%m')},
@@ -256,8 +289,199 @@ def settings_view(request):
         'values': values, 'defaults': email_settings.defaults(), 'revision': revision, 'set_up': set_up,
         'not_set_up': '' if set_up else email_settings.NOT_SET_UP,
         'reminder_types': [{'key': key, 'label': label} for key, label in email_settings.REMINDER_TYPES.items()],
-        'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing()},
+        'sending': {'configured': mailer.configured(), 'sender': mailer.sender(), 'missing': mailer.missing(),
+                    'live_allowed': settings.CALLCENTRE_EMAIL_LIVE_ALLOWED},
         'history': email_settings.history(),
+    })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def employer_specialists(request):
+    """Director overview card: whether employer satisfaction calls go to chosen specialists, and to whom."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        if type(data.get('revision')) is not int:
+            raise ValueError('Reload the page and try again.')
+        revision = employer_desk.save(data.get('values'), data['revision'], data.get('reason'), request.user.get_username())
+        return JsonResponse({'ok': True, 'revision': revision})
+    values, revision, set_up = employer_desk.stored()
+    # Learners still allocated to each specialist: they wait in the shared queue while that specialist calls employers.
+    allocated = Counter(owners().values())
+    agents = Agent.objects.filter(active=True, user__is_active=True).order_by('display_name')
+    return JsonResponse({
+        'values': values, 'revision': revision, 'set_up': set_up, 'not_set_up': '' if set_up else employer_desk.NOT_SET_UP,
+        'agents': [{'id': agent.pk, 'display_name': agent.display_name, 'allocated_learners': allocated.get(agent.pk, 0)}
+                   for agent in agents],
+        'open_employer_cases': CaseTicket.objects.open().filter(source_type=employer_desk.EMPLOYER).count(),
+        'history': employer_desk.history(),
+    })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def do_not_call_view(request):
+    """Director card: learners taken off every call list (no calls, emails allowed), and the history."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        actor = request.user.get_username()
+        if data.get('action') == 'add':
+            people, email = learner_directory(), email_key(data.get('learner_email'))
+            person = people.resolve(email=email) if hasattr(people, 'resolve') else people.get(email)
+            if not person:
+                raise ValueError('Choose a learner from the list.')
+            do_not_call.add(person['learner_email'], person['learner_name'], data.get('reason'), data.get('note'), actor)
+        elif data.get('action') == 'remove':
+            do_not_call.remove(data.get('id'), data.get('note'), actor)
+        else:
+            raise ValueError('Unknown action.')
+    return JsonResponse(do_not_call.listing())
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def attendance_edits_view(request):
+    """Director page: every attendance correction made on missed-lecture calls, with the AI's check, and undo."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        if data.get('action') != 'undo':
+            raise ValueError('Unknown action.')
+        attendance_edits.undo(data.get('id'), request.user, data.get('note'))
+        days, ai_state = int(data.get('days') or 30), str(data.get('ai_state') or '')
+    else:
+        days, ai_state = int(request.GET.get('days') or 30), request.GET.get('ai_state', '')
+    if not 1 <= days <= 365:
+        raise ValueError('Choose a period of 1 to 365 days.')
+    return JsonResponse(attendance_edits.listing(days, ai_state))
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def phone_lines(request):
+    """Zoom Phone page: the director's list of Zoom numbers, who has each, and the Test that checks a number works."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request)
+        action = data.get('action')
+        if action == 'add':
+            zoom_lines.add(data, actor)
+        elif action == 'update':
+            zoom_lines.update(data.get('number'), data, actor)
+        elif action == 'discover':
+            return JsonResponse({'ok': True, 'found': zoom_lines.discover(data.get('number'))})
+        elif action == 'remove':
+            zoom_lines.remove(data.get('number'), actor)
+        elif action == 'test':
+            return JsonResponse({'ok': True, 'test': zoom_lines.test(data.get('number'), actor)})
+        elif action == 'refresh':
+            return JsonResponse({'ok': True, 'refresh': zoom_lines.refresh(actor)})
+        else:
+            raise ValueError('Unknown action.')
+        return JsonResponse({'ok': True})
+    using = zoom_lines.agents_by_number()
+    lines = zoom_lines.stored()
+    listed = {line['number'] for line in lines}
+    return JsonResponse({
+        'lines': [{**line, 'agents': using.get(line['number'], [])} for line in lines],
+        # Numbers on a specialist's profile that are not in the list yet (added before the list existed).
+        'unlisted': [{'number': number, 'agents': agents} for number, agents in using.items() if number not in listed],
+        'scope': zoom_lines.NUMBERS_SCOPE,
+    })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def zoom_account_list(request):
+    """Zoom Phone page: the Zoom accounts (Server-to-Server OAuth apps) calls are read from. Secrets go in, never out."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request)
+        action = data.get('action')
+        if action == 'add':
+            zoom_accounts.add(data, actor)
+        elif action == 'update':
+            zoom_accounts.update(str(data.get('key') or ''), data, actor)
+        elif action == 'remove':
+            zoom_accounts.remove(str(data.get('key') or ''), actor)
+        elif action == 'test':
+            return JsonResponse({'ok': True, 'test': zoom_accounts.test(str(data.get('key') or ''), actor)})
+        elif action == 'numbers':
+            return JsonResponse({'ok': True, 'numbers': zoom_accounts.numbers(str(data.get('key') or ''))})
+        else:
+            raise ValueError('Unknown action.')
+        return JsonResponse({'ok': True})
+    try:
+        zoom_accounts._cipher()
+        secrets = ''
+    except FieldError as exc:
+        secrets = str(exc)
+    return JsonResponse({'accounts': [zoom_accounts.public(account) for account in zoom_accounts.stored()],
+                         'secrets_problem': secrets, 'secret_setting': zoom_accounts.SECRET_SETTING})
+
+
+COACH_PAGES_NOT_SET_UP = ('Linking coach booking pages is not set up yet. Run docs/callcentre-port/coach_booking_pages.sql '
+                          'on the call-centre database.')
+
+
+def register_coaches():
+    """Coach name -> email for every coach with an open case; the email from the LMS enrolment records ('' if unknown)."""
+    names = {name.strip() for name in CaseTicket.objects.open().values_list('coach', flat=True).distinct() if name and name.strip()}
+    return {name: coach_email(name) for name in sorted(names, key=str.casefold)}
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def coach_pages(request):
+    """Directors link each coach (by email) to their page in the LMS coach directory, which is only read.
+    A coach's links then follow that page as it is edited in the LMS."""
+    require_manager(request.user)
+    coaches = register_coaches()
+    if request.method == 'POST':
+        data = body(request)
+        email = email_key(data.get('email'))
+        slug = data.get('slug')
+        if not email or email not in {email_key(value) for value in coaches.values()}:
+            raise ValueError('Choose a coach from the current register.')
+        if not isinstance(slug, str):
+            raise ValueError('Choose a booking page.')
+        directory = booking_links.pages()
+        if slug and (directory is None or slug not in directory):
+            raise ValueError('That page is not in the LMS coach directory. Reload and choose again.')
+        try:
+            booking_links.confirm(email, slug, request.user.get_username())
+        except ProgrammingError:
+            return JsonResponse({'detail': COACH_PAGES_NOT_SET_UP}, status=503)
+        return JsonResponse({'ok': True})
+    directory = booking_links.pages()
+    try:
+        CoachBookingPage.objects.exists()   # the table is there
+        set_up = True
+    except ProgrammingError:
+        set_up = False
+    rows_out = []
+    for name, email in coaches.items():
+        slug, source = booking_links.page_for(email) if email else ('', '')
+        rows_out.append({
+            'coach': name, 'email': email, 'slug': slug, 'source': source,
+            'page_found': directory is None or not slug or slug in directory,
+            'suggestion': booking_links.suggest(name, directory) if email and not source else '',
+        })
+    return JsonResponse({
+        'coaches': rows_out, 'set_up': set_up, 'not_set_up': '' if set_up else COACH_PAGES_NOT_SET_UP,
+        'directory_readable': directory is not None,
+        'pages': sorted(({'slug': slug, 'name': page['name']} for slug, page in (directory or {}).items()),
+                        key=lambda page: (page['name'].casefold(), page['slug'])),
     })
 
 
@@ -284,36 +508,36 @@ def allocations(request):
         return people[email]['learner_email'] if email in people else email
 
     work = {}
-    for row in (CaseTicket.objects.open().values('learner_email')
-                .annotate(cases=Count('id'), next_contact=Min(Coalesce('next_followup_at', 'due_at')))):
-        entry = work.setdefault(main_email(row['learner_email']), {'cases': 0, 'next_contact': None})
-        entry['cases'] += row['cases']
-        entry['next_contact'] = min(filter(None, [entry['next_contact'], row['next_contact']]), default=None)
-    # Modules of open missed-lecture cases, so a whole class can be allocated together.
-    modules = {}
-    for email, data in CaseTicket.objects.open().filter(source_type='attendance').values_list(
-            'learner_email', 'source_data'):
-        module = str((data or {}).get('module') or '').strip() if isinstance(data, dict) else ''
-        if module:
-            modules.setdefault(main_email(email), set()).add(module)
-    last_calls = {}
-    for row in CallMatch.objects.values('learner_email').annotate(last=Max('call__started_at')):
+    for row in CaseTicket.objects.open().values('learner_email').annotate(cases=Count('id')):
         key = main_email(row['learner_email'])
-        last_calls[key] = max(filter(None, [last_calls.get(key), row['last']]), default=None)
+        work[key] = work.get(key, 0) + row['cases']
     names = {p['learner_email']: p['learner_name'] for p in people.values()}
+    operators = list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name').values('id', 'display_name'))
+    active = {operator['id'] for operator in operators}
+
+    allocated = Counter(current[p['learner_email']].agent_id for p in people.values() if p['learner_email'] in current)
+    inactive = [{'id': agent.pk, 'display_name': agent.display_name, 'learners': allocated[agent.pk]}
+                for agent in Agent.objects.filter(Q(active=False) | Q(user__is_active=False)).order_by('display_name')]
+
+    def owner(email):
+        # A switched-off specialist's learners are in the shared queue (allocation.owners).
+        agent_id = current[email].agent_id if email in current else None
+        return agent_id if agent_id in active else None
+
     return JsonResponse({
         'learners': [{
             'email': p['learner_email'], 'name': p['learner_name'], 'programme': p['programme'],
             'organisation': p['organisation'], 'coach': p['coach'],
-            **people.cohorts.get(p['learner_email'], {'cohort': '', 'group': ''}),
-            'modules': sorted(modules.get(p['learner_email'], ())),
-            'agent_id': current[p['learner_email']].agent_id if p['learner_email'] in current else None,
+            'manager_email': p['manager_email'], 'manager_name': p['manager_name'],
+            'agent_id': owner(p['learner_email']),
+            # The specialist the allocation names, even when switched off (then the learner is in the shared queue).
+            'allocated_to': current[p['learner_email']].agent_id if p['learner_email'] in current else None,
             'revision': current[p['learner_email']].revision if p['learner_email'] in current else 0,
-            'active_cases': work.get(p['learner_email'], {}).get('cases', 0),
-            'next_contact': work.get(p['learner_email'], {}).get('next_contact'),
-            'last_call': last_calls.get(p['learner_email']),
+            'active_cases': work.get(p['learner_email'], 0),
         } for p in sorted(people.values(), key=lambda p: (p['learner_name'].lower(), p['learner_email']))],
-        'operators': list(Agent.objects.filter(active=True, user__is_active=True).order_by('display_name').values('id', 'display_name')),
+        'operators': operators,
+        # Switched-off specialists (or closed logins) whose learners are still allocated to them: hand them over.
+        'inactive': [item for item in inactive if item['learners']],
         'history': [{**h, 'learner_name': names.get(h['learner_email'], h['learner_email'])} for h in history],
     })
 
@@ -365,3 +589,44 @@ def save_allocations(request, people):
     except IntegrityError:
         raise Conflict('Allocations changed since you loaded them. Refresh and review again.') from None
     return {'ok': True, 'changed': changed}
+
+
+def absence_json(item):
+    return {'id': item.pk, 'agent_id': item.agent_id, 'agent_name': item.agent.display_name, 'line_cover_id': item.line_cover_id,
+            'line_cover_name': item.line_cover.display_name if item.line_cover else '', 'started_at': item.started_at,
+            'started_by': item.started_by}
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def task_delegation(request):
+    """Director's Task delegation page: hand a list to another specialist, recall it, mark someone absent or back; and
+    for a day (?day=YYYY-MM-DD, today by default) each task with what its receiver did, and the audit."""
+    require_manager(request.user)
+    actor = request.user.get_username()
+    if request.method == 'POST':
+        data = body(request, limit=256000)
+        action = data.get('action')
+        if action == 'delegate':
+            return JsonResponse({'ok': True, 'task_ids': delegation.delegate(data, actor)})
+        if action == 'recall':
+            return JsonResponse({'ok': True, 'recalled': delegation.recall(data.get('task_ids'), actor)})
+        if action == 'absent':
+            return JsonResponse({'ok': True, 'absence_id': delegation.mark_absent(data, actor)})
+        if action == 'back':
+            return JsonResponse({'ok': True, 'recalled': delegation.mark_back(data, actor)})
+        raise ValueError('Unknown action.')
+    today = timezone.now().astimezone(LONDON).date()
+    asked = request.GET.get('day')
+    day = date.fromisoformat(asked) if asked else today
+    if not date(2026, 1, 1) <= day <= today:
+        raise ValueError('Choose a day up to today.')
+    found = delegation.summary(day)
+    agents = Agent.objects.filter(active=True, user__is_active=True).order_by('display_name')
+    return JsonResponse({
+        'set_up': found['set_up'], 'not_set_up': '' if found['set_up'] else delegation.NOT_SET_UP, 'day': day,
+        'tasks': found['tasks'], 'absences': [absence_json(item) for item in delegation.open_absences().values()],
+        'agents': [{'id': agent.pk, 'display_name': agent.display_name} for agent in agents],
+        'history': delegation.history(),
+    })

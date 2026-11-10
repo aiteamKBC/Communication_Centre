@@ -1,30 +1,48 @@
+import hashlib
+import logging
+import os
+import socket
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import DatabaseError, connections, transaction
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .ai import process_ai
+from .attendance_edits import verify_pending as verify_attendance_edits
+from .authorised_absence import apply as apply_authorised_absences
+from .reported_absence import apply as apply_reported_absences
+from .alternative_sessions import refresh_alternative_sessions
 from .db import DB
-from .emails import generate_surveys, process_emails
+from .call_scope import system_calls
+from .emails import process_emails
+from .events_hub import sync as sync_events_hub
 from .evidence import EvidenceSnapshot, check_evidence
-from .models import CaseCall, CaseTicket, CycleState, ZoomPhoneCall
-from .learner_satisfaction import generate as generate_learner_satisfaction
-from .rules import MAX_MISSED_PROMISES
-from .services import Conflict, event, expire_claims, match_call, release_fields, resolve
-from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_recording_links, source_health
-from .zoom_phone import ACCOUNT_LABELS, sync_account
+from .models import CallIntent, CaseCall, CaseTicket, CycleState, ZoomPhoneCall
+from .learner_satisfaction import generate as generate_learner_satisfaction, generate_employers
+from .services import Conflict, apply_stale_outcomes, event, expire_claims, match_call, release_fields, resolve
+from .rules import LATE_FROM, is_late, late_cutoff
+from .sources import generate_reminders, generate_risks, get_source, load_bookings, profiles, refresh_epa_metrics, refresh_recording_links, source_health
+from .voicemail_calls import detect as detect_voicemails, effective_result_expression
+from .zoom_phone import account_labels, sync_account
 from .zoom_views import current_account_filter
+
+logger = logging.getLogger(__name__)
 
 
 def maintenance(now):
     expire_claims(now)
-    pending = Q(due_at__lt=now, sla_breached=False) | Q(next_followup_at__lte=now, status__in=['pending_learner', 'pending_verification'])
+    if now < LATE_FROM:
+        # The fresh start: until it is over nothing is late, so cases marked late before it are cleared.
+        CaseTicket.objects.open().filter(sla_breached=True).update(sla_breached=False)
+    pending = (Q(due_at__lt=late_cutoff(now), sla_breached=False)
+               | Q(next_followup_at__lte=now, status__in=['pending_learner', 'pending_verification']))
     for pk in CaseTicket.objects.open().filter(pending).values_list('pk', flat=True).iterator():
         with transaction.atomic(using=DB):
             ticket = CaseTicket.objects.select_for_update().get(pk=pk)
-            if ticket.due_at < now and not ticket.sla_breached:
+            if is_late(ticket.due_at, now) and not ticket.sla_breached:
                 agents = list(ticket.events.exclude(agent=None).values_list('agent_id', flat=True).distinct())
                 ticket.sla_breached = True
                 event(ticket, 'sla_breached', {'agent_ids': sorted(agents), 'unclaimed': not agents, 'due_at': ticket.due_at.isoformat()})
@@ -36,10 +54,8 @@ def maintenance(now):
                 if promise:
                     since = ticket.evidence_after or ticket.created_at
                     missed = ticket.events.filter(kind='promise_missed', created_at__gt=since).count() + 1
-                    if missed >= MAX_MISSED_PROMISES:
-                        ticket.status, ticket.escalated = 'escalated', True
                     event(ticket, 'promise_missed', {'option': ticket.resolution_option, 'promised_at': promise.isoformat(),
-                                                     'missed': missed, 'to_manager': missed >= MAX_MISSED_PROMISES})
+                                                     'missed': missed})
                 else:
                     event(ticket, 'followup_due', {'promised_at': None})
             ticket.save()
@@ -65,62 +81,240 @@ def evidence_cycle():
     return resolved
 
 
-def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
-    token = str(uuid.uuid4())
-    now = timezone.now()
-    CycleState.objects.get_or_create(name='cycle')
-    if not CycleState.objects.filter(Q(locked_until__isnull=True) | Q(locked_until__lt=now), name='cycle').update(
-            token=token, locked_until=now + timedelta(hours=2)):
-        return {'skipped': 'Another cycle is running.'}
-    result = {}
+def step(result, name, fn):
+    """Run one cycle step. A failure is logged and recorded under ``name``; the remaining steps still run."""
     try:
+        value = fn()
+    except Exception as exc:
+        logger.exception('Call Centre cycle step %s failed', name)
+        result[name] = f'Failed ({type(exc).__name__}); see the worker log.'
+        return None
+    if value is not None:
+        result[name] = value
+    return value
+
+
+def review_meetings_step(people):
+    """The coaches' Outlook calendars into the stored review meetings; how it went is kept as a source's health."""
+    from .review_meetings import sync
+    try:
+        summary = sync(people)
+    except Exception as exc:
+        source_health('outlook_reviews', error=f'Outlook calendars unavailable ({type(exc).__name__}); the last read meetings are kept.')
+        raise
+    source_health('outlook_reviews', count=summary['meetings'], error=summary.get('error', ''))
+    return summary
+
+
+def update_phone_directory(people):
+    directory = {}
+    for person in people.values():
+        if person['learner_phone']:
+            directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
+    if hasattr(people, 'phone_contacts'):
+        directory = {phone: [entry['email']] for phone, entry in people.phone_contacts().items()
+                     if entry['role'] == 'learner' and entry['email']}
+    CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
+    from .inbound import save_caller_directory
+    save_caller_directory(people)
+
+
+def inbound_sync():
+    from .inbound import sync
+    return sync()
+
+
+def match_calls():
+    earliest = CaseTicket.objects.order_by('created_at').values_list('created_at', flat=True).first()
+    matched = 0
+    if earliest:
+        # Calls before the module's first case cannot be its contact attempts.
+        # The result as the cases take it: a call a voicemail picked up is not answered (voicemail_calls).
+        changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('case_result'))
+        pending_intent = CallIntent.objects.filter(
+            matched_call__isnull=True, agent__zoom_account=OuterRef('source_account'),
+            created_at__lte=OuterRef('started_at'),
+            created_at__gte=OuterRef('started_at') - timedelta(minutes=10),
+        )
+        calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
+            case_result=effective_result_expression()).annotate(
+            needs_result=Exists(changed_result), pending_intent=Exists(pending_intent),
+            system_call=Exists(system_calls().filter(pk=OuterRef('pk'))),
+        ).filter(Q(callmatch__isnull=True, pending_intent=True) | Q(needs_result=True, system_call=True)).order_by('started_at')
+        for pk in calls.values_list('pk', flat=True).iterator():
+            if match_call(pk):
+                matched += 1
+    return matched
+
+
+HOST = hashlib.sha1(socket.gethostname().encode()).hexdigest()[:8]
+
+
+def lock_token():
+    """A new lock token naming this process: '<pid>:<host>:<random>' (fits the 36-character column)."""
+    return f'{os.getpid()}:{HOST}:{uuid.uuid4().hex[:16]}'
+
+
+def abandoned(token):
+    """Whether the lock holder was a process on this server that no longer exists. A worker killed mid-cycle (SIGKILL
+    after a stop timeout, out of memory) never releases the lock; without this every cycle skips until it expires."""
+    pid, _, rest = token.partition(':')
+    if os.name != 'posix' or not pid.isdigit() or rest.partition(':')[0] != HOST or int(pid) == os.getpid():
+        # Tokens from before this change, another server, or Windows (where os.kill would end the process): wait for
+        # the expiry as before.
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        # It exists under another user.
+        return False
+    # Alive, or its pid was reused: wait for the expiry.
+    return False
+
+
+@contextmanager
+def cycle_lock(duration):
+    """The cycle's database lock: yields its token, or None when another cycle holds it."""
+    token = lock_token()
+    now = timezone.now()
+    state, _ = CycleState.objects.get_or_create(name='cycle')
+    free = Q(locked_until__isnull=True) | Q(locked_until__lt=now)
+    if state.token and state.locked_until and state.locked_until >= now and abandoned(state.token):
+        logger.warning('Taking over the Call Centre cycle lock of process %s, which no longer exists.', state.token.partition(':')[0])
+        # Only that token: if a live cycle took the lock meanwhile, this matches nothing.
+        free |= Q(token=state.token)
+    held = CycleState.objects.filter(free, name='cycle').update(token=token, locked_until=now + duration)
+    try:
+        yield token if held else None
+    finally:
+        if held:
+            release_lock(token)
+
+
+def release_lock(token):
+    """Release the cycle lock. A dropped connection (Neon/PgBouncer) would otherwise leave it held for hours,
+    so a failed release closes the connection and tries once more on a fresh one."""
+    for attempt in range(2):
+        try:
+            CycleState.objects.filter(name='cycle', token=token).update(locked_until=None, token='')
+            return
+        except DatabaseError:
+            if attempt:
+                logger.exception('Could not release the Call Centre cycle lock')
+            connections[DB].close()
+
+
+def run_call_sync():
+    """The quick cycle after an in-page call: new Zoom calls (no recordings), then call matching, so the call and its
+    result reach the case within a minute instead of at the next full cycle. The evidence is Zoom's own call history."""
+    with cycle_lock(timedelta(minutes=10)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
+        for account in account_labels():
+            step(result, 'zoom_' + account, lambda account=account: sync_account(account))
+        step(result, 'matched', match_calls)
+        step(result, 'inbound', inbound_sync)
+        return result
+
+
+def voicemail_sync(account):
+    """Voicemails of one account. Zoom refusing (e.g. the voicemail scope not added yet) is reported, not raised."""
+    from .voicemails import sync
+    from .zoom_phone import ZoomError
+    try:
+        return sync(account)
+    except ZoomError as exc:
+        return f'Unavailable: {exc}'
+
+
+def run_recording_sync():
+    """Zoom says a recording or transcript is ready (webhook): fetch recordings now and review them, instead of waiting
+    for the next full cycle."""
+    with cycle_lock(timedelta(minutes=20)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
+        for account in account_labels():
+            step(result, 'zoom_' + account, lambda account=account: sync_account(account, include_recordings=True))
+            step(result, 'voicemails_' + account, lambda account=account: voicemail_sync(account))
+        # Before matching: a call whose transcript is a voicemail greeting is then applied to its cases as one.
+        step(result, 'voicemail_calls', detect_voicemails)
+        step(result, 'matched', match_calls)
+        step(result, 'inbound', inbound_sync)
+        step(result, 'analyses', process_ai)
+        step(result, 'attendance_checks', verify_attendance_edits)
+        return result
+
+
+def run_zoom_check():
+    """A Zoom webhook says something other than a call changed: compare the numbers with Zoom now."""
+    from .zoom_watch import check
+    return check(force=True)
+
+
+def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
+    with cycle_lock(timedelta(hours=2)) as token:
+        if not token:
+            return {'skipped': 'Another cycle is running.'}
+        result = {}
         if not skip_zoom:
-            for account in ACCOUNT_LABELS:
+            for account in account_labels():
                 try:
                     result['zoom_' + account] = sync_account(account, include_recordings=True)
                 except Exception as exc:
                     result['zoom_' + account] = f'Unavailable ({type(exc).__name__}); inspect Zoom account status.'
         people = get_source('profiles', profiles)
         if people is not None and people.sources_complete:
+            from .catchup import sync as sync_catchups
             from .sources import refresh_contacts
-            result['contacts_refreshed'] = refresh_contacts(people)
-            directory = {}
-            for person in people.values():
-                if person['learner_phone']:
-                    directory.setdefault(person['learner_phone'], []).append(person['learner_email'])
-            if hasattr(people, 'phone_contacts'):
-                directory = {phone: [entry['email']] for phone, entry in people.phone_contacts().items()
-                             if entry['role'] == 'learner' and entry['email']}
-            CycleState.objects.update_or_create(name='phone_directory', defaults={'details': directory, 'last_success_at': timezone.now()})
-            result['source_created'] = generate_risks(people)
+            step(result, 'contacts_refreshed', lambda: refresh_contacts(people))
+            step(result, 'phone_directory', lambda: update_phone_directory(people))
+            step(result, 'source_created', lambda: generate_risks(people))
+            # Straight after: a missed lecture the coach was told about beforehand never reaches a list.
+            step(result, 'authorised_absences', lambda: apply_authorised_absences(people))
+            # And one the learner reported missing in the LMS (pending or approved).
+            step(result, 'reported_absences', lambda: apply_reported_absences(people))
+            # Before the bookings: the next day's reviews and coaching meetings come from the stored Outlook meetings.
+            step(result, 'review_meetings', lambda: review_meetings_step(people))
             bookings = get_source('bookings', lambda: load_bookings(people))
             if bookings is not None:
-                result['reminders_created'] = generate_reminders(people, bookings)
-            result['manager_surveys'] = generate_surveys(people)
-            result['learner_satisfaction'] = generate_learner_satisfaction(people)
-            from .catchup import sync as sync_catchups
+                step(result, 'reminders_created', lambda: generate_reminders(people, bookings))
+            step(result, 'learner_satisfaction', lambda: generate_learner_satisfaction(people))
+            step(result, 'employer_feedback', lambda: generate_employers(people))
             result['catchup_followups'] = get_source('catchup_followups', lambda: sync_catchups(people))
         else:
             result['identity_skipped'] = 'Source unavailable or ambiguous; existing contacts and cases retained.'
         get_source('recording_links', refresh_recording_links)
+        # Before evidence: a missed lecture's session with another group, offered on the call and checked as proof.
+        get_source('alternative_sessions', refresh_alternative_sessions)
+        result['epa_metrics'] = get_source('epa_metrics', refresh_epa_metrics)
         # Evidence wins over returning a promised-date case to the queue.
-        result['resolved'] = evidence_cycle()
-        maintenance(timezone.now())
-        earliest = CaseTicket.objects.order_by('created_at').values_list('created_at', flat=True).first()
-        result['matched'] = 0
-        if earliest:
-            # Calls before the module's first case cannot be its contact attempts.
-            changed_result = CaseCall.objects.filter(match__call_id=OuterRef('pk')).exclude(processed_result=OuterRef('result'))
-            calls = ZoomPhoneCall.objects.filter(current_account_filter(), direction='outbound', started_at__gte=earliest).annotate(
-                needs_result=Exists(changed_result)).filter(Q(callmatch__isnull=True) | Q(needs_result=True)).order_by('started_at')
-            for pk in calls.values_list('pk', flat=True).iterator():
-                if match_call(pk):
-                    result['matched'] += 1
+        step(result, 'resolved', evidence_cycle)
+        step(result, 'maintenance', lambda: maintenance(timezone.now()))
+        # After maintenance: a technical issue still with support ends the cycle waiting, whatever a call did meanwhile.
+        from .helpdesk import sync as sync_helpdesk
+        step(result, 'technical_issues', sync_helpdesk)
+        step(result, 'voicemail_calls', detect_voicemails)
+        step(result, 'matched', match_calls)
+        # After matching: an outcome still waiting for a call Zoom has not reported is applied without it.
+        step(result, 'held_outcomes', apply_stale_outcomes)
+        step(result, 'inbound', inbound_sync)
+        if not skip_zoom:
+            from .zoom_watch import check
+            for account in account_labels():
+                step(result, 'voicemails_' + account, lambda account=account: voicemail_sync(account))
+            step(result, 'zoom_changes', check)
+            from .presence import poll
+            step(result, 'presence', poll)
         if not skip_ai:
-            result['analyses'] = process_ai()
+            step(result, 'analyses', process_ai)
+            step(result, 'attendance_checks', verify_attendance_edits)
         if not skip_emails and people is not None and people.sources_complete:
-            result['emails_processed'] = process_emails()
+            step(result, 'emails_processed', process_emails)
+        # The Events hub has no worker: this cycle sends it the specialists and runs its Eventbrite import.
+        step(result, 'events_hub', sync_events_hub)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result
-    finally:
-        CycleState.objects.filter(name='cycle', token=token).update(locked_until=None, token='')

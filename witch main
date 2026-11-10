@@ -1,0 +1,31 @@
+ .../migrations/0026_training_plan_lms_reference.py |  42 [32m++++[m
+ backend/api/models.py                              |  13 [32m++[m
+ backend/api/training_plan_lms_reference.py         | 125 [32m+++++++++++[m
+ backend/api/urls.py                                |   2 [32m+[m
+ backend/training_plan_lms_reference_dev/.gitignore |   3 [32m+[m
+ .../training_plan_lms_reference_dev/__init__.py    |   1 [32m+[m
+ .../training_plan_lms_reference_dev/bootstrap.py   | 234 [32m+++++++++++++++++++++[m
+ .../training_plan_lms_reference_dev/frontend.mjs   |  31 [32m+++[m
+ .../training_plan_lms_reference_dev/prepare_lms.py |  68 [32m++++++[m
+ .../preview_access.py                              |  39 [32m++++[m
+ .../training_plan_lms_reference_dev/settings.py    |  75 [32m+++++++[m
+ .../source-schema-inspection.json                  |  36 [32m++++[m
+ .../test_reference.py                              | 220 [32m+++++++++++++++++++[m
+ .../training_plan_lms_reference_dev/ui_fixtures.py |  74 [32m+++++++[m
+ backend/training_plan_lms_reference_dev/verify.py  |  80 [32m+++++++[m
+ .../training_plan_lms_reference_dev/verify_ui.mjs  | 151 [32m+++++++++++++[m
+ docs/communication-centre/training-plan.md         |  63 [32m++++++[m
+ frontend/src/index.css                             |  26 [32m+++[m
+ .../components/GanttTimeline.tsx                   | 198 [32m++++++++++++[m[31m-----[m
+ .../components/LmsReference.tsx                    | 117 [32m+++++++++++[m
+ .../components/LmsReferenceTimeline.tsx            |  75 [32m+++++++[m
+ .../components/PlanDifferences.tsx                 | 111 [32m++++++++++[m
+ .../components/TimelineZoomControls.tsx            |  30 [32m+++[m
+ .../apprenticeships-timeline/lmsComparison.ts      | 112 [32m++++++++++[m
+ .../pages/apprenticeships-timeline/lmsReference.ts |  49 [32m+++++[m
+ .../src/pages/apprenticeships-timeline/page.tsx    |  10 [32m+[m[31m-[m
+ .../src/pages/apprenticeships-timeline/types.ts    |   1 [32m+[m
+ frontend/test-results/now-location-desktop.png     | Bin [31m0[m -> [32m59558[m bytes
+ frontend/test-results/now-location-mobile.png      | Bin [31m0[m -> [32m35990[m bytes
+ frontend/tests/ui/training-plan-comparison.spec.ts | 149 [32m+++++++++++++[m
+ 30 files changed, 2079 insertions(+), 56 deletions(-)

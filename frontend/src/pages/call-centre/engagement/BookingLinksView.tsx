@@ -17,7 +17,7 @@ export default function BookingLinksView({ overview }: { overview: Overview }) {
     <section className="ec-card">
       <h2>Coach booking links</h2>
       <p>Open the coach’s service while speaking with a learner, or copy its link into a booking invitation.</p>
-      <p className="ec-muted">Links come from the college’s Microsoft Bookings page mapping. The link that fits the case is included in each learner’s booking email (missed-lecture catch-ups use the coach’s support link).</p>
+      <p className="ec-muted">Links come from each coach’s page in the LMS Coach directory. The link that fits the case is included in each learner’s booking email (missed-lecture catch-ups use the coach’s support link).</p>
       <div className="ec-table-wrap">
         <table>
           <thead><tr><th>Coach</th><th>Learners</th><th>Booking services</th></tr></thead>

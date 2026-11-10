@@ -51,7 +51,13 @@ class Unavailable(RuntimeError):
 
 
 def session_types(ticket):
-    return [CATCH_UP, SUPPORT] if ticket.source_type == 'attendance' else [SUPPORT]
+    """What can be booked from this case. Only where a coach session is the agreed next step: a missed lecture's
+    catch-up, or support towards EPA, off-the-job hours or a manager's request. A review is booked in its own
+    review slot (the booking email sends the coach's review page), a signature has nothing to book, tomorrow's
+    appointment is already booked, and employer, satisfaction and technical calls are not coaching."""
+    if ticket.source_type == 'attendance':
+        return [CATCH_UP, SUPPORT]
+    return [SUPPORT] if ticket.source_type in ('epa', 'otj', 'manual') else []
 
 
 def bookable_day(day):
@@ -125,18 +131,54 @@ def lms_learner(email):
             'coach_email': coach_email, 'coach_name': coach_name}
 
 
-def missed_lecture(ticket):
-    """The register row this missed-lecture case is about, read-only from kbc_attendance."""
+def _lecture_emails(ticket):
+    """The learner's emails for a missed-lecture lookup; raises when identity needs review."""
+    from .identity import enabled
+    if not enabled():
+        return [ticket.learner_email]
+    from .sources import learner_directory
+    person = learner_directory().resolve(email=ticket.learner_email)
+    if not person:
+        raise Conflict('Learner identity requires review before linking a missed lecture.')
+    return person['emails']
+
+
+def live_missed_lecture(ticket, emails):
+    """The LMS live-session occurrence this missed-lecture case is about (current LMS learners), read-only.
+
+    Matches on the case's (learner, lecture date, module) in ``curriculum.live_session_learner_attendance``.
+    Returns the same shape as the kbc path, keyed by the per-learner attendance row id (``la.id``) so a catch-up
+    booked from the call centre links through the same ``kbc_report_id(key)`` as the register path and never
+    collides between learners who share a session's attendance report. ``None`` when the LMS has no single matching
+    absence, so the caller can report that the lecture is no longer shown as missed.
+    """
     from .sources import rows
     module = str((ticket.source_data or {}).get('module') or '').strip()
-    from .identity import enabled
-    emails = [ticket.learner_email]
-    if enabled():
-        from .sources import learner_directory
-        person = learner_directory().resolve(email=ticket.learner_email)
-        if not person:
-            raise Conflict('Learner identity requires review before linking a missed lecture.')
-        emails = person['emails']
+    found = rows(LMS, '''SELECT la.id AS row_id, (o.scheduled_start)::date AS day,
+            o.session_number AS session_number,
+            COALESCE(NULLIF(trim(m.title), ''), la.module_catalogue_id) AS module
+        FROM curriculum.live_session_learner_attendance la
+        JOIN curriculum.live_session_occurrences o ON o.id = la.occurrence_id
+        LEFT JOIN curriculum.modules m ON m.module_catalogue_id = la.module_catalogue_id
+        WHERE la.attendance_status = 'absent' AND lower(trim(la.learner_email)) = ANY(%s)
+          AND (o.scheduled_start)::date = %s''', [emails, ticket.overdue_since])
+    missed = [r for r in found if str(r['module'] or '').strip() == module and r['row_id'] is not None]
+    if len({r['row_id'] for r in missed}) != 1:
+        return None
+    row = missed[0]
+    title = module or 'Attendance session'
+    if row['session_number']:
+        title = f'{title} — Session {row["session_number"]}'
+    return {'key': f'live:{row["row_id"]}', 'register_id': None, 'date': row['day'], 'title': title,
+            'source': 'live_session', 'learner_email': ticket.learner_email}
+
+
+def missed_lecture(ticket):
+    """The lecture this missed-lecture case is about, read-only. Tries the legacy kbc_attendance register first,
+    then the LMS live-session attendance (current learners), so both case sources can book a catch-up."""
+    from .sources import rows
+    module = str((ticket.source_data or {}).get('module') or '').strip()
+    emails = _lecture_emails(ticket)
     found = rows(DB, '''SELECT "ID", "key", "date", "Attendance", "module", "lecture_name" FROM public.kbc_attendance
         WHERE lower(trim("Email")) = ANY(%s) AND "date" = %s AND trim(coalesce("module", '')) = %s''',
                  [emails, ticket.overdue_since, module])
@@ -145,6 +187,10 @@ def missed_lecture(ticket):
     if recorded_key:
         missed = [r for r in missed if str(r['key']) == str(recorded_key)]
     if not missed:
+        # No kbc register row: the case may come from the LMS live-session source instead.
+        live = live_missed_lecture(ticket, emails)
+        if live:
+            return live
         raise Conflict('The register no longer shows this lecture as missed.')
     if len({str(r['key']).strip() for r in missed}) > 1:
         raise Conflict('The register has more than one entry for this lecture. Book it from the LMS.')
@@ -186,14 +232,19 @@ def coach_busy(coach, start, end):
     return busy
 
 
-def free_slots(coach, now=None, day=None):
-    """Hour-long UK slots the coach is free for: weekdays, no bank holidays, 09-17, an hour's notice."""
+def slot_starts(now=None, day=None):
+    """Hour-long UK slots on offer before the coach's calendar is checked: weekdays, no bank holidays, 09-17,
+    an hour's notice."""
     earliest = (now or timezone.now()) + LEAD
     first = earliest.astimezone(LONDON).date()
     days = [day] if day else [first + timedelta(days=n) for n in range(DAYS_AHEAD)]
-    starts = [datetime.combine(d, time(hour), LONDON) for d in days if bookable_day(d)
-              for hour in range(FIRST_HOUR, LAST_HOUR + 1)]
-    starts = [s for s in starts if s >= earliest]
+    return [s for d in days if bookable_day(d) for hour in range(FIRST_HOUR, LAST_HOUR + 1)
+            if (s := datetime.combine(d, time(hour), LONDON)) >= earliest]
+
+
+def free_slots(coach, now=None, day=None):
+    """The offered slots (slot_starts) the coach is free for."""
+    starts = slot_starts(now, day)
     if not starts:
         return []
     busy = coach_busy(coach, starts[0], starts[-1] + timedelta(minutes=DURATION))
@@ -254,6 +305,16 @@ def _reserve(person, session_type, start, notes, idempotency_key):
                     or row['scheduled_date'] != day or row['scheduled_time'] != at):
                 raise ValueError('This booking request was already used for a different session.')
             return row, False
+        # One coach, one slot: the free times were read before this transaction, so bookings for this coach and
+        # day are serialized here and the slot is checked again.
+        cursor.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [f'callcentre-coach:{coach.lower()}:{day.isoformat()}'])
+        for other in _fetch(cursor, '''SELECT scheduled_time, duration_minutes FROM "Coach".coach_calendar_event
+            WHERE lower(owner_email) = lower(%s) AND scheduled_date = %s AND scheduled_time IS NOT NULL
+              AND status = ANY(%s)''', [coach, day, list(ACTIVE_STATUSES)]):
+            other_start = datetime.combine(day, other['scheduled_time'])
+            mine = datetime.combine(day, at)
+            if mine < other_start + timedelta(minutes=other['duration_minutes'] or DURATION) and mine + timedelta(minutes=DURATION) > other_start:
+                raise Conflict('That time has just been taken in the coach’s calendar. Pick another time.')
         # By email: LMS rows carry a profile id or a Created_users id, two unrelated number ranges.
         nearby = _fetch(cursor, '''SELECT event_type, sequence, scheduled_date, scheduled_time, duration_minutes, status
             FROM "Coach".coach_calendar_event
@@ -348,9 +409,14 @@ def _fail(row, message):
 
 
 def _link_report(cursor, row, lecture, person, reason_category, reason_note, agent_name):
-    """Create the lecture's LMS absence report, or attach this catch-up to the one already there."""
-    # Created_users.aptem_id is text; the register "ID" is a number.
-    if str(lecture['register_id']).strip() != str(person['aptem_id'] or '').strip():
+    """Create the lecture's LMS absence report, or attach this catch-up to the one already there.
+
+    A new report is 'pending' with no evidence: the call centre took the reason by phone, the coach approves it.
+    An existing report keeps its status.
+    """
+    # Created_users.aptem_id is text; the kbc register "ID" is a number. Live-session cases carry no register id:
+    # the absence is already keyed to the learner by email in the LMS, so this register check does not apply.
+    if lecture.get('source') != 'live_session' and str(lecture['register_id']).strip() != str(person['aptem_id'] or '').strip():
         return None, 'The register id does not match the learner’s LMS Aptem id, so the LMS cannot show the link.'
     taken = _fetch(cursor, '''SELECT id FROM "Coach".coach_absence_report WHERE catchup_event_key = %s
         AND status <> 'declined' ''', [row['event_key']])
@@ -364,7 +430,7 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
                 and not _missed_previous_catchup(cursor, report, lecture)):
             return None, 'The lecture was linked to another catch-up a moment ago.'
         cursor.execute('''UPDATE "Coach".coach_absence_report SET catchup_event_key = %s, recovery_method = 'catch-up',
-            status = 'approved', updated_at = now() WHERE id = %s''', [row['event_key'], report['id']])
+            updated_at = now() WHERE id = %s''', [row['event_key'], report['id']])
         return report['id'], ''
     cursor.execute('SELECT count(*) FROM "Coach".coach_absence_report WHERE learner_id = %s', [person['source_id']])
     previous = cursor.fetchone()[0]
@@ -373,7 +439,7 @@ def _link_report(cursor, row, lecture, person, reason_category, reason_note, age
             learner_name, learner_email, session_title, session_date, session_time, reason_category, reason, reported_by,
             status, evidence_provided, coach_note, created_at, updated_at, attendance_rate, evidence_image_url,
             evidence_kind, evidence_text, previous_absences, recovery_method, catchup_event_key)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 'approved', true, '', now(), now(), NULL, '', 'text',
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 'pending', false, '', now(), now(), NULL, '', 'text',
                 %s, %s, 'catch-up', %s) RETURNING id''',
                    [kbc_report_id(lecture['key']), person['coach_email'], person['coach_name'], person['source_id'],
                     person['name'], person['email'], lecture['title'][:255],
@@ -419,7 +485,8 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
         raise Conflict('Another booking for this learner landed at the same moment. Reload and try again.') from exc
     if not created and row['sync_state'] == 'synced':
         return {'event_key': row['event_key'], 'start': start, 'join_url': row['meeting_link'], 'report_id': None,
-                'link_warning': '', 'coach': row['owner_name'], 'replayed': True}
+                'link_warning': '', 'coach': row['owner_name'], 'learner_name': row['learner_name'],
+                'learner_email': row['learner_email'], 'replayed': True}
     if not created:
         raise Conflict('This booking is still being processed or failed earlier. Close the panel and book again.')
 
@@ -427,8 +494,11 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
         meeting = _create_meeting(row)
         if not meeting['graph_event_id'] or not meeting['meeting_link']:
             raise graph.GraphError('Teams did not return a meeting link.')
-    except graph.GraphError as exc:
-        _fail(row, f'Call centre booking: {exc}')
+    except Exception as exc:
+        # Not only GraphError (a bad response body, a crash): the LMS row must never stay 'scheduled' without a
+        # meeting, where it would block the coach's slot and the learner's weekly limit.
+        reason = str(exc) if isinstance(exc, graph.GraphError) else type(exc).__name__
+        _fail(row, f'Call centre booking: {reason}')
         raise Unavailable('The Teams meeting could not be created, so nothing was booked. Try again shortly.') from exc
 
     report_id, link_warning = None, ''
@@ -457,4 +527,5 @@ def book(ticket, session_type, start, request_id, agent_name, reason_category=''
     option_warning = graph.apply_meeting_options(row['owner_email'], meeting['join_url'],
                                                  [row['learner_email'], row['owner_email']]) if meeting['join_url'] else ''
     return {'event_key': row['event_key'], 'start': start, 'join_url': meeting['meeting_link'], 'report_id': report_id,
-            'link_warning': link_warning, 'option_warning': option_warning, 'coach': row['owner_name'], 'replayed': False}
+            'link_warning': link_warning, 'option_warning': option_warning, 'coach': row['owner_name'],
+            'learner_name': row['learner_name'], 'learner_email': row['learner_email'], 'replayed': False}

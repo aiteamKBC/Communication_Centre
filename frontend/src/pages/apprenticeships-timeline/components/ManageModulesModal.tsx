@@ -2,11 +2,17 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import type { ChangeEvent } from 'react';
-import type { CatalogModule, KsbProfile, SessionKsbMapping } from '../types';
+import type { CatalogModule, CustomModule, Holiday, KsbProfile, ProgrammeGroup, SessionKsbMapping, TutorProfile } from '../types';
+import LmsModuleMatcher, { type SaveLmsModuleMatch } from './LmsModuleMatcher';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import { loadAptemSubprogrammesForModule, rankAptemSubprogrammeOptions, readApiErrorMessage } from '../aptemLearnerMapping';
 
 interface Props {
+  comparisonGroups?: ProgrammeGroup[];
+  customModules?: CustomModule[];
+  holidays?: Holiday[];
+  tutorProfiles?: TutorProfile[];
+  onSaveLmsMatch?: SaveLmsModuleMatch;
   modules: CatalogModule[];
   ksbProfiles?: KsbProfile[];
   onAdd: (mod: Omit<CatalogModule, 'id'>) => Promise<void>;
@@ -471,7 +477,7 @@ function KsbSessionMappingRows({
   );
 }
 
-export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
+export default function ManageModulesModal({ modules, ksbProfiles = [], comparisonGroups = [], customModules = [], holidays = [], tutorProfiles = [], onSaveLmsMatch, onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
   const ksbTemplateInputRef = useRef<HTMLInputElement | null>(null);
   const [editing, setEditing] = useState<EditState | null>(() => {
     const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
@@ -869,7 +875,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-950/28 backdrop-blur-[6px]" onClick={onClose} />
-      <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 680, maxHeight: '88vh' }}>
+      <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: editing ? 960 : 680, maxHeight: '88vh' }}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ background: '#1B2A4A' }}>
@@ -981,7 +987,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
       {editing && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/20" onClick={() => { void closeEditing(); }} />
-          <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 560, maxHeight: '92vh' }}>
+          <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 920, maxHeight: '92vh' }}>
             <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ background: '#1B2A4A' }}>
               <div>
                 <h3 className="text-white font-extrabold text-sm tracking-wide">{editing.id === null ? 'Add Module' : 'Edit Module'}</h3>
@@ -993,6 +999,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], onAdd, o
             </div>
 
             <div className="overflow-y-auto flex-1 px-5 py-5 space-y-4 bg-gray-50">
+              {editing.id !== null && onSaveLmsMatch && <LmsModuleMatcher key={editing.id} catalogueModule={{ id: editing.id, name: editing.name }} groups={comparisonGroups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles} onSave={onSaveLmsMatch} />}
               {/* Preview */}
               <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3">
                 <span className="w-3 h-8 rounded-sm shrink-0" style={{ background: editing.colour }} />

@@ -11,6 +11,7 @@ from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
 from django.contrib.auth.hashers import check_password
 from django.core import signing
+from django.core.cache import cache
 from django.db.models import Sum
 from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
@@ -23,6 +24,10 @@ from .access import get_user_access_payload
 
 
 MICROSOFT_SCOPE = 'openid profile email User.Read'
+# Failed password sign-ins allowed per account and address before sign-in pauses for the rest of the window.
+# The cache is per process, so with several web workers the real limit is a small multiple of this.
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 
 
 def _ms_authority_base() -> str:
@@ -103,33 +108,16 @@ def _get_activity_session(tracking_session_id: str) -> UserActivitySession | Non
 		return None
 
 
-def _find_user_from_payload(payload: dict):
-	user_model = get_user_model()
-	queryset = user_model.objects.using('login_db')
+def _signed_in_user(request):
+	"""The account of the signed-in Django session, or None. Never ids or names sent by the browser."""
+	user = getattr(request, 'user', None)
+	return user if user is not None and user.is_authenticated and user.is_active else None
 
-	user_id = str(payload.get('userId') or payload.get('id') or '').strip()
-	email = str(payload.get('email') or '').strip()
-	username = str(payload.get('username') or '').strip()
 
-	if user_id:
-		try:
-			user = queryset.filter(pk=int(user_id), is_active=True).first()
-			if user:
-				return user
-		except ValueError:
-			pass
-
-	if email:
-		user = queryset.filter(email__iexact=email, is_active=True).first()
-		if user:
-			return user
-
-	if username:
-		user = queryset.filter(username__iexact=username, is_active=True).first()
-		if user:
-			return user
-
-	return None
+def _own_activity_session(request, tracking_session_id: str) -> UserActivitySession | None:
+	user = _signed_in_user(request)
+	session = _get_activity_session(tracking_session_id)
+	return session if user and session and session.user_id == user.id else None
 
 
 def _sync_session_totals(session: UserActivitySession, now=None) -> None:
@@ -260,6 +248,10 @@ def login_view(request):
 	if not identifier or not password:
 		return HttpResponseBadRequest('identifier and password are required.')
 
+	failures_key = f'login-failures:{identifier.lower()}:{_client_ip(request) or ""}'
+	if (cache.get(failures_key) or 0) >= LOGIN_FAILURE_LIMIT:
+		return JsonResponse({'detail': 'Too many failed sign-ins. Wait 15 minutes and try again.'}, status=429)
+
 	user_model = get_user_model()
 	queryset = user_model.objects.using('login_db')
 	user = queryset.filter(email__iexact=identifier).first()
@@ -267,8 +259,11 @@ def login_view(request):
 		user = queryset.filter(username__iexact=identifier).first()
 
 	if not user or not check_password(password, user.password) or not user.is_active:
+		cache.add(failures_key, 0, LOGIN_FAILURE_WINDOW_SECONDS)
+		cache.incr(failures_key)
 		return JsonResponse({'detail': 'Invalid credentials.'}, status=401)
 
+	cache.delete(failures_key)
 	_start_server_session(request, user)
 	activity_session = _safe_create_activity_session(request, user, 'password')
 	return JsonResponse(_user_payload(user, 'password', activity_session))
@@ -284,7 +279,7 @@ def logout_view(request):
 	except json.JSONDecodeError:
 		payload = {}
 
-	session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	session = _own_activity_session(request, str(payload.get('trackingSessionId', '')).strip())
 	if session:
 		now = timezone.now()
 		session.logout_at = now
@@ -298,7 +293,6 @@ def logout_view(request):
 	return JsonResponse({'detail': 'Logged out.'})
 
 
-@csrf_exempt
 def activity_start_view(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -308,19 +302,21 @@ def activity_start_view(request):
 	except json.JSONDecodeError:
 		return HttpResponseBadRequest('Invalid JSON payload.')
 
-	existing_session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	user = _signed_in_user(request)
+	if user is None:
+		return JsonResponse({'detail': 'Sign in again to continue.'}, status=401)
+
+	existing_session = _own_activity_session(request, str(payload.get('trackingSessionId', '')).strip())
 	if existing_session:
 		return JsonResponse(_activity_session_payload(existing_session))
-
-	user = _find_user_from_payload(payload)
-	if user is None:
-		return JsonResponse({'detail': 'User not found.'}, status=404)
 
 	auth_provider = str(payload.get('authProvider') or 'existing_session').strip()[:50] or 'existing_session'
 	activity_session = _create_activity_session(request, user, auth_provider)
 	return JsonResponse(_activity_session_payload(activity_session), status=201)
 
 
+# Exempt: the page-close heartbeat comes from navigator.sendBeacon, which cannot send the CSRF header. The view
+# only records time on the signed-in account's own activity session.
 @csrf_exempt
 def activity_view(request):
 	if request.method != 'POST':
@@ -331,7 +327,9 @@ def activity_view(request):
 	except json.JSONDecodeError:
 		return HttpResponseBadRequest('Invalid JSON payload.')
 
-	session = _get_activity_session(str(payload.get('trackingSessionId', '')).strip())
+	if _signed_in_user(request) is None:
+		return JsonResponse({'detail': 'Sign in again to continue.'}, status=401)
+	session = _own_activity_session(request, str(payload.get('trackingSessionId', '')).strip())
 	if not session:
 		return JsonResponse({'detail': 'Activity session not found.'}, status=404)
 
@@ -388,53 +386,13 @@ def activity_view(request):
 
 
 def access_view(request):
+	"""The signed-in account's own access. Ids, emails or usernames in the request are ignored."""
 	if request.method != 'GET':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
-	user_id = str(request.GET.get('userId', '')).strip()
-	email = str(request.GET.get('email', '')).strip()
-	username = str(request.GET.get('username', '')).strip()
-	tracking_session_id = str(request.GET.get('trackingSessionId', '') or request.headers.get('X-KBC-Tracking-Session-Id', '')).strip()
-
-	# The frontend still sends explicit identifiers today because login is
-	# payload/localStorage based, not Django-session based. Header and tracking
-	# fallbacks make GET /api/auth/access/ safer, but login_db remains the source
-	# of truth for permissions.
-	if not user_id:
-		user_id = str(request.headers.get('X-KBC-User-Id', '')).strip()
-	if not email:
-		email = str(request.headers.get('X-KBC-User-Email', '')).strip()
-	if not username:
-		username = str(request.headers.get('X-KBC-Username', '')).strip()
-
-	if not user_id and not email and not username and tracking_session_id:
-		activity_session = _get_activity_session(tracking_session_id)
-		if activity_session:
-			user_id = str(activity_session.user_id or '').strip()
-			email = activity_session.email or ''
-			username = activity_session.username or ''
-
-	if not user_id and not email and not username:
-		return HttpResponseBadRequest('Provide one of userId, email, username, or trackingSessionId.')
-
-	user_model = get_user_model()
-	queryset = user_model.objects.using('login_db')
-	user = None
-
-	if user_id:
-		try:
-			user = queryset.filter(pk=int(user_id)).first()
-		except ValueError:
-			user = None
-
-	if user is None and email:
-		user = queryset.filter(email__iexact=email).first()
-
-	if user is None and username:
-		user = queryset.filter(username__iexact=username).first()
-
+	user = _signed_in_user(request)
 	if user is None:
-		return JsonResponse({'detail': 'User not found.'}, status=404)
+		return JsonResponse({'detail': 'Sign in again to continue.'}, status=401)
 
 	group_names = list(user.groups.using('login_db').values_list('name', flat=True))
 	return JsonResponse(

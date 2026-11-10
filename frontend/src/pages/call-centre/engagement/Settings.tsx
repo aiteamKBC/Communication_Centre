@@ -11,7 +11,7 @@ type Change = { id: number; previous: Values | null; value: Values; reason: stri
 type Data = {
   values: Values; defaults: Values; revision: number; set_up: boolean; not_set_up: string;
   reminder_types: { key: string; label: string }[];
-  sending: { configured: boolean; sender: string; missing: string[] };
+  sending: { configured: boolean; sender: string; missing: string[]; live_allowed: boolean };
   history: Change[];
 };
 
@@ -41,6 +41,10 @@ function changes(before: Values, after: Values, types: Map<string, string>) {
 const parseDays = (text: string) => text.split(',').map(part => part.trim()).filter(Boolean).map(Number);
 
 /** Director settings: the automatic reminder emails and whether email is really sent. Every save keeps its reason. */
+// Automatic reminders are not released yet: shown as "Coming soon" and locked. The backend sends none either
+// (AUTOMATIC_REMINDERS_AVAILABLE in callcentre/emails.py); release both together.
+const REMINDERS_AVAILABLE = false;
+
 export default function Settings({ csrf }: { csrf: string }) {
   const [data, setData] = useState<Data | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -76,7 +80,7 @@ export default function Settings({ csrf }: { csrf: string }) {
 
   const update = (patch: Partial<Values>) => { setDraft({ ...draft, ...patch }); setSaved(''); setError(''); };
   const readOnly = !data.set_up;
-  const goingLive = next.reminders_enabled && next.email_mode === 'live';
+  const goingLive = REMINDERS_AVAILABLE && next.reminders_enabled && next.email_mode === 'live';
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -107,24 +111,28 @@ export default function Settings({ csrf }: { csrf: string }) {
             ? `Microsoft 365 is ready. Emails go out as ${data.sending.sender}.`
             : `Microsoft 365 is not ready: add ${data.sending.missing.join(', ')} to the server settings (.env).`}
         </p>
+        {!data.sending.live_allowed && (
+          <p className="ec-alert" role="note">This server only records emails: CALLCENTRE_EMAIL_LIVE_ALLOWED is not set in its .env. Change the sending mode on the production server.</p>
+        )}
         <fieldset disabled={readOnly}>
           <legend>When an email is due</legend>
           <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'dry_run'} onChange={() => update({ email_mode: 'dry_run' })} /> Record only (dry run): nothing is sent, the email is kept on the case</label>
-          <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'live'} disabled={!data.sending.configured} onChange={() => update({ email_mode: 'live' })} /> Send for real (live)</label>
+          <label className="ec-choice"><input type="radio" name="email-mode" checked={draft.email_mode === 'live'} disabled={!data.sending.configured || !data.sending.live_allowed} onChange={() => update({ email_mode: 'live' })} /> Send for real (live)</label>
         </fieldset>
       </section>
 
       <section className="ec-card">
-        <h2>Automatic reminders</h2>
+        <h2>Automatic reminders {!REMINDERS_AVAILABLE && <span className="ec-tag amber">Coming soon</span>}</h2>
         <p className="ec-muted">Emails the case cycle sends to learners about their open cases, on the college template with the right booking link.</p>
-        <fieldset disabled={readOnly}>
+        {!REMINDERS_AVAILABLE && <p className="ec-alert" role="note">Automatic reminders are not available yet. No reminder emails are sent.</p>}
+        <fieldset disabled={readOnly || !REMINDERS_AVAILABLE}>
           <label className="ec-choice"><input type="checkbox" checked={draft.reminders_enabled} onChange={event => update({ reminders_enabled: event.target.checked })} /> Send automatic reminders</label>
           <div className="ec-form">
             <label>Email the learner on these days (0 = when the case opens)
               <input value={days} inputMode="numeric" aria-invalid={!daysValid} onChange={event => { setDays(event.target.value); setSaved(''); }} />
               {!daysValid && <small className="danger">Up to 10 whole numbers from 0 to 60, separated by commas.</small>}
             </label>
-            <label>Email the line manager and send to a manager on day (0 = never)
+            <label>Email the line manager on day (0 = never)
               <input type="number" min={0} max={60} value={draft.escalate_day} onChange={event => update({ escalate_day: Number(event.target.value) })} />
             </label>
             <label>Most emails per learner per day
@@ -147,14 +155,14 @@ export default function Settings({ csrf }: { csrf: string }) {
             </div>
           </fieldset>
         </fieldset>
-        <p className="ec-muted">Reminders go out when the case cycle runs. A cycle started with <code>--skip-emails</code> sends none.</p>
+        {REMINDERS_AVAILABLE && <p className="ec-muted">Reminders go out when the case cycle runs. A cycle started with <code>--skip-emails</code> sends none.</p>}
       </section>
 
       {!readOnly && (
         <section className="ec-card">
           <h2>Save changes</h2>
           {pending.length ? <ul>{pending.map(line => <li key={line}>{line}</li>)}</ul> : <p className="ec-muted">No changes yet.</p>}
-          {goingLive && pending.length > 0 && <p className="ec-alert" role="alert">Learners and line managers will receive real emails from {data.sending.sender}.</p>}
+          {goingLive && pending.length > 0 && <p className="ec-alert" role="alert">Learners and line managers will receive real emails from {data.sending.sender}. Only reminders that fall due from today are sent, not the backlog.</p>}
           <label>Why are you changing this?
             <input value={reason} maxLength={1000} onChange={event => setReason(event.target.value)} placeholder="For example: start reminders for missed lectures" />
           </label>

@@ -1,0 +1,36 @@
+{
+  "confirmedAsRequestedLmsSource": true,
+  "table": "curriculum.modules",
+  "sourceInspectionReadOnly": true,
+  "consistentCopyIsolation": "REPEATABLE READ, READ ONLY",
+  "records": 332,
+  "columns": {
+    "module_catalogue_id": "character varying, primary key",
+    "programme_id": "character varying",
+    "programme_name": "character varying",
+    "title": "text",
+    "start_date": "date",
+    "end_date": "date"
+  },
+  "verifiedRelationships": [
+    "curriculum.modules.programme_id -> curriculum.programmes.programme_id"
+  ],
+  "displayMapping": {
+    "Programme": "modules.programme_name",
+    "Module": "modules.title",
+    "Start Date": "modules.start_date",
+    "End Date": "modules.end_date"
+  },
+  "traceIdentifiers": ["module_catalogue_id", "programme_id"],
+  "orphanedProgrammeReferences": 0,
+  "missingValues": {"programme_name": 0, "title": 0, "start_date": 134, "end_date": 144},
+  "runtimeSource": "Isolated local six-column copy with a separate SELECT-only reader",
+  "notes": [
+    "Programme is stored directly in modules; no join or group/session date inference is needed.",
+    "All source rows are selected without live Training Plan filters or pagination.",
+    "Missing dates remain null; date-only values are rendered as ISO dates without timezone conversion.",
+    "Only the six required fields are copied; staff, learners, descriptions and notes are excluded.",
+    "The supplied original owner connection is never used by the running application.",
+    "No original database was written to or migrated."
+  ]
+}

@@ -1,4 +1,5 @@
 from django.urls import path
+from .training_plan_lms_reference import training_plan_lms_reference, training_plan_lms_tutors, training_plan_lms_cohorts, training_plan_lms_session_counts, training_plan_lms_holidays
 
 from .views import dashboard_card_detail, dashboard_cards, dashboard_cards_reorder
 
@@ -23,6 +24,11 @@ urlpatterns = [
 	path('upload-image/', upload_image, name='upload-image'),
 	path('feedback/', feedback, name='feedback'),
     path('training-plan/', training_plan, name='training-plan'),
+    path('training-plan/lms-reference/', training_plan_lms_reference, name='training-plan-lms-reference'),
+    path('training-plan/lms-reference/tutors/', training_plan_lms_tutors, name='training-plan-lms-tutors'),
+    path('training-plan/lms-reference/cohorts/', training_plan_lms_cohorts, name='training-plan-lms-cohorts'),
+    path('training-plan/lms-reference/session-counts/', training_plan_lms_session_counts, name='training-plan-lms-session-counts'),
+    path('training-plan/lms-reference/holidays/', training_plan_lms_holidays, name='training-plan-lms-holidays'),
     path('training-plan-bootstrap/', training_plan_bootstrap, name='training-plan-bootstrap'),
     path('training-plan/sessions/<int:session_id>/', training_plan_session_detail, name='training-plan-session-detail'),
     path('training-plan/sessions/<int:session_id>/coverage/', training_plan_session_coverage, name='training-plan-session-coverage'),

@@ -1,22 +1,16 @@
-import { useCallback, useState, useRef, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import * as XLSX from 'xlsx';
+import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
+import './training-plan.css';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
 import type { ProgrammeGroup, CohortRow, Holiday, ZoomLevel, MKey, ModuleValue, WeekDayKey, CustomModule, CustomProgram, CatalogModule, SessionCoverage, SessionKsbMapping, KsbProfile, KsbProfileItem, TutorProfile, CoachProfile, ModuleBlock } from './types';
 import { MS, getModuleMeta } from './data';
 import GanttTimeline from './components/GanttTimeline';
-import CohortModal, { type ModulePartialUpdatePayload } from './components/CohortModal';
-import HolidayManager from './components/HolidayManager';
-import AddModuleModal from './components/AddModuleModal';
-import AddModuleCatalogModal from './components/AddModuleCatalogModal';
-import ManageModulesModal from './components/ManageModulesModal';
-import AddProgramModal from './components/AddProgramModal';
-import ManageProgramModal from './components/ManageProgramModal';
-import KsbProfilesManager from './components/KsbProfilesManager';
-import ScheduleTable, { type SessionScheduleUpdatePayload } from '@/pages/apprenticeships-timeline/components/ScheduleTable';
-import TutorProfiles from './components/TutorProfiles';
-import CoachProfiles from './components/CoachProfiles';
+import LmsReference, { type TrainingPlanSource } from './components/LmsReference';
+import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
+import type { ModulePartialUpdatePayload } from './components/CohortModal';
+import type { SessionScheduleUpdatePayload } from './components/ScheduleTable';
 import DateField from './components/DateField';
 import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
@@ -27,12 +21,25 @@ import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName }
 import { buildCoachProfilesFromGroups } from './coachProfiles';
 import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
 
+const ModuleComparisonModal = lazy(() => import('./components/ModuleComparisonModal'));
+const CohortModal = lazy(() => import('./components/CohortModal'));
+const HolidayManager = lazy(() => import('./components/HolidayManager'));
+const AddModuleModal = lazy(() => import('./components/AddModuleModal'));
+const AddModuleCatalogModal = lazy(() => import('./components/AddModuleCatalogModal'));
+const ManageModulesModal = lazy(() => import('./components/ManageModulesModal'));
+const AddProgramModal = lazy(() => import('./components/AddProgramModal'));
+const ManageProgramModal = lazy(() => import('./components/ManageProgramModal'));
+const KsbProfilesManager = lazy(() => import('./components/KsbProfilesManager'));
+const ScheduleTable = lazy(() => import('./components/ScheduleTable'));
+const TutorProfiles = lazy(() => import('./components/TutorProfiles'));
+const CoachProfiles = lazy(() => import('./components/CoachProfiles'));
+
 type ModalState =
   | { open: false }
   | { open: true; mode: 'add'; defaultGroupIdx: number }
   | { open: true; mode: 'add'; defaultGroupIdx: number; lockGroupSelection: true }
   | { open: true; mode: 'add'; defaultGroupIdx: number; prefillTutorProfileId: string; prefillModule: ModuleValue; lockGroupSelection?: true }
-  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string; prefillTutorProfileId?: string; prefillModule?: ModuleValue };
+  | { open: true; mode: 'edit'; groupIdx: number; rowIdx: number; row: CohortRow; expandedBlockId?: string; openLmsMatching?: boolean; prefillTutorProfileId?: string; prefillModule?: ModuleValue };
 
 type ProgramModalState =
   | { open: false }
@@ -144,6 +151,7 @@ interface ModuleMonthSummary {
 }
 
 interface ModuleMonthlySummary {
+  source?: 'LMS';
   key: string;
   programmeId: string;
   cohortId: string;
@@ -224,6 +232,7 @@ const HOLIDAY_MARKER_PREFIX = '__holiday_ids:';
 const COHORT_COLOR_MARKER_PREFIX = '__cohort_color:';
 const MODULE_COLOR_MARKER_PREFIX = '__module_color:';
 const MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:';
+const LMS_MODULE_MATCH_MARKER_PREFIX = '__lms_source_module_id:';
 const COHORT_END_DATE_MARKER_PREFIX = '__cohort_end_date:';
 const GROUP_NAME_MARKER_PREFIX = '__group_name:';
 const COACH_NAME_MARKER_PREFIX = '__coach_name:';
@@ -333,9 +342,9 @@ function filterSessionKsbMappingForProfile(mapping: SessionKsbMapping | undefine
   };
 }
 
-function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; moduleCatalogueId?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
+function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?: string; moduleColor?: string; moduleCatalogueId?: string; lmsSourceModuleId?: string; cohortEndDate?: string; groupName?: string; coachName?: string; programId?: string; cohortId?: string; groupId?: string; blockId?: string; notes: string } {
   const value = (raw || '').trim();
-  if (!value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
+  if (!value.startsWith(LMS_MODULE_MATCH_MARKER_PREFIX) && !value.startsWith(HOLIDAY_MARKER_PREFIX) && !value.startsWith(COHORT_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_COLOR_MARKER_PREFIX) && !value.startsWith(MODULE_CATALOGUE_ID_MARKER_PREFIX) && !value.startsWith(COHORT_END_DATE_MARKER_PREFIX) && !value.startsWith(GROUP_NAME_MARKER_PREFIX) && !value.startsWith(COACH_NAME_MARKER_PREFIX) && !value.startsWith(PROGRAM_ID_MARKER_PREFIX) && !value.startsWith(COHORT_ID_MARKER_PREFIX) && !value.startsWith(GROUP_ID_MARKER_PREFIX) && !value.startsWith(BLOCK_ID_MARKER_PREFIX)) {
     return { holidayIds: [], cohortColor: undefined, moduleColor: undefined, moduleCatalogueId: undefined, cohortEndDate: undefined, groupName: undefined, coachName: undefined, programId: undefined, cohortId: undefined, groupId: undefined, blockId: undefined, notes: raw || '' };
   }
 
@@ -345,6 +354,7 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let cohortColor: string | undefined;
   let moduleColor: string | undefined;
   let moduleCatalogueId: string | undefined;
+  let lmsSourceModuleId: string | undefined;
   let cohortEndDate: string | undefined;
   let groupName: string | undefined;
   let coachName: string | undefined;
@@ -355,6 +365,10 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
   let readingMarkers = true;
 
   lines.forEach(line => {
+    if (readingMarkers && line.startsWith(LMS_MODULE_MATCH_MARKER_PREFIX)) {
+      lmsSourceModuleId = line.slice(LMS_MODULE_MATCH_MARKER_PREFIX.length).trim() || undefined;
+      return;
+    }
     if (readingMarkers && line.startsWith(HOLIDAY_MARKER_PREFIX)) {
       line
         .slice(HOLIDAY_MARKER_PREFIX.length)
@@ -429,10 +443,10 @@ function splitPersistedNotes(raw: string): { holidayIds: string[]; cohortColor?:
     noteLines.push(line);
   });
 
-  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, moduleCatalogueId, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
+  return { holidayIds: Array.from(holidayIds), cohortColor, moduleColor, moduleCatalogueId, lmsSourceModuleId, cohortEndDate, groupName, coachName, programId, cohortId, groupId, blockId, notes: noteLines.join('\n') };
 }
 
-function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string, moduleCatalogueId?: string): string {
+function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: string, moduleColor?: string, cohortEndDate?: string, groupName?: string, coachName?: string, programId?: string, cohortId?: string, groupId?: string, blockId?: string, moduleCatalogueId?: string, lmsSourceModuleId?: string): string {
   const markers: string[] = [];
   if (programId) {
     markers.push(`${PROGRAM_ID_MARKER_PREFIX}${programId}`);
@@ -457,6 +471,9 @@ function joinPersistedNotes(notes: string, holidayIds: string[], cohortColor?: s
   }
   if (moduleCatalogueId) {
     markers.push(`${MODULE_CATALOGUE_ID_MARKER_PREFIX}${moduleCatalogueId}`);
+  }
+  if (lmsSourceModuleId) {
+    markers.push(`${LMS_MODULE_MATCH_MARKER_PREFIX}${lmsSourceModuleId}`);
   }
   if (cohortEndDate) {
     markers.push(`${COHORT_END_DATE_MARKER_PREFIX}${cohortEndDate}`);
@@ -656,6 +673,7 @@ function buildGroupsFromTrainingRows(
       trainingPlanId: item.id ? String(item.id) : undefined,
       groupId: parsedNotes.groupId,
       moduleCatalogueId: parsedNotes.moduleCatalogueId,
+      lmsSourceModuleId: parsedNotes.lmsSourceModuleId,
       mod: modKey,
       groupName: item.groupName || parsedNotes.groupName,
       coachName: item.coachName || parsedNotes.coachName,
@@ -717,7 +735,7 @@ function flattenGroupsForApi(groups: ProgrammeGroup[], tutorProfiles: TutorProfi
         ksbProfileId: row.ksbProfileId || '',
         programmeDisplayOrder: groupIndex,
         cohortDisplayOrder: rowIndex,
-        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id, block.moduleCatalogueId),
+        notes: joinPersistedNotes(block.notes || '', row.holidayIds || [], row.color, block.color, row.endDateLbl, block.groupName, block.coachName, group.id, row.id, block.groupId, block.id, block.moduleCatalogueId, block.lmsSourceModuleId),
       })),
     ),
   );
@@ -744,6 +762,7 @@ function cloneModuleBlock(block: ModuleBlock, patch: Partial<ModuleBlock> = {}):
     ...patch,
     id: patch.id || nextCloneId('blk'),
     trainingPlanId: undefined,
+    lmsSourceModuleId: undefined,
     groupId: patch.groupId ?? block.groupId ?? nextCloneId('grp'),
     days: [...(patch.days ?? block.days ?? [])],
     sessionKsbMappings: normalizeSessionKsbMappings(patch.sessionKsbMappings ?? block.sessionKsbMappings, sessions),
@@ -914,7 +933,8 @@ function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: Cu
   );
 }
 
-function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+async function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+  const XLSX = await import('xlsx');
   const rows = buildTrainingPlanExportRows(groups, customModules, ksbProfiles);
   const worksheet = XLSX.utils.json_to_sheet(rows);
   worksheet['!cols'] = [
@@ -1136,9 +1156,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     ['Group', summary.groupName],
     ['Tutor', summary.tutor],
     ['Coach', summary.coach],
-    ['Planned sessions', String(summary.totalSessions)],
-    ['Skipped weeks', String(totalClashedSessions)],
-    ['Delivery weeks', String(totalWeeks)],
+    ['Planned sessions', summary.source === 'LMS' ? 'Not captured' : String(summary.totalSessions)],
+    ['Skipped weeks', summary.source === 'LMS' ? 'Not captured' : String(totalClashedSessions)],
+    ['Delivery weeks', summary.source === 'LMS' ? 'Not captured' : String(totalWeeks)],
   ];
   const renderKsbBadges = (mapping: SessionKsbMapping) => {
     const rows = [
@@ -1159,6 +1179,10 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
     `;
   };
   const monthRows = summary.months.map(month => {
+    if (summary.source === 'LMS') {
+      const bounds = monthBounds(month.key);
+      return `<tr><td>${escapeAlertHtml(month.label)}</td><td>${escapeAlertHtml(summary.moduleStartDate > bounds.start ? summary.moduleStartDate : bounds.start)}</td><td>${escapeAlertHtml(summary.moduleEndDate < bounds.end ? summary.moduleEndDate : bounds.end)}</td><td>${escapeAlertHtml(summary.tutor)}</td></tr>`;
+    }
     const clashedCount = month.sessions.filter(session => session.holidays.length > 0).length;
     const validCount = month.sessions.filter(session => !session.isClash).length;
     const sessionsHtml = month.sessions.length
@@ -1268,7 +1292,7 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
         <h1>${escapeAlertHtml(summary.moduleName)}</h1>
         <div class="subtitle">
           ${escapeAlertHtml(summary.programme)} - ${escapeAlertHtml(summary.cohort)}<br />
-          ${escapeAlertHtml(summary.dateRange)}
+          ${escapeAlertHtml(summary.dateRange)}${summary.source === 'LMS' ? '<br />Source: LMS. Session schedules, holidays, coaches and KSB mappings were not captured.' : ''}
         </div>
       </div>
       <div class="generated">
@@ -1298,9 +1322,9 @@ function buildMonthlySummaryPrintHtml(summary: ModuleMonthlySummary): string {
       <thead>
         <tr>
           <th>Month</th>
-          <th>Sessions</th>
-          <th>Session Dates</th>
-          <th>Holidays</th>
+          <th>${summary.source === 'LMS' ? 'Start Date' : 'Sessions'}</th>
+          <th>${summary.source === 'LMS' ? 'End Date' : 'Session Dates'}</th>
+          <th>${summary.source === 'LMS' ? 'Tutor' : 'Holidays'}</th>
         </tr>
       </thead>
       <tbody>${monthRows}</tbody>
@@ -1351,6 +1375,15 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
         const meta = resolveTrainingModuleMeta(block, customModules);
         const catalogModule = resolveCatalogModuleForBlock(block, meta.lbl, catalogModules);
         const months = new Map<string, ModuleMonthSummary>();
+        if (block.source === 'LMS') {
+          // An LMS range is a delivery interval, not evidence of weekly sessions.
+          const [startYear, startMonth] = block.startDate.split('-').map(Number);
+          const [endYear, endMonth] = block.endDate.split('-').map(Number);
+          for (let index = startYear * 12 + startMonth - 1; index <= endYear * 12 + endMonth - 1; index++) {
+            const key = `${Math.floor(index / 12).toString().padStart(4, '0')}-${(index % 12 + 1).toString().padStart(2, '0')}`;
+            months.set(key, { key, label: formatPlanMonth(key), sessions: [], holidays: [] });
+          }
+        }
         const scopedHolidays = getRowActiveHolidays(row, holidays);
         const sessionPlan = buildHolidayAdjustedSessionPlan(block, scopedHolidays);
         const affectedSessions = sessionPlan.originalClashedSessions;
@@ -1463,6 +1496,7 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
         });
 
         return {
+          source: block.source,
           key: `${group.id}-${row.id}-${block.id}`,
           programmeId: group.id,
           cohortId: row.id,
@@ -1475,8 +1509,8 @@ function buildMonthlyModuleSummaries(groups: ProgrammeGroup[], holidays: Holiday
           groupName: block.groupName || 'No group name',
           moduleStartDate: block.startDate,
           moduleEndDate: sessionPlan.effectiveEndDate,
-          tutor: block.tutor || 'TBD',
-          coach: block.coachName || 'TBD',
+          tutor: block.tutor || (block.source === 'LMS' ? 'Not assigned in LMS' : 'TBD'),
+          coach: block.coachName || (block.source === 'LMS' ? 'Not provided in LMS' : 'TBD'),
           dateRange: `${formatPlanDate(block.startDate)} - ${formatPlanDate(sessionPlan.effectiveEndDate)}`,
           totalSessions: block.sessions || 0,
           scheduledSessions: sortedMonths.reduce((count, month) => count + month.sessions.filter(session => !session.isClash).length, 0),
@@ -1600,6 +1634,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
             <button
               type="button"
               onClick={handleClose}
+              aria-label="Close module overview dialog"
               className="flex h-10 w-10 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-slate-100 hover:text-kbc-navy"
             >
               <i className="ri-close-line text-lg" />
@@ -1607,14 +1642,15 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
           </div>
         </div>
 
+        {summary.source === 'LMS' && <p className="border-b border-teal-100 bg-teal-50 px-5 py-3 text-xs text-teal-900">LMS captured date range. Session schedules, holidays, coaches and KSB mappings were not captured; session counts are unavailable.</p>}
         <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 text-xs text-gray-500 sm:grid-cols-3 lg:grid-cols-6">
           {[
             ['ri-group-line', 'Group', summary.groupName],
             ['ri-user-3-line', 'Tutor', summary.tutor],
             ['ri-user-star-line', 'Coach', summary.coach],
             ['ri-calendar-check-line', 'Planned sessions', summary.totalSessions],
-            ['ri-alert-line', 'Skipped weeks', totalClashedSessions],
-            ['ri-route-line', 'Delivery weeks', totalWeeks],
+            ['ri-alert-line', 'Skipped weeks', summary.source === 'LMS' ? 'Not captured' : totalClashedSessions],
+            ['ri-route-line', 'Delivery weeks', summary.source === 'LMS' ? 'Not captured' : totalWeeks],
           ].map(([icon, label, value]) => (
             <div key={label} className="flex min-h-[58px] items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${label === 'Skipped weeks' && totalClashedSessions ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-kbc-navy'}`}>
@@ -1633,7 +1669,7 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
             {isMonthly ? 'Monthly Module Breakdown' : 'Subprogramme Students'}
           </span>
           <span className="text-xs font-semibold text-slate-400">
-            {summary.scheduledSessions} scheduled / {summary.totalSessions} planned
+            {summary.source === 'LMS' ? 'Source: LMS · Captured dates' : `${summary.scheduledSessions} scheduled / ${summary.totalSessions} planned`}
           </span>
         </div>
         {isMonthly && totalClashedSessions > 0 && (
@@ -1647,7 +1683,17 @@ function MonthlyModuleSummaryModal({ summary, mode = 'monthly', onClose, onBack 
           </div>
         )}
 
-        {isMonthly && (
+        {isMonthly && summary.source === 'LMS' && <div className="min-h-0 flex-1 overflow-auto p-5">
+          <table className="w-full text-left text-xs">
+            <caption className="sr-only">LMS monthly delivery dates</caption>
+            <thead className="bg-slate-100 text-slate-500"><tr><th className="px-3 py-2">Month</th><th className="px-3 py-2">Start Date</th><th className="px-3 py-2">End Date</th><th className="px-3 py-2">Tutor</th></tr></thead>
+            <tbody>{selectedMonths.map(month => {
+              const bounds = monthBounds(month.key);
+              return <tr key={month.key} className="border-t border-slate-100"><th scope="row" className="px-3 py-3">{month.label}</th><td className="px-3 py-3">{summary.moduleStartDate > bounds.start ? summary.moduleStartDate : bounds.start}</td><td className="px-3 py-3">{summary.moduleEndDate < bounds.end ? summary.moduleEndDate : bounds.end}</td><td className="px-3 py-3">{summary.tutor}</td></tr>;
+            })}</tbody>
+          </table>
+        </div>}
+        {isMonthly && summary.source !== 'LMS' && (
         <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <table className="min-w-full text-left text-xs">
@@ -2156,11 +2202,12 @@ function ModuleOverviewStudentsTab({
     return () => onRegisterSave?.(null);
   });
 
-  const exportLearnerMappingExcel = () => {
+  const exportLearnerMappingExcel = async () => {
     const exportLearners = selectedLearnerIds.size
       ? liveLearners.filter(learner => selectedLearnerIds.has(learnerIdentity(learner)))
       : learners;
     if (!exportLearners.length) return;
+    const XLSX = await import('xlsx');
 
     const headers = [
       'Module',
@@ -2594,12 +2641,27 @@ function KsbBadges({ mapping }: { mapping: SessionKsbMapping }) {
   );
 }
 
+function MonthlyPlanOverview({ groups, holidays, customModules, catalogModules, ksbProfiles }: {
+  groups: ProgrammeGroup[];
+  holidays: Holiday[];
+  customModules: CustomModule[];
+  catalogModules: CatalogModule[];
+  ksbProfiles: KsbProfile[];
+}) {
+  const summaries = useMemo(
+    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
+    [groups, holidays, customModules, catalogModules, ksbProfiles],
+  );
+  return <MonthlyModuleBreakdown summaries={summaries} />;
+}
+
 function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary[] }) {
+  const isLms = summaries.length > 0 && summaries.every(summary => summary.source === 'LMS');
   type ProgrammeSummaryGroup = { programme: string; color: string; summaries: ModuleMonthlySummary[]; countedSessions: number; affectedSessions: number };
   const totalSummaryClashes = (summary: ModuleMonthlySummary) => summary.affectedSessions + summary.extensionAffectedSessions;
   const [selectedSummary, setSelectedSummary] = useState<ModuleMonthlySummary | null>(null);
   const [selectedProgrammeGroup, setSelectedProgrammeGroup] = useState<ProgrammeSummaryGroup | null>(null);
-  const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(false);
+  const [isBreakdownCollapsed, setIsBreakdownCollapsed] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [programmeFilter, setProgrammeFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
@@ -2685,6 +2747,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
         <button
           type="button"
           onClick={() => setIsBreakdownCollapsed(value => !value)}
+          aria-expanded={!isBreakdownCollapsed}
           className={`flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50 ${isBreakdownCollapsed ? '' : 'border-b border-gray-100'}`}
         >
           <span className="flex min-w-0 items-center gap-3">
@@ -2693,7 +2756,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-bold text-kbc-navy">Monthly Module Breakdown</span>
-              <span className="mt-0.5 block text-xs text-gray-400">Click any module to view monthly sessions, holidays, tutors, and coaches.</span>
+              <span className="mt-0.5 block text-xs text-gray-400">{summaries.every(summary => summary.source === 'LMS') ? 'Review LMS modules by month, cohort, group and tutor. Session schedules were not captured.' : 'Click any module to view monthly sessions, holidays, tutors, and coaches.'}</span>
             </span>
           </span>
           <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
@@ -2782,7 +2845,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                     <span className="mt-0.5 block text-gray-400">{group.summaries.length} module{group.summaries.length !== 1 ? 's' : ''}</span>
                   </span>
                   <span className="rounded-md bg-white px-2 py-1 text-center font-bold text-kbc-navy">
-                    {group.countedSessions}
+                    {isLms ? 'N/A' : group.countedSessions}
                   </span>
                   <span
                     className={`rounded-md px-2 py-1 text-center font-bold ${group.affectedSessions ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
@@ -2793,7 +2856,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                         <i className="ri-alert-line" />
                         {group.affectedSessions}
                       </span>
-                    ) : '0'}
+                    ) : isLms ? 'N/A' : '0'}
                   </span>
                   <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
                     <i className="ri-arrow-right-s-line text-base" />
@@ -2821,7 +2884,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                   <h3 className="truncate text-base font-extrabold text-kbc-navy">{selectedProgrammeGroup.programme}</h3>
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
-                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''} - {selectedProgrammeGroup.countedSessions} valid counted sessions
+                  {selectedProgrammeGroup.summaries.length} module{selectedProgrammeGroup.summaries.length !== 1 ? 's' : ''}{isLms ? ' - LMS captured dates' : ` - ${selectedProgrammeGroup.countedSessions} valid counted sessions`}
                 </p>
               </div>
               <button
@@ -2835,9 +2898,9 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
 
             <div className="grid gap-2 border-y border-slate-100 bg-slate-50 px-5 py-3 text-xs text-gray-500 sm:grid-cols-3">
               <span><strong className="text-gray-700">Modules:</strong> {selectedProgrammeGroup.summaries.length}</span>
-              <span><strong className="text-gray-700">Valid counted sessions:</strong> {selectedProgrammeGroup.countedSessions}</span>
+              <span><strong className="text-gray-700">Valid counted sessions:</strong> {isLms ? 'Not captured' : selectedProgrammeGroup.countedSessions}</span>
               <span className={selectedProgrammeGroup.affectedSessions ? 'font-bold text-amber-700' : 'text-emerald-700'}>
-                <strong>Holiday clashes:</strong> {selectedProgrammeGroup.affectedSessions}
+                <strong>Holiday clashes:</strong> {isLms ? 'Not captured' : selectedProgrammeGroup.affectedSessions}
               </span>
             </div>
 
@@ -2909,7 +2972,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                       <span className="block truncate"><strong className="text-gray-700">Tutor:</strong> {summary.tutor}</span>
                     </span>
                     <span className="rounded-md px-2 py-1 text-center font-bold" style={{ background: summary.color, color: summary.textColor }}>
-                      {summary.countedSessions}
+                      {isLms ? 'N/A' : summary.countedSessions}
                     </span>
                     <span
                       className={`rounded-md px-2 py-1 text-center font-bold ${clashes ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
@@ -2920,7 +2983,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                           <i className="ri-alert-line" />
                           {clashes}
                         </span>
-                      ) : '0'}
+                      ) : isLms ? 'N/A' : '0'}
                     </span>
                     <span className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-kbc-navy">
                       <i className="ri-external-link-line text-sm" />
@@ -3049,6 +3112,8 @@ export default function ApprenticeshipTimeline() {
   const [showAddModule,  setShowAddModule]  = useState(false);
   const [showAddCatalogModule, setShowAddCatalogModule] = useState(false);
   const [showManageModules, setShowManageModules] = useState(false);
+  const [showModuleComparison, setShowModuleComparison] = useState(false);
+  const [trainingPlanSource, setTrainingPlanSource] = useState<TrainingPlanSource>('current');
   const [showKsbProfiles, setShowKsbProfiles] = useState(false);
   const [initialManageModuleId, setInitialManageModuleId] = useState<number | null>(null);
   const [returnEditChoice, setReturnEditChoice] = useState<EditChoiceState | null>(null);
@@ -5111,9 +5176,9 @@ export default function ApprenticeshipTimeline() {
     }
 
     const requestPayload: Record<string, unknown> = { ...payload };
-    if ('notes' in payload) {
+    if ('notes' in payload || 'lmsSourceModuleId' in payload) {
       requestPayload.notes = joinPersistedNotes(
-        payload.notes || '',
+        'notes' in payload ? payload.notes || '' : targetBlock.notes || '',
         targetRow?.holidayIds || [],
         targetRow?.color,
         typeof payload.color === 'string' ? payload.color : targetBlock.color,
@@ -5124,6 +5189,8 @@ export default function ApprenticeshipTimeline() {
         targetRow?.id,
         targetBlock.groupId,
         targetBlock.id,
+        targetBlock.moduleCatalogueId,
+        'lmsSourceModuleId' in payload ? payload.lmsSourceModuleId : targetBlock.lmsSourceModuleId,
       );
     }
 
@@ -5145,6 +5212,7 @@ export default function ApprenticeshipTimeline() {
               tutorProfileId: updatedItem?.tutorProfileId || payload.tutorProfileId || block.tutorProfileId,
               notes: 'notes' in payload ? payload.notes : block.notes,
               color: typeof payload.color === 'string' ? payload.color : block.color,
+              lmsSourceModuleId: 'lmsSourceModuleId' in payload ? payload.lmsSourceModuleId || undefined : block.lmsSourceModuleId,
             };
           }),
         }),
@@ -5171,6 +5239,22 @@ export default function ApprenticeshipTimeline() {
       await kbcSwal.fire({ title: 'Module Not Saved', html: message, icon: 'error', confirmButtonText: 'OK' });
       return false;
     }
+  };
+
+  const saveLmsModuleMatch: SaveLmsModuleMatch = async (current, sourceModuleId) => {
+    if (/[\r\n]/.test(sourceModuleId)) throw new Error('The LMS module ID is invalid.');
+    const groupIdx = groups.findIndex(programme => programme.id === current.programme.id);
+    const rowIdx = groups[groupIdx]?.rows.findIndex(cohort => cohort.id === current.cohort.id) ?? -1;
+    if (groupIdx < 0 || rowIdx < 0) throw new Error('The current module is no longer available. Reload and retry.');
+    const duplicate = sourceModuleId && groups.some(programme => programme.rows.some(cohort => cohort.blks.some(block =>
+      block.lmsSourceModuleId === sourceModuleId
+      && !(programme.id === current.programme.id && cohort.id === current.cohort.id && block.id === current.block.id))));
+    if (duplicate) throw new Error('This LMS module is already matched to another current module. Remove that match first.');
+    const saved = await updateModulePartial(groupIdx, rowIdx, current.block.id, { lmsSourceModuleId: sourceModuleId });
+    if (saved) setModal(previous => previous.open && previous.mode === 'edit' && previous.groupIdx === groupIdx && previous.rowIdx === rowIdx
+      ? { ...previous, row: { ...previous.row, blks: previous.row.blks.map(block => block.id === current.block.id
+        ? { ...block, lmsSourceModuleId: sourceModuleId || undefined } : block) } } : previous);
+    return saved;
   };
 
   const handleDeleteRow = async (groupIdx: number, rowIdx: number) => {
@@ -6484,7 +6568,7 @@ export default function ApprenticeshipTimeline() {
 
     const today = new Date();
     const stamp = `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, '0')}-${`${today.getDate()}`.padStart(2, '0')}`;
-    downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
+    await downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
   };
   const selectedProgram = programModal.open && programModal.mode === 'edit'
     ? (() => {
@@ -6529,6 +6613,8 @@ export default function ApprenticeshipTimeline() {
     [resolveEditChoiceDetails, visibleEditChoice],
   );
 
+  const resolvedTutorProfiles = useMemo(() => buildTutorProfilesFromGroups(groups, tutorProfiles), [groups, tutorProfiles]);
+  const resolvedCoachProfiles = useMemo(() => buildCoachProfilesFromGroups(groups, coachProfiles), [groups, coachProfiles]);
   const todaySessions = useMemo(() => {
     const today = new Date();
     const todayKey = DAY_NAMES[today.getDay()];
@@ -6558,13 +6644,13 @@ export default function ApprenticeshipTimeline() {
 
     return sessions;
   }, [groups]);
-  const monthlyModuleSummaries = useMemo(
-    () => buildMonthlyModuleSummaries(groups, holidays, customModules, catalogModules, ksbProfiles),
-    [catalogModules, customModules, groups, holidays, ksbProfiles],
-  );
   const openMonthlySummary = (groupId: string, rowId: string, blockId: string, mode: ModuleOverviewMode = 'monthly', overviewChoiceDetails?: ModuleOverviewChoiceDetails) => {
-    const targetKey = `${groupId}-${rowId}-${blockId}`;
-    const summary = monthlyModuleSummaries.find(item => item.key === targetKey);
+    const group = groups.find(item => item.id === groupId);
+    const row = group?.rows.find(item => item.id === rowId);
+    const block = row?.blks.find(item => item.id === blockId);
+    if (!group || !row || !block) return;
+    const [summary] = buildMonthlyModuleSummaries([{ ...group, rows: [{ ...row, blks: [block] }] }],
+      holidays, customModules, catalogModules, ksbProfiles);
     if (summary) {
       setSelectedMonthlySummary({ summary, mode, overviewChoiceDetails });
     }
@@ -6578,14 +6664,14 @@ export default function ApprenticeshipTimeline() {
   };
 
   return (
-    <div className="min-h-screen bg-kbc-bg font-sans">
+    <div className="training-plan-page min-h-screen bg-kbc-bg font-sans">
       <TopNav />
 
       {/* ── PAGE HEADER ─────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-screen-xl mx-auto px-3 sm:px-4 md:px-6 py-3 sm:py-4">
+      <div className="tp-page-header bg-white border-b border-gray-200">
+        <div className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-3 sm:py-4">
           {/* Breadcrumb */}
-          <div className="flex items-center gap-1.5 mb-3 text-xs text-gray-400">
+          <div className="tp-breadcrumb flex items-center gap-1.5 mb-3 text-xs text-gray-400">
             <Link to="/" className="hover:text-kbc-navy transition-colors cursor-pointer">Home</Link>
             <i className="ri-arrow-right-s-line" />
             <Link to="/events" className="hover:text-kbc-navy transition-colors cursor-pointer">Events</Link>
@@ -6593,182 +6679,233 @@ export default function ApprenticeshipTimeline() {
             <span className="text-kbc-navy font-semibold">Training Plan</span>
           </div>
 
-          <div className="flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#1B2A4A' }}>
-                <i className="ri-time-line text-white text-base" />
-              </div>
-              <div>
-                <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
-                  Apprenticeships Training Plan
-                </h1>
-                <p className="text-xs text-gray-400 mt-0.5">Programme Structure 2025 – 2027</p>
-              </div>
-            </div>
+          <div className="tp-header-overview">
+            <div className="tp-header-summary">
+              <div className="tp-header-content flex items-start justify-between gap-3 sm:gap-4 flex-wrap xl:flex-nowrap">
+                <div className="tp-title-row flex items-center gap-3 min-w-0">
+                  <div className="tp-title-icon w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                    <GraduationCap size={25} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <p className="tp-eyebrow">Learning &amp; delivery</p>
+                    <h1 className="text-base font-extrabold text-kbc-navy leading-tight">
+                      Apprenticeships Training Plan
+                    </h1>
+                    <p className="tp-title-meta">
+                      <span>Programme structure</span>
+                      <span className="tp-period-badge"><CalendarRange size={13} aria-hidden="true" />2025 – 2027</span>
+                    </p>
+                  </div>
+                </div>
 
-            <div className="training-plan-action-row w-full md:w-auto md:flex md:flex-wrap md:overflow-visible md:pb-0 md:ml-3">
-              {[
-                { icon: 'ri-book-open-line',  label: `${groups.length} Programmes` },
-                { icon: 'ri-group-line',       label: `${totalCohorts} Cohorts` },
-                { icon: 'ri-team-line',        label: `${totalGroups} Groups` },
-                { icon: 'ri-puzzle-line',      label: `${totalModules} Modules` },
-                { icon: 'ri-stack-line',       label: `${totalSessions} Sessions` },
-                { icon: 'ri-calendar-event-line', label: `${holidayCount} Holidays` },
-                { icon: 'ri-live-line',        label: 'Apr 2026 Live' },
-              ].map((s, i) => (
-                <span key={i} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border"
-                  style={{ background: '#F0F4FF', color: '#2E4482', borderColor: '#D5DFF7' }}>
-                  <i className={`${s.icon} text-xs`} />
-                  {s.label}
-                </span>
-              ))}
-            </div>
+                <div className="tp-stat-grid" role="group" aria-label="Training Plan overview" aria-busy={isInitialProgrammesLoading}>
+                  {[
+                    { icon: BookOpen, value: groups.length, label: 'Programmes' },
+                    { icon: GraduationCap, value: totalCohorts, label: 'Cohorts' },
+                    { icon: Users, value: totalGroups, label: 'Groups' },
+                    { icon: Layers3, value: totalModules, label: 'Modules' },
+                    { icon: Clock3, value: totalSessions, label: 'Sessions' },
+                    { icon: CalendarDays, value: holidayCount, label: 'Holidays' },
+                  ].map((s, i) => (
+                    <div key={i} className="tp-stat">
+                      <span className="tp-stat-icon"><s.icon size={18} aria-hidden="true" /></span>
+                      <span><strong>{isInitialProgrammesLoading ? '—' : s.value.toLocaleString('en-GB')}</strong><span className="tp-stat-label">{s.label}</span></span>
+                    </div>
+                  ))}
+                </div>
 
-            <div className="hidden xl:flex items-center gap-2 ml-auto">
-              {showHiddenCohortActions && canManageCohorts && (
-                <button
-                  onClick={() => setShowHolidayMgr(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                  style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
-                  <i className="ri-calendar-event-line" />
-                  Holidays
-                </button>
-              )}
+                <div className="hidden xl:flex items-center gap-2 ml-auto">
+                  {showHiddenCohortActions && canManageCohorts && (
+                    <button
+                      onClick={() => setShowHolidayMgr(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                      style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                      <i className="ri-calendar-event-line" />
+                      Holidays
+                    </button>
+                  )}
 
-              {showHiddenCohortActions && canManageCohorts && (
-                <div className="relative" ref={addDropdownRef}>
-                  <button
-                    onClick={() => setAddDropdownOpen(v => !v)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                    style={{ background: '#1B2A4A' }}>
-                    <i className="ri-add-line" />
-                    Add Cohort
-                    {addDropdownOpen ? (
-                      <i className="ri-arrow-up-s-line ml-0.5" />
-                    ) : (
-                      <i className="ri-arrow-down-s-line ml-0.5" />
-                    )}
-                  </button>
-                  {addDropdownOpen && (
-                    <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
-                      <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                        Select Programme
-                      </p>
-                      {groups.map((g, gi) => (
-                        <button
-                          key={gi}
-                          onClick={() => {
-                            setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-                            setAddDropdownOpen(false);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
-                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
-                          <div>
-                            <p className="text-xs font-bold text-gray-800 leading-tight">
-                              {g.name.split('\n')[0]}
-                            </p>
-                            <p className="text-xs text-gray-400 leading-tight">
-                              {g.name.split('\n')[1] || ''} Â· {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
-                            </p>
-                          </div>
-                        </button>
-                      ))}
+                  {showHiddenCohortActions && canManageCohorts && (
+                    <div className="relative" ref={addDropdownRef}>
+                      <button
+                        onClick={() => setAddDropdownOpen(v => !v)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                        style={{ background: '#1B2A4A' }}>
+                        <i className="ri-add-line" />
+                        Add Cohort
+                        {addDropdownOpen ? (
+                          <i className="ri-arrow-up-s-line ml-0.5" />
+                        ) : (
+                          <i className="ri-arrow-down-s-line ml-0.5" />
+                        )}
+                      </button>
+                      {addDropdownOpen && (
+                        <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                          <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                            Select Programme
+                          </p>
+                          {groups.map((g, gi) => (
+                            <button
+                              key={gi}
+                              onClick={() => {
+                                setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                                setAddDropdownOpen(false);
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                              <div>
+                                <p className="text-xs font-bold text-gray-800 leading-tight">
+                                  {g.name.split('\n')[0]}
+                                </p>
+                                <p className="text-xs text-gray-400 leading-tight">
+                                  {g.name.split('\n')[1] || ''} Â· {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
 
-          {/* Action buttons */}
-          <div className="training-plan-action-row mt-3 xl:hidden">
-            {canManageCohorts && (
-              <button
-                onClick={() => setShowHolidayMgr(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
-                <i className="ri-calendar-event-line" />
-                Holidays
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => setShowAddCatalogModule(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
-                <i className="ri-puzzle-line" />
-                Add Module
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => {
-                  setInitialManageModuleId(null);
-                  setShowManageModules(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
-                style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
-                <i className="ri-list-check-2" />
-                View Added Modules
-              </button>
-            )}
-            {canManageCohorts && (
-              <button
-                onClick={() => setProgramModal({ open: true, mode: 'add' })}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                style={{ background: '#1B2A4A' }}>
-                <i className="ri-add-circle-line" />
-                Add Programme
-              </button>
-            )}
+              {/* Action buttons */}
+              <div className="tp-header-secondary-actions training-plan-action-row mt-3 xl:hidden">
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setShowHolidayMgr(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
+                    <i className="ri-calendar-event-line" />
+                    Holidays
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setShowAddCatalogModule(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
+                    <i className="ri-puzzle-line" />
+                    Add Module
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => {
+                      setInitialManageModuleId(null);
+                      setShowManageModules(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
+                    style={{ background: '#F0FFF4', color: '#15803D', borderColor: '#86EFAC' }}>
+                    <i className="ri-list-check-2" />
+                    View Added Modules
+                  </button>
+                )}
+                {canManageCohorts && (
+                  <button
+                    onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                    style={{ background: '#1B2A4A' }}>
+                    <i className="ri-add-circle-line" />
+                    Add Programme
+                  </button>
+                )}
 
-            {showHiddenCohortActions && canManageCohorts && (
-              <div className="relative" ref={addDropdownRef}>
-                <button
-                  onClick={() => setAddDropdownOpen(v => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
-                  style={{ background: '#1B2A4A' }}>
-                  <i className="ri-add-line" />
-                  Add Cohort
-                  {addDropdownOpen ? (
-                    <i className="ri-arrow-up-s-line ml-0.5" />
-                  ) : (
-                    <i className="ri-arrow-down-s-line ml-0.5" />
-                  )}
-                </button>
-                {addDropdownOpen && (
-                  <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
-                    <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                      Select Programme
-                    </p>
-                    {groups.map((g, gi) => (
-                      <button
-                        key={gi}
-                        onClick={() => {
-                          setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
-                          setAddDropdownOpen(false);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
-                        <div>
-                          <p className="text-xs font-bold text-gray-800 leading-tight">
-                            {g.name.split('\n')[0]}
-                          </p>
-                          <p className="text-xs text-gray-400 leading-tight">
-                            {g.name.split('\n')[1] || ''} · {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
-                          </p>
-                        </div>
-                      </button>
-                    ))}
+                {showHiddenCohortActions && canManageCohorts && (
+                  <div className="relative" ref={addDropdownRef}>
+                    <button
+                      onClick={() => setAddDropdownOpen(v => !v)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
+                      style={{ background: '#1B2A4A' }}>
+                      <i className="ri-add-line" />
+                      Add Cohort
+                      {addDropdownOpen ? (
+                        <i className="ri-arrow-up-s-line ml-0.5" />
+                      ) : (
+                        <i className="ri-arrow-down-s-line ml-0.5" />
+                      )}
+                    </button>
+                    {addDropdownOpen && (
+                      <div className="absolute right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 overflow-hidden z-50 min-w-[200px]">
+                        <p className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                          Select Programme
+                        </p>
+                        {groups.map((g, gi) => (
+                          <button
+                            key={gi}
+                            onClick={() => {
+                              setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
+                              setAddDropdownOpen(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors text-left">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                            <div>
+                              <p className="text-xs font-bold text-gray-800 leading-tight">
+                                {g.name.split('\n')[0]}
+                              </p>
+                              <p className="text-xs text-gray-400 leading-tight">
+                                {g.name.split('\n')[1] || ''} · {g.rows.length} cohort{g.rows.length !== 1 ? 's' : ''}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
+            </div>
+
+            {/* Today's Sessions */}
+            <div className="tp-today-card bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
+              <div className="tp-section-heading">
+                <div className="flex items-center gap-3">
+                  <span className="tp-section-icon"><CalendarDays size={19} aria-hidden="true" /></span>
+                  <div><p className="tp-eyebrow">Daily overview</p><h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2></div>
+                </div>
+                <span className="tp-count-badge">{isInitialProgrammesLoading ? 'Loading…' : `${todaySessions.length} scheduled`}</span>
+              </div>
+              {isInitialProgrammesLoading ? (
+                <div className="mt-3 space-y-3 animate-pulse">
+                  {[0, 1, 2].map((item) => (
+                    <div key={item} className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 px-3 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="h-4 w-32 rounded-full bg-slate-200" />
+                        <div className="mt-2 h-3 w-48 rounded-full bg-slate-200" />
+                      </div>
+                      <div className="h-4 w-20 rounded-full bg-slate-200" />
+                    </div>
+                  ))}
+                </div>
+              ) : todaySessions.length === 0 ? (
+                <div className="tp-today-empty">
+                  <span className="tp-empty-icon"><CalendarDays size={20} aria-hidden="true" /></span>
+                  <p>No sessions scheduled for today.</p>
+                </div>
+              ) : (
+                <ul className="mt-3 max-h-60 overflow-y-auto divide-y">
+                  {todaySessions.map((s, i) => (
+                    <li key={i} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">{s.groupName}</p>
+                        <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
+                        <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
+                        <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
+                      </div>
+                      <div className="text-left sm:text-right">
+                        <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      <main className="max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
+      <main className="tp-workspace max-w-screen-2xl mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-5 space-y-4">
         {(trainingPlanServerUnavailable || trainingPlanServerRecovered) && (
           <div className={`rounded-lg border px-4 py-3 text-sm ${trainingPlanServerUnavailable ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -6798,64 +6935,28 @@ export default function ApprenticeshipTimeline() {
             </div>
           </div>
         )}
-        {/* Today's Sessions */}
-        <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4">
-          <h2 className="text-sm font-bold text-kbc-navy">Today's Sessions</h2>
-          {isInitialProgrammesLoading ? (
-            <div className="mt-3 space-y-3 animate-pulse">
-              {[0, 1, 2].map((item) => (
-                <div key={item} className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 px-3 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="h-4 w-32 rounded-full bg-slate-200" />
-                    <div className="mt-2 h-3 w-48 rounded-full bg-slate-200" />
-                  </div>
-                  <div className="h-4 w-20 rounded-full bg-slate-200" />
-                </div>
-              ))}
-            </div>
-          ) : todaySessions.length === 0 ? (
-            <p className="text-xs text-gray-400 mt-2">No sessions yet. Add cohorts and module blocks to populate this schedule.</p>
-          ) : (
-            <ul className="mt-3 divide-y">
-              {todaySessions.map((s, i) => (
-                <li key={i} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">{s.groupName}</p>
-                    <p className="text-xs text-gray-500">{s.cohortName} · {s.program}</p>
-                    <p className="text-xs text-gray-400">Tutor: {s.tutor || 'TBD'}</p>
-                    <p className="text-xs text-gray-400">Coach: {s.coach || 'TBD'}</p>
-                  </div>
-                  <div className="text-left sm:text-right">
-                    <p className="text-sm font-semibold">{s.startTime}{s.endTime ? ` - ${s.endTime}` : ''}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
         {/* Tab switcher */}
-        <div className="flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
-          <div className="training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0">
+        <div className="tp-workspace-nav flex flex-col gap-2 bg-white border border-gray-200 rounded-lg p-1 lg:flex-row lg:items-center lg:justify-between">
+          <div className="tp-view-tabs training-plan-action-row min-w-0 lg:overflow-visible lg:pb-0" aria-label="Training Plan views">
             {([
-              { key: 'gantt',    label: 'Training Plan', icon: 'ri-bar-chart-horizontal-line' },
-              { key: 'schedule', label: 'Session Schedule', icon: 'ri-table-line' },
-              { key: 'tutors',   label: 'Tutor Profiles', icon: 'ri-user-star-line' },
-              { key: 'coaches',  label: 'Coach Profiles', icon: 'ri-user-follow-line' },
+              { key: 'gantt',    label: 'Training Plan', icon: CalendarRange },
+              { key: 'schedule', label: 'Session Schedule', icon: Table2 },
+              { key: 'tutors',   label: 'Tutor Profiles', icon: UserRound },
+              { key: 'coaches',  label: 'Coach Profiles', icon: ContactRound },
             ] as const).map(tab => (
-              <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+              <button key={tab.key} onClick={() => setActiveTab(tab.key)} aria-pressed={activeTab === tab.key}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all whitespace-nowrap"
                 style={{
                   background: activeTab === tab.key ? '#1B2A4A' : 'transparent',
                   color:      activeTab === tab.key ? '#fff'    : '#6B7280',
                 }}>
-                <i className={tab.icon} />
+                <tab.icon size={16} aria-hidden="true" />
                 {tab.label}
               </button>
             ))}
           </div>
           {canManageCohorts && (
-            <div className="training-plan-action-row lg:overflow-visible lg:pb-0">
+            <div className="tp-management-actions training-plan-action-row lg:overflow-visible lg:pb-0">
               <button
                 onClick={() => setShowHolidayMgr(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
@@ -6898,20 +6999,40 @@ export default function ApprenticeshipTimeline() {
           )}
         </div>
 
+        <Suspense fallback={<TrainingPlanPanelSkeleton />}>
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          isInitialProgrammesLoading ? (
+          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
+            view={trainingPlanSource} onViewChange={setTrainingPlanSource}
+            onManualMerge={() => setShowModuleComparison(true)}
+            manualMergeDisabled={isInitialProgrammesLoading}
+            onSaveManualMerge={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
+            holidays={holidays} catalogModules={catalogModules} tutorProfiles={tutorProfiles}
+            renderLmsOverview={(lmsGroups, lmsModules) => <MonthlyPlanOverview groups={lmsGroups} holidays={[]} customModules={lmsModules} catalogModules={[]} ksbProfiles={[]} />}
+            onViewMergedModule={(programme, rowIndex, blockId, modules) => {
+              const row = programme.rows[rowIndex];
+              const isLms = row.planSource === 'LMS';
+              const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [row] }],
+                isLms ? [] : holidays, modules, isLms ? [] : catalogModules, isLms ? [] : ksbProfiles)
+                .find(item => item.moduleBlockId === blockId);
+              if (summary) setSelectedMonthlySummary({ summary, mode: 'monthly' });
+            }}
+            onViewLmsModule={(programme, rowIndex, blockId, lmsModules) => {
+              const summary = buildMonthlyModuleSummaries([{ ...programme, rows: [programme.rows[rowIndex]] }], [], lmsModules, [], [])
+                .find(item => item.moduleBlockId === blockId);
+              if (summary) setSelectedMonthlySummary({ summary, mode: 'monthly' });
+            }}>
+          {isInitialProgrammesLoading ? (
             <TrainingPlanPanelSkeleton />
           ) : groups.length ? (
             <>
-              <MonthlyModuleBreakdown summaries={monthlyModuleSummaries} />
               <div className="training-plan-gantt-shell bg-white rounded-xl overflow-visible border border-gray-200">
                 <GanttTimeline
                   groups={groups}
                   holidays={holidays}
                   customModules={customModules}
                   catalogModules={catalogModules}
-                  tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+                  tutorProfiles={resolvedTutorProfiles}
                   zoom={zoom}
                   onZoomChange={setZoom}
                   onManageHolidays={() => setShowHolidayMgr(true)}
@@ -6944,6 +7065,9 @@ export default function ApprenticeshipTimeline() {
                   canManageCohorts={canEditTrainingPlan}
                 />
               </div>
+              <div data-training-plan-overview>
+                <MonthlyPlanOverview groups={groups} holidays={holidays} customModules={customModules} catalogModules={catalogModules} ksbProfiles={ksbProfiles} />
+              </div>
             </>
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center">
@@ -6964,7 +7088,8 @@ export default function ApprenticeshipTimeline() {
                 </button>
               )}
             </div>
-          )
+          )}
+          </LmsReference>
         )}
 
         {/* SESSION SCHEDULE */}
@@ -6974,8 +7099,8 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <ScheduleTable
               groups={groups}
-              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
-              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+              tutorProfiles={resolvedTutorProfiles}
+              coachProfiles={resolvedCoachProfiles}
               catalogModules={catalogModules}
               holidays={holidays}
               ksbProfiles={ksbProfiles}
@@ -7002,7 +7127,7 @@ export default function ApprenticeshipTimeline() {
           ) : groups.length ? (
             <TutorProfiles
               groups={groups}
-              tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
+              tutorProfiles={resolvedTutorProfiles}
               catalogModules={catalogModules}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
@@ -7026,7 +7151,7 @@ export default function ApprenticeshipTimeline() {
           ) : (
             <CoachProfiles
               groups={groups}
-              coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+              coachProfiles={resolvedCoachProfiles}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
@@ -7038,6 +7163,7 @@ export default function ApprenticeshipTimeline() {
           )
         )}
 
+        </Suspense>
       </main>
       <Footer />
 
@@ -7522,6 +7648,7 @@ export default function ApprenticeshipTimeline() {
         </div>
       )}
 
+      <Suspense fallback={<div role="status" className="fixed bottom-4 right-4 z-[60] rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-kbc-navy shadow-lg">Loading…</div>}>
       {canEditTrainingPlan && modal.open && (
         <CohortModal
           mode={modal.mode}
@@ -7530,16 +7657,18 @@ export default function ApprenticeshipTimeline() {
           customModules={customModules}
           catalogModules={catalogModules}
           ksbProfiles={ksbProfiles}
-          tutorProfiles={buildTutorProfilesFromGroups(groups, tutorProfiles)}
-          coachProfiles={buildCoachProfilesFromGroups(groups, coachProfiles)}
+          tutorProfiles={resolvedTutorProfiles}
+          coachProfiles={resolvedCoachProfiles}
           initialGroupIdx={modal.mode === 'add' ? modal.defaultGroupIdx : modal.groupIdx}
           initialRow={modal.mode === 'edit' ? modal.row : undefined}
           initialExpandedBlockId={modal.mode === 'edit' ? modal.expandedBlockId : undefined}
+          openLmsMatching={modal.mode === 'edit' ? modal.openLmsMatching : false}
           prefillTutorProfileId={'prefillTutorProfileId' in modal ? modal.prefillTutorProfileId : undefined}
           prefillModule={'prefillModule' in modal ? modal.prefillModule : undefined}
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
           onUpdateModulePartial={modal.open && modal.mode === 'edit' ? (blockId, payload) => updateModulePartial(modal.groupIdx, modal.rowIdx, blockId, payload) : undefined}
+          onSaveLmsMatch={saveLmsModuleMatch}
           onCreateTutorProfile={createTutorProfile}
           onManageHolidays={() => setShowHolidayMgr(true)}
           onBackToPreviousStep={() => {
@@ -7632,9 +7761,19 @@ export default function ApprenticeshipTimeline() {
         )
       )}
 
+      {showModuleComparison && <ModuleComparisonModal groups={groups} customModules={customModules} holidays={holidays}
+        tutorProfiles={tutorProfiles} onClose={() => setShowModuleComparison(false)}
+        onSave={canManageCohorts ? saveLmsModuleMatch : undefined}
+        onViewMerge={() => { setShowModuleComparison(false); setActiveTab('gantt'); setTrainingPlanSource('merged'); }} />}
+
       {canEditTrainingPlan && showManageModules && (
         <ManageModulesModal
           modules={catalogModules}
+          comparisonGroups={groups}
+          customModules={customModules}
+          holidays={holidays}
+          tutorProfiles={tutorProfiles}
+          onSaveLmsMatch={saveLmsModuleMatch}
           ksbProfiles={ksbProfiles}
           onAdd={handleAddCatalogModule}
           onUpdate={handleUpdateCatalogModule}
@@ -7646,6 +7785,7 @@ export default function ApprenticeshipTimeline() {
           }}
         />
       )}
+      </Suspense>
     </div>
   );
 }

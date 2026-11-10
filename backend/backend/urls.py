@@ -19,6 +19,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
 
+from callcentre.zoom_webhook import zoom_webhook
 from login.views import microsoft_popup_bridge
 from .swagger import swagger_schema, swagger_ui
 
@@ -28,6 +29,7 @@ urlpatterns = [
     path('api/swagger.json', swagger_schema, name='swagger-schema'),
     path('api/callcentre/', include('callcentre.urls')),
     path('api/zoom/', include('callcentre.zoom_urls')),
+    path('api/zoom-webhook/<str:key>/', zoom_webhook, name='zoom-webhook'),
     path('api/', include('api.urls')),
     path('api/auth/', include('login.urls')),
     path('', include('login.urls')),

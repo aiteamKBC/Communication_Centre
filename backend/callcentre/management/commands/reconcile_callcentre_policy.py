@@ -9,8 +9,7 @@ from django.utils import timezone
 from callcentre.db import DB
 from callcentre.models import CaseTicket
 from callcentre.sources import unified_directory, load_bookings, generate_reminders, generate_risks
-from callcentre.learner_satisfaction import eligible, generate
-from callcentre.emails import generate_surveys
+from callcentre.learner_satisfaction import eligible, generate, generate_employers
 from callcentre.services import event
 
 
@@ -76,7 +75,7 @@ class Command(BaseCommand):
                           'due_at': case.due_at.isoformat(), 'reason': 'Untouched first review is due immediately.'})
                 report['repaired_dates'] = len(safe_ids)
                 report['learner_generation'] = generate(people)
-                report['employer_contacts'] = generate_surveys(people)
+                report['employer_feedback'] = generate_employers(people)
                 report['reminders_created'] = generate_reminders(people, bookings)
             report['attendance_created'] = generate_risks(people, categories={'attendance'})
             report['writes'] = True

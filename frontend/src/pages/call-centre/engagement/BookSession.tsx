@@ -11,14 +11,24 @@ type Options = {
   reasons: { key: string; label: string }[];
   slots: { start: string; date: string; time: string }[];
 };
-type Booked = { booking: { start: string; coach: string; session_type: string }; warning: string };
+type Booked = {
+  booking: { start: string; coach: string; session_type: string }; warning: string;
+  confirmation: { status: string; recipient: string; error?: string };
+};
+
+/** What happened to the learner's confirmation email, for the success message. */
+function confirmationText({ status, recipient, error }: Booked['confirmation']) {
+  if (status === 'accepted') return ` Confirmation email sent to ${recipient}.`;
+  if (status === 'dry_run') return ' Confirmation email recorded on the case (dry run: not sent).';
+  return ` The confirmation email was not sent${error ? `: ${error}` : '.'}`;
+}
 
 const dayLabel = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' });
 const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : 'Something went wrong. Try again.');
 
 /** "Book" button: books the session straight into the coach's LMS calendar with a Teams meeting. */
 export default function BookSession({ caseId, session, onBooked, notify, className }: {
-  caseId: number; session: Session; onBooked: () => void; notify: (message: string, error?: boolean) => void; className?: string;
+  caseId: number; session: Session; onBooked: (sessionType: string) => void; notify: (message: string, error?: boolean) => void; className?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -27,13 +37,13 @@ export default function BookSession({ caseId, session, onBooked, notify, classNa
         Book with coach
       </button>
       <Dialog open={open} onClose={() => setOpen(false)}>
-        {open && <BookingForm caseId={caseId} session={session} notify={notify} onDone={() => { setOpen(false); onBooked(); }} />}
+        {open && <BookingForm caseId={caseId} session={session} notify={notify} onDone={type => { setOpen(false); onBooked(type); }} />}
       </Dialog>
     </>
   );
 }
 
-function BookingForm({ caseId, session, notify, onDone }: { caseId: number; session: Session; notify: (message: string, error?: boolean) => void; onDone: () => void }) {
+function BookingForm({ caseId, session, notify, onDone }: { caseId: number; session: Session; notify: (message: string, error?: boolean) => void; onDone: (sessionType: string) => void }) {
   // One id per opened panel: a double click or retry can never book twice.
   const requestId = useMemo(() => crypto.randomUUID(), []);
   const [options, setOptions] = useState<Options | null>(null);
@@ -73,8 +83,8 @@ function BookingForm({ caseId, session, notify, onDone }: { caseId: number; sess
         session_type: type, start, request_id: requestId, reason_category: catchUp ? reason : '', reason_note: catchUp ? note : '', agent_id: session.agentId,
       });
       const at = new Date(result.booking.start).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
-      notify(`Booked with ${result.booking.coach} on ${at}. The learner and coach have the Teams invitation.${result.warning ? ` Note: ${result.warning}` : ''}`);
-      onDone();
+      notify(`Booked with ${result.booking.coach} on ${at}. The learner and coach have the Teams invitation.${confirmationText(result.confirmation)}${result.warning ? ` Note: ${result.warning}` : ''}`);
+      onDone(type);
     } catch (reason) {
       setError(errorText(reason));
       if (reason instanceof ApiError && reason.status === 409) {

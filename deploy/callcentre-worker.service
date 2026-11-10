@@ -1,0 +1,37 @@
+[Unit]
+# Engagement Centre worker: every INTERVAL seconds one cycle syncs Zoom (calls, recordings, transcripts), builds the
+# cases (missed lectures, reviews, learner and employer satisfaction), resolves cases from evidence, matches calls,
+# runs AI analysis (only if switched on) and sends due reminder emails (only if switched on and allowed).
+# A database lock makes overlapping runs and restarts safe. Run exactly one worker for the shared database.
+Description=KBC Engagement Centre worker (run_callcentre_cycle --loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# --- EDIT THESE FOUR FOR YOUR SERVER ---
+# The Linux user that owns the deploy (never root).
+User=REPLACE_WITH_DEPLOY_USER
+# Absolute path to Communication_Centre/backend (the directory containing manage.py).
+WorkingDirectory=/REPLACE/PATH/TO/Communication_Centre/backend
+# Absolute path to the Python inside that backend's virtualenv.
+ExecStart=/REPLACE/PATH/TO/Communication_Centre/backend/venv/bin/python manage.py run_callcentre_cycle --loop --interval 300
+# The .env the backend reads (backend/login/.env.login is read by Django itself).
+EnvironmentFile=/REPLACE/PATH/TO/Communication_Centre/backend/.env
+# ----------------------------------------
+
+# Keep it alive: restart on any exit, wait 10 s between tries.
+Restart=always
+RestartSec=10
+# SIGTERM stops the worker and releases the cycle lock (an unfinished step rolls back); allow time before SIGKILL.
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=callcentre-worker
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

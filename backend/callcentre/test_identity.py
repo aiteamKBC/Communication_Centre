@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.db.models import Q
 from django.utils import timezone
 
 from . import identity, lms_booking, sources, evidence
@@ -32,7 +33,9 @@ class IdentityTests(SimpleTestCase):
         rows = [{'id': n, 'event_key': f'event-{n}', 'learner_id': 1, 'learner_email': 'learner@example.org',
                  'event_type': kind, 'status': 'scheduled', 'scheduled_date': tomorrow, 'scheduled_time': time(10+n)}
                 for n,kind in enumerate(['first-session', 'lms-introduction'])]
-        with patch.object(sources, 'rows', side_effect=[[], rows]):
+        def read(alias, sql, params=()):
+            return rows if 'coach_calendar_event' in sql else []
+        with patch.object(sources, 'rows', side_effect=read), patch.object(sources, 'review_bookings', return_value=[]):
             self.assertEqual(len(sources.load_bookings(p)), 2)
     def build(self, **kwargs):
         return identity.build([lms()], [aptem(OwnerEmail='coach@example.org')], **kwargs)
@@ -106,26 +109,6 @@ class IdentityTests(SimpleTestCase):
         self.assertIsNone(p.calendar_person({'learner_id': 800, 'learner_email': ''}))
         self.assertIsNone(p.resolve('profile', 0, 'learner@example.org'))
 
-    def test_calendar_reminder_supersedes_legacy_copy_without_duplication(self):
-        from .rules import LONDON
-        p = self.build()
-        tomorrow = timezone.now().astimezone(LONDON).date() + timedelta(days=1)
-        from datetime import time, datetime
-        start = datetime.combine(tomorrow, time(10), LONDON)
-        legacy = {'pr': {'students': [{'customerEmail': 'learner@example.org', 'startDateTime': start.isoformat(),
-                                      'appointmentId': 'legacy-id'}]}}
-        calendar = {'id': 5, 'event_key': 'calendar-key', 'learner_id': 1, 'learner_email': 'learner@example.org',
-                    'event_type': 'progress-review', 'status': 'scheduled', 'scheduled_date': tomorrow,
-                    'scheduled_time': time(10)}
-        def read(alias, sql, params=()):
-            return [calendar] if 'coach_calendar_event' in sql else [legacy]
-        with patch.object(sources, 'rows', side_effect=read):
-            bookings = sources.load_bookings(p)
-            self.assertEqual(len(bookings), 1)
-            self.assertEqual(bookings[0]['id'], 'calendar-key')
-            calendar['status'] = 'cancelled'
-            self.assertEqual(sources.load_bookings(p), [])
-
     def test_native_reviews_are_not_hidden_by_unrelated_imported_history(self):
         from . import lms_reviews
         from .rules import LONDON
@@ -133,12 +116,11 @@ class IdentityTests(SimpleTestCase):
                                  'email_normalized': 'learner@example.org'}])
         today = timezone.now().astimezone(LONDON).date()
         imported = {'id': 'old', 'email': 'learner@example.org', 'review_type': 'Progress Review',
-                    'status': 'Not Scheduled', 'day': today-timedelta(days=1), 'completed_date': None}
+                    'status': 'Not Scheduled', 'planned_day': today-timedelta(days=1), 'completed_date': None}
         native = {'id': 'native', 'email': 'learner@example.org', 'review_type': 'Progress Review',
                   'status': 'not-scheduled', 'day': today-timedelta(days=1), 'completed_at': None, 'profile_id': 800}
         with patch.object(lms_reviews, 'connections', {sources.LMS: MagicMock()}), \
-                patch.object(lms_reviews, '_fetch', side_effect=[[imported], [native]]), \
-                patch.object(lms_reviews, '_fetch_rows', return_value=[('learner@example.org',)]):
+                patch.object(lms_reviews, '_fetch', side_effect=[[imported], [native]]):
             result = lms_reviews.review_items(today, people=p)
         self.assertEqual({r['ref'] for r in result}, {'reviews:old', 'instance:native'})
 
@@ -263,21 +245,15 @@ class IdentityWorkflowTests(TestCase):
         case.save()
         self.assertEqual(first_review_repairs(p), [])
 
-    def test_employer_quarters_keep_one_open_task_and_all_history(self):
-        from .emails import generate_surveys
+    def test_employer_feedback_keeps_one_open_case_per_manager(self):
+        from .learner_satisfaction import generate_employers
         from .models import CaseTicket
         p = identity.build([lms()], [aptem()])
-        for quarter in ('old-quarter', 'new-quarter'):
-            CaseTicket.objects.create(source_type='satisfaction', learner_email='manager@example.org',
-                manager_email='manager@example.org', reason_key=quarter, due_at=timezone.now(),
-                source_data={'quarter': quarter})
-        generate_surveys(p)
-        generate_surveys(p)
-        self.assertEqual(CaseTicket.objects.filter(source_type='satisfaction').count(), 2)
-        self.assertEqual(CaseTicket.objects.filter(source_type='satisfaction', archived=False).count(), 1)
-        old = CaseTicket.objects.get(archived=True)
-        self.assertIn('superseded_by', old.source_data)
-        self.assertIsNone(old.resolved_at)
+        generate_employers(p)
+        generate_employers(p)
+        case = CaseTicket.objects.get(source_type='employer_feedback')
+        self.assertEqual(case.learner_email, 'manager@example.org')
+        self.assertIsNone(case.resolved_at)
 
     def test_direct_lms_booking_closes_only_exact_lecture_and_not_same_missed_session(self):
         from . import catchup
@@ -306,6 +282,30 @@ class IdentityWorkflowTests(TestCase):
             self.assertEqual(catchup.adopt_lms_bookings(people), 0)
         followup.refresh_from_db()
         self.assertEqual(followup.status, 'new')
+
+    def test_direct_lms_booking_closes_a_live_register_lecture_through_its_absence_row(self):
+        from . import catchup
+        from .models import CaseTicket
+        people = identity.build([lms()], [aptem()])
+        day = (timezone.now()-timedelta(days=8)).date()
+        ticket = CaseTicket.objects.create(source_type='attendance', learner_email='learner@example.org',
+            due_at=timezone.now(), reason_key='live-booking', overdue_since=day,
+            source_data={'module': 'Lecture', 'attendance_key': '77'})
+        report = {'report_id': 4, 'attendance_id': 123, 'report_email': 'learner@example.org', 'id': 22,
+                  'event_key': 'booked-in-lms', 'learner_id': 1, 'learner_email': 'learner@example.org',
+                  'scheduled_date': day, 'scheduled_time': timezone.now().time(), 'owner_name': 'Coach',
+                  'meeting_link': ''}
+        lecture = {'key': '77', 'email': 'learner@example.org', 'day': day, 'event_key': 'booked-in-lms'}
+        # The absence row names another booking, or the lecture is another day's: nothing closes.
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [{**lecture, 'event_key': 'other'}]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 0)
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [{**lecture, 'day': day - timedelta(days=1)}]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 0)
+        with patch('callcentre.catchup.rows', side_effect=[[], [report], [lecture]]):
+            self.assertEqual(catchup.adopt_lms_bookings(people), 1)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, 'resolved')
+        self.assertEqual(ticket.source_data['catchup_booking']['event_key'], 'booked-in-lms')
 
     def test_catchup_no_show_creates_new_case_once_and_keeps_history(self):
         from . import catchup
@@ -377,11 +377,12 @@ class IdentityWorkflowTests(TestCase):
         user = get_user_model().objects.create(username='operator')
         agent = Agent.objects.create(user=user, display_name='Operator', zoom_email='operator@example.org', zoom_account='student')
         now = timezone.now()
-        employer = CaseTicket.objects.create(source_type='satisfaction', learner_email='shared@example.org',
+        employer = CaseTicket.objects.create(source_type='employer_feedback', learner_email='shared@example.org',
                                              learner_phone='+447700900123', due_at=now, reason_key='manager-quarter')
         learner = CaseTicket.objects.create(source_type='attendance', learner_email='shared@example.org',
                                             learner_phone='+447700900123', due_at=now, reason_key='student-absence')
-        with patch('callcentre.services.owners', return_value={}), patch('callcentre.sources.on_break_emails', return_value=set()):
+        with patch('callcentre.services.owners', return_value={}), patch('callcentre.sources.on_break_emails', return_value=set()), \
+                patch('callcentre.sources.active_case_contacts', return_value=Q()):
             intent = create_intent(employer.pk, agent)
         self.assertEqual(list(intent.tickets.values_list('pk', flat=True)), [employer.pk])
         learner.refresh_from_db()
@@ -431,7 +432,7 @@ class IdentityWorkflowTests(TestCase):
         from django.contrib.auth import get_user_model
         from .models import CaseTicket
         from .views import booking
-        user = get_user_model().objects.create(username='failed-booking-manager', is_staff=True)
+        user = get_user_model().objects.create(username='failed-booking-manager', is_staff=True, is_superuser=True)
         case = CaseTicket.objects.create(source_type='attendance', learner_email='learner@example.org',
                                          due_at=timezone.now(), reason_key='failed-booking')
         request = RequestFactory().post('/booking/', json.dumps({'session_type': 'catch-up',
@@ -444,6 +445,61 @@ class IdentityWorkflowTests(TestCase):
         case.refresh_from_db()
         self.assertEqual(case.status, 'new')
         self.assertIsNone(case.resolved_at)
+
+    def test_booking_emails_the_learner_once_with_the_coach_and_time(self):
+        import json
+        from datetime import datetime
+        from django.test import RequestFactory
+        from django.contrib.auth import get_user_model
+        from . import mailer
+        from .models import CaseTicket, EmailDelivery
+        from .rules import LONDON
+        from .views import booking
+        user = get_user_model().objects.create(username='confirm-manager', is_staff=True, is_superuser=True)
+        case = CaseTicket.objects.create(source_type='otj', learner_email='alias@example.org', learner_name='Sam Learner',
+                                         due_at=timezone.now(), reason_key='confirm-booking')
+        start = datetime(2026, 10, 27, 14, 0, tzinfo=LONDON)
+        request = RequestFactory().post('/booking/', json.dumps({'session_type': 'student-support',
+            'start': start.isoformat(), 'request_id': 'confirm-booking-1'}), content_type='application/json')
+        request.user = user
+        request._dont_enforce_csrf_checks = True
+        result = {'event_key': 'student-support:1:1:2026-10-27', 'start': start, 'coach': 'Casey Coach',
+                  'join_url': 'https://teams.example.org/join', 'report_id': None, 'link_warning': '',
+                  'learner_name': 'Sam Learner', 'learner_email': 'Sam@Example.org', 'replayed': False}
+        live = {'email_mode': 'live'}
+        with patch('callcentre.views.operating_agent', return_value=None), patch('callcentre.views.can_work'), \
+                patch('callcentre.lms_booking.book', return_value=result), \
+                patch('callcentre.booking_email.email_settings.current', return_value=live), \
+                patch('callcentre.booking_email.mailer.configured', return_value=True), \
+                patch('callcentre.booking_email.mailer.send') as send:
+            response = booking(request, case.pk)
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(json.loads(response.content)['confirmation']['status'], 'accepted')
+            # A replay of the same booking does not email the learner again.
+            self.assertEqual(booking(request, case.pk).status_code, 201)
+        send.assert_called_once()
+        recipient, subject, html = send.call_args.args
+        # The address the LMS booking (and its Teams invitation) used, not the case's alias.
+        self.assertEqual(recipient, 'sam@example.org')
+        self.assertEqual(subject, 'Your student support with Casey Coach is booked')
+        self.assertIn('Tuesday 27 October 2026 at 14:00 (UK time)', html)
+        self.assertIn('https://teams.example.org/join', html)
+        delivery = EmailDelivery.objects.get(ticket=case)
+        self.assertEqual((delivery.kind, delivery.status), ('booking_confirmation', 'accepted'))
+        self.assertEqual(case.events.filter(kind='email_accepted', data__stage='booking_confirmation').count(), 1)
+
+        # A mail failure is recorded, and the booking still reports as made.
+        other = CaseTicket.objects.create(source_type='otj', learner_email='other@example.org',
+                                          due_at=timezone.now(), reason_key='confirm-booking-failed')
+        with patch('callcentre.views.operating_agent', return_value=None), patch('callcentre.views.can_work'), \
+                patch('callcentre.lms_booking.book', return_value={**result, 'event_key': 'student-support:1:2:2026-10-27'}), \
+                patch('callcentre.booking_email.email_settings.current', return_value=live), \
+                patch('callcentre.booking_email.mailer.configured', return_value=True), \
+                patch('callcentre.booking_email.mailer.send', side_effect=mailer.MailError('refused')):
+            response = booking(request, other.pk)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(json.loads(response.content)['confirmation']['status'], 'failed')
+        self.assertEqual(other.events.filter(kind='session_booked').count(), 1)
 
     def test_satisfaction_refresh_keeps_case_and_cycle_when_email_changes(self):
         from .learner_satisfaction import generate
@@ -460,32 +516,28 @@ class IdentityWorkflowTests(TestCase):
         self.assertEqual(case.due_at, initial_due)
         self.assertEqual(case.learner_email, 'new@example.org')
 
-    def test_employer_contact_keeps_students_with_individual_coaches_and_phone(self):
-        from .emails import generate_surveys
-        from .models import CaseTicket, EmployerSatisfaction
+    def test_employer_contact_lists_learners_and_manager_phone(self):
+        from .learner_satisfaction import generate_employers
+        from .models import CaseTicket
         p = identity.build([], [aptem(OwnerName='Coach A', **{'Manager Phone': '07700900123'}),
                                 aptem(ID=11, Email='second@example.org', OwnerName='Coach B', **{'Manager Phone': '07700900123'})])
-        generate_surveys(p)
-        generate_surveys(p)
-        case = CaseTicket.objects.get(source_type='satisfaction')
+        generate_employers(p)
+        generate_employers(p)
+        case = CaseTicket.objects.get(source_type='employer_feedback')
         self.assertEqual(case.learner_phone, '+447700900123')
-        self.assertEqual({r['coach'] for r in case.source_data['learners']}, {'Coach A', 'Coach B'})
-        self.assertEqual(EmployerSatisfaction.objects.count(), 1)
+        self.assertEqual({r['email'] for r in case.source_data['learners']}, {'learner@example.org', 'second@example.org'})
 
     def test_unverified_historical_employer_keeps_history_but_cannot_be_contacted(self):
-        from .emails import generate_surveys
+        from .learner_satisfaction import generate_employers
         from .models import CaseTicket
-        from .satisfaction_email import check_open
-        from .services import Conflict
-        old = CaseTicket.objects.create(source_type='satisfaction', learner_email='former@example.org',
+        old = CaseTicket.objects.create(source_type='employer_feedback', learner_email='former@example.org',
                                         manager_email='former@example.org', due_at=timezone.now(), reason_key='old-manager')
-        generate_surveys(identity.build([lms()], [aptem()]))
+        generate_employers(identity.build([lms()], [aptem()]))
         old.refresh_from_db()
         self.assertFalse(old.source_data['eligible'])
         self.assertNotEqual(old.status, 'resolved')
         self.assertIsNone(old.resolved_at)
-        with self.assertRaises(Conflict):
-            check_open(old)
+        self.assertFalse(CaseTicket.objects.open().filter(pk=old.pk).exists())
 
     def test_historical_case_key_survives_alias_change(self):
         from .models import CaseTicket

@@ -4,16 +4,19 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.conf import settings
 from django.core.cache import cache
 from django.db import OperationalError, ProgrammingError, connections, transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, OuterRef, Q, Subquery, Sum
+from django.db.models.fields.json import KT
 from django.db.models.functions import Substr, TruncDate
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
+from .access import is_director, refused
 from .db import APTEM
-from .models import CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
-from .zoom_phone import ACCOUNT_LABELS, ZoomError, account_config, missing_credentials, validate_config
+from .call_scope import system_calls, system_recordings
+from .models import AIAnalysis, CallMatch, CaseTicket, ZoomPhoneCall, ZoomPhoneRecording, ZoomSyncState
+from .zoom_phone import ZoomError, account_config, account_labels, missing_credentials, validate_config
 from .rules import normalize_phone
 
 
@@ -59,7 +62,8 @@ def contact_directory():
         pass
 
     try:
-        for phone, name, email in CaseTicket.objects.exclude(learner_phone='').values_list(
+        # Employer feedback cases carry the manager's number, already named from Aptem above.
+        for phone, name, email in CaseTicket.objects.exclude(learner_phone='').exclude(source_type='employer_feedback').values_list(
                 'learner_phone', 'learner_name', 'learner_email').distinct().iterator():
             add(phone, 'learner', name, email)
     except (OperationalError, ProgrammingError):
@@ -93,6 +97,8 @@ def report_metrics(row):
 def zoom_call_report(request):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view call reports.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
         report_zone = ZoneInfo(settings.ZOOM_REPORT_TIME_ZONE)
     except ZoneInfoNotFoundError:
@@ -109,22 +115,19 @@ def zoom_call_report(request):
         return JsonResponse({'detail': 'Use a valid date range of at most 366 days and a positive page.'}, status=400)
     source = request.GET.get('account', 'all')
     direction = request.GET.get('direction', 'outbound')
-    if source not in ('all', *ACCOUNT_LABELS) or direction not in ('all', 'inbound', 'outbound'):
+    labels = account_labels()
+    if source not in ('all', *labels) or direction not in ('all', 'inbound', 'outbound'):
         return JsonResponse({'detail': 'Invalid account or call direction.'}, status=400)
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
     end_time = datetime.combine(end + timedelta(days=1), time.min, tzinfo=report_zone)
-    configured_ids = Q(pk__in=[])
-    for key in ACCOUNT_LABELS:
-        account_id = account_config(key)['account_id']
-        if account_id:
-            configured_ids |= Q(source_account=key, zoom_account_id=account_id)
+    configured_ids = current_account_filter()
     try:
-        base = ZoomPhoneCall.objects.filter(configured_ids, started_at__gte=start_time, started_at__lt=end_time)
+        base = system_calls().filter(configured_ids, started_at__gte=start_time, started_at__lt=end_time)
         if direction != 'all':
             base = base.filter(direction=direction)
         states = {state.source_account: state for state in ZoomSyncState.objects.all()}
         accounts = []
-        for key, label in ACCOUNT_LABELS.items():
+        for key, label in labels.items():
             state = states.get(key)
             if state and state.zoom_account_id != account_config(key)['account_id']:
                 state = None
@@ -134,7 +137,7 @@ def zoom_call_report(request):
                 configuration_error = ''
             except ZoomError:
                 configured = False
-                configuration_error = 'Zoom account setup is incomplete.'
+                configuration_error = 'Zoom account setup is incomplete: ' + ', '.join(missing_credentials(key)) + '.'
             accounts.append({
                 'key': key, 'label': label, 'configured': configured,
                 'missing_settings': missing_credentials(key),
@@ -177,7 +180,7 @@ def zoom_call_report(request):
 
 def can_view_call(user, call):
     """Recordings and transcripts: managers, or the agent who made or was matched to the call."""
-    if user.is_staff or user.is_superuser:
+    if is_director(user):
         return True
     from .services import agent_for, identify_agent
     agent = agent_for(user)
@@ -199,7 +202,7 @@ def recording_calls(recording):
 
 def current_account_filter():
     query = Q(pk__in=[])
-    for key in ACCOUNT_LABELS:
+    for key in account_labels():
         account_id = account_config(key)['account_id']
         if account_id:
             query |= Q(source_account=key, zoom_account_id=account_id)
@@ -211,7 +214,9 @@ def current_account_filter():
 def zoom_transcript_report(request):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view transcripts.'}, status=401)
-    if not (request.user.is_staff or request.user.is_superuser):
+    if refused(request.user):
+        return refused(request.user)
+    if not is_director(request.user):
         return JsonResponse({'detail': 'Only managers can view the transcript overview.'}, status=403)
     try:
         report_zone = ZoneInfo(settings.ZOOM_REPORT_TIME_ZONE)
@@ -229,13 +234,16 @@ def zoom_transcript_report(request):
         return JsonResponse({'detail': 'Use a valid date range of at most 366 days and a positive page.'}, status=400)
     source = request.GET.get('account', 'all')
     status = request.GET.get('status', 'all')
+    rating = request.GET.get('rating', 'all')
     statuses = ('ready', 'pending', 'disabled', 'unavailable', 'error')
-    if source not in ('all', *ACCOUNT_LABELS) or status not in ('all', *statuses):
+    labels = account_labels()
+    if (source not in ('all', *labels) or status not in ('all', *statuses)
+            or rating not in ('all', 'excellent', 'good', 'bad', 'not_rated')):
         return JsonResponse({'detail': 'Invalid transcript filter.'}, status=400)
     start_time = datetime.combine(start, time.min, tzinfo=report_zone)
     end_time = datetime.combine(end + timedelta(days=1), time.min, tzinfo=report_zone)
     try:
-        base = ZoomPhoneRecording.objects.filter(
+        base = system_recordings().filter(
             current_account_filter(), started_at__gte=start_time, started_at__lt=end_time,
         )
         if source != 'all':
@@ -245,7 +253,7 @@ def zoom_transcript_report(request):
             **{item: base.filter(transcript_status=item).count() for item in statuses},
         }
         accounts = []
-        for key, label in ACCOUNT_LABELS.items():
+        for key, label in labels.items():
             rows = base.filter(source_account=key)
             accounts.append({
                 'key': key,
@@ -254,12 +262,16 @@ def zoom_transcript_report(request):
                 **{item: rows.filter(transcript_status=item).count() for item in statuses},
             })
         selected = base if status == 'all' else base.filter(transcript_status=status)
+        latest = AIAnalysis.objects.filter(recording=OuterRef('pk'), state='ready').order_by('-created_at', '-pk')
+        selected = selected.annotate(rating=Subquery(latest.annotate(rating=KT('result__call_rating')).values('rating')[:1]))
+        if rating != 'all':
+            selected = selected.filter(rating=rating)
         total_records = selected.count()
         offset = (page - 1) * page_size
         records = list(selected.annotate(preview=Substr('transcript_text', 1, 240)).values(
             'id', 'source_account', 'recording_type', 'owner_name', 'started_at',
             'duration_seconds', 'transcript_status', 'transcript_error',
-            'transcript_checked_at', 'preview',
+            'transcript_checked_at', 'preview', 'rating',
         ).order_by('-started_at', '-id')[offset:offset + page_size])
     except (OperationalError, ProgrammingError):
         return JsonResponse({'detail': 'Transcripts are temporarily unavailable.'}, status=503)
@@ -269,6 +281,7 @@ def zoom_transcript_report(request):
         'timezone': settings.ZOOM_REPORT_TIME_ZONE,
         'account': source,
         'status': status,
+        'rating': rating,
         'summary': summary,
         'accounts': accounts,
         'records': records,
@@ -284,8 +297,10 @@ def zoom_transcript_report(request):
 def zoom_call_recordings(request, call_pk):
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view recordings.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
-        call = ZoomPhoneCall.objects.filter(current_account_filter(), pk=call_pk).first()
+        call = system_calls().filter(current_account_filter(), pk=call_pk).first()
         if call is None:
             return JsonResponse({'detail': 'Call not found.'}, status=404)
         if not can_view_call(request.user, call):
@@ -293,7 +308,7 @@ def zoom_call_recordings(request, call_pk):
         match = Q(call_log_id=call.history_id)
         if call.call_id:
             match |= Q(call_id=call.call_id)
-        recordings = ZoomPhoneRecording.objects.filter(
+        recordings = system_recordings().filter(
             match, source_account=call.source_account, zoom_account_id=call.zoom_account_id,
         )
         return JsonResponse({'call_id': call.pk, 'recordings': list(recordings.values(
@@ -307,21 +322,52 @@ def zoom_call_recordings(request, call_pk):
 
 @never_cache
 @require_GET
+def zoom_recording_audio(request, recording_pk):
+    """Play a call recording: streamed from Zoom, to a manager or the agent on the call (as its transcript)."""
+    from django.http import FileResponse
+    from .zoom_phone import ZoomError
+    from .zoom_recordings import recording_audio
+    if not request.user.is_authenticated or not request.user.is_active:
+        return JsonResponse({'detail': 'Sign in to play recordings.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
+    try:
+        recording = system_recordings().filter(current_account_filter(), pk=recording_pk).first()
+    except (OperationalError, ProgrammingError):
+        return JsonResponse({'detail': 'Recordings are temporarily unavailable.'}, status=503)
+    if recording is None:
+        return JsonResponse({'detail': 'Recording not found.'}, status=404)
+    if not is_director(request.user) and not any(can_view_call(request.user, call) for call in recording_calls(recording)):
+        return JsonResponse({'detail': 'Only managers or the agent on this call can play its recording.'}, status=403)
+    try:
+        file, content_type = recording_audio(recording)
+    except ZoomError as exc:
+        return JsonResponse({'detail': str(exc), 'source': 'zoom'}, status=502)
+    response = FileResponse(file, content_type=content_type)
+    response['Cache-Control'] = 'no-store'
+    return response
+
+
+@never_cache
+@require_GET
 def zoom_recording_transcript(request, recording_pk):
+    from .ai import latest_review
     if not request.user.is_authenticated or not request.user.is_active:
         return JsonResponse({'detail': 'Sign in to view transcripts.'}, status=401)
+    if refused(request.user):
+        return refused(request.user)
     try:
-        recording = ZoomPhoneRecording.objects.filter(current_account_filter(), pk=recording_pk).first()
+        recording = system_recordings().filter(current_account_filter(), pk=recording_pk).first()
         if recording is None:
             return JsonResponse({'detail': 'Recording not found.'}, status=404)
-        if not (request.user.is_staff or request.user.is_superuser) and not any(
+        if not is_director(request.user) and not any(
                 can_view_call(request.user, call) for call in recording_calls(recording)):
             return JsonResponse({'detail': 'Only managers or the agent on this call can read its transcript.'}, status=403)
         return JsonResponse({
             'id': recording.pk, 'source_account': recording.source_account,
             'status': recording.transcript_status, 'text': recording.transcript_text,
             'transcript': recording.transcript_data, 'error': recording.transcript_error,
-            'checked_at': recording.transcript_checked_at,
+            'checked_at': recording.transcript_checked_at, 'review': latest_review(recording),
         })
     except (OperationalError, ProgrammingError):
         return JsonResponse({'detail': 'Transcripts are temporarily unavailable.'}, status=503)

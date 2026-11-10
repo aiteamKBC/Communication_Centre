@@ -1,11 +1,11 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from callcentre.learner_satisfaction import eligible, generate
+from callcentre.learner_satisfaction import eligible, employer_contacts, generate, generate_employers
 from callcentre.sources import learner_directory
 
 
 class Command(BaseCommand):
-    help = 'Refresh learner satisfaction only (no calls, emails, AI or other case generation).'
+    help = 'Refresh learner and employer satisfaction only (no calls, emails, AI or other case generation).'
 
     def add_arguments(self, parser):
         parser.add_argument('--dry-run', action='store_true', help='Read sources and report eligibility; write nothing.')
@@ -25,7 +25,9 @@ class Command(BaseCommand):
                 'onboarding': sum(person['programme_status'].lower() == 'onboarding' for person in selected),
                 'without_phone': sum(not person['profile']['learner_phone'] for person in selected),
                 'without_email': sum(not person['profile']['learner_email'] for person in selected),
+                'employers': len(contacts := employer_contacts(people)),
+                'employers_without_phone': sum(not profile['learner_phone'] for profile, _ in contacts.values()),
                 'writes': 0,
             }))
             return
-        self.stdout.write(str(generate(people)))
+        self.stdout.write(str({'learners': generate(people), 'employers': generate_employers(people)}))

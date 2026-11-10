@@ -7,8 +7,7 @@ from django.db import transaction
 from callcentre.db import DB
 from callcentre.identity import enabled
 from callcentre.sources import unified_directory, refresh_contacts
-from callcentre.learner_satisfaction import generate, eligible
-from callcentre.emails import generate_surveys
+from callcentre.learner_satisfaction import generate, eligible, generate_employers
 
 
 class Command(BaseCommand):
@@ -32,6 +31,6 @@ class Command(BaseCommand):
             with transaction.atomic(using=DB):
                 result['refreshed_cases'] = refresh_contacts(people)
                 result['learner_satisfaction'] = generate(people)
-                result['manager_groups'] = generate_surveys(people)
+                result['employer_feedback'] = generate_employers(people)
             result['writes'] = True
         self.stdout.write(json.dumps(result))

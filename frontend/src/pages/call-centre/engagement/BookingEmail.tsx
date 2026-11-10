@@ -5,21 +5,30 @@ import type { Session } from './actions';
 type Check = { key: string; label: string; state: 'ok' | 'warning' | 'missing'; detail: string };
 type Draft = {
   recipient: string; subject: string; message: string; text: string; html: string;
-  link: { label: string; url: string }; checks: Check[];
+  link: { label: string; url: string }; checks: Check[]; mode: 'dry_run' | 'live';
 };
+type Delivery = { id: number; status: string; mode: string; recipient: string; error: string };
 
 const EMAIL_CHECKS = new Set(['recipient', 'link']);
 const STATE_TEXT = { ok: 'Ready', warning: 'Check', missing: 'Missing' };
 const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : 'Something went wrong. Try again.');
 
 /** The booking email for one case: the college template with only this case's link, a live preview and what sending still needs. */
-export default function BookingEmail({ caseId, session }: { caseId: number; session: Session }) {
+export default function BookingEmail({ caseId, recipientRole, session }: { caseId: number; recipientRole?: 'learner' | 'employer'; session: Session }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [edited, setEdited] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<Delivery | null>(null);
+  const [sendError, setSendError] = useState('');
+  // After a Send the wording is locked: a retry must send the very same email under the same request id.
+  const [attempted, setAttempted] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  // One id per email: a retry after a lost answer returns the same delivery instead of sending twice.
+  const requestId = useRef(crypto.randomUUID());
   const latest = useRef(0);
 
   // The server owns the template: render the default, then re-render the reworded draft shortly after typing stops.
@@ -27,7 +36,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
   useEffect(() => {
     const request = ++latest.current;
     const timer = window.setTimeout(() => {
-      post<Draft>(`tickets/${caseId}/booking-email/`, session.csrf, { agent_id: session.agentId, ...(wording ? JSON.parse(wording) : {}) })
+      post<Draft>(`tickets/${caseId}/booking-email/`, session.csrf, { agent_id: session.agentId, ...(recipientRole ? { recipient_role: recipientRole } : {}), ...(wording ? JSON.parse(wording) : {}) })
         .then(value => {
           if (request !== latest.current) return;
           setDraft(value);
@@ -37,7 +46,7 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
         .catch(reason => { if (request === latest.current) setError(errorText(reason)); });
     }, wording ? 400 : 0);
     return () => window.clearTimeout(timer);
-  }, [caseId, session.csrf, session.agentId, wording]);
+  }, [caseId, recipientRole, session.csrf, session.agentId, wording]);
 
   async function copy() {
     if (!draft) return;
@@ -52,6 +61,31 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
     }
   }
 
+  async function send() {
+    if (sending || sent) return;
+    setSending(true);
+    setSendError('');
+    setAttempted(true);
+    try {
+      const delivery = await post<Delivery>(`tickets/${caseId}/booking-email/send/`, session.csrf, {
+        agent_id: session.agentId, ...(recipientRole ? { recipient_role: recipientRole } : {}), request_id: requestId.current, subject, message,
+      });
+      if (delivery.status === 'failed') {
+        // Definitely not sent: a new request id lets it be fixed and sent again.
+        requestId.current = crypto.randomUUID();
+        setAttempted(false);
+        setSendError(delivery.error);
+      } else if (delivery.status === 'unknown') {
+        setUncertain(true);
+        setSendError(delivery.error);
+      } else setSent(delivery);
+    } catch (reason) {
+      setSendError(`${errorText(reason)} Pressing Send again checks this same email; it is never sent twice.`);
+    } finally {
+      setSending(false);
+    }
+  }
+
   if (!draft) return <><h2>Booking email</h2>{error ? <p className="ec-alert" role="alert">{error}</p> : <p className="ec-muted" role="status">Preparing the email…</p>}</>;
 
   const groups: [string, Check[]][] = [
@@ -59,6 +93,12 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
     ['Sending it from the call centre', draft.checks.filter(c => !EMAIL_CHECKS.has(c.key))],
   ];
   const mailto = `mailto:${encodeURIComponent(draft.recipient)}?subject=${encodeURIComponent(draft.subject)}`;
+  const blocked = draft.checks.find(c => c.state === 'missing' && (c.key === 'recipient' || c.key === 'quota'
+    || (c.key === 'gateway' && draft.mode === 'live')));
+  const dryRun = draft.mode !== 'live';
+  const sentText = sent && (sent.status === 'dry_run'
+    ? `Recorded on the case (dry run): nothing was sent to ${sent.recipient}.`
+    : `Accepted by Microsoft 365 for ${sent.recipient} and recorded on the case.`);
 
   return (
     <div id="ed-booking-email">
@@ -67,18 +107,28 @@ export default function BookingEmail({ caseId, session }: { caseId: number; sess
       <div className="ed-email-grid">
         <div className="ed-email-edit">
           <label>To<input value={draft.recipient} readOnly /></label>
-          <label>Subject<input value={subject} maxLength={180} onChange={event => { setEdited(true); setSubject(event.target.value); }} /></label>
-          <label>Message<textarea rows={9} maxLength={5000} value={message} onChange={event => { setEdited(true); setMessage(event.target.value); }} /></label>
+          <label>Subject<input value={subject} maxLength={180} disabled={!!sent || attempted} onChange={event => { setEdited(true); setSubject(event.target.value); }} /></label>
+          <label>Message<textarea rows={9} maxLength={5000} value={message} disabled={!!sent || attempted} onChange={event => { setEdited(true); setMessage(event.target.value); }} /></label>
           <p className="ec-muted">The greeting, the “{draft.link.label}” button and the sign-off are added for you.</p>
-          {edited && <button type="button" className="ed-sheet-link" onClick={() => setEdited(false)}>Reset to the standard wording</button>}
+          {edited && !sent && !attempted && <button type="button" className="ed-sheet-link" onClick={() => setEdited(false)}>Reset to the standard wording</button>}
           {error && <p className="ec-alert" role="alert">{error}</p>}
           <div className="ec-buttons">
-            <button type="button" className="primary" onClick={() => void copy()}>1. Copy email</button>
-            <a className="ec-button" href={mailto}>2. Open new email</a>
+            {draft.link.url && <a className="ec-button" href={draft.link.url} target="_blank" rel="noopener noreferrer">{draft.link.label} ↗</a>}
+            <button type="button" className="primary" onClick={() => void send()}
+              disabled={sending || !!sent || uncertain || !!blocked || !session.canAct || session.preview || !subject.trim() || !message.trim()}>
+              {sending ? 'Sending…' : sent ? (sent.status === 'dry_run' ? 'Recorded' : 'Sent') : attempted ? 'Check / retry this email' : dryRun ? 'Send (dry run: record only)' : 'Send email'}
+            </button>
+            <button type="button" onClick={() => void copy()}>Copy email</button>
+            <a className="ec-button" href={mailto}>Open in my mail app</a>
           </div>
-          <p role="status">{copied}</p>
+          {blocked && !sent && <p className="ec-muted">Send needs: {blocked.label.toLowerCase()}. {blocked.detail}</p>}
+          {sendError && <p className="ec-alert" role="alert">{sendError}</p>}
+          <p role="status">{sentText || copied}</p>
         </div>
-        <iframe className="ed-email-preview" title="Email preview" sandbox="" srcDoc={draft.html} />
+        <div>
+          {draft.link.url && <p className="ec-muted">The booking page opens in a new tab. Your email draft stays here.</p>}
+          <iframe className="ed-email-preview" title="Email preview" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={draft.html} />
+        </div>
       </div>
       <section className="ed-email-checks" aria-label="What this email needs before it can be sent">
         {groups.map(([title, checks]) => (

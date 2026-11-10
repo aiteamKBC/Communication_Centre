@@ -468,7 +468,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
   };
 
   return (
-    <section className="grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+    <section className="tp-profiles-layout grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-w-0 rounded-xl border border-gray-200 bg-white">
         <div className="border-b border-gray-100 px-4 py-3">
           <div className="flex items-start justify-between gap-3">
@@ -485,7 +485,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
           </div>
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 focus-within:border-kbc-navy focus-within:ring-2 focus-within:ring-kbc-navy/10">
             <i className="ri-search-line text-sm text-gray-400" />
-            <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search coach..." className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400" />
+            <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search coach..." aria-label="Search coaches" className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-kbc-navy outline-none placeholder:text-gray-400" />
           </div>
         </div>
         <div className="max-h-[42vh] overflow-y-auto p-2 xl:max-h-none xl:overflow-visible">
@@ -500,6 +500,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
                   setSelectedId(profile.id);
                   setEditing(false);
                 }}
+                aria-pressed={selected}
                 className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-all"
                 style={{ background: selected ? '#1B2A4A' : '#FFFFFF', color: selected ? '#FFFFFF' : '#1F2937' }}
               >

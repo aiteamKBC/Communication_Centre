@@ -7,14 +7,16 @@ export default function Imports({ overview, onAllocate }: { overview: Overview; 
   const [message, setMessage] = useState('');
 
   function exportCsv(kind: 'learners' | 'cases') {
+    const learnerCases = overview.cases.filter(c => c.source_type !== 'employer_feedback');
     const csv = kind === 'cases'
       ? csvText(['case_id', 'learner_email', 'learner_name', 'issue', 'status', 'coach', 'programme', 'organisation', 'due_at', 'next_followup_at', 'attempts', 'in_progress_with'],
         overview.cases.map(c => ({ case_id: c.id, learner_email: c.learner_email, learner_name: c.learner_name, issue: issueLabel(c), status: c.status, coach: c.coach, programme: c.programme, organisation: c.organisation, due_at: c.due_at, next_followup_at: c.next_followup_at, attempts: c.attempts, in_progress_with: c.claimed_by })))
       : csvText(['learner_email', 'learner_name', 'learner_phone', 'programme', 'organisation', 'coach', 'line_manager', 'line_manager_email', 'active_cases'],
-        [...new Map(overview.cases.map(c => [c.learner_email.toLowerCase(), c])).values()].map(c => ({
+        // Employer calls are kept under the line manager's email; they are not learners.
+        [...new Map(learnerCases.map(c => [c.learner_email.toLowerCase(), c])).values()].map(c => ({
           learner_email: c.learner_email, learner_name: c.learner_name, learner_phone: c.learner_phone, programme: c.programme, organisation: c.organisation,
           coach: c.coach, line_manager: c.manager_name, line_manager_email: c.manager_email,
-          active_cases: overview.cases.filter(x => x.learner_email.toLowerCase() === c.learner_email.toLowerCase()).length,
+          active_cases: learnerCases.filter(x => x.learner_email.toLowerCase() === c.learner_email.toLowerCase()).length,
         })));
     downloadBlob(new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' }), `KBC-${kind}-${overview.today}.csv`);
     setMessage('Export downloaded.');
@@ -25,7 +27,7 @@ export default function Imports({ overview, onAllocate }: { overview: Overview; 
       <section className="ec-card">
         <div className="ec-head">
           <div><h2>Upload now, connect feeds later</h2><p>Bring bookings, attendance reports, assignments, event confirmations and follow-up requests into the calling register.</p></div>
-          <button type="button" onClick={onAllocate}>Allocate by coach</button>
+          <button type="button" onClick={onAllocate}>Allocate by employer</button>
         </div>
         <ol>
           <li>Download the learner and case lists to copy the correct IDs and emails.</li>

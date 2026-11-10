@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EventMedia } from '../../../mocks/events';
+import { csrfToken } from '../../../utils/apiSession';
 
 export const MAX_EVENT_IMAGE_SIZE_MB = 10;
 export const MAX_EVENT_IMAGE_SIZE_BYTES = MAX_EVENT_IMAGE_SIZE_MB * 1024 * 1024;
@@ -164,6 +165,7 @@ function uploadImageWithProgress(file: File, onProgress: (progress: number) => v
     xhr.onerror = () => reject(new Error('Network error while uploading image.'));
     xhr.onabort = () => reject(new DOMException('Upload cancelled.', 'AbortError'));
     xhr.open('POST', '/api/upload-image/');
+    xhr.setRequestHeader('X-CSRFToken', csrfToken());
     xhr.send(formData);
   });
 

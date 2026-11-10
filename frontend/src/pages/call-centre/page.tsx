@@ -1,51 +1,62 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { clearAuthStorage, readStoredAuthUser } from '../../utils/authStorage';
+import { readStoredAuthUser } from '../../utils/authStorage';
 import { useCallCentre } from './api';
-import type { Config, Overview } from './api';
+import type { Config, Overview, OverviewCase } from './api';
 import type { Session } from './engagement/actions';
 import Allocation from './engagement/Allocation';
+import AttendanceEdits from './engagement/AttendanceEdits';
 import BookingLinksView from './engagement/BookingLinksView';
-import CaseWorkspace from './engagement/CaseWorkspace';
+import CoachPages from './engagement/CoachPages';
+import Coaches from './engagement/Coaches';
+import LearnerWorkspace from './engagement/LearnerWorkspace';
 import Connections from './engagement/Connections';
 import Desk from './engagement/Desk';
-import Director from './engagement/Director';
+import { CallsPage, ScorecardsPage } from './engagement/Director';
+import DirectorHome from './engagement/DirectorHome';
+import DoNotCall from './engagement/DoNotCall';
+import EmployerSpecialists from './engagement/EmployerSpecialists';
+import EventAllocation from './engagement/EventAllocation';
 import Imports from './engagement/Imports';
-import { DESK_MENUS, deskLabel, longDate } from './engagement/model';
-import { Calendar, Eventbrite } from './engagement/NotConnected';
+import { useLive } from './engagement/live';
+import type { InboundListing } from './engagement/inbound';
+import { deskCases, deskLayout, deskSection, deskTopics, failingSources, human, listsTotal, longDate, setHolidays } from './engagement/model';
+import MissedCalls from './engagement/MissedCalls';
 import RequestCall from './engagement/RequestCall';
+import ReviewMeetings from './engagement/ReviewMeetings';
 import Settings from './engagement/Settings';
+import TaskDelegation from './engagement/TaskDelegation';
 import Shell from './engagement/Shell';
 import type { NavGroup } from './engagement/Shell';
+import { MissingRecordings } from './engagement/Scorecard';
+import { SpecialistIndex, SpecialistPage } from './engagement/Specialists';
 import ZoomPhone from './engagement/ZoomPhone';
+import { signOut } from './signOut';
 import './styles/engagement.css';
+import './styles/director.css';
+import './styles/desk.css';
+import './styles/full-case.css';
 
-const DIRECTOR_NAV: [string, string, string][] = [
-  ['director', 'Director overview', 'chart'], ['calendar', 'Coach calendars', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
-  ['allocations', 'Learner allocation', 'people'], ['imports', 'Import & export', 'upload'], ['phone', 'Zoom Phone', 'settings'],
-  ['eventbrite', 'Eventbrite', 'calendar'], ['connections', 'Connections & rules', 'check'], ['settings', 'Settings', 'settings'],
-];
-const DIRECTOR_TABS: [string, string][] = [
-  ['director', 'Director'], ['allocations', 'Learner allocation'], ['imports', 'Import & export'], ['phone', 'Zoom Phone'],
-  ['bookings', 'Coach booking links'], ['operator', 'Calling workspace'], ['connections', 'Connections & call rules'],
-  ['settings', 'Settings'],
+// The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
+const DIRECTOR_NAV: [string, [string, string, string][]][] = [
+  ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['coaches', 'Coaches', 'people'],
+    ['scorecards', 'Scorecards', 'chart'],
+    ['meetings', 'Review meetings', 'calendar']]],
+  ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
+    ['delegation', 'Task delegation', 'people'],
+    ['operator', 'Calling desk', 'phone']]],
+  ['Setup', [['phone', 'Zoom Phone', 'settings'], ['allocations', 'Learner allocation', 'book'], ['event-allocation', 'Event allocation', 'calendar'], ['bookings', 'Coach booking links', 'calendar'],
+    ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Director overview', calendar: 'Coach calendars', bookings: 'Coach booking links', allocations: 'Learner allocation',
-  imports: 'Import & export', phone: 'Zoom Phone', eventbrite: 'Eventbrite', connections: 'Make every conversation count',
-  settings: 'Settings',
+  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', coaches: 'Coaches', scorecards: 'Scorecards', calls: 'Calls',
+  bookings: 'Coach booking links', allocations: 'Learner allocation', 'event-allocation': 'Event allocation',
+  phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
+  delegation: 'Task delegation', attendance: 'Attendance edits',
 };
-
-function signOut(navigate: ReturnType<typeof useNavigate>) {
-  const user = readStoredAuthUser();
-  const body = JSON.stringify({
-    trackingSessionId: String(user?.trackingSessionId || ''), userId: String(user?.id || ''),
-    email: String(user?.email || ''), username: String(user?.username || ''), reason: 'logout_button',
-  });
-  void fetch('/api/auth/logout/', { method: 'POST', keepalive: true, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body }).catch(() => undefined);
-  clearAuthStorage();
-  navigate('/login', { replace: true });
-}
+// Pages folded into another: Import & export and Connections & rules sit in Settings, call quality in Calls.
+const MOVED: Record<string, string> = { imports: 'settings', connections: 'settings', quality: 'calls', cases: 'director' };
+const LIVE_VIEWS = new Set(['director', 'specialists', 'specialist']);
 
 /** The Engagement Centre: the director workspace and each specialist's calling desk. */
 export default function CallCentrePage() {
@@ -54,9 +65,11 @@ export default function CallCentrePage() {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [requesting, setRequesting] = useState(false);
   const month = params.get('month') || '';
-  const config = useCallCentre<Config>('config/');
+  const config = useCallCentre<Config>('config/', false);
   const overviewState = useCallCentre<Overview>(`overview/${month ? `?month=${month}` : ''}`);
   const overview = overviewState.data;
+  // The quick follow-up dates skip the bank holidays the server knows.
+  setHolidays(overview?.holidays);
 
   const setParam = useCallback((changes: Record<string, string | null>) => {
     setParams(current => {
@@ -71,54 +84,83 @@ export default function CallCentrePage() {
   const refresh = overviewState.refresh;
 
   useEffect(() => {
-    if (overviewState.error && overview) setMessage({ text: overviewState.error, error: true });
+    if (overviewState.error && overview) setMessage({ text: `Could not refresh: ${overviewState.error} Showing the last loaded list.`, error: true });
   }, [overviewState.error, overview]);
+  useEffect(() => {
+    if (config.error && config.status !== 401) setMessage({ text: `The Engagement Centre settings could not load (${config.error}). Saving will fail until you reload the page.`, error: true });
+  }, [config.error, config.status]);
 
   const role = overview?.access.role;
   const director = role === 'director';
-  const view = director ? params.get('view') || 'director' : params.get('view') === 'phone' ? 'phone' : 'operator';
+  const asked = params.get('view') || 'director';
+  const view = director ? MOVED[asked] || asked : params.get('view') === 'phone' ? 'phone' : 'operator';
   const inDesk = view === 'operator';
-  const section = DESK_MENUS.some(item => item[0] === params.get('section')) ? params.get('section')! : 'next';
   const caseId = director && params.get('case') ? Number(params.get('case')) : null;
+  const specialistId = Number(params.get('agent')) || null;
+  // The board's live state (who is on a call, ringing, free), asked only while a page that shows it is open.
+  const { live, now } = useLive(5000, director && !caseId && LIVE_VIEWS.has(view));
 
   const ownAgent = overview?.access.agent_id ?? null;
   const deskAgentId = director ? Number(params.get('operator')) || ownAgent || overview?.agents[0]?.id || null : ownAgent;
+  // With employer specialists chosen, they make the employer calls only, and everyone else none of them.
+  const team = useMemo(() => overview?.employer_specialists || [], [overview]);
+  const employerDesk = deskAgentId !== null && team.includes(deskAgentId);
+  const layout = useMemo(() => deskLayout({ employer_specialists: team }, deskAgentId), [team, deskAgentId]);
+  const { section, page: deskPage } = deskSection(params.get('section'), layout);
   const deskAgent = overview?.agents.find(agent => agent.id === deskAgentId);
   const session: Session = useMemo(() => {
     const isManager = !!overview && (overview.access.role === 'director');
-    const superuser = !!overview?.access.is_superuser;
     const csrf = config.data?.csrf_token || '';
     const self = overview?.access.display_name || '';
-    if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self };
+    const helpdesk = !!config.data?.helpdesk;
+    if (!inDesk) return { csrf, agentId: ownAgent, canAct: !!ownAgent || isManager, isManager, preview: false, name: self, helpdesk };
     const own = deskAgentId !== null && deskAgentId === ownAgent;
-    const preview = role === 'viewer' || (!own && !superuser);
-    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self };
-  }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role]);
+    const preview = role === 'viewer' || (!own && !isManager);
+    return { csrf, agentId: preview ? null : deskAgentId, canAct: !preview, isManager, preview, name: deskAgent?.display_name || self, ownDesk: own, helpdesk, employerDesk };
+  }, [config.data, overview, inDesk, deskAgentId, deskAgent, ownAgent, role, employerDesk]);
 
   const email = overview?.access.email || String(readStoredAuthUser()?.email || '');
-  // A specialist's desk holds their allocated learners plus the shared queue.
-  const deskOverview = useMemo(() => (overview && deskAgentId
-    ? { ...overview, cases: overview.cases.filter(c => !c.allocated_agent_id || c.allocated_agent_id === deskAgentId) }
-    : overview), [overview, deskAgentId]);
+  // The desk being shown: its lists, with each director's task (deskCases).
+  const deskOverview = useMemo(() => (overview && deskAgentId ? deskCases(overview, deskAgentId) : overview), [overview, deskAgentId]);
+  // The desk's lists in calling order, with the tasks given to it where the director placed them.
+  const topics = useMemo(() => deskTopics(layout.lists, overview?.tasks, deskAgentId), [layout.lists, overview?.tasks, deskAgentId]);
 
+  // Who rang the desk's specialist and is still waiting: the Missed calls count and the Today page's call-backs.
+  const rangState = useCallCentre<InboundListing>(overview && (inDesk || !director) && (session.canAct || director)
+    ? `inbound/?kind=callback&status=open&days=90${director && deskAgentId ? `&agent_id=${deskAgentId}` : ''}` : null);
+  const refreshRang = rangState.refresh;
+  useEffect(() => { refreshRang(); }, [overview?.generated_at, refreshRang]);
+  const rangOpen = rangState.data?.summary?.open || 0;
+
+  const deskItems = !deskOverview ? [] : layout.pages.map(([key, label, icon]) => ({
+    key: `desk:${key}`, icon,
+    label: key === 'lists' ? `${label} (${listsTotal(deskOverview, layout, topics)})` : key === 'rang' && rangOpen ? `${label} (${rangOpen})` : label,
+  }));
   const groups: NavGroup[] = !overview || !deskOverview ? [] : inDesk
     ? [
-      { title: 'My calling day', items: DESK_MENUS.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
+      { title: 'My calling day', items: deskItems },
       ...(director ? [{ title: 'Director', items: [{ key: 'exit', label: 'Return to director', icon: 'back' }] }]
         : [{ title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] }]),
     ]
-    : director ? [{ title: 'Director', items: DIRECTOR_NAV.map(([key, label, icon]) => ({ key: `view:${key}`, label, icon })) }]
+    : director ? DIRECTOR_NAV.map(([title, items]) => ({ title, items: items.map(([key, label, icon]) => ({ key: `view:${key}`, label, icon })) }))
       : [
-        { title: 'My calling day', items: DESK_MENUS.map(([key, , icon]) => ({ key: `desk:${key}`, label: deskLabel(deskOverview, key), icon })) },
+        { title: 'My calling day', items: deskItems },
         { title: 'Engagement', items: [{ key: 'view:phone', label: 'Zoom Phone', icon: 'settings' }] },
       ];
-  const activeKey = inDesk ? `desk:${section}` : `view:${view}`;
+  const activeKey = inDesk ? `desk:${deskPage}` : `view:${view === 'specialist' ? 'specialists' : view}`;
 
   function navigateTo(key: string) {
     if (key === 'exit') setParam({ view: null, operator: null, section: null, case: null });
     else if (key.startsWith('desk:')) setParam(director ? { section: key.slice(5) } : { view: null, section: key.slice(5) });
-    else if (key.startsWith('view:')) setParam({ view: key.slice(5) === 'director' ? null : key.slice(5), case: null, section: null });
+    else if (key.startsWith('view:')) go(key.slice(5));
   }
+
+  function go(next: string, extra: Record<string, string> = {}) {
+    setParam({ view: next === 'director' ? null : next, case: null, section: null, agent: extra.agent ?? null, coach: null, learner: null });
+    window.scrollTo({ top: 0 });
+  }
+
+  const openCase = (id: number) => setParam({ case: String(id) });
 
   const status = <div className="ec-status" role="status" aria-live="polite" style={message?.error ? { color: '#963e48' } : undefined}>{message?.text || ''}</div>;
 
@@ -132,23 +174,23 @@ export default function CallCentrePage() {
       </div>
     );
   } else if (!overview) {
-    content = overviewState.error ? <p role="alert">{overviewState.error}</p> : <p>Loading your Engagement Centre…</p>;
+    content = overviewState.error
+      ? <div role="alert"><p>{overviewState.error}</p><button type="button" onClick={refresh}>Try again</button></div>
+      : <p>Loading your Engagement Centre…</p>;
   } else if (inDesk && deskOverview) {
     content = (
       <div id="engagement-centre" className="ec ed">
-        <p className="ec-alert">
-          Workspace: {deskAgent?.display_name || overview.access.display_name}. Showing this specialist's allocated contacts plus the shared queue.
-          {' '}Last successful cycle: {overview.cycle?.last_success_at ? new Date(overview.cycle.last_success_at).toLocaleString() : 'Not recorded'}.
-        </p>
-        {overview.sources?.some(source => source.details?.error) && <p className="ec-alert" role="alert">
-          Some data sources are unavailable. Lists may be incomplete; existing cases have been retained. Ask a manager to check Connections.
+        {failingSources(overview).length > 0 && <p className="ec-alert" role="alert">
+          Some data sources are unavailable ({failingSources(overview).map(source => human(source.name.replace(/^source:/, ''))).join(', ')}).
+          {' '}Lists may be incomplete; existing cases have been retained. Ask a manager to check Connections.
         </p>}
         {(!overview.cycle?.last_success_at || Date.now() - Date.parse(overview.cycle.last_success_at) > 30 * 60 * 1000) &&
           <p className="ec-alert" role="alert">Synchronization is overdue or has not completed. Refresh only reloads saved cases; it does not run synchronization.</p>}
         {overview.cases_truncated && <p className="ec-alert" role="alert">The case list is truncated. These counters do not include every case.</p>}
         {role === 'viewer' && <p className="ec-alert">Ask a manager to set up your agent profile to call learners and record outcomes. This calling workspace is read-only until then.</p>}
         <Desk
-          overview={deskOverview} agent={deskAgent} session={session} section={section}
+          overview={deskOverview} agent={deskAgent} session={session} section={section} page={deskPage} lists={topics}
+          rang={rangState.data}
           name={deskAgent?.display_name || overview.access.display_name} status={status}
           onSection={key => setParam({ section: key })} onExit={director && session.preview ? () => navigateTo('exit') : undefined}
           onRefresh={refresh} onMonth={value => setParam({ month: value })} notify={notify}
@@ -160,42 +202,58 @@ export default function CallCentrePage() {
       <div id="engagement-centre" className="ec">
         <div className="ec-head">
           <div>
-            <div className="ec-eyebrow">Kent Business College · Engagement</div>
+            <div className="ec-eyebrow">Kent Business College · Engagement{director ? ' · Director' : ''}</div>
             <h1>{caseId ? 'Learner call workspace' : TITLES[view] || 'Make every conversation count'}</h1>
             <div className="ec-muted">{longDate(overview.today)} · {overview.access.display_name}</div>
           </div>
           <div className="ec-buttons">
-            {caseId && <button type="button" onClick={() => setParam({ case: null })}>← Calling register</button>}
+            {caseId && <button type="button" onClick={() => setParam({ case: null })}>← Back</button>}
             {!director && <button type="button" onClick={() => setParam({ view: null })}>← Calling workspace</button>}
             {director && <button type="button" className="primary" onClick={() => setRequesting(true)}>+ Request a call</button>}
             <button type="button" onClick={refresh}>Refresh</button>
           </div>
         </div>
         {status}
-        {!caseId && director && (
-          <div className="ec-tabs" role="tablist" aria-label="Engagement screens">
-            {DIRECTOR_TABS.map(([key, label]) => (
-              <button key={key} type="button" role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} onClick={() => setParam({ view: key === 'director' ? null : key, section: null })}>{label}</button>
-            ))}
-          </div>
-        )}
         <div id="ec-body">
           {caseId ? (
-            <CaseWorkspace key={caseId} id={caseId} overview={overview} session={session} onOpen={id => setParam({ case: String(id) })} notify={notify} onChanged={refresh} />
-          ) : view === 'allocations' ? <Allocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
-            : view === 'imports' ? <Imports overview={overview} onAllocate={() => setParam({ view: 'allocations' })} />
-              : view === 'phone' ? <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
-                : view === 'bookings' ? <BookingLinksView overview={overview} />
-                  : view === 'connections' ? <Connections overview={overview} onView={key => setParam({ view: key })} />
-                    : view === 'calendar' ? <Calendar />
-                      : view === 'eventbrite' ? <Eventbrite />
-                        : view === 'settings' ? <Settings csrf={config.data?.csrf_token || ''} />
-                        : (
-                          <Director
-                            overview={overview} month={overview.month} onMonth={value => setParam({ month: value })} onView={key => setParam({ view: key })}
-                            onPreview={id => setParam({ view: 'operator', operator: String(id), section: null })} onOpenCase={id => setParam({ case: String(id) })}
-                          />
-                        )}
+            <LearnerWorkspace key={caseId} id={caseId} overview={overview} session={session}
+              onSaved={text => { notify(text); refresh(); }} notify={notify} onRefresh={refresh} />
+          ) : view === 'allocations' ? (
+            <>
+              <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />
+              <DoNotCall session={session} onChanged={refresh} notify={notify} />
+              <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
+            </>
+          ) : view === 'event-allocation' ? (
+            <EventAllocation csrf={config.data?.csrf_token || ''} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
+          ) : view === 'phone' ? (
+            <>
+              <ZoomPhone overview={overview} csrf={config.data?.csrf_token || ''} isManager={director} />
+              {director && <MissingRecordings revision={overview.generated_at} />}
+            </>
+          )
+            : view === 'bookings' ? <><BookingLinksView overview={overview} /><CoachPages csrf={config.data?.csrf_token || ''} onSaved={refresh} /></>
+              : view === 'settings' ? (
+                <>
+                  <Settings csrf={config.data?.csrf_token || ''} />
+                  <Connections overview={overview} />
+                  <Imports overview={overview} onAllocate={() => go('allocations')} />
+                </>
+              ) : view === 'specialists' ? <SpecialistIndex overview={overview} live={live} now={now} go={go} />
+                : view === 'coaches' ? (
+                  <Coaches coach={params.get('coach')} onOpen={email => setParam({ coach: email, learner: null })}
+                    onBack={() => setParam({ coach: null, learner: null })} />
+                )
+                : view === 'specialist' && specialistId ? (
+                  <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go}
+                    onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
+                ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
+                  : view === 'meetings' ? <ReviewMeetings today={overview.today} />
+                  : view === 'delegation' ? <TaskDelegation overview={overview} csrf={config.data?.csrf_token || ''} onChanged={refresh} notify={notify} />
+                  : view === 'missed' ? <MissedCalls session={session} revision={overview.generated_at} onOpenCase={openCase} />
+                  : view === 'attendance' ? <AttendanceEdits session={session} notify={notify} onOpenCase={openCase} />
+                  : view === 'calls' ? <CallsPage overview={overview} session={session} onOpenCase={openCase} onChanged={refresh} notify={notify} />
+                    : <DirectorHome overview={overview} live={live} now={now} go={go} onMonth={value => setParam({ month: value })} />}
         </div>
         {director && (
           <RequestCall

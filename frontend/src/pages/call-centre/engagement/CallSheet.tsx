@@ -1,17 +1,26 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Overview, OverviewCase } from '../api';
-import { callDisabledReason, caseAction, saveOutcome } from './actions';
+import { callDisabledReason, caseAction, recallFor, recallHint, requestCallSync, saveOutcome } from './actions';
 import type { Session } from './actions';
 import BookSession from './BookSession';
 import BookingEmail from './BookingEmail';
+import BookingPage from './BookingPage';
 import Dialog from './Dialog';
+import EmployerCheck from './EmployerCheck';
+import MeetingTools from './MeetingTools';
 import SatisfactionFeedback from './SatisfactionFeedback';
 import SatisfactionEmail from './SatisfactionEmail';
+import TechIssue from './TechIssue';
+import CaseDates from './CaseDates';
+import RecallTries from './Recall';
+import CaseFilters, { EMPTY_CASE_FILTERS, matchesCaseFilters } from './CaseFilters';
+import { matchesTicketDate, orderTickets, TICKET_ORDERS, type TicketOrder } from './ticketOrder';
 import type { CallTab } from './model';
-import { callGroups, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, issueLabel, matchesSearch, shortDate, uniqueLearners } from './model';
+import { ISSUE_LABELS, QUICK_FOLLOW_UPS, activeCase, bookingHint, closesCase, feedbackMessage, longDate, workdayInput, helpdeskStatus, londonInput, outcomeChoices, outcomeHelp, splitOutcome, categoryCases, contactKey, dueForCall, isSatisfaction, issueLabel, matchesSearch, satisfactionRecipient, shortDate, uniqueLearners } from './model';
 
 type Draft = { outcome: string; notes: string; next_contact: string; dirty: boolean; status?: string; error?: string };
+const PAGE_SIZE = 20;
 type Props = {
   overview: Overview; tab: CallTab; session: Session;
   onOpen: (id: number) => void; onSaved: () => void; notify: (message: string, error?: boolean) => void;
@@ -21,33 +30,74 @@ type Props = {
 export default function CallSheet({ overview, tab, session, onOpen, onSaved, notify }: Props) {
   const [drafts, setDrafts] = useState<Map<number, Draft>>(new Map());
   const [saving, setSaving] = useState<Set<number>>(new Set());
+  const [dialling, setDialling] = useState<number | null>(null);
+  // Rows on a call (Call pressed, End call not yet) and rows whose call ended in this session.
+  const [onCall, setOnCall] = useState<Set<number>>(new Set());
+  const [ended, setEnded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
+  const [caseFilters, setCaseFilters] = useState({ ...EMPTY_CASE_FILTERS });
   const [reason, setReason] = useState('all');
-  const [scope, setScope] = useState(tab.key === 'learner_satisfaction' ? 'due' : 'all');
-  const [mode, setMode] = useState('coach');
-  const [selected, setSelected] = useState('');
-  const [emailCase, setEmailCase] = useState<number | null>(null);
+  const [order, setOrder] = useState<TicketOrder>('newest');
+  const [dateMode, setDateMode] = useState<'all' | 'day' | 'range'>('all');
+  const [selectedDay, setSelectedDay] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [page, setPage] = useState(1);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scope, setScope] = useState(tab.key === 'learner_satisfaction' || tab.key === 'employer_satisfaction' ? 'due' : 'all');
+  const [emailCase, setEmailCase] = useState<{ id: number; role?: 'learner' | 'employer' } | null>(null);
   const [feedbackCase, setFeedbackCase] = useState<OverviewCase | null>(null);
   const [satisfactionEmail, setSatisfactionEmail] = useState<OverviewCase | null>(null);
+  const from = dateMode === 'day' ? selectedDay : dateMode === 'range' ? dateFrom : '';
+  const to = dateMode === 'day' ? selectedDay : dateMode === 'range' ? dateTo : '';
+  const invalidDateRange = !!from && !!to && from > to;
 
   const eligible = useMemo(() => categoryCases(overview.cases, tab.key, overview.today, overview.next_workday), [overview, tab.key]);
-  const groups = useMemo(() => callGroups(eligible, mode), [eligible, mode]);
-  const group = groups.find(g => g.key === selected);
+  const matching = useMemo(() => orderTickets(eligible.filter(c =>
+    (reason === 'all' || c.source_type === reason) && (scope !== 'due' || dueForCall(c)) && matchesSearch(c, search)
+    && matchesTicketDate(c, from, to) && matchesCaseFilters(c, caseFilters),
+  ), order), [eligible, reason, scope, search, order, from, to, caseFilters]);
+  const ticketsByContact = useMemo(() => {
+    const grouped = new Map<string, OverviewCase[]>();
+    for (const c of matching) {
+      const key = contactKey(c);
+      const tickets = grouped.get(key) || [];
+      tickets.push(c);
+      grouped.set(key, tickets);
+    }
+    return grouped;
+  }, [matching]);
+  const allCasesByContact = useMemo(() => {
+    const grouped = new Map<string, OverviewCase[]>();
+    for (const c of overview.cases.filter(activeCase)) {
+      const key = contactKey(c);
+      grouped.set(key, [...(grouped.get(key) || []), c]);
+    }
+    return grouped;
+  }, [overview.cases]);
   const rows = useMemo(() => {
     const chosen = new Map<string, OverviewCase>();
-    for (const c of eligible) {
-      if ((reason !== 'all' && c.source_type !== reason) || (scope === 'due' && !dueForCall(c))
-        || (group && !group.cases.some(x => x.id === c.id)) || !matchesSearch(c, search)) continue;
+    for (const c of matching) {
       const key = contactKey(c);
       const old = chosen.get(key);
-      if (!old || (drafts.has(c.id) && !drafts.has(old.id))) chosen.set(key, c);
+      // Changing the order must not replace a ticket whose outcome is being edited.
+      if (!old || (drafts.get(c.id)?.dirty && !drafts.get(old.id)?.dirty)) chosen.set(key, c);
     }
-    return [...chosen.values()];
-  }, [eligible, reason, scope, group, search, drafts]);
+    return orderTickets([...chosen.values()], order);
+  }, [matching, order, drafts]);
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const firstRow = (currentPage - 1) * PAGE_SIZE;
+  const visibleRows = rows.slice(firstRow, firstRow + PAGE_SIZE);
+  const unsavedCount = [...drafts.values()].filter(draft => draft.dirty).length;
+
+  useEffect(() => { setPage(1); }, [reason, scope, search, order, from, to, tab.key, caseFilters]);
+  useEffect(() => { setPage(value => Math.min(value, pageCount)); }, [pageCount]);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); }, [currentPage, reason, scope, search, order, from, to, caseFilters]);
 
   const update = (c: OverviewCase, field: 'outcome' | 'notes' | 'next_contact', value: string) => setDrafts(current => {
     const next = new Map(current);
-    const draft = next.get(c.id) || { outcome: '', notes: '', next_contact: c.next_followup_at?.slice(0, 10) || '', dirty: false };
+    const draft = next.get(c.id) || { outcome: '', notes: '', next_contact: '', dirty: false };
     next.set(c.id, { ...draft, [field]: value, dirty: true, status: undefined, error: undefined });
     return next;
   });
@@ -59,13 +109,17 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     try {
       if (!draft.outcome) throw new Error('Choose an outcome first.');
       if (draft.notes.trim().length < 10) throw new Error('Add a short note: what was agreed and the next action (at least 10 characters).');
-      if (draft.outcome === 'callback' && !draft.next_contact) throw new Error('Choose the follow-up date for the callback.');
-      await saveOutcome(session, c.id, {
+      if (draft.outcome === 'callback' && !draft.next_contact) throw new Error('Choose the date and time for the callback.');
+      const followUp = draft.next_contact ? londonInput(draft.next_contact) : null;
+      if (followUp && followUp.getTime() <= Date.now()) throw new Error('Choose a follow-up time in the future.');
+      const result = await saveOutcome(session, c.id, {
         ...splitOutcome(draft.outcome), note: draft.notes.trim(),
-        callback_at: draft.next_contact && (draft.outcome === 'callback' || (c.source_type === 'learner_satisfaction' && draft.outcome === 'no_answer'))
-          ? new Date(`${draft.next_contact}T09:00`).toISOString() : null,
+        // The chosen follow-up applies to every outcome; an outcome that closes the case ignores it.
+        callback_at: followUp ? followUp.toISOString() : null,
       });
-      setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false, status: 'Saved' }));
+      setDrafts(current => new Map(current).set(c.id, { ...draft, dirty: false,
+        status: 'Saved' }));
+      setEnded(current => { const next = new Set(current); next.delete(c.id); return next; });
       onSaved();
     } catch (reason) {
       setDrafts(current => new Map(current).set(c.id, { ...draft, error: reason instanceof Error ? reason.message : 'Save failed.' }));
@@ -78,14 +132,29 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
     }
   }
 
-  async function call(c: OverviewCase) {
+  /** Call, or with `recall` call again now a case held after an unanswered call (one of its tries). */
+  async function call(c: OverviewCase, recall = false) {
+    if (dialling !== null) return;
+    setDialling(c.id);
     try {
-      await caseAction(session, c.id, 'call');
-      notify(`Zoom Phone opened for ${c.learner_name}. Update the row during the call, then save once Zoom reports it.`);
+      const role = c.employer_signature_missing && session.employerDesk ? 'employer' : 'learner';
+      await caseAction(session, c.id, 'call', { call_role: role, ...(recall ? { recall: true } : {}) });
+      setOnCall(current => new Set(current).add(c.id));
+      const tries = recall && c.recall ? ` (recall ${c.recall.used + 1} of ${c.recall.max})` : '';
+      notify(`Zoom opened for ${c.call_name || c.learner_name}${tries}. When you hang up, press End call, then choose the outcome and Save.`);
       onSaved();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : 'The call could not start.', true);
+    } finally {
+      setDialling(null);
     }
+  }
+
+  function endCall(c: OverviewCase) {
+    requestCallSync(session);
+    setOnCall(current => { const next = new Set(current); next.delete(c.id); return next; });
+    setEnded(current => new Set(current).add(c.id));
+    document.querySelector<HTMLSelectElement>(`[data-sheet-row="${c.id}"] select`)?.focus();
   }
 
   const onKey = (event: KeyboardEvent, c: OverviewCase) => {
@@ -110,83 +179,170 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
         <input type="search" aria-label="Search the call sheet" placeholder="Find a name, number or coach…" value={search} onChange={event => setSearch(event.target.value)} />
         <select aria-label="Filter call reason" value={reason} onChange={event => setReason(event.target.value)}>
           <option value="all">All call reasons</option>
-          {[...new Set(eligible.map(c => c.source_type))].map(key => <option key={key} value={key}>{issueLabel({ source_type: key, issue_name: key })}</option>)}
+          {[...new Set(eligible.map(c => c.source_type))].map(key => <option key={key} value={key}>{ISSUE_LABELS[key] || key}</option>)}
         </select>
         <select aria-label="Follow-up timing" value={scope} onChange={event => setScope(event.target.value)}>
           <option value="all">All active</option><option value="due">Due now</option>
         </select>
-        <select aria-label="Group calls by" value={mode} onChange={event => { setMode(event.target.value); setSelected(''); }}>
-          {[['coach', 'Group by coach'], ['class', 'Group by class'], ['programme', 'Group by programme']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        <select aria-label="Ticket order" aria-describedby="ed-ticket-order-help" value={order} onChange={event => setOrder(event.target.value as TicketOrder)}>
+          {Object.entries(TICKET_ORDERS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <select aria-label="Choose a call group" value={selected} onChange={event => setSelected(event.target.value)}>
-          <option value="">All groups</option>
-          {groups.map(g => <option key={g.key} value={g.key}>{g.label} · {g.purpose} ({g.cases.length})</option>)}
-        </select>
+        <div className="ed-date-filter" role="group" aria-label="Ticket date filter">
+          <select aria-label="Date filter" aria-describedby="ed-ticket-order-help" value={dateMode}
+            onChange={event => setDateMode(event.target.value as 'all' | 'day' | 'range')}>
+            <option value="all">All dates</option>
+            <option value="day">Specific day</option>
+            <option value="range">Date range</option>
+          </select>
+          {dateMode === 'day' && <label>Day
+            <input type="date" aria-label="Ticket date" value={selectedDay} onChange={event => setSelectedDay(event.target.value)} />
+          </label>}
+          {dateMode === 'range' && <>
+            <label>From
+              <input type="date" aria-label="From date" value={dateFrom} max={dateTo || undefined}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? 'ed-date-error' : undefined}
+                onChange={event => setDateFrom(event.target.value)} />
+            </label>
+            <label>To
+              <input type="date" aria-label="To date" value={dateTo} min={dateFrom || undefined}
+                aria-invalid={invalidDateRange} aria-describedby={invalidDateRange ? 'ed-date-error' : undefined}
+                onChange={event => setDateTo(event.target.value)} />
+            </label>
+          </>}
+          {dateMode !== 'all' && <button type="button" onClick={() => {
+            setDateMode('all'); setSelectedDay(''); setDateFrom(''); setDateTo('');
+          }}>Clear dates</button>}
+        </div>
       </div>
+      <CaseFilters cases={eligible} value={caseFilters} onChange={setCaseFilters} />
+      {invalidDateRange && <p className="ed-sheet-hint" id="ed-date-error" role="alert">The end date must be on or after the start date.</p>}
+      <p className="ed-sheet-hint" id="ed-ticket-order-help">
+        Date filters and oldest / newest use the issue date, then the appointment date or ticket opened date if unavailable.
+        Dates are UK calendar days; a range includes both days.
+        Tickets with unsaved edits stay selected for their contact.
+      </p>
       <p className="ed-sheet-hint">
-        Call, update the row, then Save. {session.preview
+        Call, press End call when you hang up, choose the outcome, then Save. {session.preview
           ? `Calls are disabled in the director preview. ${session.name} must sign in to call. `
           : !session.agentId ? 'Ask a manager to set up your agent profile before calling. '
             : 'Zoom Phone opens with your caller ID; keep the Zoom desktop app signed in. '}
-        An outcome is saved against the call Zoom reports, so save once the call has synced.
+        Nothing changes on the case until you save; saving moves it on straight away.
       </p>
       <div id="ed-sheet-body">
         <p className="ed-sheet-hint">This section contains {eligible.length} open tickets across {uniqueLearners(eligible).length} contacts before the filters below. A contact can have multiple tickets.</p>
-        <div className="ed-sheet-count">{rows.length} {rows.length === 1 ? 'contact' : 'contacts'} · Priority order · One row per contact <span>Tab between fields · Ctrl/⌘ + Enter to save a row</span></div>
-        <div className="ed-sheet-scroll" tabIndex={0} role="region" aria-label="Quick call register">
+        <div className="ed-sheet-count">{rows.length ? `${firstRow + 1}–${firstRow + visibleRows.length} of ` : ''}{rows.length} {rows.length === 1 ? 'contact' : 'contacts'} · {TICKET_ORDERS[order]} · One row per contact <span>Tab between fields · Ctrl/⌘ + Enter to save a row</span></div>
+        <div ref={scrollRef} className="ed-sheet-scroll" tabIndex={0} role="region" aria-label="Quick call register">
           <table className="ed-sheet-table">
             <caption className="ed-sr-only">Learner calls. Edit the outcome, notes and follow-up date, then save that row.</caption>
-            <thead><tr>{['Learner / phone', 'Call reason / coach', 'Call', 'Coach appointment', 'Outcome', 'Notes / agreed action', 'Follow-up', 'Save'].map(head => <th key={head} scope="col">{head}</th>)}</tr></thead>
+            <thead><tr>{['Learner / phone', 'Call reason / coach', 'Call', 'Booking', 'Outcome', 'Notes / agreed action', 'Follow-up', 'Save'].map(head => <th key={head} scope="col">{head}</th>)}</tr></thead>
             <tbody>
-              {rows.map(c => {
+              {visibleRows.map(c => {
                 const d = drafts.get(c.id);
-                const callReason = callDisabledReason(c, session);
+                // Held after an unanswered call: Recall (up to its tries) instead of a Call that must wait for the follow-up.
+                const recall = recallFor(c);
+                const callReason = callDisabledReason(c, session, Date.now(), !!recall);
                 const disabled = session.preview || !session.canAct;
+                const employer = c.source_type === 'employer_feedback';
+                const employerContact = !!c.employer_signature_missing && !!session.employerDesk;
+                const contactName = employerContact ? (c.call_name || c.manager_name) : c.learner_name;
+                const contactPhone = employerContact ? (c.call_phone ?? '') : c.learner_phone;
+                const signatureEmailRole = employerContact ? 'employer' as const : 'learner' as const;
                 return (
-                  <tr key={c.id} data-sheet-row={c.id} className={d?.dirty ? 'is-dirty' : ''} onKeyDown={event => onKey(event, c)}>
+                  <tr key={c.id} data-sheet-row={c.id} className={[d?.dirty ? 'is-dirty' : '', c.desk === 'covered' ? 'ed-covered' : ''].filter(Boolean).join(' ')}
+                    onKeyDown={event => onKey(event, c)}>
                     <th scope="row">
-                      <strong>{c.source_type === 'satisfaction' ? c.manager_name || c.learner_name : c.learner_name}</strong>
+                      <strong>{c.learner_name}</strong>
+                      {c.desk === 'covered' && c.cover && <span className="ed-cover-tag">Covered by {c.cover.to_name}</span>}
+                      {c.desk === 'task' && c.cover && <span className="ed-cover-tag task">For {c.cover.from_name}</span>}
                       <span>{c.learner_phone || 'No phone recorded'}</span>
+                      {!employer && <button type="button" className="ed-all-cases" onClick={() => onOpen(c.id)}>
+                        All cases ({allCasesByContact.get(contactKey(c))?.length || 1}{overview.cases_truncated ? '+' : ''})
+                      </button>}
+                      {!employer && !c.employer_signature_missing && c.source_type !== 'tech_support' && <div style={{ marginTop: '.45rem' }}><TechIssue caseId={c.id} learner={c.learner_name} session={session} notify={notify} onRaised={onSaved} /></div>}
                       {c.source_type === 'learner_satisfaction' && <span>{c.programme_status}</span>}
-                      <details>
-                        <summary>Contact details</summary>
-                        <span>{c.learner_email || 'Email not recorded'}</span>
-                        <small>Phone source: {c.contact_sources?.phone || 'Not recorded'} · Email source: {c.contact_sources?.email || 'Not recorded'}</small>
-                        <span>{c.programme || 'Programme not recorded'}</span>
-                        <span>{c.organisation || 'Employer not recorded'}</span>
-                        {c.manager_email && <span>Line manager: {c.manager_name || c.manager_email}</span>}
-                      </details>
-                      {c.source_type === 'satisfaction' && !!c.employer_learners?.length && <details>
-                        <summary>Learners ({c.employer_learners.length})</summary>
-                        <ul>{c.employer_learners.map(p => <li key={p.person_id || p.email}>
-                          <strong>{p.name || p.email}</strong>
-                          <span>{p.coach || 'Coach not recorded'} · {p.programme || 'Programme not recorded'}</span>
-                          <span>{p.organisation}</span>
-                        </li>)}</ul>
-                      </details>}
+                      {employer ? (
+                        <>
+                          <span className="ed-employer-email">Employer email: {satisfactionRecipient(c) || 'Email not recorded'}</span>
+                          <details>
+                            <summary>{c.employer_learners?.length || 0} learners · {c.organisation || 'Organisation not recorded'}</summary>
+                            {c.employer_learners?.map(l => <span key={l.email}>{l.name}{l.programme ? ` · ${l.programme}` : ''}</span>)}
+                            <span>Email: {satisfactionRecipient(c) || 'Email not recorded'}</span>
+                          </details>
+                        </>
+                      ) : (
+                        <details>
+                          <summary>Contact details</summary>
+                          <span>{(employerContact ? c.call_email || c.manager_email : c.learner_email) || 'Email not recorded'}</span>
+                          {employerContact ? <span>Learner: {c.learner_name} · {c.learner_email}</span>
+                            : <small>Phone source: {c.contact_sources?.phone || 'Not recorded'} · Email source: {c.contact_sources?.email || 'Not recorded'}</small>}
+                          <span>{c.programme || 'Programme not recorded'}</span>
+                          <span>{c.organisation || 'Employer not recorded'}</span>
+                          {c.manager_email && <span>Line manager: {c.manager_name || c.manager_email}</span>}
+                        </details>
+                      )}
                     </th>
                     <td>
                       <strong>{issueLabel(c)}</strong>
-                      <span>{c.coach || 'Coach not recorded'}</span>
-                      {c.source_type === 'attendance' && c.issue_date && <span>{c.issue_date} · {c.issue_name}</span>}
-                      {c.booking_at && <span>{shortDate(c.booking_at)} · {c.issue_name}</span>}
-                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} of 3` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
+                      <span>{employer ? c.organisation || 'Organisation not recorded' : c.coach || 'Coach not recorded'}</span>
+                      {(c.source_type === 'attendance' || c.booking_at) && <span>{c.issue_name}</span>}
+                      <CaseDates ticket={c} />
+                      {c.helpdesk && <span>{c.helpdesk.ticket} · {helpdeskStatus(c.helpdesk)}</span>}
+                      {c.helpdesk?.helpdesk_error && <small>Last status check failed: {c.helpdesk.helpdesk_error}</small>}
+                      <small>{c.claimed_by ? `In progress: ${c.claimed_by}` : c.status === 'ai_suggested_close' ? 'AI suggests closing: waiting for a manager' : c.called_back_at ? 'Rang us: call back now' : c.promise_missed ? 'Promise missed: call again' : c.missed_call ? `Missed call · ${c.attempts} unanswered` : dueForCall(c) ? 'Due now' : `Follow-up ${shortDate(c.next_followup_at || c.due_at)}`}</small>
                       <button type="button" className="ed-sheet-link" onClick={() => onOpen(c.id)}>Full case</button>
+                      {(ticketsByContact.get(contactKey(c))?.length || 0) > 1 && (
+                        <details>
+                          <summary>Other matching tickets ({ticketsByContact.get(contactKey(c))!.length - 1})</summary>
+                          {ticketsByContact.get(contactKey(c))!.filter(ticket => ticket.id !== c.id).map(ticket => (
+                            <div key={ticket.id} className="ed-related-ticket" data-related-ticket={ticket.id}>
+                              <strong>{issueLabel(ticket)}</strong>
+                              {ticket.source_type === 'attendance' && <span>{ticket.issue_name}</span>}
+                              <CaseDates ticket={ticket} />
+                              <button type="button" className="ed-sheet-link" onClick={() => onOpen(ticket.id)}>Full case #{ticket.id}</button>
+                            </div>
+                          ))}
+                        </details>
+                      )}
                     </td>
                     <td>
-                      <button type="button" className="primary" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${c.learner_name}`} disabled={!!callReason} title={callReason || undefined} onClick={() => void call(c)}>
-                        {session.preview ? 'Preview' : 'Call'}
-                      </button>
-                      {callReason && <span className="ed-call-reason">{callReason}</span>}
-                      {['learner_satisfaction', 'satisfaction'].includes(c.source_type) && <button type="button"
-                        className="ed-sheet-link" disabled={disabled || !(c.source_type === 'satisfaction' ? c.manager_email : c.learner_email)}
-                        title="Review and send an email via Microsoft 365" onClick={() => setSatisfactionEmail(c)}>Email</button>}
+                      <div className="ed-call-actions">
+                        {onCall.has(c.id) ? (
+                          <button type="button" className="primary ed-call-action ed-end-call" aria-label={`End call with ${contactName}`} onClick={() => endCall(c)}>
+                            End call
+                          </button>
+                        ) : recall ? (
+                          <button type="button" className="primary ed-call-action ed-recall"
+                            aria-label={`${session.preview ? 'Preview only: ' : 'Recall '}${contactName}, ${recall.used} of ${recall.max} tries used`}
+                            disabled={!!callReason || !recall.left || dialling !== null}
+                            title={callReason || (recall.left ? `Call again now: try ${recall.used + 1} of ${recall.max}` : `All ${recall.max} recalls used`)}
+                            onClick={() => void call(c, true)}>
+                            {session.preview ? 'Preview' : 'Recall'}
+                          </button>
+                        ) : (
+                          <button type="button" className="primary ed-call-action" aria-label={`${session.preview ? 'Preview only: ' : 'Call '}${contactName}`} disabled={!!callReason || dialling !== null} title={callReason || undefined} onClick={() => void call(c)}>
+                            {session.preview ? 'Preview' : 'Call'}
+                          </button>
+                        )}
+                        {recall && <RecallTries recall={recall} />}
+                        {(isSatisfaction(c) || c.employer_signature_missing) && <button type="button" className="ed-call-action"
+                          disabled={disabled || !(c.employer_signature_missing ? (signatureEmailRole === 'employer' ? c.manager_email : c.learner_email) : satisfactionRecipient(c))}
+                          title="Review and send an email via Microsoft 365" onClick={() => c.employer_signature_missing ? setEmailCase({ id: c.id, role: signatureEmailRole }) : setSatisfactionEmail(c)}>Email</button>}
+                      </div>
+                      {onCall.has(c.id) ? <span className="ed-call-reason">On the call: press End call when you hang up</span>
+                        : ended.has(c.id) ? <span className="ed-call-reason">Call ended: choose the outcome and Save</span>
+                          : recall && !callReason ? <span className="ed-call-reason">{recallHint(recall, c.next_followup_at)}</span>
+                            : callReason && <span className="ed-call-reason">{callReason}</span>}
                     </td>
                     <td className="ed-booking-cell">
-                      <strong>{c.coach || 'Coach not recorded'}</strong>
-                      <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />
-                      {!['satisfaction', 'signature'].includes(c.source_type) && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase(c.id)}>Booking email</button>}
-                      <small>{session.preview ? 'Read-only preview' : c.bookable.includes('catch-up') ? 'Catch-up or support, in the LMS calendar' : 'Support session, in the LMS calendar'}</small>
+                      {employer ? <small>No coach booking for employer calls</small> : <>
+                        <strong>{c.coach || 'Coach not recorded'}</strong>
+                        <MeetingTools c={c} session={session} notify={notify} onChanged={onSaved} />
+                        <EmployerCheck c={c} session={session} notify={notify} onChanged={onSaved} />
+                        {!!c.bookable.length && <BookSession caseId={c.id} session={session} notify={notify} onBooked={onSaved} />}
+                        <BookingPage c={c} className="ed-sheet-link" />
+                        {c.booking_email && !c.employer_signature_missing && <button type="button" className="ed-sheet-link" disabled={session.preview} onClick={() => setEmailCase({ id: c.id })}>Booking email</button>}
+                        <small>{bookingHint(c)}</small>
+                      </>}
                     </td>
                     <td>
                       <select aria-label={`Outcome for ${c.learner_name}`} disabled={disabled} value={d?.outcome || ''} onChange={event => update(c, 'outcome', event.target.value)}>
@@ -194,14 +350,23 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                         {outcomeChoices(c).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
                       {d?.outcome && <small>{outcomeHelp(d.outcome, c)}</small>}
-                      {c.source_type === 'learner_satisfaction' && <button type="button" className="ed-sheet-link"
+                      {isSatisfaction(c) && <button type="button" className="ed-sheet-link"
                         disabled={disabled} onClick={() => setFeedbackCase(c)}>Complete feedback</button>}
                     </td>
                     <td>
                       <textarea rows={2} maxLength={3500} aria-label={`Notes and action for ${c.learner_name}`} placeholder="What was agreed? Who will do what, by when?" disabled={disabled} value={d?.notes || ''} onChange={event => update(c, 'notes', event.target.value)} />
                     </td>
                     <td>
-                      <input type="date" aria-label={`Follow-up date for ${c.learner_name}`} disabled={disabled} value={d?.next_contact ?? c.next_followup_at?.slice(0, 10) ?? ''} onChange={event => update(c, 'next_contact', event.target.value)} />
+                      <small>London time</small>
+                      <input type="datetime-local" aria-label={`Follow-up date and time for ${c.learner_name}`} disabled={disabled} value={d?.next_contact ?? ''} onChange={event => update(c, 'next_contact', event.target.value)} />
+                      <div className="ed-quick-dates" aria-label={`Quick follow-up dates for ${c.learner_name}`}>
+                        {QUICK_FOLLOW_UPS.map(([days, label]) => (
+                          <button key={days} type="button" className="ed-sheet-link" disabled={disabled} title={`${longDate(workdayInput(days))} at 10:00 London`}
+                            onClick={() => update(c, 'next_contact', workdayInput(days))}>{label}</button>
+                        ))}
+                      </div>
+                      {d?.next_contact ? <small>{closesCase(d.outcome, c) ? 'This outcome closes the case, so the date is not used.' : `Back in the list ${longDate(d.next_contact)}`}</small>
+                        : c.next_followup_at && <small>Now: {shortDate(c.next_followup_at)}</small>}
                     </td>
                     <td>
                       <button type="button" disabled={disabled || !d?.dirty || saving.has(c.id)} onClick={() => void save(c)}>{saving.has(c.id) ? 'Saving…' : 'Save'}</button>
@@ -214,23 +379,38 @@ export default function CallSheet({ overview, tab, session, onOpen, onSaved, not
                 );
               })}
               {!rows.length && (
-                <tr><td colSpan={8}><div className="ec-empty"><h3>No calls in this view</h3><p>Calls appear when matching records are available. Check Connections & call rules for source coverage.</p></div></td></tr>
+                <tr><td colSpan={8}><div className="ec-empty"><h3>No calls in this view</h3><p>{invalidDateRange
+                  ? 'Correct the date range to see matching tickets.'
+                  : eligible.length ? 'No tickets match these filters. Try another date, call reason or search.'
+                    : 'Calls appear when matching records are available. Check Connections & call rules for source coverage.'}</p></div></td></tr>
               )}
             </tbody>
           </table>
         </div>
+        <nav className="ed-pagination" aria-label="Ticket pages">
+          <button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>Previous page</button>
+          <label>Page
+            <select aria-label="Ticket page" value={currentPage} onChange={event => setPage(Number(event.target.value))}>
+              {Array.from({ length: pageCount }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+            </select>
+            of {pageCount}
+          </label>
+          <button type="button" disabled={currentPage === pageCount} onClick={() => setPage(currentPage + 1)}>Next page</button>
+          <span>20 contacts per page</span>
+          {!!unsavedCount && <span role="status">{unsavedCount} unsaved {unsavedCount === 1 ? 'row' : 'rows'} across pages</span>}
+        </nav>
       </div>
 
       <Dialog open={emailCase !== null} onClose={() => setEmailCase(null)}>
-        {emailCase !== null && <BookingEmail caseId={emailCase} session={session} />}
+        {emailCase !== null && <BookingEmail caseId={emailCase.id} recipientRole={emailCase.role} session={session} />}
       </Dialog>
       <Dialog open={feedbackCase !== null} onClose={() => setFeedbackCase(null)}>
         {feedbackCase && <SatisfactionFeedback key={feedbackCase.id} caseId={feedbackCase.id} name={feedbackCase.learner_name}
-          session={session} onSaved={() => { setFeedbackCase(null); onSaved(); notify('Feedback completed. Next review is due in three calendar months.'); }} />}
+          employer={feedbackCase.source_type === 'employer_feedback'} session={session} onSaved={held => { setFeedbackCase(null); onSaved(); notify(feedbackMessage(held)); }} />}
       </Dialog>
       <Dialog open={satisfactionEmail !== null} onClose={() => setSatisfactionEmail(null)}>
-        {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id} employer={satisfactionEmail.source_type === 'satisfaction'}
-          caseId={satisfactionEmail.id} session={session} />}
+        {satisfactionEmail && <SatisfactionEmail key={satisfactionEmail.id}
+          caseId={satisfactionEmail.id} session={session} employer={satisfactionEmail.source_type === 'employer_feedback'} />}
       </Dialog>
     </section>
   );

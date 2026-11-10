@@ -1,0 +1,271 @@
+/* The director's dashboard (.dd), in the Engagement Centre's own colours: KBC purple, the sidebar's aubergine and lilac,
+   teal for answered calls, gold for targets, DM Serif Display for the figures and DM Sans for everything else. */
+.kbc-portals .ec {
+  --dd-ink: #202139; --dd-muted: #66677b; --dd-line: #e4e3ec; --dd-soft: #f4f1f9;
+  --dd-purple: #60359a; --dd-deep: #4f2d7f; --dd-aubergine: #29163d; --dd-lilac: #ceb3eb;
+  --dd-teal: #268a8b; --dd-gold: #bb8a32; --dd-good: #28614b; --dd-bad: #963e48;
+  --dd-serif: 'DM Serif Display', Georgia, serif;
+}
+
+/* Page titles of the director's pages carry the serif, as the figures do. */
+.kbc-portals #engagement-centre:not(.ed) > .ec-head h1 { font-family: var(--dd-serif); font-weight: 400; font-size: 2.1rem; letter-spacing: -.01em; line-height: 1.15; }
+
+.kbc-portals .dd { display: grid; gap: 1.5rem; margin-top: .4rem; }
+.kbc-portals .dd > .ec-card, .kbc-portals .dd > .ed-history, .kbc-portals .dd > .dd-log > .ed-history > .ec-card:first-child { margin-top: 0; }
+.kbc-portals .dd-muted { color: var(--dd-muted); font-size: .9rem; margin: 0 0 .6rem; }
+.kbc-portals .dd-empty { color: var(--dd-muted); margin: .6rem 0; }
+.kbc-portals .dd-bad { color: var(--dd-bad); }
+.kbc-portals .dd-eyebrow { margin: 0 0 .15rem; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); }
+
+/* ---- The switchboard: one dark panel, one line per specialist ---- */
+.kbc-portals .dd-board {
+  background: radial-gradient(120% 140% at 100% 0%, #3b2058 0%, var(--dd-aubergine) 55%);
+  color: #efe9f7; border-radius: 16px; padding: 1.2rem 1.3rem .6rem; box-shadow: 0 10px 30px rgba(41, 22, 61, .18);
+}
+.kbc-portals .dd-board > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: .5rem; }
+.kbc-portals .dd-board h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 1.55rem; margin: 0; color: #fff; }
+.kbc-portals .dd-board header p { margin: .1rem 0 0; font-size: .85rem; color: var(--dd-lilac); }
+.kbc-portals .dd-board-key { display: flex; gap: .9rem; flex-wrap: wrap; list-style: none; margin: .35rem 0 0; padding: 0; font-size: .78rem; color: rgba(239, 233, 247, .75); }
+.kbc-portals .dd-board-key li { display: inline-flex; align-items: center; gap: .4rem; }
+.kbc-portals .dd-board-key .dd-lamp { width: 9px; height: 9px; }
+.kbc-portals .dd-lines { list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-line + .dd-line { border-top: 1px solid rgba(206, 179, 235, .13); }
+.kbc-portals .workspace-app .ec .dd-line > button, .kbc-portals .workspace-app .ec .dd-line > div {
+  display: grid; grid-template-columns: 14px minmax(150px, 1.3fr) 82px minmax(120px, 2fr) 104px; align-items: center; gap: 1rem;
+  width: 100%; padding: .8rem .5rem; margin: 0; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; font: inherit;
+}
+.kbc-portals .workspace-app .ec .dd-line > button { cursor: pointer; transition: background .15s; }
+.kbc-portals .workspace-app .ec .dd-line > button:hover { background: rgba(206, 179, 235, .08); border: 0; }
+.kbc-portals .dd-line-who { display: grid; min-width: 0; }
+.kbc-portals .dd-line-who strong { color: #fff; font-weight: 600; }
+.kbc-portals .dd-line-who span { font-size: .85rem; color: rgba(239, 233, 247, .72); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbc-portals .dd-line.talking .dd-line-who span { color: #8fe3bf; }
+.kbc-portals .dd-line.ringing .dd-line-who span { color: #f5c76b; }
+.kbc-portals .dd-line-calls, .kbc-portals .dd-line-time { display: grid; font-size: .8rem; color: rgba(239, 233, 247, .7); font-variant-numeric: tabular-nums; }
+.kbc-portals .dd-line-calls b, .kbc-portals .dd-line-time b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.25rem; color: #fff; line-height: 1.1; }
+.kbc-portals .dd-line-calls small, .kbc-portals .dd-line-time small { font-size: .75rem; }
+.kbc-portals .dd-line-time { text-align: right; }
+.kbc-portals .dd-line-empty { padding: 1rem .5rem; color: var(--dd-lilac); }
+.kbc-portals .dd-board-shared { font-size: .85rem; color: var(--dd-lilac); margin: .4rem .5rem .6rem; }
+
+.kbc-portals .dd-lamp { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex: none; background: rgba(255, 255, 255, .16); }
+.kbc-portals .dd-lamp.talking { background: #3fd69a; box-shadow: 0 0 0 3px rgba(63, 214, 154, .2), 0 0 12px rgba(63, 214, 154, .7); }
+.kbc-portals .dd-lamp.ringing { background: #f2b544; box-shadow: 0 0 10px rgba(242, 181, 68, .8); animation: dd-ring 1s ease-in-out infinite; }
+.kbc-portals .dd-lamp.free { background: transparent; box-shadow: inset 0 0 0 2px var(--dd-lilac); }
+@keyframes dd-ring { 50% { opacity: .35; } }
+
+/* Talk time against target: lilac filling up, gold once the target is met. */
+.kbc-portals .dd-meter { display: flex; position: relative; height: 8px; border-radius: 99px; background: rgba(206, 179, 235, .16); overflow: hidden; }
+.kbc-portals .dd-meter-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #a77fd8, var(--dd-lilac)); transition: width .6s ease; }
+.kbc-portals .dd-meter-fill.met { background: linear-gradient(90deg, #c99a3f, #ecc777); }
+.kbc-portals .dd-meter.light { background: #eeeaf6; }
+.kbc-portals .dd-meter.light .dd-meter-fill:not(.met) { background: linear-gradient(90deg, var(--dd-deep), var(--dd-purple)); }
+/* Events hub calls: the second colour of the same bar; both count towards the target. */
+.kbc-portals .dd-meter .dd-meter-fill.event, .kbc-portals .dd-meter.light .dd-meter-fill.event { background: linear-gradient(90deg, #2f9e8f, #6fcdbf); }
+.kbc-portals .dd-meter-fill:has(+ .dd-meter-fill.event) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.kbc-portals .dd-meter-fill + .dd-meter-fill.event { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.kbc-portals .dd-key-bar { display: inline-block; width: 14px; height: 6px; border-radius: 99px; background: linear-gradient(90deg, #a77fd8, var(--dd-lilac)); }
+.kbc-portals .dd-key-bar.event { background: linear-gradient(90deg, #2f9e8f, #6fcdbf); }
+
+/* ---- Needs you ---- */
+.kbc-portals .dd-needs { display: flex; align-items: center; gap: .8rem 1.2rem; flex-wrap: wrap; }
+.kbc-portals .dd-needs h2 { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); }
+.kbc-portals .dd-needs ul { display: flex; flex-wrap: wrap; gap: .5rem; list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-needs p { margin: 0; color: var(--dd-good); }
+.kbc-portals .workspace-app .ec .dd-needs button {
+  display: inline-flex; align-items: baseline; gap: .45rem; padding: .4rem .8rem; border: 1px solid var(--dd-line); border-radius: 99px; background: #fff; font-size: .9rem;
+}
+.kbc-portals .workspace-app .ec .dd-needs button:hover { border-color: var(--dd-purple); background: var(--dd-soft); }
+.kbc-portals .dd-needs b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.15rem; color: var(--dd-purple); line-height: 1; }
+.kbc-portals .dd-needs button span { color: var(--dd-purple); }
+
+/* ---- Sections, figures and panels ---- */
+.kbc-portals .dd-section { display: grid; gap: 1rem; }
+.kbc-portals .dd-section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-section-head h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 1.65rem; margin: 0; line-height: 1.15; }
+.kbc-portals .dd-month { display: grid; gap: .2rem; font-size: .8rem; color: var(--dd-muted); }
+
+.kbc-portals .dd-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+.kbc-portals .dd-figure { display: grid; align-content: start; padding: .9rem 1rem 1rem; background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; }
+.kbc-portals .dd-figure > span { font-size: .82rem; font-weight: 600; color: var(--dd-muted); }
+.kbc-portals .dd-figure strong { font-family: var(--dd-serif); font-weight: 400; font-size: 2.05rem; line-height: 1.1; margin: .25rem 0 .2rem; color: var(--dd-ink); font-variant-numeric: tabular-nums; }
+.kbc-portals .dd-figure small { font-size: .78rem; color: var(--dd-muted); line-height: 1.35; }
+.kbc-portals .dd-figure.bad strong { color: var(--dd-bad); }
+.kbc-portals .dd-figure.bad { border-color: #efd3d6; }
+
+.kbc-portals .dd-panel { background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; padding: 1.1rem 1.2rem; min-width: 0; }
+.kbc-portals .dd-panel h3 { margin: 0 0 .2rem; font-size: 1.02rem; font-weight: 600; }
+.kbc-portals .dd-panel.dd-flush { padding: .3rem .4rem; }
+.kbc-portals .dd-pair, .kbc-portals .dd-trio { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+@media (min-width: 1000px) { .kbc-portals .dd-pair { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 760px) { .kbc-portals .dd-trio { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1200px) { .kbc-portals .dd-trio { grid-template-columns: 1.15fr 1fr 1fr; } }
+.kbc-portals .dd-chart { margin-top: .4rem; }
+.kbc-portals .dd-chart .recharts-legend-item-text { color: var(--dd-ink) !important; }
+.kbc-portals .dd-total { margin: .8rem 0 0; font-size: .9rem; color: var(--dd-muted); }
+.kbc-portals .dd-total b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.3rem; color: var(--dd-ink); }
+.kbc-portals .dd-panel > button { margin-top: .8rem; }
+
+/* Horizontal bars: label, track, count. */
+.kbc-portals .dd-bars { list-style: none; margin: .7rem 0 0; padding: 0; display: grid; gap: .15rem; }
+.kbc-portals .workspace-app .ec .dd-bars li > button, .kbc-portals .workspace-app .ec .dd-bars li > div {
+  display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(60px, 1fr) 2.6rem; align-items: center; gap: .7rem;
+  width: 100%; padding: .35rem .4rem; margin: 0; border: 0; border-radius: 8px; background: transparent; text-align: left; font: inherit; color: inherit;
+}
+.kbc-portals .workspace-app .ec .dd-bars li > button:hover { background: var(--dd-soft); border: 0; }
+.kbc-portals .dd-bar-label { font-size: .88rem; line-height: 1.3; min-width: 0; }
+.kbc-portals .dd-bar-label small { display: block; color: var(--dd-muted); font-size: .76rem; }
+.kbc-portals .dd-bar-track { display: block; height: 10px; border-radius: 99px; background: #f0edf5; overflow: hidden; }
+.kbc-portals .dd-bar-track > span { display: block; height: 100%; border-radius: inherit; background: var(--dd-purple); }
+.kbc-portals .dd-bars.teal .dd-bar-track > span { background: var(--dd-teal); }
+.kbc-portals .dd-bars.red .dd-bar-track > span { background: var(--dd-bad); }
+.kbc-portals .dd-bars b { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Call quality: excellent / good / bad as one strip. */
+.kbc-portals .dd-quality { display: grid; gap: .3rem; min-width: 150px; }
+.kbc-portals .dd-quality-strip { display: flex; gap: 2px; height: 8px; border-radius: 99px; overflow: hidden; }
+.kbc-portals .dd-quality-strip i { display: block; flex-basis: 0; }
+.kbc-portals .dd-quality-strip i.excellent { background: var(--dd-teal); }
+.kbc-portals .dd-quality-strip i.good { background: #a98bd6; }
+.kbc-portals .dd-quality-strip i.bad { background: #c4505c; }
+.kbc-portals .dd-quality small { font-size: .8rem; color: var(--dd-muted); }
+.kbc-portals .dd-team-quality { margin: .9rem 0 .2rem; }
+.kbc-portals .dd-team-quality .dd-quality-strip { height: 14px; }
+.kbc-portals .dd-team-quality small { font-size: .9rem; }
+.kbc-portals .dd-muted.dd-quality, .kbc-portals span.dd-muted { font-size: .85rem; color: var(--dd-muted); }
+
+/* The team table. */
+.kbc-portals .dd-table td, .kbc-portals .dd-table th { vertical-align: middle; }
+.kbc-portals .workspace-app .ec .dd-name { display: inline-flex; align-items: center; gap: .6rem; padding: 0; border: 0; background: none; font-weight: 600; color: var(--dd-ink); text-align: left; }
+.kbc-portals .workspace-app .ec .dd-name:hover { color: var(--dd-purple); background: none; text-decoration: underline; text-underline-offset: 3px; }
+.kbc-portals .dd-name i { display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--dd-soft); color: var(--dd-purple); font: 400 .95rem var(--dd-serif); }
+
+/* ---- Specialists ---- */
+.kbc-portals .dd-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 1rem; }
+.kbc-portals .workspace-app .ec .dd-person {
+  display: grid; gap: .9rem; align-content: start; padding: 1.1rem 1.2rem 1.2rem; text-align: left; background: #fff;
+  border: 1px solid var(--dd-line); border-radius: 14px; color: var(--dd-ink); transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.kbc-portals .workspace-app .ec .dd-person:hover { border-color: var(--dd-purple); background: #fff; box-shadow: 0 8px 22px rgba(79, 45, 127, .1); transform: translateY(-1px); }
+.kbc-portals .dd-person-head { display: grid; }
+.kbc-portals .dd-person-head strong { font-family: var(--dd-serif); font-weight: 400; font-size: 1.45rem; line-height: 1.15; }
+.kbc-portals .dd-person-head span, .kbc-portals .dd-person-today small { font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-today { display: grid; gap: .35rem; }
+.kbc-portals .dd-person-figures { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; font-size: .75rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-figures span { display: grid; }
+.kbc-portals .dd-person-figures b { font-size: 1rem; color: var(--dd-ink); font-variant-numeric: tabular-nums; }
+
+.kbc-portals .dd-crumbs { display: flex; align-items: center; gap: .4rem 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-crumbs-others { display: flex; gap: .3rem; flex-wrap: wrap; }
+.kbc-portals .workspace-app .ec .dd-crumbs-others button { padding: .15rem .6rem; border-radius: 99px; font-size: .82rem; color: var(--dd-muted); }
+.kbc-portals .dd-person-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-person-title h2 { font-family: var(--dd-serif); font-weight: 400; font-size: 2.4rem; line-height: 1.05; margin: 0 0 .3rem; }
+.kbc-portals .dd-person-title .dd-muted { margin: 0; }
+.kbc-portals .dd-flags { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .3rem; }
+.kbc-portals .workspace-app .ec .dd-flags button { display: grid; width: 100%; text-align: left; padding: .45rem .6rem; border-radius: 8px; border-color: #f0dadd; font-size: .85rem; line-height: 1.35; }
+.kbc-portals .dd-flags button span { font-size: .75rem; color: var(--dd-bad); }
+
+.kbc-portals .dd-report { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .dd-report h2 { margin-bottom: .2rem; }
+
+@media (max-width: 760px) {
+  .kbc-portals .workspace-app .ec .dd-line > button, .kbc-portals .workspace-app .ec .dd-line > div { grid-template-columns: 14px 1fr auto; gap: .35rem .8rem; }
+  .kbc-portals .dd-line-calls { display: none; }
+  .kbc-portals .dd-meter { grid-column: 2 / -1; grid-row: 2; }
+  .kbc-portals .dd-line-time { grid-column: 3; grid-row: 1; }
+  .kbc-portals .dd-board { padding: 1rem .8rem .4rem; }
+  .kbc-portals #engagement-centre:not(.ed) > .ec-head h1 { font-size: 1.7rem; }
+  .kbc-portals .dd-person-title h2 { font-size: 1.9rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kbc-portals .dd-lamp.ringing { animation: none; }
+  .kbc-portals .dd-meter-fill, .kbc-portals .workspace-app .ec .dd-person { transition: none; }
+}
+
+/* ---- A specialist's lists today (DeskProgress) ---- */
+.kbc-portals .dd-lists { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: .6rem; list-style: none; margin: 0; padding: 0; }
+.kbc-portals .workspace-app .ec .dd-lists .dd-list {
+  display: grid; align-content: start; gap: .15rem; text-align: left; padding: .75rem .9rem; background: #fff;
+  border: 1px solid var(--dd-line); border-radius: 12px;
+}
+.kbc-portals .dd-list > span { font-size: .85rem; font-weight: 600; color: var(--dd-muted); display: flex; justify-content: space-between; gap: .4rem; }
+.kbc-portals .dd-list em { font-style: normal; font-size: .72rem; padding: 0 .45rem; border-radius: 99px; background: var(--dd-purple); color: #fff; }
+.kbc-portals .dd-list strong { font-family: var(--dd-serif); font-weight: 400; font-size: 1.8rem; line-height: 1.1; color: var(--dd-ink); }
+.kbc-portals .dd-list strong small { font-family: inherit; font-size: .85rem; color: var(--dd-muted); }
+.kbc-portals .dd-list > small { font-size: .78rem; color: var(--dd-muted); }
+.kbc-portals .workspace-app .ec .dd-lists .dd-list.now { border-color: var(--dd-purple); }
+.kbc-portals .dd-list.empty { opacity: .6; }
+.kbc-portals .dd-now-on { display: block; font-size: .8rem; color: var(--dd-muted); }
+
+/* ---- Review meetings (the Outlook audit) ---- */
+.kbc-portals .rm-filters { display: flex; flex-wrap: wrap; gap: .4rem; }
+.kbc-portals .workspace-app .ec .rm-filters button {
+  display: inline-flex; align-items: baseline; gap: .45rem; padding: .35rem .8rem; border: 1px solid var(--dd-line); border-radius: 99px; background: #fff; font-size: .88rem;
+}
+.kbc-portals .workspace-app .ec .rm-filters button[aria-selected='true'] { background: var(--dd-purple); border-color: var(--dd-purple); color: #fff; }
+.kbc-portals .rm-filters b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.05rem; }
+.kbc-portals .ec input.rm-search { max-width: 22rem; }
+/* The page takes the full width (like the call sheets) and the table wraps instead of scrolling sideways: long emails
+   break, the title takes two lines, and the grids around it may shrink below the table's widest content. */
+.workspace-app:has(.rm-table) .workspace-content { max-width: none; }
+.kbc-portals .dd:has(.rm-table), .kbc-portals .dd-section:has(.rm-table) { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.kbc-portals .rm-table th, .kbc-portals .rm-table td { padding: .7rem .6rem; }
+.kbc-portals .rm-table td { overflow-wrap: anywhere; }
+.kbc-portals .rm-table td small { display: block; }
+.kbc-portals .rm-table small.rm-subject { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kbc-portals .rm-table td.rm-when { white-space: nowrap; }
+.kbc-portals .ec .rm-pages select { width: auto; min-width: 3.5rem; }
+.kbc-portals .rm-history { list-style: none; margin: 1rem 0 0; padding: 0 0 0 1rem; border-left: 2px solid var(--dd-lilac); display: grid; gap: .8rem; }
+.kbc-portals .rm-history li { display: grid; gap: .1rem; position: relative; }
+.kbc-portals .rm-history li::before { content: ''; position: absolute; left: -1.38rem; top: .45rem; width: 10px; height: 10px; border-radius: 50%; background: var(--dd-purple); }
+.kbc-portals .rm-history span, .kbc-portals .rm-history small { font-size: .82rem; color: var(--dd-muted); }
+
+/* ---- Task delegation ---- */
+.kbc-portals .td-step { display: flex; flex-wrap: wrap; gap: .8rem 1.2rem; align-items: end; }
+.kbc-portals .td-step label { display: grid; gap: .25rem; min-width: 16rem; }
+.kbc-portals .td-lists { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; margin-top: 1rem; }
+.kbc-portals .workspace-app .ec button.td-list {
+  display: grid; justify-content: stretch; justify-items: start; align-content: start; gap: .1rem; padding: .7rem .9rem;
+  background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; color: var(--dd-ink); font-weight: 400; text-align: left;
+}
+.kbc-portals .workspace-app .ec button.td-list[aria-checked='true'] { border-color: var(--dd-purple); box-shadow: inset 0 0 0 1px var(--dd-purple); background: var(--dd-soft); }
+.kbc-portals .td-list b { font-family: var(--dd-serif); font-weight: 400; font-size: 1.6rem; color: var(--dd-purple); line-height: 1.1; }
+.kbc-portals .td-list span { font-weight: 600; font-size: .88rem; }
+.kbc-portals .td-list small { font-size: .75rem; color: var(--dd-muted); }
+.kbc-portals .td-builder { display: grid; gap: 1rem; margin-top: 1.2rem; padding-top: 1.2rem; border-top: 1px solid var(--dd-line); }
+.kbc-portals .td-mode { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
+.kbc-portals .td-mode label, .kbc-portals .td-absence-list header label { display: flex; align-items: center; gap: .45rem; font-weight: 600; }
+.kbc-portals .td-pick { display: grid; gap: .6rem; }
+.kbc-portals .td-pick input[type='number'] { width: 5rem; margin-left: .4rem; }
+.kbc-portals .td-people { list-style: none; margin: 0; padding: 0; max-height: 20rem; overflow: auto; border: 1px solid var(--dd-line); border-radius: 10px; }
+.kbc-portals .td-people li { border-bottom: 1px solid var(--dd-line); }
+.kbc-portals .td-people li:last-child { border-bottom: 0; }
+.kbc-portals .td-people label { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; padding: .45rem .7rem; }
+.kbc-portals .td-people small { color: var(--dd-muted); font-size: .8rem; }
+.kbc-portals .td-parts { display: grid; gap: .7rem; }
+.kbc-portals .td-part { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin: 0; padding: .7rem .9rem; border: 1px solid var(--dd-line); border-radius: 10px; }
+.kbc-portals .td-part legend { padding: 0 .3rem; font-weight: 600; font-size: .85rem; color: var(--dd-purple); }
+.kbc-portals .td-part label, .kbc-portals .td-new { display: grid; gap: .25rem; }
+.kbc-portals .td-part input[type='number'] { width: 6rem; }
+.kbc-portals .td-new { max-width: 22rem; }
+.kbc-portals .td-table td small { display: block; color: var(--dd-muted); }
+.kbc-portals .td-table tr.td-recalled td { color: var(--dd-muted); }
+.kbc-portals .td-absences { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.kbc-portals .td-absences li { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.2rem; padding: .7rem .9rem; border: 1px solid var(--dd-line); border-left: 4px solid var(--dd-bad); border-radius: 10px; background: #fff; }
+.kbc-portals .td-absences li div { display: grid; margin-right: auto; }
+.kbc-portals .td-absences small { color: var(--dd-muted); font-size: .8rem; }
+.kbc-portals .td-absence { display: grid; gap: 1rem; }
+.kbc-portals .td-absence-list header label { white-space: nowrap; }
+.kbc-portals .td-absence-list { display: grid; gap: .6rem; padding: .8rem 0; border-top: 1px solid var(--dd-line); }
+.kbc-portals .td-absence-list header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+@media (max-width: 760px) {
+  .kbc-portals .td-step label { min-width: 0; width: 100%; }
+}
+
+/* The Events hub panel: events whose calls are open, and any nobody is allocated to. */
+.kbc-portals .dd-events { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; }
+.kbc-portals .dd-events li {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .8rem; padding: .65rem 1rem;
+  background: #fff; border: 1px solid var(--dd-line); border-radius: 12px; font-size: .92rem;
+}
+.kbc-portals .dd-events li.bad { border-color: #efd3d6; border-left: 4px solid var(--dd-bad); }

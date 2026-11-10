@@ -16,7 +16,7 @@ function sample(id: number, fields: Partial<OverviewCase> = {}): OverviewCase {
     booking_at: null, ai_summary: '', ai_confidence: null, resolution_option: '', resolved_at: null, resolved_by: '',
     archived: false, escalated: false, created_at: past, purpose: '', requested_by: '', promised_at: null,
     promise_missed: false, promises: {}, specialist_closes: false, missed_call: false,
-    bookable: [], booking_links: {}, allocated_agent_id: null, ...fields,
+    bookable: [], booking_links: {}, allocated_agent_id: null, followup_agent_id: null, ...fields,
   };
 }
 
@@ -30,10 +30,10 @@ async function mockDesk(page: Page, agentId = 1, suppliedCases?: OverviewCase[])
   const pageErrors: string[] = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   let cases = suppliedCases || [sample(1), sample(2, { next_followup_at: future }), sample(3, {
-    source_type: 'satisfaction', learner_name: 'Manager One', learner_email: 'wrong-fallback@example.org',
+    source_type: 'employer_feedback', learner_name: 'Manager One', learner_email: 'wrong-fallback@example.org',
     learner_phone: '+447700900123', employer_learners: [
-      { person_id: 'lms:1', name: 'Student Alpha', email: 'alpha@example.org', coach: 'Coach Alpha', programme: 'Marketing', organisation: 'Company' },
-      { person_id: 'lms:2', name: 'Student Beta', email: 'beta@example.org', coach: 'Coach Beta', programme: 'Management', organisation: 'Company' },
+      { name: 'Student Alpha', email: 'alpha@example.org', programme: 'Marketing' },
+      { name: 'Student Beta', email: 'beta@example.org', programme: 'Management' },
     ],
   })];
   const posts: { path: string; data: Record<string, unknown> }[] = [];
@@ -73,14 +73,14 @@ async function mockDesk(page: Page, agentId = 1, suppliedCases?: OverviewCase[])
     return json({}); // No request in these UI tests reaches a real backend or mail provider.
   });
   await page.goto('/dashboard/call-centre?view=operator&section=learner_satisfaction');
-  await expect(page.getByRole('heading', { name: 'Learner Satisfaction', exact: true }),
-    `Browser errors: ${pageErrors.join('; ')}`).toBeVisible();
+  await expect(page.getByRole('tab', { name: /^Learner Satisfaction \(/ }),
+    `Browser errors: ${pageErrors.join('; ')}`).toHaveAttribute('aria-selected', 'true');
   return posts;
 }
 
 test('counts only due open reviews and keeps contacts with no phone', async ({ page }) => {
   await mockDesk(page);
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Call Learner 1', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Email', exact: true })).toBeEnabled();
   await expect(page.locator('[data-sheet-row="2"]')).toHaveCount(0);
@@ -92,7 +92,7 @@ for (const agentId of [1, 2]) {
   test(`specialist ${agentId} sees only their allocated contacts and shared queue`, async ({ page }) => {
     await mockDesk(page, agentId, [sample(1, { allocated_agent_id: 1 }),
       sample(2, { allocated_agent_id: 2 }), sample(4)]);
-    await expect(page.getByRole('button', { name: 'Learner Satisfaction (2)', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Learner Satisfaction (2)', exact: true })).toBeVisible();
     await expect(page.locator(`[data-sheet-row="${agentId}"]`)).toBeVisible();
     await expect(page.locator('[data-sheet-row="4"]')).toBeVisible();
     await expect(page.locator(`[data-sheet-row="${agentId === 1 ? 2 : 1}"]`)).toHaveCount(0);
@@ -100,25 +100,33 @@ for (const agentId of [1, 2]) {
   });
 }
 
-test('email drafts use the right contact and only send on explicit click', async ({ page }) => {
+test('learner email drafts use the right contact and only send on explicit click', async ({ page }) => {
   const posts = await mockDesk(page);
   await page.getByRole('button', { name: 'Email', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('learner1@example.org');
   await expect(dialog.getByRole('button', { name: 'Send via Azure', exact: true })).toBeEnabled();
-  await dialog.getByLabel('Message').fill('Draft feedback request');
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
-  await page.getByRole('button', { name: 'Email', exact: true }).click();
-  await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('manager@example.org');
   expect(posts.filter(post => post.path.startsWith('/api/callcentre/'))).toEqual([]);
   await dialog.getByRole('button', { name: 'Send via Azure', exact: true }).click();
-  await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365 for manager@example.org');
+  await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365 for learner1@example.org');
   await expect(dialog.getByRole('button', { name: 'Request recorded', exact: true })).toBeDisabled();
   expect(posts.filter(post => post.path.endsWith('/satisfaction-email/'))).toHaveLength(1);
   expect(posts.at(-1)?.data).toMatchObject({ agent_id: 1, subject: 'Feedback request' });
   expect(posts.at(-1)?.data.request_id).toBeTruthy();
-  await expect(page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  // Employer feedback uses the manager email from the employer case.
+  await page.getByRole('tab', { name: 'Employer Satisfaction (1)', exact: true }).click();
+  const employerRow = page.locator('[data-sheet-row="3"]');
+  await expect(employerRow).toBeVisible();
+  await employerRow.getByRole('button', { name: 'Email', exact: true }).click();
+  const employerDialog = page.getByRole('dialog');
+  await expect(employerDialog).toHaveRole('dialog');
+  await expect(employerDialog.getByRole('heading', { name: 'Employer satisfaction email', exact: true })).toBeVisible();
+  await expect(employerDialog.getByLabel('To', { exact: true })).toHaveValue('manager@example.org');
+  await employerDialog.getByRole('button', { name: 'Send via Azure', exact: true }).click();
+  await expect(employerDialog.getByRole('status')).toContainText('Accepted by Microsoft 365 for manager@example.org');
+  expect(posts.filter(post => post.path.endsWith('/satisfaction-email/'))).toHaveLength(2);
+  expect(posts.at(-1)?.data).toMatchObject({ agent_id: 1 });
 });
 
 test('a network retry reuses the same request ID and does not complete feedback', async ({ page }) => {
@@ -137,7 +145,7 @@ test('a network retry reuses the same request ID and does not complete feedback'
   await expect(dialog.getByRole('status')).toContainText('Accepted by Microsoft 365');
   expect(requests).toHaveLength(2);
   expect(requests[0]).toEqual(requests[1]);
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (1)', exact: true })).toBeVisible();
 });
 
 test('completion records rating, issue and agreed action then refreshes the count', async ({ page }) => {
@@ -149,21 +157,19 @@ test('completion records rating, issue and agreed action then refreshes the coun
   await dialog.getByLabel('Issue raised', { exact: false }).fill('None');
   await dialog.getByLabel('Agreed action', { exact: false }).fill('No action needed');
   await dialog.getByRole('button', { name: 'Complete review', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Learner Satisfaction (0)', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Learner Satisfaction (0)', exact: true })).toBeVisible();
   expect(posts.find(post => post.path.endsWith('/complete_feedback/'))?.data).toMatchObject({
     score: 4, problem: 'None', agreed_action: 'No action needed', agent_id: 1,
   });
 });
 
-test('employer row shows each learner with their own coach and permits calling a recorded number', async ({ page }) => {
+test('employer row lists each learner and permits calling a recorded number', async ({ page }) => {
   const posts = await mockDesk(page);
-  await page.getByRole('button', { name: 'Employer Satisfaction (1)', exact: true }).click();
-  await page.getByText('Learners (2)', { exact: true }).click();
+  await page.getByRole('tab', { name: 'Employer Satisfaction (1)', exact: true }).click();
   const row = page.locator('[data-sheet-row="3"]');
-  await expect(row.getByText('Student Alpha', { exact: true })).toBeVisible();
-  await expect(row.getByText('Coach Alpha · Marketing', { exact: true })).toBeVisible();
-  await expect(row.getByText('Student Beta', { exact: true })).toBeVisible();
-  await expect(row.getByText('Coach Beta · Management', { exact: true })).toBeVisible();
+  await row.getByText('2 learners · Company', { exact: true }).click();
+  await expect(row.getByText('Student Alpha · Marketing', { exact: true })).toBeVisible();
+  await expect(row.getByText('Student Beta · Management', { exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Call Manager One', exact: true })).toBeEnabled();
   expect(posts.filter(post => post.path.startsWith('/api/callcentre/'))).toEqual([]);
 });

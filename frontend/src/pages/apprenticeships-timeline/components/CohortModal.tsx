@@ -6,6 +6,7 @@ import { MS, getModuleMeta } from '../data';
 import { formatDate } from '../utils';
 import DateField from './DateField';
 import ModernTimeField from './ModernTimeField';
+import LmsModuleMatcher, { type SaveLmsModuleMatch } from './LmsModuleMatcher';
 import SelectField from './SelectField';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import { normalizeTutorName, profileIdForTutorName } from '../tutorProfiles';
@@ -23,11 +24,13 @@ interface Props {
   initialGroupIdx?: number;
   initialRow?: CohortRow;
   initialExpandedBlockId?: string;
+  openLmsMatching?: boolean;
   prefillTutorProfileId?: string;
   prefillModule?: ModuleValue;
   lockGroupSelection?: boolean;
   onSave: (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => boolean | Promise<boolean>;
   onUpdateModulePartial?: (blockId: string, payload: ModulePartialUpdatePayload) => Promise<boolean>;
+  onSaveLmsMatch?: SaveLmsModuleMatch;
   onManageHolidays?: () => void;
   onCreateTutorProfile?: (payload: { name: string; email?: string; notes?: string; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
   onBackToPreviousStep?: () => void;
@@ -35,6 +38,7 @@ interface Props {
 }
 
 export interface ModulePartialUpdatePayload {
+  lmsSourceModuleId?: string;
   moduleName?: string;
   tutorProfileId?: string;
   tutorName?: string;
@@ -46,6 +50,7 @@ interface FormModule {
   id: string;
   trainingPlanId?: string;
   moduleCatalogueId?: string;
+  lmsSourceModuleId?: string;
   mod: ModuleValue;
   color: string;
   startDate: string;
@@ -775,6 +780,9 @@ function buildSafeModulePartialPayload(before: FormModule, after: FormModule): {
   if ((before.notes || '').trim() !== (after.notes || '').trim()) {
     payload.notes = after.notes.trim();
   }
+  if ((before.lmsSourceModuleId || '') !== (after.lmsSourceModuleId || '')) {
+    payload.lmsSourceModuleId = after.lmsSourceModuleId || '';
+  }
   if ((before.color || '').trim() !== (after.color || '').trim()) {
     payload.color = (after.color || '').trim();
   }
@@ -1013,6 +1021,7 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
       id: block.id,
       trainingPlanId: block.trainingPlanId,
       moduleCatalogueId: block.moduleCatalogueId,
+      lmsSourceModuleId: block.lmsSourceModuleId,
       mod: block.mod,
       color: block.color || '',
       startDate: block.startDate,
@@ -1045,11 +1054,13 @@ export default function CohortModal({
   initialGroupIdx = 0,
   initialRow,
   initialExpandedBlockId,
+  openLmsMatching = false,
   prefillTutorProfileId,
   prefillModule,
   lockGroupSelection = false,
   onSave,
   onUpdateModulePartial,
+  onSaveLmsMatch,
   onManageHolidays,
   onCreateTutorProfile,
   onBackToPreviousStep,
@@ -2109,6 +2120,7 @@ export default function CohortModal({
           id: moduleItem.id,
           trainingPlanId: moduleItem.trainingPlanId,
           moduleCatalogueId: moduleItem.moduleCatalogueId,
+          lmsSourceModuleId: moduleItem.lmsSourceModuleId,
           groupId: group.id,
           mod: moduleItem.mod,
           groupName: group.groupName.trim() || undefined,
@@ -2712,7 +2724,7 @@ export default function CohortModal({
         {moduleDraft && createPortal(
           <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/35 backdrop-blur-[2px] p-3 sm:p-4">
             <button type="button" aria-label="Close module editor" className="absolute inset-0 cursor-default" onClick={() => { void closeModuleDraft(); }} />
-            <div className="relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]">
+            <div className="relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:max-h-[calc(100vh-2rem)]">
               <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b" style={{ background: '#1B2A4A' }}>
                 <div>
                   <h3 className="text-white font-extrabold text-sm tracking-wide">{moduleDraft.replaceId ? 'Edit Module' : 'Add Module'}</h3>
@@ -2724,6 +2736,25 @@ export default function CohortModal({
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
+                {moduleDraft.replaceId && initialRow && onSaveLmsMatch && <LmsModuleMatcher
+                  key={moduleDraft.module.id}
+                  groups={groups} customModules={customModules} holidays={holidays} tutorProfiles={tutorProfiles}
+                  currentKey={JSON.stringify([groups[initialGroupIdx]?.id, initialRow.id, moduleDraft.module.id])}
+                  initialOpen={openLmsMatching}
+                  onSave={async (current, sourceId) => {
+                    if (!await onSaveLmsMatch(current, sourceId)) return false;
+                    const patchData = (form: FormData): FormData => ({ ...form, groups: form.groups.map(group => ({ ...group,
+                      modules: group.modules.map(item => item.id === current.block.id ? { ...item, lmsSourceModuleId: sourceId || undefined } : item),
+                    })) });
+                    setData(patchData);
+                    setModuleDraft(prev => prev && prev.module.id === current.block.id
+                      ? { ...prev, module: { ...prev.module, lmsSourceModuleId: sourceId || undefined } } : prev);
+                    const baseline = JSON.parse(initialSnapshotRef.current);
+                    baseline.data = patchData(baseline.data);
+                    initialSnapshotRef.current = JSON.stringify(baseline);
+                    return true;
+                  }}
+                />}
                 {(() => {
                   const selectedCatalogModule = resolveCatalogModuleForValue(moduleDraft.module.mod, catalogModules, moduleDraft.module.moduleCatalogueId);
                   const currentModuleLabel = selectedCatalogModule?.name || getModuleInputValue(moduleDraft.module.mod);

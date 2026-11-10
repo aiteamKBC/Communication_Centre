@@ -3,13 +3,29 @@
 // returned by config/.
 
 import { useCallback, useEffect, useState } from 'react';
+import { csrfToken as cookieCsrfToken } from '../../utils/apiSession';
 
 export type Case = {
+  /** Next-day reminders of a progress review or monthly coaching: the Outlook meeting. */
+  meeting?: ReviewMeetingSummary | null;
+  /** Next-day progress reviews: the employer (line manager) is confirmed too (employer_check.py). */
+  employer_check?: EmployerCheck | null;
   id: number; source_type: string; source_id: number | null; learner_email: string; learner_name: string;
   issue_name: string; issue_date: string | null;
+  module?: string;
+  filter_contexts?: { coach: string; cohort: string; module: string }[];
+  missed_lecture?: {
+    module: string; title: string; date: string | null;
+    starts_at: string | null; ends_at: string | null;
+    time_status: 'matched' | 'missing' | 'ambiguous' | 'unavailable';
+  } | null;
+  /** EPA dates from the last synced Aptem snapshot; absent on older servers. */
+  programme_end_date?: string | null; gateway_review_date?: string | null;
   learner_phone: string; coach: string; organisation: string; programme: string; manager_name: string; manager_email: string;
+  call_email?: string; call_name?: string; call_phone?: string;
   contact_key?: string; programme_status?: string; satisfaction_next_due_at?: string | null;
-  employer_learners?: { person_id: string; name: string; email: string; coach: string; programme: string; organisation: string }[];
+  /** Employer feedback calls: the line manager's learners in the directory. */
+  employer_learners?: { name: string; email: string; programme: string }[];
   status: string; risk: string; claimed_by: string | null; claimed_agent_id: number | null;
   last_actor: string; last_action_at: string; attempts: number; next_followup_at: string | null;
   due_at: string; sla_breached: boolean; sla_days_overdue: number; learner_days_overdue: number; misses: number;
@@ -18,28 +34,78 @@ export type Case = {
   created_at: string; priority_why: string; source_data: Record<string, unknown>;
   /** Manager requests only: why to call and who asked. */
   purpose: string; requested_by: string;
+  /** Technical issues only: the ticket in the technical support system and its last known status. */
+  helpdesk: { ticket: string; subcategory: string; description: string; raised_by: string; helpdesk_status: string;
+    helpdesk_reason: string; helpdesk_checked_at: string | null; helpdesk_error?: string | null } | null;
   /** What the learner agreed to and the deadline; a missed promise is back in the queue. */
   promised_at: string | null; promise_missed: boolean;
   /** What the learner can agree to (option -> days to do it, null: agreeing closes the case); without options a specialist closes the case. */
   promises: Record<string, number | null>; specialist_closes: boolean;
+  /** Missed lectures: the same session with another group of the learner's cohort, from the LMS; absent on older servers. */
+  alternative_session?: { starts_at: string; group: string } | null;
   /** The latest call went unanswered: the case sits at the bottom of its list. */
   missed_call: boolean;
+  /** The learner rang and nobody answered (inbound): their cases are at the top of the list until someone calls back. */
+  called_back_at: string | null;
   /** Session types the call centre can book straight into the coach's LMS calendar for this case. */
   bookable: ('catch-up' | 'student-support')[];
+  /** The case has a booking email (the coach's booking link, or the review's rebooking link). */
+  booking_email: boolean;
+  /** Imported review snapshot confirms that the employer's required signature is missing. */
+  employer_signature_missing?: boolean;
+  /** Imported review snapshot confirms that the learner's required signature is missing. */
+  learner_signature_missing?: boolean;
 };
 
-export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>;
+export type Issue = Pick<Case, 'id' | 'source_type' | 'status' | 'issue_name' | 'issue_date'>
+  & Partial<Pick<Case, 'created_at' | 'booking_at' | 'next_followup_at'>>;
 
 /** A case as listed by overview/ (no source_data). */
-export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null; contact_sources?: Record<string, string> };
+export type OverviewCase = Omit<Case, 'source_data' | 'priority_why'> & { booking_links: BookingLinks; allocated_agent_id: number | null;
+  /** An optional call an employer specialist chose to make (to any learner): theirs only, never a task. */
+  optional?: boolean;
+  /** The specialist whose saved call set the case's current follow-up; null when no call has set one. */
+  followup_agent_id: number | null; contact_sources?: Record<string, string>;
+  /** A director's task covering this case: on the task's list (`direct`), or another case of a learner it covers. */
+  cover?: CaseCover | null;
+  /** Held after an unanswered call (no answer, voicemail, or no call in Zoom): recallable from its list, `used` of `max` tries. */
+  recall?: { used: number; max: number } | null;
+  /** Where the case sits on the desk being shown (set by the page, not the server): its own list; a task given to
+   * this specialist; another specialist covers it (read-only); or it only comes along on a covered learner's call. */
+  desk?: 'own' | 'task' | 'covered' | 'call' };
+export type CaseCover = { task_id: number; to_agent_id: number; to_name: string; from_name: string; direct: boolean };
+/** A list handed to another specialist by a director until recalled (delegation.py). */
+export type DelegatedTask = {
+  id: number; group: string; source: 'agent' | 'shared' | 'employer'; from_agent_id: number | null; from_name: string;
+  category: string; category_label: string; to_agent_id: number; to_name: string; catch_new: boolean;
+  /** Where it sits in the receiver's Today order: after this topic ('' = first; a list key, or task:<id>). */
+  after_topic: string; learners: string[]; absence_id: number | null; created_at: string; created_by: string;
+  recalled_at: string | null; recalled_by: string; seen_at: string | null;
+  counts?: { open: number; called: number; reached: number; closed: number };
+};
+export type Absence = { agent_id: number; line_cover_id: number | null; started_at: string; started_by: string };
 export type BookingLinks = Partial<Record<'pr' | 'mcm' | 'support', string>>;
+/** The employer step of a next-day progress review: the line manager, how to reach them, and what they said. */
+export type EmployerCheck = {
+  manager_name: string; manager_email: string; manager_phone: string;
+  result: '' | 'confirmed' | 'cannot_attend' | 'no_answer' | 'not_reachable' | 'no_manager'; label: string; done: boolean;
+  note: string; by: string; at: string | null; tries: number;
+};
+/** A next-day reminder's Outlook review meeting (review_meetings.py): cancelled or not, the learner's reply, confirmed on a call. */
+export type ReviewMeetingSummary = {
+  id: number; status: 'scheduled' | 'cancelled'; cancelled_how: '' | 'outlook' | 'removed' | 'engagement_centre';
+  learner_response: string; confirmed: boolean; organizer: string; cancellable: boolean;
+};
 
-export type DayStats = { day: string; attempts: number; connected: number; seconds: number };
+/** ``seconds`` is all talk time (it counts towards the target); ``event_seconds`` is the part from Events hub calls. */
+export type DayStats = { day: string; attempts: number; connected: number; seconds: number; event_seconds: number };
 export type AgentStats = {
   id: number; display_name: string; zoom_account: string; zoom_phone_number: string; target_seconds: number;
-  today: { attempts: number; connected: number; seconds: number };
+  // Calls, answered and seconds include the calls made from the Events hub; event_* is that part of them.
+  today: { attempts: number; connected: number; seconds: number; event_attempts: number; event_connected: number; event_seconds: number };
   month: {
-    attempts: number; connected: number; seconds: number; resolved: number; pending: number; sla_breaches: number;
+    attempts: number; connected: number; seconds: number; event_attempts: number; event_connected: number; event_seconds: number;
+    resolved: number; pending: number; sla_breaches: number;
     unique_learners: number; emails: number; daily: DayStats[];
   };
   sync: { last_success_at: string | null; error: string; recordings_error: string };
@@ -47,42 +113,102 @@ export type AgentStats = {
 
 export type Overview = {
   today: string; next_workday: string; month: string; generated_at: string;
+  /** Bank holidays and college closures from today (ISO dates): no calls on these days. */
+  holidays: string[];
   access: { role: 'director' | 'operator' | 'viewer'; agent_id: number | null; is_superuser: boolean; display_name: string; email: string };
   agents: AgentStats[]; cases: OverviewCase[]; cases_truncated: boolean;
+  /** The director's tasks not recalled, and who is marked absent. */
+  tasks?: DelegatedTask[]; absences?: Absence[];
+  /** Specialists who make every employer satisfaction call (director's choice); empty when that is off. */
+  employer_specialists?: number[];
   resolutions: { agent: number; ai: number; system: number }; unclaimed_breaches: number;
   sources: Config['sources']; cycle: Config['cycle'];
   connections: { calling: boolean; email_mode: string; ai: boolean };
+  /** AI call ratings for the month: every specialist's for managers, only their own for a specialist. */
+  call_reviews: { agents: Record<string, Record<CallRating, number>>; flags: CallFlag[] } | null;
 };
 
-export type CaseCall = { call_id: number; agent: string; manual: boolean; result: string; started_at: string; duration_seconds: number | null; outcome: string };
+export type CallRating = 'excellent' | 'good' | 'bad' | 'not_rated';
+/** The AI's rating of one call transcript, with notes on what went wrong and what to change. */
+export type CallReview = { rating: CallRating; went_wrong: string[]; needs_change: string[]; summary: string; analysed_at: string };
+export type CallFlag = CallReview & { recording_id: number; started_at: string; agent_id: number | null; agent_name: string };
+
+export type CaseCall = {
+  call_id: number; agent: string; agent_id: number; manual: boolean; result: string; started_at: string; duration_seconds: number | null; outcome: string;
+  /** Made since the case (or its current satisfaction cycle) was opened, reopened or sent back. */
+  current: boolean;
+};
+export type HeldFeedback = { state: 'held' | 'dropped'; at: string; by: string; reason: string };
+
+/** A call in a learner's history (Full case): every case it recorded, and its recordings to play and read. */
+export type HistoryCall = {
+  call_id: number; started_at: string; result: string; direction: string; duration_seconds: number | null; agent: string; manual: boolean;
+  cases: { id: number; label: string; outcome: string }[];
+  recordings: { id: number; transcript: string; duration_seconds: number | null; rating: CallRating | null }[];
+};
+/** Everything done with one person across all their cases, open or closed (``?history=1``). */
+export type ContactHistory = {
+  calls: HistoryCall[]; cases: number;
+  events: { id: number; kind: string; actor: string; data: Record<string, unknown>; created_at: string; case_id: number; case_label: string }[];
+  missed_calls: import('./engagement/inbound').InboundItem[];
+};
+
 export type CaseDetail = {
-  ticket: Case & { booking_links: BookingLinks }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
+  ticket: Case & { booking_links: BookingLinks; manager_phone?: string }; issues: Issue[]; calls: CaseCall[]; has_more_events: boolean;
+  history?: ContactHistory;
   events: { id: number; kind: string; actor: string; data: Record<string, unknown>; call_id: number | null; created_at: string }[];
   emails: { id: number; kind: string; status: string; mode: string; subject: string; text: string; error: string; created_at: string }[];
+  /** The signed-in specialist's call to this learner (last two hours) whose outcome is not saved yet: the cases it covers. */
+  open_call?: { ticket_ids: number[] } | null;
+  /** Satisfaction feedback saved before Zoom reported its call: waiting (`held`), or `dropped` (call not answered). */
+  held_feedback?: HeldFeedback | null;
 };
 
 export type Config = {
   csrf_token: string; agent_id: number | null; is_manager: boolean; is_superuser: boolean; email_mode: string; ai_enabled: boolean;
+  /** Specialists can raise technical issues in the technical support system. */
+  helpdesk: boolean;
   agents: { id: number; display_name: string; zoom_account: string; zoom_phone_number: string }[];
-  sources: { name: string; last_success_at: string | null; details: { error?: string } }[];
+  sources: { name: string; last_success_at: string | null; details: { error?: string; checked_at?: string } }[];
   cycle: { last_success_at: string | null } | null;
 };
 
 type RequestOptions = Parameters<typeof fetch>[1];
 
+/** A failed request, with what the server said about it: the form field to fix, the reference to find it in the server
+ * log, and (on a developer's machine) what failed and where. */
 export class ApiError extends Error {
   status: number;
+  field: string;
+  reference: string;
+  debug: { error: string; where: string } | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details: { field?: string; reference?: string; debug?: { error: string; where: string } } = {}) {
     super(message);
     this.status = status;
+    this.field = details.field || '';
+    this.reference = details.reference || '';
+    this.debug = details.debug || null;
   }
 }
 
 export async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(url, { credentials: 'include', cache: 'no-store', ...options });
-  const payload = await response.json().catch(() => ({ detail: 'The server returned an invalid response.' }));
-  if (!response.ok) throw new ApiError(payload.detail || 'Request failed.', response.status);
+  let response: Response;
+  try {
+    response = await fetch(url, { credentials: 'include', cache: 'no-store', ...options });
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') throw reason;
+    throw new ApiError('Could not reach the server. Check the backend is running and your internet connection, then try again.', 0);
+  }
+  const payload = await response.json().catch(() => null);
+  if (payload === null) {
+    throw new ApiError(response.ok ? 'The server answered with something that is not data. Reload the page and try again.'
+      : `The server failed (HTTP ${response.status}) and sent no details. The backend log has the cause.`, response.status);
+  }
+  if (!response.ok) {
+    throw new ApiError(payload.detail || `The request failed (HTTP ${response.status}).`, response.status,
+      { field: payload.field, reference: payload.reference, debug: payload.debug });
+  }
   return payload as T;
 }
 
@@ -91,13 +217,14 @@ export const api = <T,>(path: string, options: RequestOptions = {}) => request<T
 export function post<T>(path: string, csrfToken: string, payload: Record<string, unknown>, method = 'POST') {
   return api<T>(path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': cookieCsrfToken() || csrfToken },
     body: JSON.stringify(payload),
   });
 }
 
-/** Loads a call-centre resource and refreshes it every 60 s while the browser tab is visible. */
-export function useCallCentre<T>(path: string | null) {
+/** Loads a call-centre resource and (with `poll`) refreshes it every 60 s while the browser tab is visible.
+ * A failed refresh keeps the last data on screen; only a sign-in or permission failure clears it. */
+export function useCallCentre<T>(path: string | null, poll = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [status, setStatus] = useState(0);
@@ -123,8 +250,9 @@ export function useCallCentre<T>(path: string | null) {
       .catch(reason => {
         if (controller.signal.aborted) return;
         setError(reason instanceof Error ? reason.message : 'Request failed.');
-        setStatus(reason instanceof ApiError ? reason.status : 0);
-        setData(null);
+        const status = reason instanceof ApiError ? reason.status : 0;
+        setStatus(status);
+        if (status === 401 || status === 403) setData(null);
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -133,45 +261,40 @@ export function useCallCentre<T>(path: string | null) {
   }, [path, revision]);
 
   useEffect(() => {
+    if (!poll) return undefined;
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') refresh();
     }, 60000);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, poll]);
 
   return { data, error, status, loading, refresh };
 }
-
-export const stamp = (value: string | null | undefined) => (value
-  ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/London' }).format(new Date(value))
-  : '--');
-
-export const category = (value: string) => ({
-  attendance: 'Lecture', pr: 'PR', mcm: 'MCM', otj: 'OTJ', epa: 'EPA', reminder: 'Reminder', satisfaction: 'Satisfaction',
-}[value] || value);
-
-export function issueLabel(issue: Pick<Case, 'source_type' | 'issue_name' | 'issue_date'>) {
-  const name = issue.issue_name?.trim() || category(issue.source_type);
-  if (issue.source_type !== 'attendance' || !issue.issue_date) return name;
-  const date = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Europe/London' })
-    .format(new Date(`${issue.issue_date}T12:00:00Z`));
-  return `${name} - ${date}`;
-}
-
-export const statusLabel = (value: string) => value.replace(/_/g, ' ');
 
 export const londonDay = () => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
 }).format(new Date());
 
-export const hours = (seconds: number) => `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-
-export const accountLabel = (key: string) => (key === 'office' ? 'Office (Accountant)' : 'Student');
+/** A Zoom account's name, from the accounts a report lists; the key when it is not among them. */
+export const accountLabel = (key: string, accounts: { key: string; label: string }[] = []) =>
+  accounts.find(account => account.key === key)?.label || key || 'No account';
 
 export const transcriptStatusLabels: Record<string, string> = {
   ready: 'Ready', pending: 'Processing', disabled: 'Transcription disabled',
   unavailable: 'Transcript unavailable', error: 'Sync failed',
 };
+
+export const RATING_LABELS: Record<CallRating, string> = {
+  excellent: 'Excellent', good: 'Good', bad: 'Bad', not_rated: 'Not rated',
+};
+
+/** The same simple rules the AI is given (backend/callcentre/ai.py RATING_CRITERIA). */
+export const RATING_RULES: [CallRating, string][] = [
+  ['excellent', 'Polite greeting, says who they are and that they are from KBC, explains why they are calling, listens and answers correctly, agrees a clear next step with a date, closes politely.'],
+  ['good', 'Professional and the call did its job, but one or two of the excellent points were missed (for example no date for the next step).'],
+  ['bad', 'Rude or impatient, wrong or confusing information, no reason given for the call, ignores the learner, no next step, or personal details shared without checking who answered.'],
+  ['not_rated', 'No real conversation: no answer, voicemail only, wrong number, or too short to judge.'],
+];
 
 export function downloadText(text: string, name: string) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));

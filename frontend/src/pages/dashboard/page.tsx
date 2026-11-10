@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
 import Footer from '../../components/feature/Footer';
 import useAccessControl from '../../hooks/useAccessControl';
-import { readStoredAuthUser } from '../../utils/authStorage';
+
 
 type DashboardLink = {
   id?: number;
@@ -21,6 +21,16 @@ type DashboardLink = {
   expireSoon?: boolean;
   expireMessage?: string;
   adminOnly?: boolean;
+  /** Open to call-centre agents and directors even when the link is admin-only. */
+  callCentre?: boolean;
+  /** The Engagement Centre itself: only call-centre agents and directors can use it. */
+  engagementCentre?: boolean;
+  /** The coaches' screen of the Engagement Centre: only accounts with Engagement Centre coach. */
+  coachCentre?: boolean;
+  /** Who can see the card when it comes from the API (replaces the three flags above for saved cards). */
+  audience?: CardAudience;
+  /** Sent by the API: whether the signed-in user may open this card. */
+  visibleToMe?: boolean;
   accentStart?: string;
   accentEnd?: string;
   softColor?: string;
@@ -29,7 +39,10 @@ type DashboardLink = {
   sortOrder?: number;
 };
 
-type DashboardDraft = Omit<DashboardLink, 'id' | 'accent' | 'soft' | 'text'> & {
+type CardAudience = 'everyone' | 'admins' | 'admins_and_call_centre' | 'call_centre' | 'coaches';
+
+type DashboardDraft = Omit<DashboardLink, 'id' | 'accent' | 'soft' | 'text' | 'audience'> & {
+  audience: CardAudience;
   id?: number;
   accentStart: string;
   accentEnd: string;
@@ -75,14 +88,8 @@ function validateDestination(destination: string): string {
   }
 }
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  const user = readStoredAuthUser();
-  const headers: Record<string, string> = { ...extra };
-  if (user?.id !== undefined) headers['X-KBC-User-Id'] = String(user.id);
-  if (user?.email) headers['X-KBC-User-Email'] = String(user.email);
-  if (user?.username) headers['X-KBC-Username'] = String(user.username);
-  return headers;
-}
+// Identity is the Django session; installApiSession (utils/apiSession) adds X-CSRFToken to every change.
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 // Mirrors the grid breakpoints below (1 col, sm:2, xl:3) so up/down arrows move a card one row.
 function readGridColumns() {
@@ -126,6 +133,19 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#1B2A4A] to-[#2E4482]',
     soft: 'bg-[#eef2ff]',
     text: 'text-[#2E4482]',
+    callCentre: true,
+    engagementCentre: true,
+  },
+  {
+    title: 'Coach Engagement Centre',
+    internalPath: '/dashboard/coach-centre',
+    description: 'Your learners’ missed lectures: mark catch-ups done and pause their calls.',
+    label: 'Engagement Centre',
+    icon: 'ri-user-heart-line',
+    accent: 'from-[#4f2d7f] to-[#29163d]',
+    soft: 'bg-[#f3eff8]',
+    text: 'text-[#4f2d7f]',
+    coachCentre: true,
   },
   {
     title: 'Tutor Dashboard',
@@ -166,6 +186,7 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#0ea5e9] to-[#2563eb]',
     soft: 'bg-[#eff6ff]',
     text: 'text-[#2563eb]',
+    callCentre: true,
   },
   {
     title: 'Bulk Attendance',
@@ -177,6 +198,7 @@ const dashboardLinks: DashboardLink[] = [
     soft: 'bg-[#ecfdf5]',
     text: 'text-[#047857]',
     adminOnly: true,
+    callCentre: true,
   },
   {
     title: 'Engagement Dashboard',
@@ -207,6 +229,7 @@ const dashboardLinks: DashboardLink[] = [
     accent: 'from-[#8b5cf6] to-[#a855f7]',
     soft: 'bg-[#f1eaff]',
     text: 'text-[#6d36b3]',
+    callCentre: true,
   },
   {
     title: 'Quality Management System',
@@ -221,6 +244,17 @@ const dashboardLinks: DashboardLink[] = [
   {
     title: 'Library',
     url: 'https://library.kentbusinesscollege.net/',
+    description: 'Central learning resources, reference material, and operational document access.',
+    label: 'Resource Library',
+    icon: 'ri-book-open-line',
+    accent: 'from-[#f43f5e] to-[#be123c]',
+    soft: 'bg-[#fff1f7]',
+    text: 'text-[#be185d]',
+  },
+
+{
+    title: 'initial assessment',
+    url: 'http://initial-assessment.kentbusinesscollege.net/',
     description: 'Central learning resources, reference material, and operational document access.',
     label: 'Resource Library',
     icon: 'ri-book-open-line',
@@ -248,6 +282,17 @@ const dashboardLinks: DashboardLink[] = [
     soft: 'bg-[#e9fbf7]',
     text: 'text-[#138f82]',
   },
+
+	{
+    title: 'Lecture Intelligence',
+    url: 'https://positive-moments.kentbusinesscollege.net/',
+    description: 'Lecture records, attendance evidence, quality assurance, and positive learner moments.',
+    label: 'Lecture Operations',
+    icon: 'ri-presentation-line',
+    accent: 'from-[#f97316] to-[#c2410c]',
+    soft: 'bg-[#fff7ed]',
+    text: 'text-[#c2410c]',
+  },
 ];
 
 const dashboardColourDefaults: Record<string, [string, string, string, string]> = {
@@ -264,6 +309,9 @@ const dashboardColourDefaults: Record<string, [string, string, string, string]> 
   Library: ['#f43f5e', '#be123c', '#fff1f7', '#be185d'],
   'HR Compliance System': ['#db2777', '#9d174d', '#fff1f7', '#be185d'],
   'Employer Dashboard': ['#14b8a6', '#0f766e', '#e9fbf7', '#138f82'],
+  'Coach Engagement Centre': ['#4f2d7f', '#29163d', '#f3eff8', '#4f2d7f'],
+  'initial assessment': ['#f43f5e', '#be123c', '#fff1f7', '#be185d'],
+  'Lecture Intelligence': ['#f97316', '#c2410c', '#fff7ed', '#c2410c'],
 };
 
 function withVisualDefaults(link: DashboardLink): DashboardLink {
@@ -295,6 +343,8 @@ function serverCardToLink(card: Record<string, unknown>): DashboardLink {
     textColor: String(card.textColor || ''),
     status: (String(card.status || 'available') as DashboardLink['status']),
     adminOnly: Boolean(card.isAdminOnly),
+    audience: (String(card.audience || '') || undefined) as CardAudience | undefined,
+    visibleToMe: typeof card.visibleToMe === 'boolean' ? card.visibleToMe : undefined,
     sortOrder: Number(card.sortOrder || 0),
   });
 }
@@ -314,9 +364,41 @@ function draftFromCard(card?: DashboardLink): DashboardDraft {
     textColor: card?.textColor || '#2E4482',
     status: card?.status || 'available',
     adminOnly: Boolean(card?.adminOnly),
+    audience: audienceOf(card),
     sortOrder: card?.sortOrder || 0,
     destination: card?.internalPath || card?.url || '',
   };
+}
+
+const audienceOptions: { value: CardAudience; label: string }[] = [
+  { value: 'everyone', label: 'Everyone' },
+  { value: 'admins', label: 'Admins only' },
+  { value: 'admins_and_call_centre', label: 'Admins and call-centre staff' },
+  { value: 'call_centre', label: 'Call-centre agents and directors only' },
+  { value: 'coaches', label: 'Engagement Centre coaches only' },
+];
+
+// Saved cards carry `audience`; the built-in fallback list still uses the Engagement Centre flags.
+function audienceOf(link?: DashboardLink): CardAudience {
+  if (!link) return 'everyone';
+  if (link.audience && audienceOptions.some(option => option.value === link.audience)) return link.audience;
+  if (link.engagementCentre) return 'call_centre';
+  if (link.coachCentre) return 'coaches';
+  if (link.adminOnly) return link.callCentre ? 'admins_and_call_centre' : 'admins';
+  return 'everyone';
+}
+
+type CardAccess = { adminAccess: boolean; callCentreAccess: boolean; callCentreCoach: boolean };
+
+// Mirrors the API's _dashboard_card_visible_to so the fallback list follows the same rules.
+function canSeeCard(link: DashboardLink, access: CardAccess): boolean {
+  if (typeof link.visibleToMe === 'boolean') return link.visibleToMe;
+  const audience = audienceOf(link);
+  if (audience === 'call_centre') return access.callCentreAccess;
+  if (audience === 'coaches') return access.callCentreCoach;
+  if (audience === 'admins_and_call_centre') return access.adminAccess || access.callCentreAccess;
+  if (audience === 'admins') return access.adminAccess;
+  return true;
 }
 
 const statusLabel: Record<NonNullable<DashboardLink['status']>, string> = {
@@ -327,7 +409,7 @@ const statusLabel: Record<NonNullable<DashboardLink['status']>, string> = {
 };
 
 export default function DashboardPage() {
-  const { adminAccess } = useAccessControl();
+  const { adminAccess, callCentreAccess, callCentreCoach } = useAccessControl();
   const [cards, setCards] = useState<DashboardLink[]>(() => dashboardLinks.map(withVisualDefaults));
   const [editingCard, setEditingCard] = useState<DashboardDraft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -356,7 +438,7 @@ export default function DashboardPage() {
 
   const loadCards = async () => {
     try {
-      const response = await fetch('/api/dashboard-cards/', { credentials: 'include', cache: 'no-store', headers: authHeaders() });
+      const response = await fetch('/api/dashboard-cards/', { credentials: 'include', cache: 'no-store' });
       if (!response.ok) return;
       const payload = await response.json();
       if (Array.isArray(payload)) { setCards(payload.map(serverCardToLink)); setCardsFromServer(true); }
@@ -387,7 +469,7 @@ export default function DashboardPage() {
     }
     const body = {
       icon: editingCard.icon,
-      isAdminOnly: Boolean(editingCard.adminOnly),
+      audience: editingCard.audience,
       title: editingCard.title,
       description: editingCard.description,
       status: editingCard.status,
@@ -400,7 +482,7 @@ export default function DashboardPage() {
       const response = await fetch(id ? `/api/dashboard-cards/${id}/` : '/api/dashboard-cards/', {
         method: id ? 'PUT' : 'POST',
         credentials: 'include',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: JSON_HEADERS,
         body: JSON.stringify(body),
       });
       if (!response.ok) {
@@ -417,7 +499,9 @@ export default function DashboardPage() {
   };
 
   const bySortOrder = (left: DashboardLink, right: DashboardLink) => (left.sortOrder || 0) - (right.sortOrder || 0) || (left.id || 0) - (right.id || 0);
-  const activeDashboardLinks = cards.filter(link => link.status !== 'hidden' && (adminAccess || !link.adminOnly)).sort(bySortOrder);
+  const access = { adminAccess, callCentreAccess, callCentreCoach };
+  // While arranging, admins see every card (including ones only call-centre staff or coaches can open) so the order covers them all.
+  const activeDashboardLinks = cards.filter(link => link.status !== 'hidden' && (arranging || canSeeCard(link, access))).sort(bySortOrder);
   const hiddenDashboardLinks = adminAccess ? cards.filter(link => link.status === 'hidden').sort(bySortOrder) : [];
   const tabLinks = dashboardTab === 'hidden' ? hiddenDashboardLinks : activeDashboardLinks;
   const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -456,7 +540,7 @@ export default function DashboardPage() {
       const response = await fetch('/api/dashboard-cards/reorder/', {
         method: 'POST',
         credentials: 'include',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: JSON_HEADERS,
         body: JSON.stringify({ ids }),
       });
       if (!response.ok) {
@@ -566,6 +650,7 @@ export default function DashboardPage() {
                   <div className="min-w-0">
                     <h2 className="text-[17px] font-bold leading-snug text-kbc-navy">{link.title}</h2>
                     {link.description && <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-slate-500">{link.description}</p>}
+                    {arranging && audienceOf(link) !== 'everyone' && <p className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-[#39206d]"><i className="ri-lock-2-line" />{audienceOptions.find(option => option.value === audienceOf(link))?.label}</p>}
                     {statusHint[status] && <p className={`mt-2 text-xs font-semibold ${status === 'maintenance' ? 'text-amber-700' : status === 'unavailable' ? 'text-rose-600' : 'text-slate-500'}`}>{statusHint[status]}</p>}
                   </div>
                   <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-md ${disabled ? 'grayscale-[60%]' : ''}`} style={gradientStyle}><i className={`${link.icon} text-lg`} /></div>
@@ -622,7 +707,7 @@ function DashboardCardModal({ draft, saving, error, onChange, onClose, onSubmit 
           </div>
           <label className="block text-sm font-semibold text-slate-700">Status<select value={draft.status} onChange={event => update('status', event.target.value as DashboardDraft['status'])} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"><option value="available">Available</option><option value="unavailable">Unavailable</option><option value="maintenance">Under maintenance</option><option value="hidden">Hidden</option></select></label>
           <div className="grid gap-4 sm:grid-cols-2"><ColorInput label="Main colour" value={draft.accentStart} onChange={value => update('accentStart', value)} /><ColorInput label="Second colour" value={draft.accentEnd} onChange={value => update('accentEnd', value)} /></div>
-          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={Boolean(draft.adminOnly)} onChange={event => update('adminOnly', event.target.checked)} className="h-4 w-4 accent-[#39206d]" />Admins only <span className="font-normal text-slate-400">(hide this card from non-admin users)</span></label>
+          <label className="block text-sm font-semibold text-slate-700">Who can see this card<select value={draft.audience} onChange={event => update('audience', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal">{audienceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         </div>
         <div className="mt-6 flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600">Cancel</button><button type="submit" disabled={saving} className="rounded-xl bg-[#39206d] px-5 py-2 text-sm font-bold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save card'}</button></div>
       </form>

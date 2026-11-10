@@ -191,6 +191,32 @@
     cursor: grabbing;
   }
 
+  .training-plan-comparison .training-plan-comparison-heading {
+    min-height: 4rem;
+  }
+
+  .training-plan-comparison [data-training-plan-overview] {
+    display: none;
+  }
+
+  .training-plan-comparison [data-training-plan-overview] + .training-plan-gantt-shell {
+    margin-top: 0;
+  }
+
+  .training-plan-comparison .training-plan-gantt-scroll {
+    max-height: min(62vh, 680px);
+    overflow: auto;
+  }
+
+  .training-plan-comparison .training-plan-gantt-fixed-scrollbar {
+    display: none;
+  }
+
+  .training-plan-comparison .training-plan-gantt-shell {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
   .training-plan-gantt-fixed-scrollbar {
     position: fixed;
     bottom: 0;

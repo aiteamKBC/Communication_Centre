@@ -21,7 +21,6 @@ from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
 from django.db import DatabaseError, models, transaction
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
@@ -64,43 +63,44 @@ DASHBOARD_CARD_DEFAULTS = [
 	('Library', 'Central learning resources, reference material, and operational document access.', 'Resource Library', 'https://library.kentbusinesscollege.net/', '', 'ri-book-open-line', '#f43f5e', '#be123c', '#fff1f7', '#be185d', False),
 	('HR Compliance System', 'Policy compliance, HR governance checkpoints, audit readiness, and people-process oversight.', 'HR Compliance', 'https://hrcompliance.kentbusinesscollege.net/', '', 'ri-file-shield-line', '#db2777', '#9d174d', '#fff1f7', '#be185d', False),
 	('Employer Dashboard', 'Employer partnerships, placement visibility, and apprenticeship engagement.', 'Partnerships', 'https://employer.kentbusinesscollege.net/', '', 'ri-briefcase-4-line', '#14b8a6', '#0f766e', '#e9fbf7', '#138f82', False),
+	('Coach Engagement Centre', 'Your learners’ missed lectures: mark catch-ups done and pause their calls.', 'Engagement Centre', '', '/dashboard/coach-centre', 'ri-user-heart-line', '#4f2d7f', '#29163d', '#f3eff8', '#4f2d7f', False),
+	('initial assessment', 'Central learning resources, reference material, and operational document access.', 'Resource Library', 'http://initial-assessment.kentbusinesscollege.net/', '', 'ri-book-open-line', '#f43f5e', '#be123c', '#fff1f7', '#be185d', False),
+	('Lecture Intelligence', 'Lecture records, attendance evidence, quality assurance, and positive learner moments.', 'Lecture Operations', 'https://positive-moments.kentbusinesscollege.net/', '', 'ri-presentation-line', '#f97316', '#c2410c', '#fff7ed', '#c2410c', False),
 ]
+
+# Engagement Centre access rules for the seeded cards (see DashboardCard.audience).
+DASHBOARD_CARD_DEFAULT_AUDIENCE = {
+	'Engagement Centre': DashboardCard.AUDIENCE_CALL_CENTRE,
+	'Coach Engagement Centre': DashboardCard.AUDIENCE_COACHES,
+	'Bulk Attendance': DashboardCard.AUDIENCE_ADMINS_AND_CALL_CENTRE,
+}
+
+
+def _dashboard_card_access(request) -> dict:
+	"""Access flags for the signed-in session user (ApiLoginRequiredMiddleware guarantees one)."""
+	try:
+		return get_user_access_payload(request.user)
+	except Exception:
+		return {}
 
 
 def _dashboard_card_is_admin(request) -> bool:
-	user = getattr(request, 'user', None)
-	if user and user.is_authenticated:
-		try:
-			if get_user_access_payload(user).get('adminAccess'):
-				return True
-		except Exception:
-			pass
+	return bool(_dashboard_card_access(request).get('adminAccess'))
 
-	# The frontend keeps the login response in localStorage and some existing
-	# sessions do not have a usable Django auth cookie (for example after a
-	# backend restart or when the dev proxy changes origin). Resolve the same
-	# identifier against login_db instead of trusting a client-side access flag.
-	user_id = str(request.headers.get('X-KBC-User-Id', '')).strip()
-	email = str(request.headers.get('X-KBC-User-Email', '')).strip()
-	username = str(request.headers.get('X-KBC-Username', '')).strip()
-	if not user_id and not email and not username:
-		return False
-	try:
-		user_model = get_user_model()
-		queryset = user_model.objects.using('login_db')
-		resolved_user = None
-		if user_id:
-			try:
-				resolved_user = queryset.filter(pk=int(user_id)).first()
-			except (TypeError, ValueError):
-				resolved_user = None
-		if resolved_user is None and email:
-			resolved_user = queryset.filter(email__iexact=email).first()
-		if resolved_user is None and username:
-			resolved_user = queryset.filter(username__iexact=username).first()
-		return bool(resolved_user and resolved_user.is_active and get_user_access_payload(resolved_user).get('adminAccess'))
-	except Exception:
-		return False
+
+def _dashboard_card_visible_to(card: DashboardCard, access: dict) -> bool:
+	"""Same rules the Engagement Centre work introduced on the frontend, now enforced by the API."""
+	is_admin = bool(access.get('adminAccess'))
+	call_centre = bool(access.get('callCentreAccess'))
+	if card.audience == DashboardCard.AUDIENCE_CALL_CENTRE:
+		return call_centre
+	if card.audience == DashboardCard.AUDIENCE_COACHES:
+		return bool(access.get('callCentreCoachAccess'))
+	if card.audience == DashboardCard.AUDIENCE_ADMINS_AND_CALL_CENTRE:
+		return is_admin or call_centre
+	if card.audience == DashboardCard.AUDIENCE_ADMINS or card.is_admin_only:
+		return is_admin
+	return True
 
 
 def _seed_dashboard_cards() -> None:
@@ -121,12 +121,13 @@ def _seed_dashboard_cards() -> None:
 			soft_color=soft_color,
 			text_color=text_color,
 			is_admin_only=is_admin_only,
+			audience=DASHBOARD_CARD_DEFAULT_AUDIENCE.get(title, DashboardCard.AUDIENCE_ADMINS if is_admin_only else DashboardCard.AUDIENCE_EVERYONE),
 			sort_order=index,
 		)
 
 
-def serialize_dashboard_card(card: DashboardCard) -> dict:
-	return {
+def serialize_dashboard_card(card: DashboardCard, access: dict | None = None) -> dict:
+	payload = {
 		'id': card.id,
 		'title': card.title,
 		'description': card.description,
@@ -140,8 +141,13 @@ def serialize_dashboard_card(card: DashboardCard) -> dict:
 		'textColor': card.text_color,
 		'status': card.status,
 		'isAdminOnly': card.is_admin_only,
+		'audience': card.audience,
 		'sortOrder': card.sort_order,
 	}
+	if access is not None:
+		# Lets an admin's page show only the cards they can open, while still managing every card.
+		payload['visibleToMe'] = _dashboard_card_visible_to(card, access)
+	return payload
 
 
 def _dashboard_card_payload(payload: dict, card: DashboardCard | None = None) -> tuple[dict | None, str]:
@@ -170,6 +176,17 @@ def _dashboard_card_payload(payload: dict, card: DashboardCard | None = None) ->
 
 	if len(title) > 255:
 		return None, 'Title must be 255 characters or fewer.'
+
+	if 'audience' in payload:
+		audience = str(payload.get('audience') or '').strip()
+	elif 'isAdminOnly' in payload:
+		audience = DashboardCard.AUDIENCE_ADMINS if payload.get('isAdminOnly') else DashboardCard.AUDIENCE_EVERYONE
+	elif card is not None:
+		audience = card.audience
+	else:
+		audience = DashboardCard.AUDIENCE_EVERYONE
+	if audience not in {choice[0] for choice in DashboardCard.AUDIENCE_CHOICES}:
+		return None, 'Audience must be everyone, admins, admins_and_call_centre, call_centre, or coaches.'
 
 	url = value('url', 'url')
 	internal_path = value('internalPath', 'internal_path')
@@ -207,20 +224,21 @@ def _dashboard_card_payload(payload: dict, card: DashboardCard | None = None) ->
 		'icon': value('icon', 'icon', 'ri-dashboard-line') or 'ri-dashboard-line',
 		**colors,
 		'status': status,
-		'is_admin_only': bool(payload.get('isAdminOnly', getattr(card, 'is_admin_only', False))),
+		'is_admin_only': audience in {DashboardCard.AUDIENCE_ADMINS, DashboardCard.AUDIENCE_ADMINS_AND_CALL_CENTRE},
+		'audience': audience,
 		'sort_order': sort_order,
 	}, ''
 
 
-@csrf_exempt
 def dashboard_cards(request):
-	_is_admin = _dashboard_card_is_admin(request)
+	access = _dashboard_card_access(request)
+	_is_admin = bool(access.get('adminAccess'))
 	if request.method == 'GET':
 		_seed_dashboard_cards()
 		cards = DashboardCard.objects.all()
 		if not _is_admin:
-			cards = cards.exclude(status=DashboardCard.STATUS_HIDDEN).filter(is_admin_only=False)
-		return JsonResponse([serialize_dashboard_card(card) for card in cards], safe=False)
+			cards = [card for card in cards.exclude(status=DashboardCard.STATUS_HIDDEN) if _dashboard_card_visible_to(card, access)]
+		return JsonResponse([serialize_dashboard_card(card, access) for card in cards], safe=False)
 
 	if not _is_admin:
 		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
@@ -238,7 +256,6 @@ def dashboard_cards(request):
 	return JsonResponse(serialize_dashboard_card(card), status=201)
 
 
-@csrf_exempt
 def dashboard_cards_reorder(request):
 	"""Persist the admin's arranged order. Body: {"ids": [3, 1, 2, ...]} in display order."""
 	if request.method != 'POST':
@@ -271,11 +288,10 @@ def dashboard_cards_reorder(request):
 				card.sort_order = offset
 				card.save(update_fields=['sort_order', 'updated_at'])
 	_audit_log(request, action='update', entity='DashboardCard', object_label='Card order', before=before, after=[{'id': card_id, 'sortOrder': index} for index, card_id in enumerate(ids)])
-	cards = DashboardCard.objects.all()
-	return JsonResponse([serialize_dashboard_card(card) for card in cards], safe=False)
+	access = _dashboard_card_access(request)
+	return JsonResponse([serialize_dashboard_card(card, access) for card in DashboardCard.objects.all()], safe=False)
 
 
-@csrf_exempt
 def dashboard_card_detail(request, card_id: int):
 	try:
 		card = DashboardCard.objects.get(pk=card_id)
@@ -283,9 +299,10 @@ def dashboard_card_detail(request, card_id: int):
 		return JsonResponse({'detail': 'Not found.'}, status=404)
 
 	if request.method == 'GET':
-		if card.status == DashboardCard.STATUS_HIDDEN and not _dashboard_card_is_admin(request):
+		access = _dashboard_card_access(request)
+		if not access.get('adminAccess') and (card.status == DashboardCard.STATUS_HIDDEN or not _dashboard_card_visible_to(card, access)):
 			return JsonResponse({'detail': 'Not found.'}, status=404)
-		return JsonResponse(serialize_dashboard_card(card))
+		return JsonResponse(serialize_dashboard_card(card, access))
 	if not _dashboard_card_is_admin(request):
 		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
 	if request.method == 'DELETE':
@@ -321,14 +338,20 @@ def _header_text(request, name: str) -> str:
 	return str(request.headers.get(name, '') or '').strip()
 
 
-def _header_int(request, name: str) -> int | None:
-	value = _header_text(request, name)
-	if not value:
-		return None
-	try:
-		return int(value)
-	except ValueError:
-		return None
+def _request_user(request) -> dict:
+	"""Who made the request, from the signed-in session (the API login gate guarantees one)."""
+	user = request.user
+	return {
+		'user_id': user.id,
+		'username': user.username or '',
+		'email': user.email or '',
+		'display_name': f'{user.first_name or ""} {user.last_name or ""}'.strip() or user.username or user.email or '',
+	}
+
+
+def _request_user_label(request) -> str:
+	user = _request_user(request)
+	return user['email'] or user['username'] or user['display_name']
 
 
 def _audit_log(
@@ -348,10 +371,7 @@ def _audit_log(
 			entity=entity,
 			object_id=str(object_id or ''),
 			object_label=str(object_label or '')[:1000],
-			user_id=_header_int(request, 'X-KBC-User-Id'),
-			username=_header_text(request, 'X-KBC-Username'),
-			email=_header_text(request, 'X-KBC-User-Email'),
-			display_name=_header_text(request, 'X-KBC-Display-Name'),
+			**_request_user(request),
 			path=request.get_full_path(),
 			method=request.method,
 			ip_address=_client_ip(request),
@@ -481,7 +501,6 @@ def serialize_event(event: EventData) -> dict:
 	}
 
 
-@csrf_exempt
 def events(request):
 	if request.method == 'GET':
 		records = EventData.objects.all().order_by('event_date', 'event_time')
@@ -515,7 +534,6 @@ def events(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def event_detail(request, event_id: int):
 	try:
 		event = EventData.objects.get(pk=event_id)
@@ -629,7 +647,6 @@ def _save_uploaded_image(uploaded_file, folder: str) -> str:
 	return f'{settings.MEDIA_URL}{stored_path}'.replace('//', '/')
 
 
-@csrf_exempt
 def news(request):
 	if request.method == 'GET':
 		records = News.objects.all().order_by('-publication_date', '-id')
@@ -675,7 +692,6 @@ def news(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def news_detail(request, news_id: int):
 	try:
 		record = News.objects.get(pk=news_id)
@@ -736,7 +752,6 @@ def news_detail(request, news_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def urgent_notice(request):
 	if request.method == 'GET':
 		if request.GET.get('list') == '1':
@@ -784,7 +799,6 @@ def urgent_notice(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def urgent_notice_detail(request, notice_id: int):
 	try:
 		record = UrgentNotice.objects.get(pk=notice_id)
@@ -840,7 +854,6 @@ def urgent_notice_detail(request, notice_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def leadership_message(request):
 	if request.method == 'GET':
 		if request.GET.get('list') == '1':
@@ -897,7 +910,6 @@ def leadership_message(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def leadership_message_detail(request, message_id: int):
 	try:
 		record = LeadershipMessage.objects.get(pk=message_id)
@@ -956,7 +968,6 @@ def leadership_message_detail(request, message_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def upload_image(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -1705,10 +1716,7 @@ def log_legacy_training_plan_full_save(
 	logger.warning(
 		'LEGACY_TRAINING_PLAN_FULL_SAVE_TRIGGERED %s',
 		json.dumps({
-			'userId': _header_int(request, 'X-KBC-User-Id'),
-			'username': _header_text(request, 'X-KBC-Username'),
-			'email': _header_text(request, 'X-KBC-User-Email'),
-			'displayName': _header_text(request, 'X-KBC-Display-Name'),
+			**_request_user(request),
 			'path': request.get_full_path(),
 			'method': request.method,
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
@@ -1788,6 +1796,7 @@ KSB_CODE_PATTERNS = {
 
 TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX = '__module_color:'
 TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:'
+TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX = '__lms_source_module_id:'
 TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX = '__program_id:'
 TRAINING_PLAN_COHORT_ID_MARKER_PREFIX = '__cohort_id:'
 TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
@@ -1799,6 +1808,7 @@ TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
 	'__cohort_color:',
 	TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
 	TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX,
+	TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX,
 	'__cohort_end_date:',
 	'__group_name:',
 	'__coach_name:',
@@ -1919,6 +1929,11 @@ def update_training_plan_module_color_marker(notes: str, color: str) -> str:
 def update_training_plan_visible_notes(existing_notes: str, visible_notes: str) -> str:
 	incoming = str(visible_notes or '').strip()
 	if any(incoming.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+		# Older clients may serialize notes without knowing about saved LMS links.
+		# Omitting a marker during an unrelated edit must not remove that link.
+		existing_match = training_plan_marker_value(existing_notes, TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX)
+		if existing_match and not training_plan_marker_value(incoming, TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX):
+			incoming = set_training_plan_metadata_markers(incoming, {TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX: existing_match})
 		return incoming
 
 	lines = str(existing_notes or '').strip().split('\n') if str(existing_notes or '').strip() else []
@@ -1970,6 +1985,7 @@ def set_training_plan_metadata_markers(notes: str, marker_values: dict[str, str]
 		'__cohort_color:',
 		TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
 		TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX,
+		'__lms_source_module_id:',
 		'__cohort_end_date:',
 		'__group_name:',
 		'__coach_name:',
@@ -2667,7 +2683,6 @@ def serialize_feedback(item: Feedback) -> dict:
 	}
 
 
-@csrf_exempt
 def feedback(request):
 	if request.method == 'GET':
 		records = Feedback.objects.all().order_by('-submitted_at', '-id')
@@ -2707,7 +2722,6 @@ def feedback(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan(request):
 	if request.method == 'GET':
 		include_archived = str(request.GET.get('includeArchived', '')).strip().lower() in {'1', 'true', 'yes'}
@@ -2857,7 +2871,6 @@ def training_plan(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_reorder_programmes(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -2943,7 +2956,6 @@ def training_plan_reorder_programmes(request):
 	return JsonResponse(training_plan_order_response({'programmeOrder': programme_ids}))
 
 
-@csrf_exempt
 def training_plan_reorder_cohorts(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3054,7 +3066,6 @@ def training_plan_reorder_cohorts(request):
 	return JsonResponse(training_plan_order_response({'programmeId': programme_id, 'cohortOrder': cohort_ids}))
 
 
-@csrf_exempt
 def training_plan_move_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3162,7 +3173,6 @@ def training_plan_move_cohort(request, cohort_id: str):
 	return JsonResponse(training_plan_order_response({'cohortId': target_cohort_id, 'fromProgrammeId': from_programme_id, 'toProgrammeId': to_programme_id}))
 
 
-@csrf_exempt
 def training_plan_cohort_detail(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3338,7 +3348,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			if int(row.id) in missing_id_set:
 				row.is_archived = True
 				row.archived_at = timezone.now()
-				row.archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+				row.archived_by = _request_user_label(request)
 				row.archive_reason = 'Module removed from cohort editor'
 				row.save(update_fields=['is_archived', 'archived_at', 'archived_by', 'archive_reason'])
 				continue
@@ -3395,7 +3405,8 @@ def training_plan_cohort_detail(request, cohort_id: str):
 				marker_values[TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX] = block_payload['moduleColor']
 			if block_payload['moduleCatalogueId']:
 				marker_values[TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX] = block_payload['moduleCatalogueId']
-			row.notes = set_training_plan_metadata_markers(block_payload['notes'] if block_payload['notes'] is not None else row.notes, marker_values)
+			next_notes = update_training_plan_visible_notes(row.notes, block_payload['notes']) if block_payload['notes'] is not None else row.notes
+			row.notes = set_training_plan_metadata_markers(next_notes, marker_values)
 			row.save(update_fields=sorted(set(update_fields)))
 		created_rows = []
 		for block_payload in new_block_payloads:
@@ -3463,7 +3474,7 @@ def training_plan_cohort_detail(request, cohort_id: str):
 			'createdCount': len(created_rows),
 			'archivedCount': len(missing_ids),
 			'note': f'User edited cohort {target_cohort_id} in programme {programme_id}: updated {len(scope_rows) - len(missing_ids)} module row(s), created {len(created_rows)}, archived {len(missing_ids)}.',
-			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'requestUser': _request_user_label(request),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
 		logger.info('cohort_edit_partial_update %s', json.dumps(metadata, sort_keys=True))
@@ -3486,7 +3497,6 @@ def training_plan_cohort_detail(request, cohort_id: str):
 	}))
 
 
-@csrf_exempt
 def training_plan_create_cohort(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3529,7 +3539,7 @@ def training_plan_create_cohort(request):
 					'identifiers': identifiers,
 					'createdCount': 0,
 					'skippedCount': len(duplicate_rows),
-					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'requestUser': _request_user_label(request),
 					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 				}, sort_keys=True),
 			)
@@ -3584,7 +3594,7 @@ def training_plan_create_cohort(request):
 				'identifiers': identifiers,
 				'createdCount': len(created_rows),
 				'skippedCount': len(skipped_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -3604,7 +3614,7 @@ def training_plan_create_cohort(request):
 				'createdIds': [int(row.id) for row in created_rows],
 				'skippedIds': [int(row.id) for row in skipped_rows],
 				'identifiers': identifiers,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -3620,7 +3630,6 @@ def training_plan_create_cohort(request):
 	return JsonResponse(result, status=201 if created_rows else 200)
 
 
-@csrf_exempt
 def training_plan_archive_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3684,7 +3693,7 @@ def training_plan_archive_cohort(request, cohort_id: str):
 
 		before = [serialize_training_plan(row) for row in scope_rows]
 		now = timezone.now()
-		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archived_by = _request_user_label(request)
 		archive_reason = str(payload.get('archiveReason') or 'Cohort archived from Training Plan UI').strip()
 		for row in scope_rows:
 			row.is_archived = True
@@ -3706,7 +3715,6 @@ def training_plan_archive_cohort(request, cohort_id: str):
 	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'programmeId': programme_id, 'cohortId': target_cohort_id}))
 
 
-@csrf_exempt
 def training_plan_archive_module(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3767,7 +3775,7 @@ def training_plan_archive_module(request):
 
 		before = [serialize_training_plan(row) for row in scope_rows]
 		now = timezone.now()
-		archived_by = _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name')
+		archived_by = _request_user_label(request)
 		archive_reason = str(payload.get('archiveReason') or 'Linked module archived from Training Plan UI').strip()
 		for row in scope_rows:
 			row.is_archived = True
@@ -3789,7 +3797,6 @@ def training_plan_archive_module(request):
 	return JsonResponse(training_plan_order_response({'archived': len(row_ids), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id}))
 
 
-@csrf_exempt
 def training_plan_restore_cohort(request, cohort_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3843,14 +3850,13 @@ def training_plan_restore_cohort(request, cohort_id: str):
 				'programmeId': programme_id,
 				'cohortId': target_cohort_id,
 				'restoredCount': len(scope_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 			},
 		)
 
 	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'cohort_id': target_cohort_id, 'programmeId': programme_id}))
 
 
-@csrf_exempt
 def training_plan_restore_module(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -3931,14 +3937,13 @@ def training_plan_restore_module(request):
 				'moduleCatalogueId': module_catalogue_id,
 				'trainingPlanIds': row_ids,
 				'restoredCount': len(scope_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 			},
 		)
 
 	return JsonResponse(training_plan_order_response({'restored_count': len(scope_rows), 'moduleName': module_name, 'moduleCatalogueId': module_catalogue_id, 'trainingPlanIds': row_ids}))
 
 
-@csrf_exempt
 def training_plan_session_detail(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4057,7 +4062,6 @@ def training_plan_session_detail(request, session_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_module_detail(request, module_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4066,10 +4070,14 @@ def training_plan_module_detail(request, module_id: int):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'moduleName', 'tutorProfileId', 'tutorName', 'notes', 'color'}
+	allowed_keys = {'version', 'moduleName', 'tutorProfileId', 'tutorName', 'notes', 'color', 'lmsSourceModuleId'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if 'lmsSourceModuleId' in payload:
+		source_id = payload['lmsSourceModuleId']
+		if not isinstance(source_id, str) or any(character in source_id for character in ('\r', '\n')):
+			return JsonResponse({'detail': 'lmsSourceModuleId must be a single-line string; use an empty string to remove a match.'}, status=400)
 	if not TrainingPlan.objects.filter(pk=module_id).exists():
 		return JsonResponse({'detail': 'Training Plan module not found.'}, status=404)
 
@@ -4111,7 +4119,14 @@ def training_plan_module_detail(request, module_id: int):
 			row.tutor_name = str(payload.get('tutorName') or '').strip()
 			update_fields.append('tutor_name')
 		if 'notes' in payload:
-			row.notes = str(payload.get('notes') or '').strip()
+			row.notes = update_training_plan_visible_notes(row.notes, payload.get('notes'))
+			update_fields.append('notes')
+		if 'lmsSourceModuleId' in payload:
+			# Removing a saved match requires an explicit request, never omission
+			# from a notes/cohort payload after a frontend deployment.
+			row.notes = set_training_plan_metadata_markers(row.notes, {
+				TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX: payload['lmsSourceModuleId'].strip(),
+			})
 			update_fields.append('notes')
 		if 'color' in payload:
 			try:
@@ -4146,7 +4161,6 @@ def training_plan_module_detail(request, module_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_linked_module_rows(request):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4248,7 +4262,7 @@ def training_plan_linked_module_rows(request):
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
 				'skippedAmbiguousRows': skipped_ambiguous_rows,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -4267,7 +4281,7 @@ def training_plan_linked_module_rows(request):
 				'identifiers': identifiers,
 				'updatedCount': len(updated_rows),
 				'skippedAmbiguousRows': skipped_ambiguous_rows,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -4284,7 +4298,6 @@ def training_plan_linked_module_rows(request):
 	return JsonResponse(response)
 
 
-@csrf_exempt
 def training_plan_linked_programme_rows(request, programme_id: str):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4365,7 +4378,7 @@ def training_plan_linked_programme_rows(request, programme_id: str):
 			'programmeId': target_programme_id,
 			'changedFields': changed_fields,
 			'updatedCount': len(scope_rows),
-			'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+			'requestUser': _request_user_label(request),
 			'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 		}
 		logger.info('programme_edit_linked_timeline_rows_partial_update %s', json.dumps(metadata, sort_keys=True))
@@ -4388,7 +4401,6 @@ def training_plan_linked_programme_rows(request, programme_id: str):
 	return JsonResponse(response)
 
 
-@csrf_exempt
 def training_plan_add_module_for_tutor(request):
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4430,7 +4442,7 @@ def training_plan_add_module_for_tutor(request):
 					'identifiers': identifiers,
 					'createdCount': 0,
 					'skippedCount': 1,
-					'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+					'requestUser': _request_user_label(request),
 					'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 				}, sort_keys=True),
 			)
@@ -4490,7 +4502,7 @@ def training_plan_add_module_for_tutor(request):
 				'identifiers': identifiers,
 				'createdCount': len(created_rows),
 				'skippedCount': len(skipped_rows),
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			}, sort_keys=True),
 		)
@@ -4510,7 +4522,7 @@ def training_plan_add_module_for_tutor(request):
 				'createdIds': [int(row.id) for row in created_rows],
 				'skippedIds': [int(row.id) for row in skipped_rows],
 				'identifiers': identifiers,
-				'requestUser': _header_text(request, 'X-KBC-User-Email') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-Display-Name'),
+				'requestUser': _request_user_label(request),
 				'source': _header_text(request, 'X-KBC-Training-Plan-Save-Source'),
 			},
 		)
@@ -4526,7 +4538,6 @@ def training_plan_add_module_for_tutor(request):
 	return JsonResponse(result, status=201 if created_rows else 200)
 
 
-@csrf_exempt
 def training_plan_session_coverage(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4623,7 +4634,6 @@ def training_plan_session_coverage(request, session_id: int):
 	return JsonResponse(training_plan_partial_response(row))
 
 
-@csrf_exempt
 def training_plan_session_ksb(request, session_id: int):
 	if request.method != 'PATCH':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -4704,7 +4714,6 @@ def health(request):
 	return JsonResponse({'status': 'ok', 'service': 'communication-centre-backend'})
 
 
-@csrf_exempt
 def tutor_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4753,7 +4762,6 @@ def tutor_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def tutor_profile_detail(request, profile_id: int):
 	try:
 		record = TutorProfile.objects.get(pk=profile_id)
@@ -4849,7 +4857,6 @@ def tutor_profile_duplicates(request):
 	return JsonResponse({'items': sorted(pairs, key=lambda item: -item['score'])})
 
 
-@csrf_exempt
 def coach_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4888,7 +4895,6 @@ def coach_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def coach_profile_detail(request, profile_id: int):
 	try:
 		record = CoachProfile.objects.get(pk=profile_id)
@@ -4954,7 +4960,6 @@ def coach_profile_detail(request, profile_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def ksb_profiles(request):
 	if request.method == 'GET':
 		include_inactive = str(request.GET.get('includeInactive', '')).lower() in {'1', 'true', 'yes'}
@@ -4970,7 +4975,7 @@ def ksb_profiles(request):
 		values, error = ksb_profile_values_from_payload(payload)
 		if error:
 			return HttpResponseBadRequest(error)
-		values['created_by'] = _header_text(request, 'X-KBC-Display-Name') or _header_text(request, 'X-KBC-Username') or _header_text(request, 'X-KBC-User-Email')
+		values['created_by'] = _request_user(request)['display_name']
 		record = KsbProfile.objects.create(**values)
 		serialized = serialize_ksb_profile(record)
 		_audit_log(request, action='create', entity='KsbProfile', object_id=record.id, object_label=record.name, after=serialized)
@@ -4979,7 +4984,6 @@ def ksb_profiles(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def ksb_profile_detail(request, profile_id: int):
 	try:
 		record = KsbProfile.objects.get(pk=profile_id)
@@ -5019,7 +5023,6 @@ def ksb_profile_detail(request, profile_id: int):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_holidays(request):
 	if request.method == 'GET':
 		records = training_plan_holidays_queryset().order_by('start_date', 'end_date', 'id')
@@ -5084,7 +5087,6 @@ def training_plan_holidays(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_holiday_detail(request, holiday_id: int):
 	if request.method not in {'PATCH', 'DELETE'}:
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
@@ -5143,7 +5145,6 @@ def training_plan_holiday_detail(request, holiday_id: int):
 		return training_plan_holidays_response({'item': serialized, 'items': training_plan_holidays_snapshot(), 'version': training_plan_holidays_version()})
 
 
-@csrf_exempt
 def training_plan_holiday_types(request):
 	if request.method == 'GET':
 		return training_plan_holiday_types_response(training_plan_holiday_types_snapshot())
@@ -5328,7 +5329,6 @@ def training_plan_holiday_types(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_modules(request):
 	if request.method == 'GET':
 		records = TrainingPlanModuleDefinition.objects.all().order_by('name', 'id')
@@ -5394,7 +5394,6 @@ def training_plan_modules(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_module_definition_detail(request, module_id: str):
 	module_id = str(module_id or '').strip()
 	if not module_id:
@@ -5456,7 +5455,6 @@ def training_plan_module_definition_detail(request, module_id: str):
 		return training_plan_module_definitions_response({'item': serialized, 'version': training_plan_module_definitions_version()})
 
 
-@csrf_exempt
 def training_plan_program_configs(request):
 	if request.method == 'GET':
 		records = TrainingPlanProgramConfig.objects.all().order_by('program_id', 'id')
@@ -5522,7 +5520,6 @@ def training_plan_program_configs(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_program_config_detail(request, config_id: str):
 	config_id = str(config_id or '').strip()
 	if not config_id:
@@ -5874,7 +5871,6 @@ def aptem_learners(request):
 	return JsonResponse({'items': learners, 'subprogramme': subprogramme})
 
 
-@csrf_exempt
 def training_plan_module_assignment_learners(request, cohort_id: str, module_block_id: str):
 	row, module_catalogue_id, error = validate_module_assignment_scope(cohort_id, module_block_id)
 	if error:
@@ -5998,7 +5994,6 @@ def training_plan_module_assignment_learners(request, cohort_id: str, module_blo
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def training_plan_module_learners(request, module_catalogue_id: str):
 	module, error = validate_module_catalogue_id(str(module_catalogue_id or '').strip())
 	if error:
@@ -6120,7 +6115,6 @@ def _apply_session_data(record, session_names: list, session_descriptions: list,
 		setattr(record, field, session_descriptions[i] if i < len(session_descriptions) else '')
 
 
-@csrf_exempt
 def modules(request):
 	if request.method == 'GET':
 		records = Module.objects.all().order_by('module_name', 'module_id')
@@ -6157,7 +6151,6 @@ def modules(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def module_detail(request, module_id: int):
 	try:
 		record = Module.objects.get(module_id=module_id)
@@ -6676,7 +6669,6 @@ def serialize_employee(emp: Employee) -> dict:
 	}
 
 
-@csrf_exempt
 def employees(request):
 	if request.method == 'GET':
 		records = Employee.objects.all().order_by('pk')
@@ -6706,7 +6698,6 @@ def employees(request):
 	return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 
 
-@csrf_exempt
 def employee_detail(request, employee_id: int):
 	try:
 		emp = Employee.objects.get(pk=employee_id)
@@ -7098,7 +7089,6 @@ def audit_logs(request):
 	)
 
 
-@csrf_exempt
 def training_plan_bootstrap(request):
 	"""Single GET endpoint returning every dataset the Training Plan page loads on
 	mount. Replaces ~8 parallel requests (training-plan, holidays, modules,
