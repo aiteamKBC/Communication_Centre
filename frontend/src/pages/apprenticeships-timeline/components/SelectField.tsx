@@ -10,6 +10,8 @@ interface SelectOption extends SelectFilterMetadata {
   color?: string;
   disabled?: boolean;
   recommended?: boolean;
+  status?: string;
+  statusDescription?: string;
 }
 
 interface Props {
@@ -262,6 +264,7 @@ export default function SelectField({
         className="group relative overflow-hidden rounded-xl border bg-white transition-all"
         style={{
           borderColor: error ? '#EF4444' : open ? `${accentColor}66` : '#D7DEEA',
+          backgroundColor: selectedOption?.status ? '#ECFDF5' : undefined,
           boxShadow: error ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : open ? `0 14px 34px ${accentColor}18` : '0 10px 28px rgba(15, 23, 42, 0.05)',
         }}
       >
@@ -277,13 +280,15 @@ export default function SelectField({
           className="flex min-h-10 w-full items-center justify-between gap-3 bg-transparent pl-4 pr-12 text-left outline-none"
           aria-haspopup="listbox"
           aria-label={ariaLabel}
+          aria-description={selectedOption?.statusDescription || selectedOption?.status}
+          data-selected-status={selectedOption?.status}
           aria-expanded={open && !disabled}
           aria-controls={open && !disabled ? listId : undefined}
           disabled={disabled}
         >
           <div className="min-w-0 py-2">
             {selectedOption ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {selectedOption.color && (
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -291,6 +296,7 @@ export default function SelectField({
                   />
                 )}
                 <span className="truncate text-sm font-semibold text-gray-800">{selectedOption.label}</span>
+                {selectedOption.status && <span aria-hidden="true" className="rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">✓ {selectedOption.status}</span>}
               </div>
             ) : (
               <span className="text-sm font-medium text-gray-400">{placeholder}</span>
@@ -451,31 +457,34 @@ export default function SelectField({
                     id={`${listId}-${index}`}
                     role="option"
                     aria-selected={isSelected}
-                    aria-description={option.recommended ? 'Recommended: shares a word with the current module' : undefined}
+                    aria-description={[option.statusDescription || option.status, option.recommended ? 'Recommended: shares a word with the current module' : ''].filter(Boolean).join('. ') || undefined}
                     disabled={option.disabled}
                     title={option.disabled ? 'Already matched to another module' : undefined}
                     tabIndex={-1}
                     data-option-index={index}
+                    data-option-status={option.status}
                     onMouseEnter={() => { if (!option.disabled) setActiveIndex(index); }}
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => choose(option)}
-                    className="mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all last:mb-0 disabled:cursor-not-allowed disabled:opacity-40"
+                    className={`mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all last:mb-0 disabled:cursor-not-allowed ${option.status ? 'disabled:opacity-80' : 'disabled:opacity-40'}`}
                     style={{
-                      background: isSelected ? `${accentColor}12` : isActive ? '#F8FAFC' : 'transparent',
-                      boxShadow: isSelected ? `inset 0 0 0 1px ${accentColor}33` : isActive ? 'inset 0 0 0 1px rgba(148,163,184,0.18)' : undefined,
+                      background: option.status ? (isSelected ? '#D1FAE5' : '#ECFDF5') : isSelected ? `${accentColor}12` : isActive ? '#F8FAFC' : 'transparent',
+                      boxShadow: option.status ? `inset 0 0 0 ${isActive || isSelected ? 2 : 1}px #6EE7B7` : isSelected ? `inset 0 0 0 1px ${accentColor}33` : isActive ? 'inset 0 0 0 1px rgba(148,163,184,0.18)' : undefined,
                     }}
                   >
                     <span
                       className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: option.color || accentColor }}
+                      style={{ background: option.status ? '#059669' : option.color || accentColor }}
                     />
                     <span className="min-w-0 flex-1">
                       <span className={`block text-sm font-semibold leading-5 text-slate-800 ${wrapLabels ? 'whitespace-normal break-words' : 'truncate'}`}>{option.label}</span>
                       {option.description && (
                         <span className="block text-xs text-slate-500">{option.description}</span>
                       )}
+                      {option.status && <span aria-hidden="true" className="mt-1 inline-block rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">✓ {option.status}</span>}
+                      {option.statusDescription && <span aria-hidden="true" className="mt-1 block text-xs text-emerald-800">{option.statusDescription}</span>}
                     </span>
-                    {option.recommended && <span aria-hidden="true" className="shrink-0 rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">Recommended</span>}
+                    {option.recommended && !option.status && <span aria-hidden="true" className="shrink-0 rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">Recommended</span>}
                     {isSelected && <i aria-hidden="true" className="ri-check-line mt-0.5 text-base" style={{ color: accentColor }} />}
                   </button>
                 );

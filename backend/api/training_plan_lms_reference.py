@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 import hashlib
 import json
+import logging
 import os
 
 import psycopg
@@ -18,10 +19,26 @@ from .models import TrainingPlanLmsReference
 
 SOURCE_TABLE = 'curriculum.modules'
 SOURCE_FIELDS = ('module_catalogue_id', 'programme_id', 'programme_name', 'title', 'start_date', 'end_date')
+logger = logging.getLogger(__name__)
+SOURCE_ERROR_DETAILS = {
+    'lms_source_not_configured': 'The LMS connection is not configured on this server. Ask an administrator to complete setup.',
+    'lms_source_configuration_invalid': 'The LMS connection settings on this server are invalid. Ask an administrator to check setup.',
+    'lms_source_authentication_failed': 'The server could not sign in to the LMS database. Ask an administrator to check its connection settings.',
+    'lms_source_permissions_invalid': 'The LMS reader needs read-only access to the requested source table. Ask an administrator to check its permissions.',
+    'lms_source_table_missing': 'The required LMS source table is missing from the configured database. Ask an administrator to check the LMS connection.',
+}
 
 
 class LmsReferenceSourceError(Exception):
-    pass
+    def __init__(self, message, *, code='lms_source_unavailable'):
+        super().__init__(message)
+        self.code = code
+
+
+def lms_source_error_response(error, fallback):
+    # Never return/log driver exceptions, SQL, hosts, users or connection URLs.
+    logger.warning('LMS source request failed: code=%s', error.code)
+    return JsonResponse({'code': error.code, 'detail': SOURCE_ERROR_DETAILS.get(error.code, fallback)}, status=503)
 
 
 @contextmanager
@@ -30,13 +47,13 @@ def lms_source_connection(table=SOURCE_TABLE):
     if source is None:
         url = os.getenv('TRAINING_PLAN_LMS_REFERENCE_DATABASE_URL', '').strip()
         if not url:
-            raise LmsReferenceSourceError('The read-only LMS reference connection is not configured.')
+            raise LmsReferenceSourceError('The read-only LMS reference connection is not configured.', code='lms_source_not_configured')
         try:
             source = conninfo_to_dict(url)
         except psycopg.Error:
-            raise LmsReferenceSourceError('The LMS reference connection configuration is invalid.') from None
+            raise LmsReferenceSourceError('The LMS reference connection configuration is invalid.', code='lms_source_configuration_invalid') from None
     if not isinstance(source, dict):
-        raise LmsReferenceSourceError('The LMS reference connection configuration is invalid.')
+        raise LmsReferenceSourceError('The LMS reference connection configuration is invalid.', code='lms_source_configuration_invalid')
     info = dict(source)
     # Neon transaction poolers reject statement_timeout as a startup option.
     # Set it inside the same read-only transaction as the source queries.
@@ -46,15 +63,18 @@ def lms_source_connection(table=SOURCE_TABLE):
             conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
             conn.execute('SET LOCAL statement_timeout=20000')
             if conn.execute('SHOW transaction_read_only').fetchone()[0] != 'on':
-                raise LmsReferenceSourceError('LMS reference source access must be read only.')
+                raise LmsReferenceSourceError('LMS reference source access must be read only.', code='lms_source_permissions_invalid')
             selectable, writable = conn.execute(
                 "SELECT has_table_privilege(current_user,%s,'SELECT'), has_table_privilege(current_user,%s,'INSERT,UPDATE,DELETE,TRUNCATE')",
                 (table, table)).fetchone()
             if not selectable or writable:
-                raise LmsReferenceSourceError('The configured LMS account must have SELECT permission and no write permissions on the source table.')
+                raise LmsReferenceSourceError('The configured LMS account must have SELECT permission and no write permissions on the source table.', code='lms_source_permissions_invalid')
             yield conn
-    except psycopg.Error:
-        raise LmsReferenceSourceError('The LMS reference source is unavailable. No reference was saved.') from None
+    except psycopg.Error as error:
+        code = {'28P01': 'lms_source_authentication_failed', '28000': 'lms_source_authentication_failed',
+                '42501': 'lms_source_permissions_invalid', '42P01': 'lms_source_table_missing'}.get(error.sqlstate, 'lms_source_unavailable')
+        logger.warning('LMS source database failure: code=%s table=%s', code, table)
+        raise LmsReferenceSourceError('The LMS reference source is unavailable. No reference was saved.', code=code) from None
 
 
 def read_lms_reference_records():
@@ -164,8 +184,8 @@ def training_plan_lms_holidays(request):
         return response
     try:
         return JsonResponse({'holidays': read_lms_holidays()})
-    except LmsReferenceSourceError:
-        return JsonResponse({'detail': 'LMS holidays could not be loaded. Please retry.'}, status=503)
+    except LmsReferenceSourceError as error:
+        return lms_source_error_response(error, 'LMS holidays could not be loaded. Please retry.')
 
 
 def read_lms_session_counts(module_ids):
@@ -200,7 +220,9 @@ def training_plan_lms_session_counts(request):
         reference = TrainingPlanLmsReference.objects.filter(pk=1).first()
         module_ids = [str(row['sourceModuleId']) for row in reference.records] if reference else []
         return JsonResponse({'sessionCounts': read_lms_session_counts(module_ids)})
-    except (LmsReferenceSourceError, DatabaseError):
+    except LmsReferenceSourceError as error:
+        return lms_source_error_response(error, 'LMS session counts could not be loaded. Please retry.')
+    except DatabaseError:
         return JsonResponse({'detail': 'LMS session counts could not be loaded. Please retry.'}, status=503)
 
 
@@ -219,7 +241,9 @@ def training_plan_lms_cohorts(request):
         reference = TrainingPlanLmsReference.objects.filter(pk=1).first()
         module_ids = [str(row['sourceModuleId']) for row in reference.records] if reference else []
         return JsonResponse({'cohorts': read_lms_cohorts(module_ids)})
-    except (LmsReferenceSourceError, DatabaseError):
+    except LmsReferenceSourceError as error:
+        return lms_source_error_response(error, 'LMS cohorts could not be loaded. Please retry.')
+    except DatabaseError:
         return JsonResponse({'detail': 'LMS cohorts could not be loaded. Please retry.'}, status=503)
 
 
@@ -238,7 +262,9 @@ def training_plan_lms_tutors(request):
         reference = TrainingPlanLmsReference.objects.filter(pk=1).first()
         module_ids = [str(row['sourceModuleId']) for row in reference.records] if reference else []
         return JsonResponse({'tutorNames': read_lms_tutor_names(module_ids)})
-    except (LmsReferenceSourceError, DatabaseError):
+    except LmsReferenceSourceError as error:
+        return lms_source_error_response(error, 'LMS tutor names could not be loaded. Please retry.')
+    except DatabaseError:
         return JsonResponse({'detail': 'LMS tutor names could not be loaded. Please retry.'}, status=503)
 
 
@@ -286,7 +312,7 @@ def training_plan_lms_reference(request):
                 content_sha256=digest)
         return JsonResponse({'reference': reference_payload(record)}, status=201)
     except LmsReferenceSourceError as error:
-        return JsonResponse({'detail': str(error)}, status=503)
+        return lms_source_error_response(error, str(error))
     except IntegrityError:
         return JsonResponse({'detail': 'Another manager captured the LMS reference first. The existing reference was preserved.'}, status=409)
     except DatabaseError as error:

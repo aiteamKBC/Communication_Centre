@@ -54,7 +54,7 @@ export default function LmsReference({ canCapture, currentProgrammes, customModu
     else setSessionCounts({});
     const errors = results.flatMap(result => result.status === 'rejected'
       ? [result.reason instanceof Error ? result.reason.message : 'LMS labels could not be loaded.'] : []);
-    if (errors.length) setError(errors.join(' '));
+    if (errors.length) setError([...new Set(errors)].join(' '));
   }, []);
 
   const load = useCallback(async () => {

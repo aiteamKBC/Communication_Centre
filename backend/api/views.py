@@ -1516,6 +1516,7 @@ KSB_CODE_PATTERNS = {
 
 TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX = '__module_color:'
 TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX = '__module_catalogue_id:'
+TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX = '__lms_source_module_id:'
 TRAINING_PLAN_PROGRAM_ID_MARKER_PREFIX = '__program_id:'
 TRAINING_PLAN_COHORT_ID_MARKER_PREFIX = '__cohort_id:'
 TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
@@ -1527,7 +1528,7 @@ TRAINING_PLAN_METADATA_MARKER_PREFIXES = (
 	'__cohort_color:',
 	TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX,
 	TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX,
-	'__lms_source_module_id:',
+	TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX,
 	'__cohort_end_date:',
 	'__group_name:',
 	'__coach_name:',
@@ -1648,6 +1649,11 @@ def update_training_plan_module_color_marker(notes: str, color: str) -> str:
 def update_training_plan_visible_notes(existing_notes: str, visible_notes: str) -> str:
 	incoming = str(visible_notes or '').strip()
 	if any(incoming.startswith(prefix) for prefix in TRAINING_PLAN_METADATA_MARKER_PREFIXES):
+		# Older clients may serialize notes without knowing about saved LMS links.
+		# Omitting a marker during an unrelated edit must not remove that link.
+		existing_match = training_plan_marker_value(existing_notes, TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX)
+		if existing_match and not training_plan_marker_value(incoming, TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX):
+			incoming = set_training_plan_metadata_markers(incoming, {TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX: existing_match})
 		return incoming
 
 	lines = str(existing_notes or '').strip().split('\n') if str(existing_notes or '').strip() else []
@@ -3119,7 +3125,8 @@ def training_plan_cohort_detail(request, cohort_id: str):
 				marker_values[TRAINING_PLAN_MODULE_COLOR_MARKER_PREFIX] = block_payload['moduleColor']
 			if block_payload['moduleCatalogueId']:
 				marker_values[TRAINING_PLAN_MODULE_CATALOGUE_ID_MARKER_PREFIX] = block_payload['moduleCatalogueId']
-			row.notes = set_training_plan_metadata_markers(block_payload['notes'] if block_payload['notes'] is not None else row.notes, marker_values)
+			next_notes = update_training_plan_visible_notes(row.notes, block_payload['notes']) if block_payload['notes'] is not None else row.notes
+			row.notes = set_training_plan_metadata_markers(next_notes, marker_values)
 			row.save(update_fields=sorted(set(update_fields)))
 		created_rows = []
 		for block_payload in new_block_payloads:
@@ -3783,10 +3790,14 @@ def training_plan_module_detail(request, module_id: int):
 	if error_response is not None:
 		return error_response
 
-	allowed_keys = {'version', 'moduleName', 'tutorProfileId', 'tutorName', 'notes', 'color'}
+	allowed_keys = {'version', 'moduleName', 'tutorProfileId', 'tutorName', 'notes', 'color', 'lmsSourceModuleId'}
 	unknown_keys = sorted(set(payload.keys()) - allowed_keys)
 	if unknown_keys:
 		return JsonResponse({'detail': f'Unsupported field(s): {", ".join(unknown_keys)}.'}, status=400)
+	if 'lmsSourceModuleId' in payload:
+		source_id = payload['lmsSourceModuleId']
+		if not isinstance(source_id, str) or any(character in source_id for character in ('\r', '\n')):
+			return JsonResponse({'detail': 'lmsSourceModuleId must be a single-line string; use an empty string to remove a match.'}, status=400)
 	if not TrainingPlan.objects.filter(pk=module_id).exists():
 		return JsonResponse({'detail': 'Training Plan module not found.'}, status=404)
 
@@ -3828,7 +3839,14 @@ def training_plan_module_detail(request, module_id: int):
 			row.tutor_name = str(payload.get('tutorName') or '').strip()
 			update_fields.append('tutor_name')
 		if 'notes' in payload:
-			row.notes = str(payload.get('notes') or '').strip()
+			row.notes = update_training_plan_visible_notes(row.notes, payload.get('notes'))
+			update_fields.append('notes')
+		if 'lmsSourceModuleId' in payload:
+			# Removing a saved match requires an explicit request, never omission
+			# from a notes/cohort payload after a frontend deployment.
+			row.notes = set_training_plan_metadata_markers(row.notes, {
+				TRAINING_PLAN_LMS_MATCH_MARKER_PREFIX: payload['lmsSourceModuleId'].strip(),
+			})
 			update_fields.append('notes')
 		if 'color' in payload:
 			try:

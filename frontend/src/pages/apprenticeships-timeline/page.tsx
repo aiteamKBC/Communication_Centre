@@ -5176,7 +5176,6 @@ export default function ApprenticeshipTimeline() {
     }
 
     const requestPayload: Record<string, unknown> = { ...payload };
-    delete requestPayload.lmsSourceModuleId;
     if ('notes' in payload || 'lmsSourceModuleId' in payload) {
       requestPayload.notes = joinPersistedNotes(
         'notes' in payload ? payload.notes || '' : targetBlock.notes || '',

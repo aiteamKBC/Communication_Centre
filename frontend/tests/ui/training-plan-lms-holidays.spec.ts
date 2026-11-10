@@ -5,8 +5,19 @@ const XLSX = createRequire(import.meta.url)('xlsx') as typeof import('xlsx');
 
 test.use({ channel: 'chrome' });
 
-for (const failFirst of [false, true]) {
-  test(`LMS holiday weeks shift dates only in the LMS timeline${failFirst ? ' after retry' : ''}`, async ({ page }) => {
+const scenarios: { name: string; failFirst?: boolean; status?: number; message?: string; code?: string }[] = [
+  { name: 'successful loading' }, { name: 'retry', failFirst: true },
+  { name: 'missing server connection', status: 503, code: 'lms_source_not_configured',
+    message: 'The LMS connection is not configured on this server. Ask an administrator to complete setup.' },
+  { name: 'missing backend endpoints', status: 404,
+    message: 'This LMS request is missing from the deployed backend. Ask an administrator to deploy the matching backend version.' },
+  { name: 'expired session', status: 401,
+    message: 'Your sign-in session has expired. Reload the page and sign in again.' },
+];
+
+for (const scenario of scenarios) {
+  const failFirst = scenario.failFirst;
+  test(`LMS holiday weeks: ${scenario.name}`, async ({ page }) => {
     const user = { id: 1, username: 'preview', displayName: 'Preview', groups: ['Admin Access'],
       access: { adminAccess: true, operationsAccess: true, canManageCohorts: true } };
     await page.addInitScript(value => localStorage.setItem('kbc-auth-user', JSON.stringify(value)), user);
@@ -27,6 +38,12 @@ for (const failFirst of [false, true]) {
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
       if (path.startsWith('/api/training-plan') && route.request().method() !== 'GET') writes.push(path);
+      if (path === '/api/training-plan/lms-reference/holidays/') holidayRequests++;
+      if (scenario.status && /^\/api\/training-plan\/lms-reference\/(tutors|cohorts|session-counts|holidays)\/$/.test(path)) {
+        await route.fulfill({ status: scenario.status, contentType: 'application/json',
+          body: JSON.stringify({ code: scenario.code, detail: scenario.message }) });
+        return;
+      }
       let body: unknown = [];
       if (path === '/api/auth/access/') body = user;
       if (path === '/api/health/') body = { status: 'ok' };
@@ -51,7 +68,6 @@ for (const failFirst of [false, true]) {
       if (path === '/api/training-plan/lms-reference/cohorts/') body = { cohorts: {} };
       if (path === '/api/training-plan/lms-reference/session-counts/') body = { sessionCounts: {} };
       if (path === '/api/training-plan/lms-reference/holidays/') {
-        holidayRequests++;
         if (failFirst && holidayRequests === 1) {
           await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Unavailable' }) });
           return;
@@ -65,11 +81,25 @@ for (const failFirst of [false, true]) {
     await expect(current.locator('[data-holiday-id="plan-holiday"]')).toHaveCount(1);
     expect(holidayRequests).toBe(0);
     await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+    if (scenario.status === 401) {
+      await expect(page.getByRole('heading', { name: 'Login', exact: true })).toBeVisible();
+      expect(await page.evaluate(() => localStorage.getItem('kbc-auth-user'))).toBeNull();
+      expect(writes).toEqual([]);
+      return;
+    }
     const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
     await expect(merged.locator('[data-holiday-id="plan-holiday"]')).toHaveCount(1);
     expect(holidayRequests).toBe(0);
     await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
     const lms = page.getByRole('tabpanel', { name: 'LMS Training Plan', exact: true });
+    if (scenario.status) {
+      await expect(page.locator('.tp-reference-error p')).toHaveText(scenario.message!);
+      await expect(lms.getByRole('alert')).toContainText(scenario.message!);
+      await expect(lms.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();
+      await expect(lms.locator('[data-holiday-day]')).toHaveCount(0);
+      expect(writes).toEqual([]);
+      return;
+    }
     if (failFirst) {
       await expect(lms.getByRole('alert')).toContainText('LMS holidays could not be loaded');
       await expect(lms.getByRole('region', { name: 'LMS reference timeline', exact: true })).toBeVisible();

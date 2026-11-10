@@ -4,6 +4,8 @@ import type { LmsReferenceRow } from '../../src/pages/apprenticeships-timeline/l
 test.use({ channel: 'chrome' });
 
 async function setup(page: Page, automatic = false, additionalModules: (Partial<LmsReferenceRow> & Pick<LmsReferenceRow, 'sourceModuleId' | 'module'>)[] = []) {
+  // Functional checks and screenshots must not depend on external font hosts.
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   const user = { id: 1, username: 'matcher', displayName: 'Matcher', groups: ['Admin Access'], access: { adminAccess: true, operationsAccess: true, canManageCohorts: true } };
   await page.addInitScript(value => localStorage.setItem('kbc-auth-user', JSON.stringify(value)), user);
   let version = 'v1';
@@ -28,7 +30,8 @@ async function setup(page: Page, automatic = false, additionalModules: (Partial<
       if (rejectSave) return json({ detail: 'The match could not be saved.' }, 400);
       const payload = route.request().postDataJSON();
       expect(payload.version).toBe(version);
-      expect(Object.keys(payload).sort()).toEqual(['notes', 'version']);
+      expect(Object.keys(payload).sort()).toEqual(['lmsSourceModuleId', 'notes', 'version']);
+      expect(payload.lmsSourceModuleId).toBe(payload.notes.match(/^__lms_source_module_id:(.*)$/m)?.[1] || '');
       savedItem.notes = payload.notes;
       version = 'v2';
       return json({ item: savedItem, items, version, count: items.length });
@@ -484,6 +487,60 @@ test('manual merge list retains failed removals, lists unavailable LMS links and
   expect(api.errors).toEqual([]);
 });
 
+test('saved manual matches stay green in both pickers after reload and clear after removal', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  page.setDefaultTimeout(15_000);
+  const api = await setup(page);
+  api.items[0].notes = `__lms_source_module_id:chosen\n${api.items[0].notes}`;
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Compare modules', exact: true });
+  const currentPicker = dialog.getByRole('button', { name: 'Current module to compare', exact: true });
+  const lmsPicker = dialog.getByRole('button', { name: 'LMS module to match', exact: true });
+  await currentPicker.click();
+  const currentOptions = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
+  const matchedCurrent = currentOptions.filter({ hasText: 'Group 1' });
+  await expect(matchedCurrent).toHaveAttribute('data-option-status', 'Manually matched');
+  await expect(matchedCurrent).toHaveCSS('background-color', 'rgb(236, 253, 245)');
+  await expect(currentOptions.filter({ hasText: 'Group 2' })).not.toHaveAttribute('data-option-status', 'Manually matched');
+  await page.screenshot({ path: testInfo.outputPath('matched-current-options.png') });
+  await matchedCurrent.click();
+  await expect(currentPicker).toHaveAttribute('data-selected-status', 'Manually matched');
+  await expect(lmsPicker).toHaveAttribute('data-selected-status', 'Manually matched');
+  await expect(dialog.getByRole('button', { name: 'Save manual match', exact: true })).toBeDisabled();
+  expect(api.writes).toEqual([]);
+  await dialog.getByRole('button', { name: 'Close module comparison', exact: true }).click();
+  await page.reload();
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+  await currentPicker.click();
+  await expect(matchedCurrent).toHaveAttribute('data-option-status', 'Manually matched');
+  await currentOptions.filter({ hasText: 'Group 2' }).click();
+  await lmsPicker.click();
+  const lmsOptions = page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option');
+  const matchedLms = lmsOptions.filter({ hasText: 'LMS Marketing Workshop' });
+  await expect(matchedLms).toHaveAttribute('data-option-status', 'Manually matched');
+  await expect(matchedLms).toContainText('Linked to Marketing');
+  await expect(matchedLms).toContainText('Group 1');
+  await expect(matchedLms).toHaveCSS('background-color', 'rgb(236, 253, 245)');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(matchedLms).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('matched-lms-options-mobile.png') });
+  await matchedLms.click();
+  await expect(dialog.getByRole('button', { name: 'Save manual match', exact: true })).toBeDisabled();
+  expect(api.writes).toEqual([]);
+  await currentPicker.click();
+  await matchedCurrent.click();
+  await dialog.getByRole('button', { name: 'Remove manual match', exact: true }).click();
+  await expect(dialog.getByText('Manual match removed. Automatic matching applies again.', { exact: true })).toBeVisible();
+  await expect(currentPicker).not.toHaveAttribute('data-selected-status', 'Manually matched');
+  await lmsPicker.click();
+  await expect(matchedLms).not.toHaveAttribute('data-option-status', 'Manually matched');
+  await expect(matchedLms).not.toContainText('Linked to');
+  expect(api.writes).toEqual(['/api/training-plan/modules/101/']);
+  expect(api.errors).toEqual([]);
+});
+
 test('manual matching persists, reserves the LMS module, compares dates and can be removed after reload', async ({ page }) => {
   test.setTimeout(90_000);
   const api = await setup(page);
@@ -498,6 +555,8 @@ test('manual matching persists, reserves the LMS module, compares dates and can 
   await expect(preview).toContainText('LMS Tutor');
   await page.getByRole('button', { name: 'Save manual match', exact: true }).click();
   await expect(page.getByText('Manual match saved.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).toHaveAttribute('data-selected-status', 'Manually matched');
+  await expect(page.getByRole('button', { name: 'Save manual match', exact: true })).toBeDisabled();
   expect(api.items[0].notes).toContain('__lms_source_module_id:chosen');
   expect(api.items[0].notes).toContain('__module_catalogue_id:42');
   expect(api.items[0].notes).toContain('Original notes');
@@ -509,12 +568,14 @@ test('manual matching persists, reserves the LMS module, compares dates and can 
   await openMatcher(page);
   const differences = page.getByRole('table', { name: 'Selected module comparison', exact: true });
   await expect(page.getByText('Saved manual match', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).toHaveAttribute('data-selected-status', 'Manually matched');
   await expect(differences).toContainText('LMS Marketing Workshop');
   await expect(page.getByText('Dates and tutor differ', { exact: true })).toBeVisible();
   await expect(differences).toContainText('2026-02-02');
   await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).toContainText('LMS Marketing Workshop');
   await page.getByRole('button', { name: 'Remove manual match', exact: true }).click();
   await expect(page.getByText('Manual match removed. Automatic matching applies again.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).not.toHaveAttribute('data-selected-status', 'Manually matched');
   expect(api.items[0].notes).not.toContain('__lms_source_module_id:');
   expect(api.writes).toEqual(['/api/training-plan/modules/101/', '/api/training-plan/modules/101/']);
   expect(api.errors).toEqual([]);
@@ -532,6 +593,7 @@ test('a failed manual match save leaves the saved assignment unchanged', async (
   await expect(page.getByRole('alert')).toContainText('The match was not saved. Check the save message and retry.');
   expect(api.items[0].notes).not.toContain('__lms_source_module_id:');
   await expect(page.getByRole('button', { name: 'Remove manual match', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).not.toHaveAttribute('data-selected-status', 'Manually matched');
   expect(api.errors).toEqual([]);
 });
 
@@ -568,6 +630,7 @@ test('module editor selects automatic matches and compares sources side by side 
   await page.getByLabel('Current module to match').selectOption(JSON.stringify(['me-lvl4', 'c1', 'b101']));
   await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).toContainText('Marketing');
   await expect(page.getByText('Automatic match: same module name and start date.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'LMS module to match', exact: true })).not.toHaveAttribute('data-selected-status', 'Manually matched');
   const current = page.getByLabel('Current module to match');
   const lms = page.getByLabel('LMS module to match');
   const left = (await current.boundingBox())!;
