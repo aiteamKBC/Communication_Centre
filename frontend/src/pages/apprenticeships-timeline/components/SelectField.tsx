@@ -55,7 +55,7 @@ export default function SelectField({
   wrapLabels = false,
   popoverZIndex = 120,
   filterFields,
-  filterByDateRange = false,
+  filterByDateRange = options.some(option => option.startDate || option.endDate),
 }: Props) {
   const listId = useId();
   const wrapperRef = useRef<HTMLDivElement>(null);

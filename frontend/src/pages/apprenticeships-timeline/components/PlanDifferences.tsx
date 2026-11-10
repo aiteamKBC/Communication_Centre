@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { compareLmsPlans, differenceLabels, isComparisonDate, type CurrentPlanRecord, type DifferenceKind, type PresentedLmsRow } from '../lmsComparison';
 import type { CustomModule, Holiday, ProgrammeGroup, TutorProfile } from '../types';
 import PlanMatchingResults from './PlanMatchingResults';
+import DateRangeFilter from './DateRangeFilter';
+import { emptyDateRange, matchesDateRange } from './selectFilters';
 
 const badgeColours: Record<DifferenceKind, string> = {
   dates: 'border-amber-200 bg-amber-50 text-amber-900',
@@ -26,6 +28,7 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
   const [search, setSearch] = useState('');
   const [programme, setProgramme] = useState('all');
   const [kind, setKind] = useState('all');
+  const [dates, setDates] = useState(emptyDateRange);
   const result = useMemo(
     () => compareLmsPlans(currentProgrammes, records, customModules, holidays, tutorProfiles), [currentProgrammes, records, customModules, holidays, tutorProfiles],
   );
@@ -35,9 +38,11 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
   const rows = useMemo(() => {
     const query = search.trim().toLowerCase();
     return comparisons.filter(row => (programme === 'all' || programme === row.programmeId)
+      && (matchesDateRange(row.current?.startDate, row.current?.endDate, dates.from, dates.to)
+        || matchesDateRange(row.lms?.startDate, row.lms?.endDate, dates.from, dates.to))
       && (kind === 'all' || kind === row.kind || (kind === 'dates' && row.kind === 'datesAndTutor') || (kind === 'tutor' && row.tutorDiffers))
       && (!query || [row.programme, row.module, row.cohort, row.group, row.current?.tutorName ?? '', row.lms?.tutorName ?? '', differenceLabels[row.kind]].some(value => value.toLowerCase().includes(query))));
-  }, [comparisons, search, programme, kind]);
+  }, [comparisons, search, programme, kind, dates]);
 
   return <>
     <PlanMatchingResults result={result} onMatchCurrent={onMatchCurrent} />
@@ -67,7 +72,8 @@ export default function PlanDifferences({ currentProgrammes, records, customModu
           {Object.entries(differenceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>
-      <button type="button" onClick={() => { setSearch(''); setProgramme('all'); setKind('all'); }} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-kbc-navy">Reset differences filters</button>
+      <DateRangeFilter label="Differences" value={dates} onChange={setDates} className="w-full sm:w-80" />
+      <button type="button" onClick={() => { setSearch(''); setProgramme('all'); setKind('all'); setDates(emptyDateRange); }} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-kbc-navy">Reset differences filters</button>
       <span className="py-2 text-xs text-gray-500" aria-live="polite">{rows.length} / {comparisons.length} matched records to check</span>
     </div>
     <div className="max-h-[560px] overflow-auto" tabIndex={0} role="region" aria-label="Plan differences table">

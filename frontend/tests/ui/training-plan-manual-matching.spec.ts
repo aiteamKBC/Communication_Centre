@@ -108,7 +108,7 @@ test('LMS recommendations include a single shared word and keep unrelated module
 test('Compare filters current modules by group and resets from the search icon while keeping the selected module', async ({ page }) => {
   const api = await setup(page);
   await page.goto('/training-plan');
-  await page.getByRole('button', { name: 'Add manual match', exact: true }).click();
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
   await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
   const options = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
   await expect(page.getByLabel('Current modules Cohort filter', { exact: true })).toBeDisabled();
@@ -119,8 +119,8 @@ test('Compare filters current modules by group and resets from the search icon w
   await expect(page.getByLabel('Current modules Group filter', { exact: true })).toBeDisabled();
   await page.getByLabel('Current modules Cohort filter', { exact: true }).selectOption({ label: 'January cohort' });
   await page.getByLabel('Current modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
-  await expect(page.getByLabel('Current modules From', { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Current modules To', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Current modules From', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Current modules To', { exact: true })).toBeVisible();
   await expect(options).toHaveCount(1);
   await expect(options.first()).toContainText('Group 2');
   await options.first().click();
@@ -138,6 +138,76 @@ test('Compare filters current modules by group and resets from the search icon w
   expect(api.errors).toEqual([]);
 });
 
+test('manual compare filters both sides by inclusive and open date ranges without changing the saved selection', async ({ page }, testInfo) => {
+  const api = await setup(page, false, [
+    { sourceModuleId: 'march', module: 'March module', startDate: '2026-03-01', endDate: '2026-03-20' },
+    { sourceModuleId: 'undated', module: 'Undated module', startDate: null, endDate: null },
+  ]);
+  api.items[1].startDate = '2026-02-02'; api.items[1].endDate = '2026-02-16';
+  api.items[2].startDate = '2026-03-01'; api.items[2].endDate = '2026-03-20';
+  await page.goto('/training-plan');
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
+  const current = page.getByRole('button', { name: 'Current module to compare', exact: true });
+  await current.click();
+  const currentOptions = page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option');
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-01-19');
+  await page.getByLabel('Current modules To', { exact: true }).fill('2026-01-19');
+  await expect(currentOptions).toHaveCount(1);
+  await expect(currentOptions.first()).toContainText('Group 1');
+  await currentOptions.first().click();
+  await current.click();
+  await page.getByLabel('Current modules From', { exact: true }).fill('2026-03-21');
+  await expect(page.getByRole('alert')).toHaveText('From must be on or before To.');
+  await expect(currentOptions).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await expect(currentOptions).toHaveCount(3);
+  await page.getByRole('combobox', { name: 'Search current comparison modules', exact: true }).press('Escape');
+  await expect(current).toContainText('Marketing');
+  const lms = page.getByRole('button', { name: 'LMS module to match', exact: true });
+  await lms.click();
+  const lmsOptions = page.getByRole('listbox', { name: 'LMS modules', exact: true }).getByRole('option');
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-02-16');
+  await page.getByLabel('LMS modules To', { exact: true }).fill('2026-02-16');
+  await expect(lmsOptions).toHaveCount(1);
+  await expect(lmsOptions.first()).toContainText('LMS Marketing Workshop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByLabel('LMS modules To', { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('manual-compare-date-range-mobile.png') });
+  await page.getByLabel('LMS modules To', { exact: true }).fill('');
+  await page.getByLabel('LMS modules From', { exact: true }).fill('2026-03-01');
+  await expect(lmsOptions).toHaveCount(1);
+  await expect(lmsOptions.first()).toContainText('March module');
+  await page.getByRole('button', { name: 'Reset search and filters', exact: true }).click();
+  await expect(lmsOptions).toHaveCount(3);
+  expect(api.writes).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+test('LMS and Merge date filters hide out-of-range modules and retain matched pairs on boundary dates', async ({ page }) => {
+  const api = await setup(page);
+  api.items[0].notes = `__lms_source_module_id:chosen\n${api.items[0].notes}`;
+  await page.goto('/training-plan');
+  await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
+  const lms = page.getByRole('tabpanel', { name: 'LMS Training Plan', exact: true });
+  await lms.getByTitle('Expand programme', { exact: true }).first().click();
+  await expect(lms.locator('[data-source="LMS"][data-timeline-block-id]')).toHaveCount(1);
+  await lms.getByLabel('LMS timeline From', { exact: true }).fill('2026-03-01');
+  await expect(lms.locator('[data-source="LMS"][data-timeline-block-id]')).toHaveCount(0);
+  await lms.getByRole('button', { name: 'Clear LMS timeline dates', exact: true }).click();
+  await expect(lms.locator('[data-source="LMS"][data-timeline-block-id]')).toHaveCount(1);
+  await page.getByRole('tab', { name: 'Merge', exact: true }).click();
+  const merged = page.getByRole('tabpanel', { name: 'Merge', exact: true });
+  const pair = merged.locator('[data-merged-module-card]');
+  await expect(pair).toHaveCount(1);
+  await merged.getByLabel('Merged timeline From', { exact: true }).fill('2026-03-01');
+  await expect(pair).toHaveCount(0);
+  await merged.getByLabel('Merged timeline From', { exact: true }).fill('2026-02-16');
+  await merged.getByLabel('Merged timeline To', { exact: true }).fill('2026-02-16');
+  await expect(pair).toHaveCount(1);
+  await expect(pair).toContainText('LMS Marketing Workshop');
+  expect(api.writes).toEqual([]);
+});
+
 test('LMS search combines programme, cohort, group and tutor and resets from the search icon on mobile', async ({ page }, testInfo) => {
   const api = await setup(page, false, [
     { sourceModuleId: 'target', module: 'Marketing February', groupName: 'Group 2', cohortName: 'Spring cohort', tutorName: 'Second Tutor', startDate: '2026-02-05', endDate: '2026-02-20' },
@@ -149,7 +219,7 @@ test('LMS search combines programme, cohort, group and tutor and resets from the
   ]);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/training-plan');
-  await page.getByRole('button', { name: 'Add manual match', exact: true }).click();
+  await page.getByRole('button', { name: 'Manual Merge', exact: true }).click();
   await page.getByRole('button', { name: 'Current module to compare', exact: true }).click();
   await page.getByRole('listbox', { name: 'Current modules', exact: true }).getByRole('option').first().click();
   await page.getByRole('button', { name: 'LMS module to match', exact: true }).click();
@@ -173,8 +243,8 @@ test('LMS search combines programme, cohort, group and tutor and resets from the
   await page.getByLabel('LMS modules Group filter', { exact: true }).selectOption({ label: 'Group 2' });
   await expect(tutor.locator('option')).toHaveText(['All', 'Second Tutor']);
   await page.getByLabel('LMS modules Tutor filter', { exact: true }).selectOption({ label: 'Second Tutor' });
-  await expect(page.getByLabel('LMS modules From', { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('LMS modules To', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('LMS modules From', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('LMS modules To', { exact: true })).toBeVisible();
   await expect(page.getByText('Clear filters and search', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/Modules overlapping this period/)).toHaveCount(0);
   await search.fill('February');

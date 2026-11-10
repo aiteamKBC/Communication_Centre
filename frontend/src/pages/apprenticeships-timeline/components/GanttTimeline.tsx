@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { Bell, CalendarRange, ChevronLeft, ChevronRight, FileSpreadsheet, Hand, Layers3, LocateFixed, LockKeyhole, Users } from 'lucide-react';
 import TimelineZoomControls from './TimelineZoomControls';
 import MergedTutorDates from './MergedTutorDates';
+import DateRangeFilter from './DateRangeFilter';
+import { emptyDateRange, matchesDateRange } from './selectFilters';
 import { tutorDisplayName } from '../tutorProfiles';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
@@ -1139,6 +1141,8 @@ export default function GanttTimeline({
 }: Props) {
   const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
   const fitModules = Boolean(referenceSource) || mergedSources;
+  const [dates, setDates] = useState(emptyDateRange);
+  const dateFilterLabel = referenceSource ? 'LMS timeline' : mergedSources ? 'Merged timeline' : 'Programme timeline';
   const cohortHeaderHeight = COHORT_H;
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -1677,9 +1681,12 @@ export default function GanttTimeline({
 
   const effectiveViewWindow = useMemo(() => {
     const base = zoom === 'week' ? getNormalizedWeekWindow(viewWindow.start) : viewWindow;
-    if (fitModules && (zoom === 'week' || zoom === 'day')) return base;
-    return { start: base.start, end: effectiveEnd > base.end ? effectiveEnd : base.end };
-  }, [viewWindow, zoom, effectiveEnd, fitModules]);
+    const end = fitModules && (zoom === 'week' || zoom === 'day') ? base.end : effectiveEnd > base.end ? effectiveEnd : base.end;
+    if (dates.from && dates.to && dates.from > dates.to) return { start: base.start, end };
+    const from = dates.from ? parseLocalDateOnly(dates.from) : null;
+    const to = dates.to ? parseLocalDateOnly(dates.to) : null;
+    return { start: from || (to && to < base.start ? to : base.start), end: to || (from && from > end ? from : end) };
+  }, [viewWindow, zoom, effectiveEnd, fitModules, dates]);
 
   const cols = useMemo(() => {
     const columns = generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end);
@@ -1746,6 +1753,7 @@ export default function GanttTimeline({
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
 
   const navigateToNow = useCallback(() => {
+    setDates(emptyDateRange);
     const now = new Date();
     const targetDate = toLocalIsoDate(now);
     setTodayKey(targetDate);
@@ -2412,14 +2420,19 @@ export default function GanttTimeline({
 
   const filteredClassSummaries = useMemo(() => {
     const q = classSearch.trim().toLowerCase();
-    if (!q) return classSummaries;
     return classSummaries.filter(item => (
-      item.className.toLowerCase().includes(q) ||
+      (!q || item.className.toLowerCase().includes(q) ||
       item.programmeName.toLowerCase().includes(q) ||
       item.cohortName.toLowerCase().includes(q) ||
-      item.moduleBreakdown.some(moduleItem => moduleItem.label.toLowerCase().includes(q))
+      item.moduleBreakdown.some(moduleItem => moduleItem.label.toLowerCase().includes(q)))
+      && ((!dates.from && !dates.to) || item.moduleBreakdown.some(moduleItem => {
+        const row = groups[item.groupIdx]?.rows[item.rowIdx];
+        const block = row?.blks.find(block => block.id === moduleItem.blockId);
+        const activeHolidays = holidays.filter(holiday => row?.holidayIds?.includes(holiday.id));
+        return matchesDateRange(block?.startDate, block ? block.source === 'LMS' || referenceSource ? block.endDate : getHolidayPlan(block, activeHolidays).effectiveEndDate : undefined, dates.from, dates.to);
+      }))
     ));
-  }, [classSearch, classSummaries]);
+  }, [classSearch, classSummaries, groups, holidays, dates, getHolidayPlan, referenceSource]);
 
   const classNavigationGroups = useMemo(() => {
     const q = classSearch.trim();
@@ -2866,6 +2879,7 @@ export default function GanttTimeline({
     const holidayPlan = getHolidayPlan(renderBlk, activeHolidays);
     const sessionSummary = getCurrentSessionSummary(renderBlk, customModules, catalogModules, activeHolidays, holidayPlan);
     const displayEndDate = barReferenceSource ? renderBlk.endDate : sessionSummary.effectiveEndDate || renderBlk.endDate;
+    if (!matchesDateRange(renderBlk.startDate, displayEndDate, dates.from, dates.to)) return null;
     const pos = getBlockPosition(renderBlk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
@@ -3281,6 +3295,9 @@ export default function GanttTimeline({
         <span className="tp-timeline-hint">{referenceSource ? <LockKeyhole size={14} aria-hidden="true" /> : <Hand size={14} aria-hidden="true" />}{referenceSource ? 'Read only' : 'Drag to explore'}</span>
       </div>
       {/* Zoom controls */}
+      <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2">
+        <DateRangeFilter label={dateFilterLabel} value={dates} onChange={value => { setDates(value); setTooltip(null); }} className="max-w-lg" />
+      </div>
       <div
         className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
         style={{
@@ -3447,6 +3464,7 @@ export default function GanttTimeline({
                     </div>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
+                    <DateRangeFilter label={`${dateFilterLabel} classes`} value={dates} onChange={setDates} className="border-b border-slate-100 px-1 pb-2" />
                     {classNavigationGroups.active.length ? classNavigationGroups.active.map(programme => {
                       const isProgrammeCollapsed = collapsedClassProgrammes.has(programme.programmeName);
                       return (
@@ -3948,6 +3966,8 @@ export default function GanttTimeline({
                     { sourceRow: row, rowIndex: ri, color: '#1B2A4A' },
                     { sourceRow: pairedRow, rowIndex: pairedRowIndex, color: '#115E59' },
                   ];
+                  if ((dates.from || dates.to) && !sources.some(({ sourceRow }) => sourceRow.blks.some(blk => matchesDateRange(blk.startDate,
+                    blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate, dates.from, dates.to)))) return null;
                   const positions = sources.flatMap(({ sourceRow }) => sourceRow.blks.flatMap(blk => {
                     const endDate = blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate;
                     const pos = getBlockPosition(blk.startDate, endDate, cols);

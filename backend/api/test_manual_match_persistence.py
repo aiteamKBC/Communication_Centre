@@ -94,6 +94,19 @@ class ManualMatchPersistenceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assert_saved_match()
 
+    def test_date_move_and_undo_preserve_manual_match_and_intervening_notes_edit(self):
+        self.assertEqual(self.patch({'lmsSourceModuleId': 'source-1'}).status_code, 200)
+        path = f'/api/training-plan/sessions/{self.row.id}/'
+        self.assertEqual(self.patch({'startDate': '2026-01-12', 'endDate': '2026-01-26'}, path).status_code, 200)
+        self.assert_saved_match()
+        self.assertEqual(self.patch({'notes': 'Notes edited after the move'}).status_code, 200)
+        self.assertEqual(self.patch({'startDate': '2026-01-05', 'endDate': '2026-01-19'}, path).status_code, 200)
+        self.row.refresh_from_db()
+        self.assertEqual((self.row.start_date, self.row.end_date), ('2026-01-05', '2026-01-19'))
+        self.assertTrue(self.row.notes.endswith('Notes edited after the move'))
+        self.assert_saved_match()
+        self.assertEqual(TrainingPlan.objects.count(), 1)
+
     def test_invalid_match_id_cannot_change_saved_data(self):
         for value in (None, 42, 'source\n__block_id:injected', 'source\rhidden'):
             with self.subTest(value=value):

@@ -140,7 +140,7 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
             startDate: record.block.startDate, endDate: record.block.endDate,
             filterValues: { programme: record.programme.name, cohort: record.cohort.label, group: record.block.groupName, tutor: tutorDisplayName(record.block, tutorProfiles) },
             description: [record.programme.name, record.cohort.label, record.block.groupName, record.block.startDate].filter(Boolean).join(' · ') }))}
-          filterFields={MODULE_FILTER_FIELDS}
+          filterFields={MODULE_FILTER_FIELDS} filterByDateRange
           placeholder="Choose a scheduled module" wrapLabels popoverZIndex={200} />
         : <select aria-label="Current module to match" value={activeKey} disabled={saving || Boolean(currentKey)}
           onChange={event => { setSelectedCurrent(event.target.value); setError(''); setNotice(''); }} className="mt-2 w-full min-w-0 rounded-lg border border-gray-200 p-2 text-xs">
@@ -163,7 +163,7 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
           filterValues: { programme: record.programme, cohort: lmsCohortDisplayName(record), group: lmsRecordGroup(record), tutor: record.tutorName },
           description: comparisonOnly ? [record.programme, record.cohortName, record.groupName, record.startDate, record.sourceModuleId].filter(Boolean).join(' · ') : undefined,
           disabled: !comparisonOnly && reserved.has(record.sourceModuleId) }))}
-        filterFields={MODULE_FILTER_FIELDS}
+        filterFields={MODULE_FILTER_FIELDS} filterByDateRange
         placeholder={loading ? 'Loading LMS modules…' : selectedLms && !selected ? 'Unavailable saved LMS module' : 'Choose an LMS module'}
         searchPlaceholder="Search by module name…" searchByLabelOnly wrapLabels accentColor="#0F766E" popoverZIndex={200}
         emptyTitle="No matching modules" emptyText="Try another module name." />

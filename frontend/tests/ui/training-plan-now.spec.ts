@@ -3,7 +3,7 @@ import { expect, test, type Locator } from '@playwright/test';
 test.use({ channel: 'chrome', timezoneId: 'Africa/Cairo' });
 
 async function expectNowInView(panel: Locator) {
-  const line = panel.locator('[data-timeline-now="2026-11-07"]').first();
+  const line = panel.locator('[data-timeline-now="2026-11-09"]').first();
   await expect(line).toBeAttached();
   await expect.poll(() => line.evaluate(element => {
     const bounds = element.getBoundingClientRect();
@@ -16,7 +16,9 @@ async function expectNowInView(panel: Locator) {
 
 test('all timeline sources open at Now across zooms and screen sizes, including historical plans', async ({ page }) => {
   test.setTimeout(90_000);
-  await page.clock.setFixedTime(new Date('2026-11-07T10:00:00Z'));
+  // LMS Week/Day views contain Monday–Friday only, so use a weekday for Now.
+  await page.clock.setFixedTime(new Date('2026-11-09T10:00:00Z'));
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   const user = { id: 1, username: 'preview', groups: ['Admin Access'], access: { adminAccess: true, operationsAccess: true } };
   await page.addInitScript(value => localStorage.setItem('kbc-auth-user', JSON.stringify(value)), user);
   const items = [{ id: 1, programmeId: 'me-lvl4', cohortId: 'c1', cohortName: 'Historical cohort', program: 'ME L4',

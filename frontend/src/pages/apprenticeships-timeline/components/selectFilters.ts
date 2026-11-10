@@ -1,3 +1,6 @@
+export interface DateRangeValue { from: string; to: string }
+export const emptyDateRange: DateRangeValue = { from: '', to: '' };
+
 export interface SelectFilterField {
   key: string;
   label: string;
@@ -20,8 +23,12 @@ const validDate = (value: string | null | undefined): value is string => {
 
 export function matchesSelectFilters(option: SelectFilterMetadata, values: Record<string, string>, from: string, to: string) {
   if (Object.entries(values).some(([key, value]) => value && filterValueKey(option.filterValues?.[key]) !== value)) return false;
+  return matchesDateRange(option.startDate, option.endDate, from, to);
+}
+
+export function matchesDateRange(startDate: string | null | undefined, endDate: string | null | undefined, from: string, to: string) {
   if (!from && !to) return true;
   if (from && to && from > to) return false;
-  if (!validDate(option.startDate) || !validDate(option.endDate) || option.startDate > option.endDate) return false;
-  return (!from || option.endDate >= from) && (!to || option.startDate <= to);
+  if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) return false;
+  return (!from || endDate >= from) && (!to || startDate <= to);
 }

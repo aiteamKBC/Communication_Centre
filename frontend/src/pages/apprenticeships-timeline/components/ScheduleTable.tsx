@@ -4,6 +4,8 @@ import type { CatalogModule, CoachProfile, Holiday, KsbProfile, ModuleBlock, Pro
 import { getModuleMeta } from '../data';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import SelectField from './SelectField';
+import DateRangeFilter from './DateRangeFilter';
+import { emptyDateRange, matchesDateRange, type DateRangeValue } from './selectFilters';
 import { normalizeTutorName, profileIdForTutorName, resolveTutorProfile, tutorDisplayName } from '../tutorProfiles';
 import { buildHolidayAdjustedSessionPlan } from '../utils';
 
@@ -578,7 +580,7 @@ function getSessionProgress(blk: ModuleBlock, moduleName: string, catalogModules
   };
 }
 
-function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[], tutorProfiles: TutorProfile[], holidays: Holiday[]): DerivedScheduleRow[] {
+function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[], tutorProfiles: TutorProfile[], holidays: Holiday[], dates: DateRangeValue): DerivedScheduleRow[] {
   const now = new Date();
   const tutorSessions = buildTutorSessionOccurrences(groups, holidays);
 
@@ -681,7 +683,7 @@ function toDerivedRows(groups: ProgrammeGroup[], catalogModules: CatalogModule[]
         }),
       ),
     )
-    .filter(r => r.isCurrent)
+    .filter(r => dates.from || dates.to ? matchesDateRange(r.startDate, r.endDate, dates.from, dates.to) : r.isCurrent)
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
 }
 
@@ -711,7 +713,8 @@ function toProgrammeSections(rows: DerivedScheduleRow[]): ProgrammeSection[] {
 }
 
 export default function ScheduleTable({ groups, tutorProfiles = [], coachProfiles = [], catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan, onUpdateSessionCoverage, onUpdateSessionSchedule, onUpdateSessionNotes, onCreateTutorProfile, onCreateCoachProfile }: Props) {
-  const rows = toDerivedRows(groups, catalogModules, tutorProfiles, holidays);
+  const [dates, setDates] = useState(emptyDateRange);
+  const rows = toDerivedRows(groups, catalogModules, tutorProfiles, holidays, dates);
   const sections = toProgrammeSections(rows);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [headerScrollLeft, setHeaderScrollLeft] = useState(0);
@@ -1467,12 +1470,13 @@ export default function ScheduleTable({ groups, tutorProfiles = [], coachProfile
         <span className="tp-section-icon"><CalendarCheck2 size={21} aria-hidden="true" /></span>
         <div className="min-w-0 flex-1">
           <h3 className="font-extrabold text-kbc-navy text-sm tracking-wide">Session Schedule Table</h3>
-          <p className="text-xs text-gray-400 mt-0.5">{rows.length} current module{rows.length !== 1 ? 's' : ''} running today</p>
+          <p className="text-xs text-gray-400 mt-0.5">{rows.length} module{rows.length !== 1 ? 's' : ''} {dates.from || dates.to ? 'overlapping the selected dates' : 'running today'}</p>
         </div>
         <span className="tp-scroll-hint"><MoveHorizontal size={16} aria-hidden="true" /><span>Scroll to explore</span></span>
       </div>
 
       {/* Today's sessions container */}
+      <div className="border-b border-slate-100 px-3 py-3 sm:px-5"><DateRangeFilter label="Schedule module dates" value={dates} onChange={setDates} className="max-w-lg" /></div>
       <div className="tp-schedule-week px-3 py-4 border-b bg-white sm:px-5">
         <div className="flex items-start justify-between gap-4">
           <div>
