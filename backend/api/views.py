@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.storage import default_storage
 from django.http import HttpResponseBadRequest, JsonResponse, StreamingHttpResponse
@@ -24,6 +25,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_date
 
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
+from dashboard_cards.models import DashboardCard
+from login.access import get_user_access_payload
 from .realtime import REALTIME_RESOURCE_ENTITIES, emit_realtime_resource_change_on_commit, realtime_resource_versions, resources_for_entity
 
 
@@ -46,6 +49,265 @@ PROFILE_FORCE_DELETE_CONFIRM_HEADER = 'X-KBC-Profile-Force-Delete'
 PROFILE_FORCE_DELETE_CONFIRM_VALUE = 'internal-admin-debug'
 MAX_UPLOAD_IMAGE_SIZE_MB = 10
 MAX_UPLOAD_IMAGE_SIZE_BYTES = MAX_UPLOAD_IMAGE_SIZE_MB * 1024 * 1024
+
+DASHBOARD_CARD_DEFAULTS = [
+	('Engagement Centre', 'Learner calling desk, Zoom Phone calls and engagement KPIs.', 'Engagement Centre', '', '/dashboard/call-centre', 'ri-customer-service-2-line', '#1B2A4A', '#2E4482', '#eef2ff', '#2E4482', False),
+	('Tutor Dashboard', 'Teaching delivery, attendance follow-up, and learner-facing academic actions.', 'Academic Delivery', 'https://tutordashboard.kentbusinesscollege.net/', '', 'ri-graduation-cap-line', '#7c4dff', '#4f2fb8', '#f1eaff', '#6b3fd1', False),
+	('Safeguarding & Wellbeing Dashboard', 'Operational controls, system-wide administration, and service coordination.', 'Operations Control', 'https://admin.kentbusinesscollege.net/', '', 'ri-heart-pulse-line', '#39206d', '#160f3f', '#efe8ff', '#39206d', False),
+	('Inclusion Dashboard', 'Inclusion monitoring, learner support visibility, and wellbeing coordination.', 'Inclusion Support', 'https://admin.kentbusinesscollege.net/coach-wellbeing?view=inclusion-dashboard', '', 'ri-user-heart-line', '#84cc16', '#15803d', '#f0fdf4', '#15803d', False),
+	('Coaching sessions', 'New coaching workflow replacing MCR and Progress Review activity.', 'Coaching Workflow', 'https://coachingsessions.kentbusinesscollege.net/', '', 'ri-discuss-line', '#0ea5e9', '#2563eb', '#eff6ff', '#2563eb', False),
+	('Bulk Attendance', 'Bulk learner attendance entry, updates, and attendance workflow access.', 'Attendance', 'https://studentportal.kentbusinesscollege.net/', '', 'ri-calendar-check-line', '#059669', '#047857', '#ecfdf5', '#047857', True),
+	('Engagement Dashboard', 'Platform governance, permissions, cross-system access, and elevated controls.', 'Platform Governance', 'https://superadmin.kentbusinesscollege.net/', '', 'ri-team-line', '#7e22ce', '#581c87', '#efe3ff', '#5b1a8e', False),
+	('Technical support portal', 'IT support requests, technical issue reporting, and service desk follow-up.', 'Technical Support', 'https://technicalsupport.kentbusinesscollege.net/', '', 'ri-customer-service-2-line', '#6366f1', '#4338ca', '#f1eaff', '#6b3fd1', False),
+	('Performance Dashboard', 'KPI monitoring, institutional progress tracking, and performance oversight.', 'Performance Insight', 'https://performancedashboard.kentbusinesscollege.net/', '', 'ri-line-chart-line', '#8b5cf6', '#a855f7', '#f1eaff', '#6d36b3', False),
+	('Quality Management System', 'Inspection readiness, evidence tracking, quality themes, and strategic oversight.', 'Inspection Readiness', 'https://commandcentre.kentbusinesscollege.net/', '', 'ri-award-line', '#d4a546', '#8b5e18', '#fff6e3', '#9a6a1d', False),
+	('Library', 'Central learning resources, reference material, and operational document access.', 'Resource Library', 'https://library.kentbusinesscollege.net/', '', 'ri-book-open-line', '#f43f5e', '#be123c', '#fff1f7', '#be185d', False),
+	('HR Compliance System', 'Policy compliance, HR governance checkpoints, audit readiness, and people-process oversight.', 'HR Compliance', 'https://hrcompliance.kentbusinesscollege.net/', '', 'ri-file-shield-line', '#db2777', '#9d174d', '#fff1f7', '#be185d', False),
+	('Employer Dashboard', 'Employer partnerships, placement visibility, and apprenticeship engagement.', 'Partnerships', 'https://employer.kentbusinesscollege.net/', '', 'ri-briefcase-4-line', '#14b8a6', '#0f766e', '#e9fbf7', '#138f82', False),
+]
+
+
+def _dashboard_card_is_admin(request) -> bool:
+	user = getattr(request, 'user', None)
+	if user and user.is_authenticated:
+		try:
+			if get_user_access_payload(user).get('adminAccess'):
+				return True
+		except Exception:
+			pass
+
+	# The frontend keeps the login response in localStorage and some existing
+	# sessions do not have a usable Django auth cookie (for example after a
+	# backend restart or when the dev proxy changes origin). Resolve the same
+	# identifier against login_db instead of trusting a client-side access flag.
+	user_id = str(request.headers.get('X-KBC-User-Id', '')).strip()
+	email = str(request.headers.get('X-KBC-User-Email', '')).strip()
+	username = str(request.headers.get('X-KBC-Username', '')).strip()
+	if not user_id and not email and not username:
+		return False
+	try:
+		user_model = get_user_model()
+		queryset = user_model.objects.using('login_db')
+		resolved_user = None
+		if user_id:
+			try:
+				resolved_user = queryset.filter(pk=int(user_id)).first()
+			except (TypeError, ValueError):
+				resolved_user = None
+		if resolved_user is None and email:
+			resolved_user = queryset.filter(email__iexact=email).first()
+		if resolved_user is None and username:
+			resolved_user = queryset.filter(username__iexact=username).first()
+		return bool(resolved_user and resolved_user.is_active and get_user_access_payload(resolved_user).get('adminAccess'))
+	except Exception:
+		return False
+
+
+def _seed_dashboard_cards() -> None:
+	# Seed the defaults only on first run (empty table). Seeding per missing title
+	# would resurrect a default card every time an admin renamed or deleted it.
+	if DashboardCard.objects.exists():
+		return
+	for index, (title, description, label, url, internal_path, icon, accent_start, accent_end, soft_color, text_color, is_admin_only) in enumerate(DASHBOARD_CARD_DEFAULTS):
+		DashboardCard.objects.create(
+			title=title,
+			description=description,
+			label=label,
+			url=url,
+			internal_path=internal_path,
+			icon=icon,
+			accent_start=accent_start,
+			accent_end=accent_end,
+			soft_color=soft_color,
+			text_color=text_color,
+			is_admin_only=is_admin_only,
+			sort_order=index,
+		)
+
+
+def serialize_dashboard_card(card: DashboardCard) -> dict:
+	return {
+		'id': card.id,
+		'title': card.title,
+		'description': card.description,
+		'label': card.label,
+		'url': card.url,
+		'internalPath': card.internal_path,
+		'icon': card.icon,
+		'accentStart': card.accent_start,
+		'accentEnd': card.accent_end,
+		'softColor': card.soft_color,
+		'textColor': card.text_color,
+		'status': card.status,
+		'isAdminOnly': card.is_admin_only,
+		'sortOrder': card.sort_order,
+	}
+
+
+def _dashboard_card_payload(payload: dict, card: DashboardCard | None = None) -> tuple[dict | None, str]:
+	def value(key: str, field: str, default: str = '') -> str:
+		if key in payload:
+			return str(payload.get(key) or '').strip()
+		return str(getattr(card, field, default) if card else default).strip()
+
+	title = value('title', 'title')
+	if not title:
+		return None, 'Title is required.'
+
+	status = value('status', 'status', DashboardCard.STATUS_AVAILABLE).lower()
+	if status not in {choice[0] for choice in DashboardCard.STATUS_CHOICES}:
+		return None, 'Status must be available, unavailable, maintenance, or hidden.'
+
+	colors = {
+		'accent_start': value('accentStart', 'accent_start', '#1B2A4A'),
+		'accent_end': value('accentEnd', 'accent_end', '#2E4482'),
+		'soft_color': value('softColor', 'soft_color', '#eef2ff'),
+		'text_color': value('textColor', 'text_color', '#2E4482'),
+	}
+	for name, color in colors.items():
+		if not re.fullmatch(r'#[0-9a-fA-F]{3,8}', color):
+			return None, f'{name} must be a valid hex colour.'
+
+	if len(title) > 255:
+		return None, 'Title must be 255 characters or fewer.'
+
+	url = value('url', 'url')
+	internal_path = value('internalPath', 'internal_path')
+	if url and internal_path:
+		return None, 'Use either an external URL or an internal path, not both.'
+	if not url and not internal_path:
+		return None, 'A destination is required: an https:// URL or an internal path starting with /.'
+	if url:
+		parsed = urlparse(url)
+		# Only http(s) links: blocks javascript:/data: hrefs and scheme-less values that would become relative links.
+		if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+			return None, 'External URL must start with https:// (or http://) and include a domain.'
+		if len(url) > 200:
+			return None, 'External URL must be 200 characters or fewer.'
+	if internal_path and (not internal_path.startswith('/') or internal_path.startswith('//') or '\\' in internal_path or len(internal_path) > 255):
+		return None, 'Internal path must start with a single / (for example /dashboard/call-centre).'
+
+	if 'sortOrder' in payload:
+		try:
+			sort_order = max(0, int(payload.get('sortOrder') or 0))
+		except (TypeError, ValueError):
+			return None, 'sortOrder must be a number.'
+	elif card is not None:
+		sort_order = card.sort_order
+	else:
+		# New cards go to the end instead of colliding with the first card at 0.
+		sort_order = (DashboardCard.objects.aggregate(models.Max('sort_order'))['sort_order__max'] or 0) + 1
+
+	return {
+		'title': title,
+		'description': value('description', 'description'),
+		'label': value('label', 'label'),
+		'url': url,
+		'internal_path': internal_path,
+		'icon': value('icon', 'icon', 'ri-dashboard-line') or 'ri-dashboard-line',
+		**colors,
+		'status': status,
+		'is_admin_only': bool(payload.get('isAdminOnly', getattr(card, 'is_admin_only', False))),
+		'sort_order': sort_order,
+	}, ''
+
+
+@csrf_exempt
+def dashboard_cards(request):
+	_is_admin = _dashboard_card_is_admin(request)
+	if request.method == 'GET':
+		_seed_dashboard_cards()
+		cards = DashboardCard.objects.all()
+		if not _is_admin:
+			cards = cards.exclude(status=DashboardCard.STATUS_HIDDEN).filter(is_admin_only=False)
+		return JsonResponse([serialize_dashboard_card(card) for card in cards], safe=False)
+
+	if not _is_admin:
+		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		return JsonResponse({'detail': 'Invalid JSON payload.'}, status=400)
+	values, error = _dashboard_card_payload(payload if isinstance(payload, dict) else {})
+	if error:
+		return JsonResponse({'detail': error}, status=400)
+	card = DashboardCard.objects.create(**values)
+	_audit_log(request, action='create', entity='DashboardCard', object_id=card.id, object_label=card.title, after=serialize_dashboard_card(card))
+	return JsonResponse(serialize_dashboard_card(card), status=201)
+
+
+@csrf_exempt
+def dashboard_cards_reorder(request):
+	"""Persist the admin's arranged order. Body: {"ids": [3, 1, 2, ...]} in display order."""
+	if request.method != 'POST':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	if not _dashboard_card_is_admin(request):
+		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+		ids = [int(item) for item in (payload.get('ids') or [])]
+	except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+		return JsonResponse({'detail': 'ids must be a list of card ids.'}, status=400)
+	if not ids or len(ids) != len(set(ids)):
+		return JsonResponse({'detail': 'ids must be a non-empty list of unique card ids.'}, status=400)
+
+	cards_by_id = DashboardCard.objects.in_bulk(ids)
+	if len(cards_by_id) != len(ids):
+		return JsonResponse({'detail': 'One or more dashboard cards no longer exist. Refresh and try again.'}, status=409)
+
+	before = [{'id': card_id, 'sortOrder': cards_by_id[card_id].sort_order} for card_id in ids]
+	# Cards not in the list (e.g. hidden ones) keep their relative order after the arranged ones.
+	remaining = DashboardCard.objects.exclude(pk__in=ids).order_by('sort_order', 'id')
+	with transaction.atomic():
+		for index, card_id in enumerate(ids):
+			card = cards_by_id[card_id]
+			if card.sort_order != index:
+				card.sort_order = index
+				card.save(update_fields=['sort_order', 'updated_at'])
+		for offset, card in enumerate(remaining, start=len(ids)):
+			if card.sort_order != offset:
+				card.sort_order = offset
+				card.save(update_fields=['sort_order', 'updated_at'])
+	_audit_log(request, action='update', entity='DashboardCard', object_label='Card order', before=before, after=[{'id': card_id, 'sortOrder': index} for index, card_id in enumerate(ids)])
+	cards = DashboardCard.objects.all()
+	return JsonResponse([serialize_dashboard_card(card) for card in cards], safe=False)
+
+
+@csrf_exempt
+def dashboard_card_detail(request, card_id: int):
+	try:
+		card = DashboardCard.objects.get(pk=card_id)
+	except DashboardCard.DoesNotExist:
+		return JsonResponse({'detail': 'Not found.'}, status=404)
+
+	if request.method == 'GET':
+		if card.status == DashboardCard.STATUS_HIDDEN and not _dashboard_card_is_admin(request):
+			return JsonResponse({'detail': 'Not found.'}, status=404)
+		return JsonResponse(serialize_dashboard_card(card))
+	if not _dashboard_card_is_admin(request):
+		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	if request.method == 'DELETE':
+		before = serialize_dashboard_card(card)
+		card.delete()
+		_audit_log(request, action='delete', entity='DashboardCard', object_id=card_id, object_label=before['title'], before=before)
+		return JsonResponse({'detail': 'Deleted.'})
+	if request.method != 'PUT':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+	try:
+		payload = json.loads(request.body.decode('utf-8') or '{}')
+	except json.JSONDecodeError:
+		return JsonResponse({'detail': 'Invalid JSON payload.'}, status=400)
+	values, error = _dashboard_card_payload(payload if isinstance(payload, dict) else {}, card)
+	if error:
+		return JsonResponse({'detail': error}, status=400)
+	before = serialize_dashboard_card(card)
+	for field, value in values.items():
+		setattr(card, field, value)
+	card.save()
+	_audit_log(request, action='update', entity='DashboardCard', object_id=card.id, object_label=card.title, before=before, after=serialize_dashboard_card(card))
+	return JsonResponse(serialize_dashboard_card(card))
 
 
 def _client_ip(request) -> str | None:
