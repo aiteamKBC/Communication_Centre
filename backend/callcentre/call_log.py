@@ -5,8 +5,10 @@ from datetime import timedelta
 
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 
 from .models import CallIntent, TicketEvent, ZoomPhoneRecording
+from .rules import LONDON
 from .voicemail_calls import effective_result, marked
 from .zoom_phone import CUT_OFF_SECONDS
 
@@ -210,3 +212,110 @@ def call_log(lower, upper, agents=None, page=1, page_size=25, now=None):
             'cases': cases,
         })
     return {'calls': rows, 'summary': summary, 'total': total, 'page': page, 'page_size': page_size, 'has_next': total > page * page_size}
+
+
+# --- one call's cases as they were when the specialist called (the director's review, read only) ----------------------
+
+CONTACT_FIELDS = ('learner_name', 'learner_phone', 'coach', 'organisation', 'programme', 'manager_name', 'manager_email')
+# Housekeeping, not part of what was done with the case.
+QUIET_KINDS = {'claimed', 'released', 'claim_expired', 'identity_contacts_refreshed'}
+
+
+def contact_at(ticket, refreshed):
+    """The case's contact details at the Call press. ``refreshed`` are its contact refreshes after the press, oldest
+    first; each keeps the values it replaced, so the first one to change a field holds that field's value then."""
+    found = {field: getattr(ticket, field) for field in CONTACT_FIELDS}
+    taken = set()
+    for item in refreshed:
+        for field, value in ((item.data or {}).get('previous_contact') or {}).items():
+            if field in found and field not in taken:
+                found[field], taken = value, taken | {field}
+    return found
+
+
+def state_before(events, press):
+    """What the case showed at the Call press, from its events before it (oldest first): open or closed, the follow-up
+    and promise dates then still to come, and the last outcome recorded."""
+    closed, followup, promise, last = False, None, None, None
+    for item in events:
+        data = item.data or {}
+        if item.kind == 'resolved':
+            closed = True
+        elif item.kind == 'reopened':
+            closed = False
+        elif item.kind in ('outcome', 'optional_outcome', 'not_discussed'):
+            last = {'outcome': data.get('outcome', 'not_discussed' if item.kind == 'not_discussed' else ''),
+                    'option': data.get('option', ''), 'note': data.get('note', ''), 'at': item.created_at}
+            followup, promise = data.get('callback_at'), data.get('promised_at')
+    def future(value):
+        # A follow-up is a moment; a promise may be a day.
+        text = str(value) if value else ''
+        moment, day = parse_datetime(text), parse_date(text[:10]) if text else None
+        if moment and timezone.is_aware(moment):
+            return value if moment > press else None
+        return value if day and day >= press.astimezone(LONDON).date() else None
+    return {'closed': closed, 'next_followup_at': future(followup), 'promised_at': future(promise), 'last_outcome': last}
+
+
+def event_json(item):
+    return {'id': item.pk, 'kind': item.kind, 'actor': item.actor, 'data': item.data or {}, 'created_at': item.created_at}
+
+
+def call_snapshot(intent_id, now=None):
+    """One call and each of its cases at the Call press: what the case was about, the contact details and history the
+    specialist had in front of them, what the call did, and what happened to the case since."""
+    from .views import issue_json
+    now = now or timezone.now()
+    intent = CallIntent.objects.select_related('agent', 'matched_call__callmatch').prefetch_related('tickets').get(pk=intent_id)
+    press = intent.created_at
+    tickets = sorted(intent.tickets.all(), key=lambda case: case.pk)
+    later = defaultdict(list)
+    for ticket_id, created_at in CallIntent.tickets.through.objects.filter(
+            caseticket_id__in=[t.pk for t in tickets], callintent__agent_id=intent.agent_id,
+            callintent__created_at__gt=press).values_list('caseticket_id', 'callintent__created_at'):
+        later[ticket_id].append(created_at)
+    events = defaultdict(list)
+    for item in TicketEvent.objects.filter(ticket_id__in=[t.pk for t in tickets]).order_by('created_at', 'id'):
+        events[item.ticket_id].append(item)
+    tries = defaultdict(int)
+    for ticket_id in CallIntent.tickets.through.objects.filter(
+            caseticket_id__in=[t.pk for t in tickets], callintent__created_at__lt=press).values_list('caseticket_id', flat=True):
+        tries[ticket_id] += 1
+    cases = []
+    for ticket in tickets:
+        history = events[ticket.pk]
+        before = [item for item in history if item.created_at < press]
+        end = min(later[ticket.pk] + [press + IMPACT_WINDOW])
+        mine = call_events(intent, [item for item in history if item.created_at >= press and item.kind in IMPACT_KINDS], end)
+        impact = case_impact(mine)
+        stuck = never_applied(intent, ticket, now)
+        for key in ('outcome', 'feedback'):
+            if stuck and impact[key] and impact[key]['state'] == 'waiting':
+                impact[key] = {**impact[key], 'state': 'dropped', 'reason': stuck}
+        # The call's own steps (Call pressed, Zoom's result, an email sent on it), then everything since.
+        during = [item for item in history if item.created_at >= press and (
+            item.pk in {event.pk for event in mine} or tied(intent, item)
+            or (item.created_at < end and item.agent_id == intent.agent_id))]
+        taken = {item.pk for item in during}
+        cases.append({
+            **issue_json(ticket),
+            'module': str((ticket.source_data or {}).get('module') or '').strip(),
+            'booking_at': ticket.booking_at, 'created_at': ticket.created_at, 'learner_email': ticket.learner_email,
+            'contact': contact_at(ticket, [item for item in history if item.created_at >= press
+                                           and item.kind == 'identity_contacts_refreshed']),
+            'at_call': {**state_before(before, press), 'calls_before': tries[ticket.pk]},
+            'before': [event_json(item) for item in before if item.kind not in QUIET_KINDS],
+            'impact': impact,
+            'during': [event_json(item) for item in during if item.kind not in QUIET_KINDS],
+            'after': [event_json(item) for item in history if item.created_at >= press and item.pk not in taken
+                      and item.kind not in QUIET_KINDS],
+            'now': {'status': ticket.status, 'resolution_option': ticket.resolution_option, 'resolved_at': ticket.resolved_at,
+                    'resolved_by': ticket.resolved_by, 'next_followup_at': ticket.next_followup_at, 'archived': ticket.archived},
+        })
+    incoming = bool(intent.matched_call and intent.matched_call.direction == 'inbound')
+    recorded = recordings_of([intent.matched_call] if intent.matched_call else [])
+    return {'id': intent.pk, 'pressed_at': intent.matched_call.started_at if incoming else press, 'incoming': incoming,
+            'agent': {'id': intent.agent_id, 'name': intent.agent.display_name}, 'number': intent.number,
+            'learner_email': intent.learner_email,
+            'zoom': {**zoom_state(intent, now), 'transcript': transcript_state(recorded.get(intent.matched_call_id, []))},
+            'recordings': recorded.get(intent.matched_call_id, []), 'cases': cases}

@@ -126,10 +126,36 @@
 .kbc-portals .ec .lf-timeline p { margin: 0; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .kbc-portals .lf-emails { display: grid; gap: .5rem; }
 
+/* ---- A manager's review of one call (CallSnapshot): each case as the specialist found it, read only ---- */
+.kbc-portals .ec .lf.cs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
+.kbc-portals .cs-recording { display: grid; gap: .5rem; padding: .8rem .9rem; border: 1px solid var(--dd-line); border-radius: 12px; background: #fff; }
+.kbc-portals .cs-case { display: grid; gap: .8rem; padding: 1rem 1.2rem; border: 1px solid var(--dd-line); border-left: 4px solid var(--dd-purple); border-radius: 14px; background: #fff; }
+.kbc-portals .cs-case-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem 1rem; flex-wrap: wrap; }
+.kbc-portals .workspace-app .ec .cs-case-head h3 { margin: 0; font-family: var(--dd-serif); font-weight: 400; font-size: 1.35rem; }
+.kbc-portals .cs-case-head p { margin: .15rem 0 0; font-size: .88rem; color: var(--dd-muted); }
+.kbc-portals .cs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.kbc-portals .cs-panel { padding: .8rem .9rem; border: 1px solid var(--dd-line); border-radius: 12px; background: var(--dd-soft); }
+.kbc-portals .workspace-app .ec .cs-case h4 {
+  margin: 0 0 .5rem; font-size: .76rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dd-purple); font-family: inherit;
+}
+.kbc-portals .cs-facts { margin: 0; display: grid; gap: .45rem; }
+.kbc-portals .cs-facts dt { font-size: .74rem; color: var(--dd-muted); }
+.kbc-portals .cs-facts dd { margin: 0; font-size: .88rem; overflow-wrap: anywhere; }
+.kbc-portals .cs-facts dd small { display: block; color: var(--dd-muted); }
+.kbc-portals .cs-section { display: grid; gap: .5rem; padding-top: .7rem; border-top: 1px solid var(--dd-line); }
+.kbc-portals .cs-section > summary, .kbc-portals .cs-section details > summary { cursor: pointer; font-size: .9rem; font-weight: 600; color: var(--dd-purple); }
+.kbc-portals .cs-section details .lf-timeline, .kbc-portals details.cs-section .lf-timeline { margin-top: .6rem; }
+/* The call's outcome, as the call log shows it (monthly-history.css styles it inside .ed-log-case only). */
+.kbc-portals .cs-section > p { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
+.kbc-portals .cs-section > p .ec-tag { margin-left: .4rem; }
+.kbc-portals .cs-section > p small { display: block; color: var(--dd-muted); font-size: .8rem; margin-top: .15rem; }
+.kbc-portals .cs-section > p .ed-log-note { color: var(--dd-ink); white-space: pre-wrap; }
+
 @media (max-width: 900px) {
   .kbc-portals .lf-case-split { grid-template-columns: minmax(0, 1fr); }
   .kbc-portals .lf-grid { grid-template-columns: minmax(0, 1fr); }
   .kbc-portals .lf-rail { position: static; max-height: none; }
+  .kbc-portals .cs-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 600px) {
   .kbc-portals .lf-band { padding: 1rem; }

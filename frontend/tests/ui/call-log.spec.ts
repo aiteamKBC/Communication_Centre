@@ -169,3 +169,45 @@ test('a call opens to what it did, the learner’s case, and its transcript with
   await asked;
   await expect(page.locator('dialog.ed-case-dialog')).toBeVisible();
 });
+
+test('the director reviews a call’s case as it was when the specialist called, read only', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const { writes } = await open(page, true);
+  await page.route('**/api/callcentre/call-log/11/', route => route.fulfill({ json: {
+    id: 11, pressed_at: '2026-10-20T10:30:00Z', incoming: false, agent: { id: 1, name: 'Operator' }, number: '+447700900123',
+    learner_email: 'akmal@example.org', recordings: [],
+    zoom: { state: 'answered', id: 501, started_at: '2026-10-20T10:30:20Z', duration_seconds: 245, transcript: 'none' },
+    cases: [{
+      id: 1, source_type: 'attendance', status: 'resolved', issue_name: 'Marketing', issue_date: '2026-10-14', module: 'Marketing',
+      booking_at: null, created_at: '2026-10-15T08:00:00Z', learner_email: 'akmal@example.org',
+      contact: { learner_name: 'Akmal Learner', learner_phone: '+447700900999', coach: 'Coach Carter', organisation: 'Acme',
+        programme: 'Level 3', manager_name: 'Mo Manager', manager_email: 'mo@acme.example' },
+      at_call: { closed: false, next_followup_at: null, promised_at: null, calls_before: 1,
+        last_outcome: { outcome: 'no_answer', option: '', note: 'Rang twice', at: '2026-10-17T09:00:00Z' } },
+      before: [{ id: 5, kind: 'created', actor: 'System', data: {}, created_at: '2026-10-15T08:00:00Z' },
+        { id: 6, kind: 'outcome', actor: 'Operator', data: { outcome: 'no_answer', note: 'Rang twice' }, created_at: '2026-10-17T09:00:00Z' }],
+      during: [{ id: 7, kind: 'dial_requested', actor: 'Operator', data: {}, created_at: '2026-10-20T10:30:00Z' }],
+      impact: LOG.calls[0].cases[0],
+      after: [],
+      now: { status: 'resolved', resolution_option: 'catch_up_session', resolved_at: '2026-10-20T10:36:00Z', resolved_by: 'agent',
+        next_followup_at: null, archived: false },
+    }],
+  } }));
+  const call = page.getByRole('article', { name: 'Call to Akmal Learner' });
+  await call.locator('.cl-toggle').click();
+  await call.getByRole('button', { name: 'See the full case at this call' }).click();
+  const review = page.getByRole('dialog', { name: 'Call review' });
+  await expect(review).toContainText('Review only');
+  await expect(review).toContainText('When Operator called');
+  await expect(review).toContainText('+447700900999');   // the number the specialist had then
+  await expect(review).toContainText('Rang twice');
+  await expect(review).toContainText('What this call did');
+  await expect(review).toContainText('Was ill, booked a catch-up.');
+  await expect(review).toContainText('Since then');
+  // Read only: the only buttons close the review itself, and nothing was written.
+  const buttons = await review.getByRole('button').allTextContents();
+  expect(buttons.map(text => text.trim()).filter(text => !['×', 'Close'].includes(text))).toEqual([]);
+  await expect(review.getByRole('button', { name: 'Close call review' })).toBeVisible();
+  expect(writes).toEqual([]);
+  await review.screenshot({ path: test.info().outputPath('call-review.png') });
+});
