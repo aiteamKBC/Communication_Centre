@@ -804,10 +804,8 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await expect(page.getByRole('button', { name: 'Compare plans', exact: true })).toHaveCount(0);
   await expect(page.getByRole('table', { name: 'Plan differences', exact: true })).toHaveCount(0);
   await expect(current.getByRole('button', { name: /Monthly Module Breakdown/ })).toHaveAttribute('aria-expanded', 'false');
-  await expect(current.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
-  await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(0);
-  await current.getByTitle('Expand programme', { exact: true }).click();
   await expect(current.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(1);
   await current.getByTitle('Collapse programme', { exact: true }).click();
   await expect(current.locator('[data-timeline-block-id="b0"]')).toHaveCount(0);
   await current.getByTitle('Expand programme', { exact: true }).click();
@@ -876,8 +874,7 @@ test('source tabs merge both timelines on one date axis and keep comparison insi
   await expect(lms).toBeVisible();
   await expect(lms.getByRole('button', { name: /Monthly Module Breakdown/ })).toBeVisible();
   await expect(lms.getByRole('button', { name: /Monthly Module Breakdown/ })).toHaveAttribute('aria-expanded', 'false');
-  await expect(lms.getByTitle('Expand programme', { exact: true })).toHaveCount(1);
-  await lms.getByTitle('Expand programme', { exact: true }).click();
+  await expect(lms.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
   await expect(lms.locator('summary').filter({ hasText: /^LMS modules/ })).toHaveCount(0);
   await expect(lms.getByRole('region', { name: 'LMS modules table', exact: true })).toHaveCount(0);
   await expect(lms.locator('[data-source="LMS"][title^="LMS: Same module."]')).toHaveCSS('background-color', sourceColour);

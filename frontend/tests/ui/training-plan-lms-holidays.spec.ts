@@ -129,7 +129,7 @@ for (const scenario of scenarios) {
     await dayMarker.press('Escape');
     await expect(lms.locator('[data-holiday-id="plan-holiday"]')).toHaveCount(0);
     await expect(lms.getByRole('alert')).toHaveCount(0);
-    await lms.getByTitle('Expand programme', { exact: true }).click();
+    await expect(lms.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
     await expect(lms.locator('[data-source="LMS"]').first()).toHaveAttribute('title', /Start: 2026-11-02\. End: 2027-02-01\./);
     await expect(lms.locator('[data-source="LMS"]').first()).toHaveAttribute('title', /Original LMS dates: 2026-11-02 to 2027-01-25\. Holiday delay: 1 week\./);
     await expect(lms.locator('[data-source="LMS"]').nth(1)).toHaveAttribute('title', /Start: 2027-02-08\. End: 2027-02-22\./);

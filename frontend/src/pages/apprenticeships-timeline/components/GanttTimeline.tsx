@@ -1205,11 +1205,7 @@ function TimelineCanvas({
     catalogModule?: CatalogModule;
   } | null>(null);
   const [viewWindow, setViewWindow] = useState(() => getDefaultViewWindow(zoom, groups, holidays, fitModules));
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(mergedSources ? groups.map(group => group.id) : []));
-  const collapsedGroups = useMemo(
-    () => new Set(groups.filter(group => !expandedGroups.has(group.id)).map(group => group.id)),
-    [groups, expandedGroups],
-  );
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [crossRowTutorConnectors, setCrossRowTutorConnectors] = useState<TimelineTutorConnector[]>([]);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
   const [virtualViewport, setVirtualViewport] = useState(() => ({ top: 0, bottom: typeof window === 'undefined' ? 900 : window.innerHeight }));
@@ -1674,7 +1670,7 @@ function TimelineCanvas({
   }, []);
 
   const toggleGroupCollapse = useCallback((groupId: string) => {
-    setExpandedGroups(prev => {
+    setCollapsedGroups(prev => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
@@ -2534,10 +2530,10 @@ function TimelineCanvas({
   const navigateToExpiringModule = useCallback((item: ExpiringModuleSummary) => {
     setNotificationsOpen(false);
     setClassesOpen(false);
-    setExpandedGroups(prev => {
+    setCollapsedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.add(groupId);
+      if (groupId) next.delete(groupId);
       return next;
     });
 
@@ -2572,10 +2568,10 @@ function TimelineCanvas({
   const navigateToClass = useCallback((item: ClassSummary, targetDateOverride?: string, moduleKey?: string, blockId?: string) => {
     setLastClassSelection({ classKey: item.key, moduleKey });
     setClassesOpen(false);
-    setExpandedGroups(prev => {
+    setCollapsedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[item.groupIdx]?.id;
-      if (groupId) next.add(groupId);
+      if (groupId) next.delete(groupId);
       return next;
     });
     const pairedRowIndex = virtualProgrammeMetrics[item.groupIdx]?.rows[item.rowIdx]?.pairedRowIndex ?? -1;
@@ -2611,10 +2607,10 @@ function TimelineCanvas({
     const target = [...items].sort((a, b) => b.clashCount - a.clashCount || a.targetDate.localeCompare(b.targetDate))[0];
     if (!target) return;
     setClassesOpen(false);
-    setExpandedGroups(prev => {
+    setCollapsedGroups(prev => {
       const next = new Set(prev);
       const groupId = groups[target.groupIdx]?.id;
-      if (groupId) next.add(groupId);
+      if (groupId) next.delete(groupId);
       return next;
     });
     setFocusedTimelineTarget({ groupIdx: target.groupIdx });

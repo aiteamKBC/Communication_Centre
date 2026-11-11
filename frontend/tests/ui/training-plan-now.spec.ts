@@ -14,7 +14,7 @@ async function expectNowInView(panel: Locator) {
   })).toBe(true);
 }
 
-test('all timeline sources open at Now across zooms and screen sizes, including historical plans', async ({ page }) => {
+test('all timeline sources start expanded at Now across zooms and screen sizes, including historical plans', async ({ page }) => {
   test.setTimeout(90_000);
   // LMS Week/Day views contain Monday–Friday only, so use a weekday for Now.
   await page.clock.setFixedTime(new Date('2026-11-09T10:00:00Z'));
@@ -56,16 +56,22 @@ test('all timeline sources open at Now across zooms and screen sizes, including 
     for (const name of ['Current Training Plan', 'Merge', 'LMS Training Plan']) {
       await page.getByRole('tab', { name, exact: true }).click();
       const panel = page.getByRole('tabpanel', { name, exact: true });
+      await expect(panel.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
+      await expect(panel.getByTitle('Expand programme', { exact: true })).toHaveCount(0);
       await expectNowInView(panel);
       for (const zoom of ['Year', 'Intake', 'Month', 'Week', 'Day']) {
         await panel.getByRole('group', { name: 'Timeline zoom', exact: true }).getByRole('button', { name: zoom, exact: true }).click();
+        await expect(panel.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
         await expectNowInView(panel);
       }
       // Ordinary rerenders must preserve the user's horizontal scroll position.
       const scroll = panel.locator('.training-plan-gantt-scroll');
       await scroll.evaluate(element => { element.scrollLeft = 0; });
-      await panel.getByTitle(/Expand programme|Collapse programme/).first().click();
+      await panel.getByTitle('Collapse programme', { exact: true }).click();
+      await expect(panel.getByTitle('Expand programme', { exact: true })).toHaveAttribute('aria-expanded', 'false');
       expect(await scroll.evaluate(element => element.scrollLeft)).toBe(0);
+      await panel.getByTitle('Expand programme', { exact: true }).click();
+      await expect(panel.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
       // The location button remains available after browsing away from Now.
       await panel.getByRole('button', { name: "Go to today's line", exact: true }).click();
       await expectNowInView(panel);

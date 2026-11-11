@@ -378,7 +378,7 @@ test('LMS and Merge date filters hide out-of-range modules and retain matched pa
   await page.goto('/training-plan');
   await page.getByRole('tab', { name: 'LMS Training Plan', exact: true }).click();
   const lms = page.getByRole('tabpanel', { name: 'LMS Training Plan', exact: true });
-  await lms.getByTitle('Expand programme', { exact: true }).first().click();
+  await expect(lms.getByTitle('Collapse programme', { exact: true }).first()).toHaveAttribute('aria-expanded', 'true');
   await expect(lms.locator('[data-source="LMS"][data-timeline-block-id]')).toHaveCount(1);
   await lms.getByLabel('LMS timeline From', { exact: true }).fill('2026-03-01');
   await expect(lms.locator('[data-source="LMS"][data-timeline-block-id]')).toHaveCount(0);
@@ -859,7 +859,7 @@ test('a failed manual match save leaves the saved assignment unchanged', async (
 test('schedule assignment editor compares its own module and saves a manual pair without changing its schedule', async ({ page }) => {
   const api = await setup(page);
   await page.goto('/training-plan');
-  await page.getByTitle('Expand programme', { exact: true }).click();
+  await expect(page.getByTitle('Collapse programme', { exact: true })).toHaveAttribute('aria-expanded', 'true');
   await page.locator('[data-timeline-block-id="b101"]').click();
   await page.getByRole('button', { name: /Edit schedule assignment/ }).click();
   await expect(page.getByRole('heading', { name: 'Edit Module', exact: true })).toBeVisible();
