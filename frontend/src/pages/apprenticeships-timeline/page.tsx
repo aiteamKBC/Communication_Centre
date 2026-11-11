@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, UserRound, Users } from 'lucide-react';
+import { BookOpen, CalendarDays, CalendarRange, Clock3, ContactRound, GraduationCap, Layers3, Table2, Undo2, UserRound, Users } from 'lucide-react';
 import './training-plan.css';
 import TopNav from '@/components/feature/TopNav';
 import Footer from '@/components/feature/Footer';
@@ -12,6 +12,8 @@ import type { SaveLmsModuleMatch } from './components/LmsModuleMatcher';
 import type { ModulePartialUpdatePayload } from './components/CohortModal';
 import type { SessionScheduleUpdatePayload } from './components/ScheduleTable';
 import DateField from './components/DateField';
+import DateRangeFilter from './components/DateRangeFilter';
+import { emptyDateRange, matchesDateRange } from './components/selectFilters';
 import SelectField from './components/SelectField';
 import useAccessControl from '@/hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '@/components/feature/sweetAlert';
@@ -20,6 +22,7 @@ import { useRealtimeResource, type RealtimeUpdateDetail } from '@/hooks/useRealt
 import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName } from './tutorProfiles';
 import { buildCoachProfilesFromGroups } from './coachProfiles';
 import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
+import { timelineCohortOrder, timelineProgrammeOrder, verifyTimelineUndo, type TimelineUndoEntry } from './timelineUndo';
 
 const ModuleComparisonModal = lazy(() => import('./components/ModuleComparisonModal'));
 const CohortModal = lazy(() => import('./components/CohortModal'));
@@ -2667,6 +2670,8 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
   const [riskFilter, setRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
   const [programmeModalSearch, setProgrammeModalSearch] = useState('');
   const [programmeModalRiskFilter, setProgrammeModalRiskFilter] = useState<'all' | 'affected' | 'clear'>('all');
+  const [breakdownDates, setBreakdownDates] = useState(emptyDateRange);
+  const [programmeDates, setProgrammeDates] = useState(emptyDateRange);
   const programmeOptions = useMemo(
     () => Array.from(new Set(summaries.map(summary => summary.programme))).sort((a, b) => a.localeCompare(b)),
     [summaries],
@@ -2674,6 +2679,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
   const filteredSummaries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return summaries.filter(summary => {
+      if (!matchesDateRange(summary.moduleStartDate, summary.moduleEndDate, breakdownDates.from, breakdownDates.to)) return false;
       const clashes = totalSummaryClashes(summary);
       if (programmeFilter !== 'all' && summary.programme !== programmeFilter) return false;
       if (riskFilter === 'affected' && clashes === 0) return false;
@@ -2691,7 +2697,7 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
       ].join(' ').toLowerCase();
       return searchable.includes(query);
     });
-  }, [programmeFilter, riskFilter, searchQuery, summaries]);
+  }, [programmeFilter, riskFilter, searchQuery, summaries, breakdownDates]);
   const programmeGroups = useMemo(() => {
     const grouped = new Map<string, ProgrammeSummaryGroup>();
     filteredSummaries.forEach(summary => {
@@ -2714,11 +2720,12 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
     });
     return Array.from(grouped.values()).sort((a, b) => a.programme.localeCompare(b.programme));
   }, [filteredSummaries]);
-  const hasActiveFilters = searchQuery.trim() || programmeFilter !== 'all' || riskFilter !== 'all';
+  const hasActiveFilters = searchQuery.trim() || programmeFilter !== 'all' || riskFilter !== 'all' || breakdownDates.from || breakdownDates.to;
   const visibleProgrammeSummaries = useMemo(() => {
     if (!selectedProgrammeGroup) return [];
     const query = programmeModalSearch.trim().toLowerCase();
     return selectedProgrammeGroup.summaries.filter(summary => {
+      if (!matchesDateRange(summary.moduleStartDate, summary.moduleEndDate, programmeDates.from, programmeDates.to)) return false;
       const clashes = totalSummaryClashes(summary);
       if (programmeModalRiskFilter === 'affected' && clashes === 0) return false;
       if (programmeModalRiskFilter === 'clear' && clashes > 0) return false;
@@ -2734,8 +2741,8 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
       ].join(' ').toLowerCase();
       return searchable.includes(query);
     });
-  }, [programmeModalRiskFilter, programmeModalSearch, selectedProgrammeGroup]);
-  const hasProgrammeModalFilters = programmeModalSearch.trim() || programmeModalRiskFilter !== 'all';
+  }, [programmeModalRiskFilter, programmeModalSearch, selectedProgrammeGroup, programmeDates]);
+  const hasProgrammeModalFilters = programmeModalSearch.trim() || programmeModalRiskFilter !== 'all' || programmeDates.from || programmeDates.to;
 
   if (!summaries.length) {
     return null;
@@ -2812,12 +2819,14 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                   setSearchQuery('');
                   setProgrammeFilter('all');
                   setRiskFilter('all');
+                  setBreakdownDates(emptyDateRange);
                 }}
                 disabled={!hasActiveFilters}
                 className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-white hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Reset
               </button>
+              <DateRangeFilter label="Monthly modules" value={breakdownDates} onChange={setBreakdownDates} className="md:col-span-full" />
             </div>
 
             <div className="max-h-[360px] overflow-auto">
@@ -2938,12 +2947,14 @@ function MonthlyModuleBreakdown({ summaries }: { summaries: ModuleMonthlySummary
                 onClick={() => {
                   setProgrammeModalSearch('');
                   setProgrammeModalRiskFilter('all');
+                  setProgrammeDates(emptyDateRange);
                 }}
                 disabled={!hasProgrammeModalFilters}
                 className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-gray-500 transition-colors hover:bg-slate-50 hover:text-kbc-navy disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Reset
               </button>
+              <DateRangeFilter label="Programme modules" value={programmeDates} onChange={setProgrammeDates} className="col-span-full" />
             </div>
 
             <div className="overflow-auto">
@@ -3103,6 +3114,9 @@ export default function ApprenticeshipTimeline() {
   const [trainingPlanItems, setTrainingPlanItems] = useState<TrainingPlanItem[]>([]);
   const [trainingPlanVersion, setTrainingPlanVersion] = useState<string | undefined>(undefined);
   const [groups,   setGroups]   = useState<ProgrammeGroup[]>(() => buildAllGroups());
+  const [timelineHistory, setTimelineHistory] = useState<TimelineUndoEntry[]>([]);
+  const [timelineBusy, setTimelineBusy] = useState(false);
+  const timelineBusyRef = useRef(false);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [holidayVersion, setHolidayVersion] = useState<string | undefined>(undefined);
   const [moduleDefinitionsVersion, setModuleDefinitionsVersion] = useState<string | undefined>(undefined);
@@ -5176,7 +5190,6 @@ export default function ApprenticeshipTimeline() {
     }
 
     const requestPayload: Record<string, unknown> = { ...payload };
-    delete requestPayload.lmsSourceModuleId;
     if ('notes' in payload || 'lmsSourceModuleId' in payload) {
       requestPayload.notes = joinPersistedNotes(
         'notes' in payload ? payload.notes || '' : targetBlock.notes || '',
@@ -5517,6 +5530,52 @@ export default function ApprenticeshipTimeline() {
     }
   };
 
+  const rememberTimelineChange = (entry: TimelineUndoEntry) => {
+    setTimelineHistory(history => [...history.slice(-19), entry]);
+  };
+
+  const runTimelineMutation = async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+    if (timelineBusyRef.current || trainingPlanSaveState === 'saving' || trainingPlanServerUnavailable) return undefined;
+    timelineBusyRef.current = true;
+    setTimelineBusy(true);
+    try { return await action(); }
+    finally { timelineBusyRef.current = false; setTimelineBusy(false); }
+  };
+
+  const handleUndoTimelineChange = async () => {
+    if (!canManageCohorts) return;
+    const entry = timelineHistory[timelineHistory.length - 1];
+    if (!entry) return;
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Undoing timeline move...');
+    try {
+      const latest = await fetchLatestTrainingPlanSnapshot({ commit: true });
+      if (!latest?.version) throw new Error('The latest timeline could not be loaded. Retry Undo when the server is available.');
+      const latestGroups = buildGroupsFromTrainingRows(latest.items, customPrograms, tutorProfiles);
+      verifyTimelineUndo(entry, latestGroups);
+      const response = await fetch(entry.path, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-KBC-Training-Plan-Save-Source': 'timeline_undo' },
+        body: JSON.stringify({ ...entry.payload, version: latest.version }),
+      });
+      const result = await handleTrainingPlanPartialResponse(response);
+      if (result.version) setTrainingPlanVersion(result.version);
+      if (Array.isArray(result.items)) {
+        setTrainingPlanItems(result.items);
+        setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
+      } else await reloadTrainingPlan();
+      setTimelineHistory(history => history.slice(0, -1));
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage('Timeline move undone and saved.');
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'Training Plan version conflict.' || error.message === 'Training Plan session not found.')) return;
+      try { await handleTrainingPlanRequestFailure(error, 'Undo Not Saved'); return; }
+      catch { /* Display validation errors below; keep history available for retry. */ }
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Undo was not saved.');
+      await kbcSwal.fire({ title: 'Undo Not Saved', text: error instanceof Error ? error.message : 'Undo could not be saved. Please retry.', icon: 'warning', confirmButtonText: 'OK' });
+    }
+  };
+
   const handleMoveModuleDates = async (groupIdx: number, rowIdx: number, blockId: string, nextStartDate: string, nextEndDate: string): Promise<boolean> => {
     if (!canManageCohorts) return false;
     if (trainingPlanServerUnavailable) {
@@ -5556,43 +5615,14 @@ export default function ApprenticeshipTimeline() {
       ...group,
       rows: group.rows.map((row, ri) => ri === rowIdx ? nextRow : row),
     });
-    const nextItemsForSave = flattenGroupsForApi(nextGroups, tutorProfiles);
-    const itemsByTrainingPlanId = new Map(nextItemsForSave.filter(item => item.id).map(item => [String(item.id), item]));
-
+    if (!targetBlock.trainingPlanId) return false;
     setGroups(nextGroups);
     setTrainingPlanSaveState('saving');
     setTrainingPlanSaveMessage('Moving module...');
     try {
-      const result = await updateTrainingPlanCohort(targetRow.id, {
-        programmeId: targetGroup.id,
-        cohortName: nextRow.label,
-        startingDateLabel: nextRow.dateLbl,
-        cohortColor: nextRow.color || '',
-        cohortEndDate: nextRow.endDateLbl || '',
-        holidayIds: nextRow.holidayIds || [],
-        ksbProfileId: nextRow.ksbProfileId || '',
-        blocks: nextRow.blks.map(block => ({
-          trainingPlanId: block.trainingPlanId,
-          moduleCatalogueId: block.moduleCatalogueId,
-          blockId: block.id,
-          groupId: block.groupId || '',
-          groupName: block.groupName || '',
-          coachName: block.coachName || '',
-          moduleName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.moduleName || getModuleMeta(block.mod).lbl,
-          tutorName: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorName || block.tutor || '',
-          tutorProfileId: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.tutorProfileId || block.tutorProfileId || '',
-          startDate: block.startDate,
-          endDate: block.endDate,
-          sessionsNumber: String(block.sessions),
-          sessionWeekDay: (block.days || []).join(', '),
-          sessionStartTime: block.sessionStartTime || '09:00',
-          sessionEndTime: block.sessionEndTime || '11:00',
-          sessionKsbMappings: normalizeSessionKsbMappings(block.sessionKsbMappings, block.sessions),
-          sessionCoverage: normalizeSessionCoverage(block.sessionCoverage, block.sessions, block.tutorProfileId || profileIdForTutorName(block.tutor || '', tutorProfiles)),
-          moduleColor: block.color || '',
-          notes: itemsByTrainingPlanId.get(String(block.trainingPlanId))?.notes || block.notes || '',
-        })),
-        allowBlockMembershipChanges: true,
+      // A drag changes only these dates; all notes and manual links stay on the server.
+      const result = await updateTrainingPlanSession(targetBlock.trainingPlanId, {
+        startDate: nextStartDate, endDate: nextEndDate,
       });
       if (result.version) setTrainingPlanVersion(result.version);
       if (Array.isArray(result.items)) {
@@ -5604,6 +5634,11 @@ export default function ApprenticeshipTimeline() {
       }
       setTrainingPlanSaveState('saved');
       setTrainingPlanSaveMessage(`Module moved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      rememberTimelineChange({
+        label: 'Move module dates', path: `/api/training-plan/sessions/${targetBlock.trainingPlanId}/`,
+        payload: { startDate: targetBlock.startDate, endDate: targetBlock.endDate },
+        expected: [{ kind: 'dates', trainingPlanId: targetBlock.trainingPlanId, startDate: nextStartDate, endDate: nextEndDate }],
+      });
       return true;
     } catch (error) {
       setGroups(groups);
@@ -5641,6 +5676,7 @@ export default function ApprenticeshipTimeline() {
     const latestSnapshot = await fetchLatestTrainingPlanSnapshot();
     const latestItems = latestSnapshot?.items || trainingPlanItems;
     const latestVersion = latestSnapshot?.version || trainingPlanVersion;
+    const beforeGroups = buildGroupsFromTrainingRows(latestItems, customPrograms, tutorProfiles);
     const movedCohortId = resolveCohortOrderId(moved, targetGroup?.id || sourceGroup?.id || '', latestItems);
     const visibleSourceCohortIds = next[fromGroupIdx]?.rows
       .map(row => resolveCohortOrderId(row, sourceGroup?.id || '', latestItems))
@@ -5648,7 +5684,8 @@ export default function ApprenticeshipTimeline() {
     const visibleTargetCohortIds = targetGroup.rows
       .map(row => resolveCohortOrderId(row, targetGroup?.id || '', latestItems))
       .filter(Boolean);
-    const sourceCohortIds = completeProgrammeCohortOrder(visibleSourceCohortIds, sourceGroup?.id || '', latestItems);
+    const sourceCohortIds = completeProgrammeCohortOrder(visibleSourceCohortIds, sourceGroup?.id || '', latestItems)
+      .filter(id => sourceGroup?.id === targetGroup?.id || id !== movedCohortId);
     let targetCohortIds = completeProgrammeCohortOrder(visibleTargetCohortIds, targetGroup?.id || '', latestItems);
     if (sourceGroup?.id !== targetGroup?.id && movedCohortId && !targetCohortIds.includes(movedCohortId)) {
       const desiredMovedIndex = Math.max(0, visibleTargetCohortIds.indexOf(movedCohortId));
@@ -5704,6 +5741,24 @@ export default function ApprenticeshipTimeline() {
       }
       setTrainingPlanSaveState('saved');
       setTrainingPlanSaveMessage(`Cohort order saved at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`);
+      const afterGroups = result.items ? buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles) : next;
+      rememberTimelineChange(sourceGroup.id === targetGroup.id ? {
+        label: 'Reorder cohorts', path: '/api/training-plan/reorder/cohorts/',
+        payload: { programmeId: targetGroup.id, cohortIds: timelineCohortOrder(beforeGroups, targetGroup.id) },
+        expected: [{ kind: 'cohorts', programmeId: targetGroup.id, ids: timelineCohortOrder(afterGroups, targetGroup.id) }],
+      } : {
+        label: 'Move cohort to programme', path: `/api/training-plan/cohorts/${encodeURIComponent(movedCohortId)}/move/`,
+        payload: {
+          fromProgrammeId: targetGroup.id, toProgrammeId: sourceGroup.id, toProgrammeName: toProgrammeLabel(sourceGroup),
+          sourceCohortIds: timelineCohortOrder(beforeGroups, targetGroup.id), targetCohortIds: timelineCohortOrder(beforeGroups, sourceGroup.id),
+        },
+        expected: [
+          { kind: 'cohorts', programmeId: sourceGroup.id, ids: timelineCohortOrder(afterGroups, sourceGroup.id) },
+          { kind: 'cohorts', programmeId: targetGroup.id, ids: timelineCohortOrder(afterGroups, targetGroup.id) },
+          { kind: 'membership', programmeId: targetGroup.id, cohortId: movedCohortId,
+            trainingPlanIds: afterGroups.find(group => group.id === targetGroup.id)?.rows.find(row => row.id === movedCohortId)?.blks.map(block => block.trainingPlanId!).filter(Boolean) || [] },
+        ],
+      });
     } catch (error) {
       setGroups(groups);
       if (error instanceof Error && error.message === 'Training Plan version conflict.') {
@@ -5743,6 +5798,8 @@ export default function ApprenticeshipTimeline() {
       return;
     }
     setGroups(next);
+    setTrainingPlanSaveState('saving');
+    setTrainingPlanSaveMessage('Saving programme order...');
     try {
       const result = await updateTrainingPlanProgrammeOrder(programmeIds);
       if (result.version) setTrainingPlanVersion(result.version);
@@ -5750,7 +5807,15 @@ export default function ApprenticeshipTimeline() {
         setTrainingPlanItems(result.items);
         setGroups(buildGroupsFromTrainingRows(result.items, customPrograms, tutorProfiles));
       }
+      rememberTimelineChange({
+        label: 'Reorder programmes', path: '/api/training-plan/reorder/programmes/',
+        payload: { programmeIds: timelineProgrammeOrder(groups) },
+        expected: [{ kind: 'programmes', ids: programmeIds }],
+      });
+      setTrainingPlanSaveState('saved');
+      setTrainingPlanSaveMessage('Programme order saved.');
     } catch (error) {
+      setGroups(groups);
       if (error instanceof Error && error.message === 'Training Plan version conflict.') {
         return;
       }
@@ -5761,6 +5826,8 @@ export default function ApprenticeshipTimeline() {
         // Continue with normal validation/server error handling.
       }
       const message = error instanceof Error ? error.message : 'Unknown save error';
+      setTrainingPlanSaveState('error');
+      setTrainingPlanSaveMessage('Programme order was not saved.');
       await kbcSwal.fire({ title: 'Programme Not Reordered', html: message, icon: 'error', confirmButtonText: 'OK' });
     }
   };
@@ -7036,6 +7103,13 @@ export default function ApprenticeshipTimeline() {
                   tutorProfiles={resolvedTutorProfiles}
                   zoom={zoom}
                   onZoomChange={setZoom}
+                  toolbarControls={canManageCohorts && <button type="button" aria-label="Undo timeline move"
+                    title={timelineHistory.length ? `Undo: ${timelineHistory[timelineHistory.length - 1].label}` : 'Move a module, cohort or programme to enable Undo. History is kept until you reload.'}
+                    disabled={!timelineHistory.length || timelineBusy || trainingPlanSaveState === 'saving' || trainingPlanServerUnavailable}
+                    onClick={() => void runTimelineMutation(handleUndoTimelineChange)}
+                    className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-kbc-navy hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">
+                    <Undo2 size={15} aria-hidden="true" />{timelineBusy && trainingPlanSaveMessage === 'Undoing timeline move...' ? 'Undoing…' : 'Undo'}
+                  </button>}
                   onManageHolidays={() => setShowHolidayMgr(true)}
                   onAddRow={(gi) => {
                     if (!canManageCohorts) {
@@ -7058,12 +7132,12 @@ export default function ApprenticeshipTimeline() {
                   onCloneRow={handleCloneCohort}
                   onCloneGroup={handleCloneGroup}
                   onCloneModule={handleCloneModule}
-                  onMoveModuleDates={handleMoveModuleDates}
-                  onReorderRow={handleReorderRow}
-                  onReorderGroup={handleReorderGroup}
+                  onMoveModuleDates={(...args) => runTimelineMutation(() => handleMoveModuleDates(...args)).then(result => result ?? false)}
+                  onReorderRow={(...args) => { void runTimelineMutation(() => handleReorderRow(...args)); }}
+                  onReorderGroup={(...args) => { void runTimelineMutation(() => handleReorderGroup(...args)); }}
                   onExportExcel={exportTrainingPlanExcel}
                   exportExcelDisabled={isInitialProgrammesLoading || exportRowCount === 0}
-                  canManageCohorts={canEditTrainingPlan}
+                  canManageCohorts={canEditTrainingPlan && !timelineBusy && trainingPlanSaveState !== 'saving'}
                 />
               </div>
               <div data-training-plan-overview>

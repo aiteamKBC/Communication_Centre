@@ -29,6 +29,83 @@ Do not create or apply the unrelated proposed `api.0023...` migration drift as p
 
 ## Pre-Deployment Checks
 
+### LMS live source setup
+
+The saved LMS reference is stored in the application database. Tutor names,
+cohorts, session counts and England holidays use a separate live LMS reader.
+Seeing the saved timeline does not prove that this reader is configured.
+
+Set `TRAINING_PLAN_LMS_REFERENCE_DATABASE_URL` in the deployed **backend**
+environment, using the dedicated LMS reader. Local ignored `.env` files are not
+deployed with Git or the frontend build. The placeholder format is documented in
+`backend/.env.lms-reference.example`; do not commit the real URL. If the server
+also has a `backend/.env`, check its LMS setting: the current settings loader
+loads that file over process environment values.
+
+The reader needs schema `USAGE` on `curriculum` and `SELECT` on both
+`curriculum.modules` and `curriculum.england_holidays`, with no write privileges.
+After changing configuration, restart all backend workers and run in the same
+backend environment:
+
+```bash
+python manage.py check_lms_reference_source
+```
+
+This command checks both tables with read-only transactions, prints row counts
+and safe error codes, and never changes source data or permissions. Expected
+results include `OK` for both tables. A missing environment variable reports
+`lms_source_not_configured`; invalid credentials, missing tables and invalid
+reader permissions have separate codes. A network/database outage reports
+`lms_source_unavailable`. After a successful check, reload the browser and retry
+the reference and holiday requests. Deploy the matching frontend and backend
+versions together; a missing endpoint is a separate deployment-version problem.
+
+### Preserve saved manual LMS matches
+
+Manual matches are stored in the application database's `Training_plan.notes`,
+using the leading `__lms_source_module_id:` metadata marker. They are read again
+on reload and are independent of browser storage and live LMS availability.
+This release requires no schema migration or re-import of existing matches.
+Deploy the frontend and backend together: removal now explicitly sends
+`lmsSourceModuleId: ""`; an omitted marker during a notes or cohort edit preserves
+the existing match. Older clients can still save marker-based matches, but must
+refresh to use explicit removal.
+
+Keep the deployed backend's `DATABASE_URL` pointed at the same persistent
+application database/branch. Changing the LMS reader URL does not move the saved
+matches. If development and production use different application databases,
+deploying code does **not** transfer development matches into production.
+
+Before deployment, take the database backup below and create a link baseline
+against the application database that must retain the matches:
+
+```bash
+cd backend
+python manage.py check_training_plan_manual_matches --snapshot /persistent-backups/manual-matches-before-release.json
+```
+
+Use a private persistent backup location outside the release directory. For a
+local check, `private_exports/` is ignored by Git. The baseline contains only row
+IDs and linked LMS IDs, includes archived rows and never overwrites an existing
+file. It verifies links; it does not replace a complete database backup.
+
+After deploying/restarting, run in the deployed backend environment against the
+same baseline (copy the file securely if the release runs on another host):
+
+```bash
+python manage.py check_training_plan_manual_matches --compare /persistent-backups/manual-matches-before-release.json
+```
+
+Require `OK: all N baseline matches retained.` The command performs database
+reads only, allows additional matches, and exits with an error if an original
+row/link is missing or changed, even when the total count is unchanged. Check
+`DATABASE_URL`/the database branch and the backup if it fails. Do not initialize,
+flush, restore fixtures over, or replace the application database during an
+ordinary code deployment. Refresh the browser and confirm existing saved links
+still show `Manually matched`.
+
+### Release checks
+
 Run these against the exact code and environment intended for staging/production.
 
 ```bash

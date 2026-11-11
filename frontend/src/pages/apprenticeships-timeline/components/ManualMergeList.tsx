@@ -50,8 +50,9 @@ export default function ManualMergeList({ groups, records, customModules, onSave
         const key = currentMatchKey(current);
         const sourceId = current.block.lmsSourceModuleId!.trim();
         const lms = sources.get(sourceId);
-        return <li key={key} className="grid min-w-0 gap-3 rounded-xl border border-gray-200 bg-slate-50/50 p-3 md:grid-cols-[1fr_1fr_auto] md:items-center">
+        return <li key={key} className="grid min-w-0 gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-3 md:grid-cols-[1fr_1fr_auto] md:items-center">
           <div className="min-w-0">
+            <span className="mb-1 inline-block rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">✓ Manually matched</span>
             <p className="text-[10px] font-extrabold uppercase tracking-wide text-kbc-navy">Current Training Plan</p>
             <p className="mt-1 break-words text-xs font-bold text-gray-900">{current.module}</p>
             <p className="mt-1 break-words text-xs text-gray-500">{current.programme.name.replace(/\n/g, ' ')} · {current.cohort.label} · {current.block.groupName || 'Group not provided'}</p>

@@ -5,6 +5,8 @@ import { buildHolidayAdjustedSessionPlan } from '../utils';
 import { buildTutorProfilesFromGroups, normalizeTutorName, resolveTutorProfile } from '../tutorProfiles';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 import SelectField from './SelectField';
+import DateRangeFilter from './DateRangeFilter';
+import { emptyDateRange, matchesDateRange } from './selectFilters';
 
 interface Props {
   groups: ProgrammeGroup[];
@@ -545,6 +547,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
   const [editProfileSaving, setEditProfileSaving] = useState(false);
   const [profileFormMode, setProfileFormMode] = useState<'add' | 'edit'>('edit');
   const [tutorSearch, setTutorSearch] = useState('');
+  const [dates, setDates] = useState(emptyDateRange);
   const [availabilityModuleSearch, setAvailabilityModuleSearch] = useState('');
   const [subjectPlannerOpen, setSubjectPlannerOpen] = useState(false);
   const [plannerTutorIds, setPlannerTutorIds] = useState<string[]>([]);
@@ -900,8 +903,8 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
   };
 
   const tutorSessions = useMemo(
-    () => sessions.filter(item => item.tutorProfileId === activeTutorId).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
-    [sessions, activeTutorId],
+    () => sessions.filter(item => item.tutorProfileId === activeTutorId && matchesDateRange(item.date, item.date, dates.from, dates.to)).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)),
+    [sessions, activeTutorId, dates],
   );
   const conflicts = useMemo(() => findTutorConflicts(tutorSessions), [tutorSessions]);
   const activeConflicts = useMemo(
@@ -964,7 +967,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
     safeSessionBreakdownPage * sessionBreakdownPageSize,
   );
   const coveringSessions = sessions
-    .filter(item => item.coverageTutorProfileId === activeTutorId)
+    .filter(item => item.coverageTutorProfileId === activeTutorId && matchesDateRange(item.date, item.date, dates.from, dates.to))
     .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
 
   if (!profileList.length) {
@@ -1050,6 +1053,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
       </aside>
 
       <section className="min-w-0 space-y-4">
+        <div className="rounded-xl border border-slate-200 bg-white p-3"><DateRangeFilter label="Tutor sessions" value={dates} onChange={setDates} className="max-w-lg" /></div>
         <div className="rounded-xl border border-gray-200 bg-white">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 px-4 py-4 sm:px-5">
             <div className="min-w-0">

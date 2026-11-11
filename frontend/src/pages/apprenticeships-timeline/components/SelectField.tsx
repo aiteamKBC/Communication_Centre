@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
-import { filterValueKey, matchesSelectFilters, type SelectFilterField, type SelectFilterMetadata } from './selectFilters';
+import { filterValueKey, matchesSelectFilters, type DateRangeMatch, type DateRangeValue, type SelectFilterField, type SelectFilterMetadata } from './selectFilters';
+import DateRangeFilter from './DateRangeFilter';
 
 interface SelectOption extends SelectFilterMetadata {
   value: string;
@@ -10,6 +11,8 @@ interface SelectOption extends SelectFilterMetadata {
   color?: string;
   disabled?: boolean;
   recommended?: boolean;
+  status?: string;
+  statusDescription?: string;
 }
 
 interface Props {
@@ -32,6 +35,7 @@ interface Props {
   popoverZIndex?: number;
   filterFields?: SelectFilterField[];
   filterByDateRange?: boolean;
+  dateRangeMatch?: DateRangeMatch;
 }
 
 export default function SelectField({
@@ -53,7 +57,8 @@ export default function SelectField({
   wrapLabels = false,
   popoverZIndex = 120,
   filterFields,
-  filterByDateRange = false,
+  filterByDateRange = options.some(option => option.startDate || option.endDate),
+  dateRangeMatch = 'overlap',
 }: Props) {
   const listId = useId();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -67,7 +72,6 @@ export default function SelectField({
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const hasFilters = Object.values(filterValues).some(Boolean) || Boolean(filterByDateRange && (from || to));
-  const invalidRange = Boolean(filterByDateRange && from && to && from > to);
   const hasFilterControls = Boolean(filterFields?.length || filterByDateRange);
   const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex(option => option.value === value)));
   const [popoverStyle, setPopoverStyle] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number }>({
@@ -86,19 +90,27 @@ export default function SelectField({
     () => options.find(option => option.value === value) ?? null,
     [options, value],
   );
-  const filteredOptions = useMemo(() => {
+  const searchedOptions = useMemo(() => {
     const term = query.trim().toLowerCase();
     return options.filter(option => (
       (!term || option.label.toLowerCase().includes(term) ||
       (!searchByLabelOnly && (option.value.toLowerCase().includes(term) ||
       (option.description || '').toLowerCase().includes(term))))
-      && matchesSelectFilters(option, filterValues, filterByDateRange ? from : '', filterByDateRange ? to : '')
     ));
-  }, [options, query, searchByLabelOnly, filterValues, filterByDateRange, from, to]);
+  }, [options, query, searchByLabelOnly]);
+  const filteredOptions = useMemo(() => searchedOptions.filter(option =>
+    matchesSelectFilters(option, filterValues, filterByDateRange ? from : '', filterByDateRange ? to : '', dateRangeMatch)),
+  [searchedOptions, filterValues, filterByDateRange, from, to, dateRangeMatch]);
 
   const closeAndFocus = () => {
     setOpen(false);
     triggerRef.current?.focus({ preventScroll: true });
+  };
+
+  const changeDates = (range: DateRangeValue) => {
+    setFrom(range.from); setTo(range.to);
+    // Dates intersect the selected filters, even when that leaves no results.
+    // Only an explicit filter change or reset should broaden the selection.
   };
 
   const choose = (option: SelectOption | undefined) => {
@@ -262,6 +274,7 @@ export default function SelectField({
         className="group relative overflow-hidden rounded-xl border bg-white transition-all"
         style={{
           borderColor: error ? '#EF4444' : open ? `${accentColor}66` : '#D7DEEA',
+          backgroundColor: selectedOption?.status ? '#ECFDF5' : undefined,
           boxShadow: error ? '0 0 0 3px rgba(239, 68, 68, 0.08)' : open ? `0 14px 34px ${accentColor}18` : '0 10px 28px rgba(15, 23, 42, 0.05)',
         }}
       >
@@ -277,13 +290,15 @@ export default function SelectField({
           className="flex min-h-10 w-full items-center justify-between gap-3 bg-transparent pl-4 pr-12 text-left outline-none"
           aria-haspopup="listbox"
           aria-label={ariaLabel}
+          aria-description={selectedOption?.statusDescription || selectedOption?.status}
+          data-selected-status={selectedOption?.status}
           aria-expanded={open && !disabled}
           aria-controls={open && !disabled ? listId : undefined}
           disabled={disabled}
         >
           <div className="min-w-0 py-2">
             {selectedOption ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {selectedOption.color && (
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -291,6 +306,7 @@ export default function SelectField({
                   />
                 )}
                 <span className="truncate text-sm font-semibold text-gray-800">{selectedOption.label}</span>
+                {selectedOption.status && <span aria-hidden="true" className="rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">✓ {selectedOption.status}</span>}
               </div>
             ) : (
               <span className="text-sm font-medium text-gray-400">{placeholder}</span>
@@ -403,8 +419,8 @@ export default function SelectField({
                     .filter(([key]) => key !== field.key && !descendants.some(candidate => candidate.key === key)));
                   const missingParent = field.dependsOn?.find(key => !filterValues[key]);
                   const choices = new Map<string, string>();
-                  for (const option of options) {
-                    if (missingParent || !matchesSelectFilters(option, scope, '', '')) continue;
+                  for (const option of searchedOptions) {
+                    if (missingParent || !matchesSelectFilters(option, scope, filterByDateRange ? from : '', filterByDateRange ? to : '', dateRangeMatch)) continue;
                     const value = option.filterValues?.[field.key];
                     choices.set(filterValueKey(value), value?.trim() || 'Not provided');
                   }
@@ -426,18 +442,12 @@ export default function SelectField({
                     </select>
                   </label>;
                 })}
-                {filterByDateRange && <>
-                  <label className="min-w-0 text-[11px] font-semibold text-slate-600">From
-                    <input type="date" aria-label={`${label} From`} value={from} max={to || undefined} aria-invalid={invalidRange}
-                      onChange={event => setFrom(event.target.value)} className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1 text-xs text-slate-700" />
-                  </label>
-                  <label className="min-w-0 text-[11px] font-semibold text-slate-600">To
-                    <input type="date" aria-label={`${label} To`} value={to} min={from || undefined} aria-invalid={invalidRange}
-                      onChange={event => setTo(event.target.value)} className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1 text-xs text-slate-700" />
-                  </label>
-                </>}
+                {filterByDateRange && <DateRangeFilter label={label} value={{ from, to }} className="col-span-full"
+                  onChange={changeDates} />}
               </div>
-              {invalidRange && <p role="alert" className="text-xs text-red-700">From must be on or before To.</p>}
+              {filterByDateRange && (from || to) && <p role="status" aria-label={`${label} date filter results`} className="text-[11px] font-semibold text-teal-800">
+                Showing {filteredOptions.length} of {options.length} options {dateRangeMatch === 'within' ? 'within' : 'overlapping'} the selected dates.
+              </p>}
             </div>}
 
             <div ref={listRef} id={listId} className="relative min-h-0 max-h-64 overflow-y-auto overscroll-contain p-2" role="listbox" aria-label={label}>
@@ -451,31 +461,36 @@ export default function SelectField({
                     id={`${listId}-${index}`}
                     role="option"
                     aria-selected={isSelected}
-                    aria-description={option.recommended ? 'Recommended: shares a word with the current module' : undefined}
+                    aria-description={[option.statusDescription || option.status, option.recommended ? 'Recommended: shares a word with the current module' : '',
+                      filterByDateRange && option.startDate && option.endDate ? `${option.startDate} to ${option.endDate}` : ''].filter(Boolean).join('. ') || undefined}
                     disabled={option.disabled}
                     title={option.disabled ? 'Already matched to another module' : undefined}
                     tabIndex={-1}
                     data-option-index={index}
+                    data-option-status={option.status}
                     onMouseEnter={() => { if (!option.disabled) setActiveIndex(index); }}
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => choose(option)}
-                    className="mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all last:mb-0 disabled:cursor-not-allowed disabled:opacity-40"
+                    className={`mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all last:mb-0 disabled:cursor-not-allowed ${option.status ? 'disabled:opacity-80' : 'disabled:opacity-40'}`}
                     style={{
-                      background: isSelected ? `${accentColor}12` : isActive ? '#F8FAFC' : 'transparent',
-                      boxShadow: isSelected ? `inset 0 0 0 1px ${accentColor}33` : isActive ? 'inset 0 0 0 1px rgba(148,163,184,0.18)' : undefined,
+                      background: option.status ? (isSelected ? '#D1FAE5' : '#ECFDF5') : isSelected ? `${accentColor}12` : isActive ? '#F8FAFC' : 'transparent',
+                      boxShadow: option.status ? `inset 0 0 0 ${isActive || isSelected ? 2 : 1}px #6EE7B7` : isSelected ? `inset 0 0 0 1px ${accentColor}33` : isActive ? 'inset 0 0 0 1px rgba(148,163,184,0.18)' : undefined,
                     }}
                   >
                     <span
                       className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: option.color || accentColor }}
+                      style={{ background: option.status ? '#059669' : option.color || accentColor }}
                     />
                     <span className="min-w-0 flex-1">
                       <span className={`block text-sm font-semibold leading-5 text-slate-800 ${wrapLabels ? 'whitespace-normal break-words' : 'truncate'}`}>{option.label}</span>
                       {option.description && (
                         <span className="block text-xs text-slate-500">{option.description}</span>
                       )}
+                      {filterByDateRange && (from || to) && option.startDate && option.endDate && <span aria-hidden="true" className="mt-1 block text-[11px] font-semibold text-teal-800">{option.startDate} → {option.endDate}</span>}
+                      {option.status && <span aria-hidden="true" className="mt-1 inline-block rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">✓ {option.status}</span>}
+                      {option.statusDescription && <span aria-hidden="true" className="mt-1 block text-xs text-emerald-800">{option.statusDescription}</span>}
                     </span>
-                    {option.recommended && <span aria-hidden="true" className="shrink-0 rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">Recommended</span>}
+                    {option.recommended && !option.status && <span aria-hidden="true" className="shrink-0 rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">Recommended</span>}
                     {isSelected && <i aria-hidden="true" className="ri-check-line mt-0.5 text-base" style={{ color: accentColor }} />}
                   </button>
                 );

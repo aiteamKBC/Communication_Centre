@@ -3,6 +3,9 @@ import { createPortal } from 'react-dom';
 import { Bell, CalendarRange, ChevronLeft, ChevronRight, FileSpreadsheet, Hand, Layers3, LocateFixed, LockKeyhole, Users } from 'lucide-react';
 import TimelineZoomControls from './TimelineZoomControls';
 import MergedTutorDates from './MergedTutorDates';
+import DateRangeFilter from './DateRangeFilter';
+import { emptyDateRange, matchesDateRange, type DateRangeValue } from './selectFilters';
+import { filterTimelineGroups } from '../timelineDateFilter';
 import { tutorDisplayName } from '../tutorProfiles';
 import type { ProgrammeGroup, Holiday, ZoomLevel, ModuleBlock, CustomModule, CatalogModule, TutorProfile } from '../types';
 import { MS, getModuleMeta } from '../data';
@@ -1130,15 +1133,42 @@ function TutorConflictTooltip({ data }: { data: TutorConflictTooltipData }) {
   );
 }
 
-export default function GanttTimeline({
+export default function GanttTimeline(props: Props) {
+  const [dates, setDates] = useState(emptyDateRange);
+  const groups = useMemo(() => filterTimelineGroups(props.groups, props.holidays, dates, props.referenceSource),
+    [props.groups, props.holidays, dates, props.referenceSource]);
+  // Display positions change when rows are filtered. All mutations must still
+  // address the original programme/cohort, including those hidden by the filter.
+  const originalGroupIndex = (gi: number) => props.groups.findIndex(group => group.id === groups[gi]?.id);
+  const originalRowIndex = (gi: number, ri: number) => props.groups[originalGroupIndex(gi)]?.rows.findIndex(row => row.id === groups[gi]?.rows[ri]?.id) ?? -1;
+  const originalRow = (gi: number, ri: number): [number, number] => [originalGroupIndex(gi), originalRowIndex(gi, ri)];
+  return <TimelineCanvas {...props} groups={groups} dates={dates} onDatesChange={setDates}
+    dateResultCounts={{ shown: groups.reduce((sum, group) => sum + group.rows.reduce((count, row) => count + row.blks.length, 0), 0),
+      total: props.groups.reduce((sum, group) => sum + group.rows.reduce((count, row) => count + row.blks.length, 0), 0) }}
+    beforeTimeline={<>{props.beforeTimeline}{(dates.from || dates.to) && !groups.length && <p role="status" className="px-4 py-8 text-center text-sm text-gray-500">No modules match the selected dates.</p>}</>}
+    onAddRow={gi => props.onAddRow(originalGroupIndex(gi))}
+    onEditRow={(gi, ri, ...args) => props.onEditRow(...originalRow(gi, ri), ...args)}
+    onDeleteRow={(gi, ri) => props.onDeleteRow(...originalRow(gi, ri))}
+    onViewMonthlyBreakdown={props.onViewMonthlyBreakdown && ((gi, ri, blockId) => props.onViewMonthlyBreakdown!(...originalRow(gi, ri), blockId))}
+    onCloneRow={props.onCloneRow && ((gi, ri) => props.onCloneRow!(...originalRow(gi, ri)))}
+    onCloneGroup={props.onCloneGroup && ((gi, ri, name) => props.onCloneGroup!(...originalRow(gi, ri), name))}
+    onCloneModule={props.onCloneModule && ((gi, ri, blockId) => props.onCloneModule!(...originalRow(gi, ri), blockId))}
+    onMoveModuleDates={props.onMoveModuleDates && ((gi, ri, ...args) => props.onMoveModuleDates!(...originalRow(gi, ri), ...args))}
+    onReorderRow={props.onReorderRow && ((fromGi, fromRi, toGi, toRi, position) => props.onReorderRow!(...originalRow(fromGi, fromRi), ...originalRow(toGi, toRi), position))}
+    onReorderGroup={props.onReorderGroup && ((fromGi, toGi) => props.onReorderGroup!(originalGroupIndex(fromGi), originalGroupIndex(toGi)))} />;
+}
+
+function TimelineCanvas({
   groups, holidays, customModules = EMPTY_CUSTOM_MODULES, catalogModules = EMPTY_CATALOG_MODULES, tutorProfiles = EMPTY_TUTOR_PROFILES, zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
   onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
   referenceSource, mergedSources = false, showZoomControls = true, toolbarControls, beforeTimeline,
-}: Props) {
+  dates, onDatesChange: setDates, dateResultCounts,
+}: Props & { dates: DateRangeValue; onDatesChange: (value: DateRangeValue) => void; dateResultCounts: { shown: number; total: number } }) {
   const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
   const fitModules = Boolean(referenceSource) || mergedSources;
+  const dateFilterLabel = referenceSource ? 'LMS timeline' : mergedSources ? 'Merged timeline' : 'Programme timeline';
   const cohortHeaderHeight = COHORT_H;
   const [tooltip, setTooltip]             = useState<TooltipData | null>(null);
   const [holidayTip, setHolidayTip]       = useState<{ h: Holiday; x: number; y: number } | null>(null);
@@ -1677,9 +1707,12 @@ export default function GanttTimeline({
 
   const effectiveViewWindow = useMemo(() => {
     const base = zoom === 'week' ? getNormalizedWeekWindow(viewWindow.start) : viewWindow;
-    if (fitModules && (zoom === 'week' || zoom === 'day')) return base;
-    return { start: base.start, end: effectiveEnd > base.end ? effectiveEnd : base.end };
-  }, [viewWindow, zoom, effectiveEnd, fitModules]);
+    const end = fitModules && (zoom === 'week' || zoom === 'day') ? base.end : effectiveEnd > base.end ? effectiveEnd : base.end;
+    if (dates.from && dates.to && dates.from > dates.to) return { start: base.start, end };
+    const from = dates.from ? parseLocalDateOnly(dates.from) : null;
+    const to = dates.to ? parseLocalDateOnly(dates.to) : null;
+    return { start: from || (to && to < base.start ? to : base.start), end: to || (from && from > end ? from : end) };
+  }, [viewWindow, zoom, effectiveEnd, fitModules, dates]);
 
   const cols = useMemo(() => {
     const columns = generateColumns(zoom, effectiveViewWindow.start, effectiveViewWindow.end);
@@ -1746,6 +1779,7 @@ export default function GanttTimeline({
   const emphasizeCohortBounds = zoom === 'year' || zoom === 'intake' || zoom === 'month' || zoom === 'week';
 
   const navigateToNow = useCallback(() => {
+    setDates(emptyDateRange);
     const now = new Date();
     const targetDate = toLocalIsoDate(now);
     setTodayKey(targetDate);
@@ -1763,7 +1797,7 @@ export default function GanttTimeline({
         };
       });
     }
-  }, [cols, zoom]);
+  }, [cols, zoom, setDates]);
 
   useEffect(() => {
     if (!pendingTimelineNavigation) return;
@@ -2412,14 +2446,19 @@ export default function GanttTimeline({
 
   const filteredClassSummaries = useMemo(() => {
     const q = classSearch.trim().toLowerCase();
-    if (!q) return classSummaries;
     return classSummaries.filter(item => (
-      item.className.toLowerCase().includes(q) ||
+      (!q || item.className.toLowerCase().includes(q) ||
       item.programmeName.toLowerCase().includes(q) ||
       item.cohortName.toLowerCase().includes(q) ||
-      item.moduleBreakdown.some(moduleItem => moduleItem.label.toLowerCase().includes(q))
+      item.moduleBreakdown.some(moduleItem => moduleItem.label.toLowerCase().includes(q)))
+      && ((!dates.from && !dates.to) || item.moduleBreakdown.some(moduleItem => {
+        const row = groups[item.groupIdx]?.rows[item.rowIdx];
+        const block = row?.blks.find(block => block.id === moduleItem.blockId);
+        const activeHolidays = holidays.filter(holiday => row?.holidayIds?.includes(holiday.id));
+        return matchesDateRange(block?.startDate, block ? block.source === 'LMS' || referenceSource ? block.endDate : getHolidayPlan(block, activeHolidays).effectiveEndDate : undefined, dates.from, dates.to);
+      }))
     ));
-  }, [classSearch, classSummaries]);
+  }, [classSearch, classSummaries, groups, holidays, dates, getHolidayPlan, referenceSource]);
 
   const classNavigationGroups = useMemo(() => {
     const q = classSearch.trim();
@@ -2866,6 +2905,7 @@ export default function GanttTimeline({
     const holidayPlan = getHolidayPlan(renderBlk, activeHolidays);
     const sessionSummary = getCurrentSessionSummary(renderBlk, customModules, catalogModules, activeHolidays, holidayPlan);
     const displayEndDate = barReferenceSource ? renderBlk.endDate : sessionSummary.effectiveEndDate || renderBlk.endDate;
+    if (!matchesDateRange(renderBlk.startDate, displayEndDate, dates.from, dates.to)) return null;
     const pos = getBlockPosition(renderBlk.startDate, displayEndDate, cols);
     if (!pos) return null;
     const extensionStartDate = sessionSummary.baselineEndDate && displayEndDate > sessionSummary.baselineEndDate
@@ -3281,6 +3321,12 @@ export default function GanttTimeline({
         <span className="tp-timeline-hint">{referenceSource ? <LockKeyhole size={14} aria-hidden="true" /> : <Hand size={14} aria-hidden="true" />}{referenceSource ? 'Read only' : 'Drag to explore'}</span>
       </div>
       {/* Zoom controls */}
+      <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2">
+        <DateRangeFilter label={dateFilterLabel} value={dates} onChange={value => { setDates(value); setTooltip(null); }} className="max-w-lg" />
+        {(dates.from || dates.to) && <p role="status" aria-label={`${dateFilterLabel} filter results`} className="mt-2 text-xs font-semibold text-teal-800">
+          Showing {dateResultCounts.shown} of {dateResultCounts.total} modules overlapping the selected dates.
+        </p>}
+      </div>
       <div
         className="training-plan-gantt-toolbar sticky flex items-center gap-2 border-b border-gray-200 bg-white"
         style={{
@@ -3447,6 +3493,7 @@ export default function GanttTimeline({
                     </div>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
+                    <DateRangeFilter label={`${dateFilterLabel} classes`} value={dates} onChange={setDates} className="border-b border-slate-100 px-1 pb-2" />
                     {classNavigationGroups.active.length ? classNavigationGroups.active.map(programme => {
                       const isProgrammeCollapsed = collapsedClassProgrammes.has(programme.programmeName);
                       return (
@@ -3948,6 +3995,8 @@ export default function GanttTimeline({
                     { sourceRow: row, rowIndex: ri, color: '#1B2A4A' },
                     { sourceRow: pairedRow, rowIndex: pairedRowIndex, color: '#115E59' },
                   ];
+                  if ((dates.from || dates.to) && !sources.some(({ sourceRow }) => sourceRow.blks.some(blk => matchesDateRange(blk.startDate,
+                    blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate, dates.from, dates.to)))) return null;
                   const positions = sources.flatMap(({ sourceRow }) => sourceRow.blks.flatMap(blk => {
                     const endDate = blk.source === 'LMS' ? blk.endDate : getHolidayPlan(blk, rowHolidays).effectiveEndDate || blk.endDate;
                     const pos = getBlockPosition(blk.startDate, endDate, cols);

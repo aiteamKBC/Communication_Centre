@@ -42,6 +42,8 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
   const currentRecords = useMemo(() => groups.flatMap(programme => programme.rows.flatMap(cohort => cohort.blks.map(block => ({
     programme, cohort, block, module: comparisonModuleName(block, customModules),
   })))), [groups, customModules]);
+  const manualMatches = useMemo(() => new Map(currentRecords.filter(record => record.block.lmsSourceModuleId?.trim())
+    .map(record => [record.block.lmsSourceModuleId!.trim(), record])), [currentRecords]);
   const options = currentRecords.filter(record => currentKey ? currentMatchKey(record) === currentKey
     : !catalogueModule || (record.block.moduleCatalogueId
       ? record.block.moduleCatalogueId === String(catalogueModule.id)
@@ -84,6 +86,7 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
   }, [open, loaded, retry]);
 
   const selected = records.find(record => record.sourceModuleId === selectedLms);
+  const savedPair = Boolean(selectedLms && current?.block.lmsSourceModuleId?.trim() === selectedLms);
   const reserved = new Set(currentRecords.filter(record => currentMatchKey(record) !== activeKey)
     .map(record => record.block.lmsSourceModuleId).filter(Boolean));
   const programmeModules = comparisonOnly ? records : records.filter(record => record.planProgrammeId === current?.programme.id
@@ -95,7 +98,7 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
       || (left.module || 'Untitled module').localeCompare(right.module || 'Untitled module'));
   const preview = current && selected ? compareLmsModule(current, selected, holidays, tutorProfiles) : undefined;
   const save = async (sourceId: string) => {
-    if (!current || saving || !onSave) return;
+    if (!current || saving || !onSave || (sourceId && sourceId === current.block.lmsSourceModuleId?.trim())) return;
     if (sourceId && (!selected || (!comparisonOnly && selected.planProgrammeId !== current.programme.id
       && sourceId !== current.block.lmsSourceModuleId) || reserved.has(sourceId))) {
       setError('Choose an available LMS module. This module may already be matched to another current module.');
@@ -126,21 +129,25 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
       <p className="text-xs text-gray-500">{comparisonOnly
         ? `Choose any Current Training Plan module and any LMS module, even when their names, programmes and dates differ.${onSave ? ' Save your manual match to show Current above LMS on the same Merge timeline.' : ' Compare their details below.'}`
         : 'Compare this saved Training Plan assignment with an LMS module. A unique match with the same name and start date is selected automatically. Choose a different LMS module to compare or save a manual match.'}</p>
+      <p className="text-xs font-semibold text-emerald-800">Green modules marked “Manually matched” already have a saved manual link.</p>
       <div className="grid grid-cols-2 items-start gap-3" aria-label="Modules to compare">
-      <div className="min-w-0 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-gray-700"><span className="block min-h-12 sm:min-h-4">Current Training Plan module</span>
+      <div className={`min-w-0 space-y-2 rounded-lg border p-3 text-xs font-semibold text-gray-700 ${current?.block.lmsSourceModuleId ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}><span className="block min-h-12 sm:min-h-4">Current Training Plan module</span>
         {comparisonOnly ? <SelectField ariaLabel="Current module to compare" label="Current modules" searchLabel="Search current comparison modules"
           disabled={saving} value={activeKey} onChange={value => { setSelectedCurrent(value); setError(''); setNotice(''); }}
           options={options.map(record => ({ value: currentMatchKey(record), label: record.module,
+            status: record.block.lmsSourceModuleId?.trim() ? 'Manually matched' : undefined,
+            statusDescription: record.block.lmsSourceModuleId?.trim() ? `Linked to ${records.find(source => source.sourceModuleId === record.block.lmsSourceModuleId?.trim())?.module || 'a saved LMS module'}` : undefined,
             startDate: record.block.startDate, endDate: record.block.endDate,
             filterValues: { programme: record.programme.name, cohort: record.cohort.label, group: record.block.groupName, tutor: tutorDisplayName(record.block, tutorProfiles) },
             description: [record.programme.name, record.cohort.label, record.block.groupName, record.block.startDate].filter(Boolean).join(' · ') }))}
-          filterFields={MODULE_FILTER_FIELDS}
+          filterFields={MODULE_FILTER_FIELDS} filterByDateRange dateRangeMatch="within"
           placeholder="Choose a scheduled module" wrapLabels popoverZIndex={200} />
         : <select aria-label="Current module to match" value={activeKey} disabled={saving || Boolean(currentKey)}
           onChange={event => { setSelectedCurrent(event.target.value); setError(''); setNotice(''); }} className="mt-2 w-full min-w-0 rounded-lg border border-gray-200 p-2 text-xs">
           <option value="">Choose a scheduled module</option>
-          {options.map(record => <option key={currentMatchKey(record)} value={currentMatchKey(record)}>
-            {record.module}
+          {options.map(record => <option key={currentMatchKey(record)} value={currentMatchKey(record)}
+            style={record.block.lmsSourceModuleId?.trim() ? { backgroundColor: '#D1FAE5', color: '#065F46' } : undefined}>
+            {record.module}{record.block.lmsSourceModuleId?.trim() ? ' — Manually matched' : ''}
           </option>)}
         </select>}
       </div>
@@ -150,11 +157,13 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
         disabled={!current || saving || !loaded || loading} value={selectedLms}
         onChange={value => { setSelectedLms(value); setNotice(''); }}
         options={available.map(record => ({ value: record.sourceModuleId, label: record.module || 'Untitled module', recommended: record.sharedWords > 0,
+          status: manualMatches.has(record.sourceModuleId) ? 'Manually matched' : undefined,
+          statusDescription: manualMatches.has(record.sourceModuleId) ? `Linked to ${manualMatches.get(record.sourceModuleId)!.module} · ${manualMatches.get(record.sourceModuleId)!.cohort.label} · ${manualMatches.get(record.sourceModuleId)!.block.groupName || 'Group not provided'}` : undefined,
           startDate: record.startDate, endDate: record.endDate,
           filterValues: { programme: record.programme, cohort: lmsCohortDisplayName(record), group: lmsRecordGroup(record), tutor: record.tutorName },
           description: comparisonOnly ? [record.programme, record.cohortName, record.groupName, record.startDate, record.sourceModuleId].filter(Boolean).join(' · ') : undefined,
           disabled: !comparisonOnly && reserved.has(record.sourceModuleId) }))}
-        filterFields={MODULE_FILTER_FIELDS}
+        filterFields={MODULE_FILTER_FIELDS} filterByDateRange dateRangeMatch="within"
         placeholder={loading ? 'Loading LMS modules…' : selectedLms && !selected ? 'Unavailable saved LMS module' : 'Choose an LMS module'}
         searchPlaceholder="Search by module name…" searchByLabelOnly wrapLabels accentColor="#0F766E" popoverZIndex={200}
         emptyTitle="No matching modules" emptyText="Try another module name." />
@@ -162,7 +171,7 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
       </div>
       {!options.length && <p className="text-xs text-amber-800">No saved Training Plan assignments are available for this module.</p>}
       {loading && <p role="status" className="text-xs text-gray-500">Loading LMS modules…</p>}
-      {(!comparisonOnly || onSave) && selected && current && <p role="status" className="text-xs font-semibold text-teal-900">{current.block.lmsSourceModuleId === selectedLms ? 'Saved manual match'
+      {(!comparisonOnly || onSave) && selected && current && <p role="status" className={`text-xs font-semibold ${savedPair ? 'rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-emerald-900' : 'text-teal-900'}`}>{savedPair ? 'Saved manual match'
         : automatic?.lms.sourceModuleId === selectedLms ? 'Automatic match: same module name and start date.' : 'Selected for comparison; save to keep this manual match.'}</p>}
       {!!rows.length && <div className="overflow-x-auto" role="region" aria-label="Module comparison details" tabIndex={0}><table aria-label="Selected module comparison" className="w-full min-w-[520px] table-fixed text-left text-xs">
         <thead><tr><th className="p-2">Field</th><th className="p-2">Current Training Plan</th><th className="p-2">LMS</th></tr></thead>
@@ -173,7 +182,8 @@ export default function LmsModuleMatcher({ groups, customModules = [], holidays 
       {error && <div role="alert" className="text-xs text-red-700"><p>{error}</p>{loadFailed && <button type="button" disabled={loading} onClick={() => { setLoaded(false); setRetry(value => value + 1); }} className="underline">Retry loading LMS modules</button>}</div>}
       {notice && <p role="status" className="text-xs text-teal-800">{notice}</p>}
       {onSave && <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={!current?.block.trainingPlanId || !selectedLms || !selected || reserved.has(selectedLms) || saving || loading} onClick={() => void save(selectedLms)} className="rounded-lg bg-teal-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-40">{saving ? 'Saving match…' : 'Save manual match'}</button>
+        <button type="button" disabled={!current?.block.trainingPlanId || !selectedLms || !selected || reserved.has(selectedLms) || savedPair || saving || loading}
+          title={savedPair ? 'This manual match is already saved.' : undefined} onClick={() => void save(selectedLms)} className="rounded-lg bg-teal-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-40">{saving ? 'Saving match…' : 'Save manual match'}</button>
         {current?.block.lmsSourceModuleId && <button type="button" disabled={saving} onClick={() => void save('')} className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold">Remove manual match</button>}
         {onViewMerge && current?.block.lmsSourceModuleId && <button type="button" disabled={saving} onClick={onViewMerge} className="rounded-lg border border-teal-300 px-3 py-2 text-xs font-bold text-teal-900">View in Merge</button>}
       </div>}
