@@ -28,7 +28,8 @@ from .services import Conflict
 
 logger = logging.getLogger(__name__)
 
-DAYS_AHEAD = 14
+# As far ahead as a meeting can be moved to (lms_booking.DAYS_AHEAD), so a moved meeting stays in view.
+DAYS_AHEAD = 92
 # What the subject says, after _plain(): a progress review, or a monthly coaching meeting (also "Coaching with <coach> -
 # <learner>"). Staff meetings ("Weekly coaching meeting") name no learner and are left out by the matching.
 SUBJECTS = (('pr', re.compile(r'\bprogress review\b')), ('mcm', re.compile(r'\bmonthly coaching\b|^coaching with ')))
@@ -405,7 +406,7 @@ def cancel(meeting_id, reason, note, agent, actor, ticket=None):
 
 
 def free_times(meeting, now=None):
-    """The times the meeting can move to: the coach's free hour slots in the next two weeks (as Book with coach offers
+    """The times the meeting can move to: the coach's free hour slots in the next three months (as Book with coach offers
     them), the meeting's own time aside."""
     from . import lms_booking
     length = _length(meeting)

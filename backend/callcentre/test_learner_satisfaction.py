@@ -84,7 +84,8 @@ class LearnerSatisfactionRulesTests(SimpleTestCase):
 
     def test_partial_source_load_does_not_become_authoritative(self):
         from .sources import learner_directory
-        with mock.patch('callcentre.sources.rows', side_effect=[[lms()], RuntimeError('offline')]):
+        with mock.patch('callcentre.sources.rows', side_effect=[[lms()], RuntimeError('offline')]), \
+                mock.patch('callcentre.phone_numbers.numbers', return_value={}):
             self.assertFalse(learner_directory().sources_complete)
 
     def test_no_automatic_evidence_for_satisfaction(self):

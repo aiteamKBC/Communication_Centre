@@ -35,6 +35,7 @@ const EVENT_NAMES: Record<string, string> = {
   meeting_cancelled: 'Meeting cancelled', meeting_rescheduled: 'Meeting moved', employer_check: 'Employer step',
   employer_dialled: 'Employer rung', email_dry_run: 'Email (dry run)', email_requested: 'Email sent', reminder_eligibility_changed: 'Reminder changed',
   learner_feedback_completed: 'Satisfaction feedback completed', employer_feedback_completed: 'Employer feedback completed',
+  phone_changed: 'Phone number changed',
 };
 export const eventName = (kind: string) => EVENT_NAMES[kind] || human(kind);
 
@@ -49,6 +50,10 @@ export function eventText(kind: string, data: Record<string, unknown>) {
   if (kind === 'employer_check') return [EMPLOYER_RESULTS[text('result')] || human(text('result')), text('note')].filter(Boolean).join(': ');
   if (kind === 'meeting_rescheduled' && text('to')) return `Moved to ${appointmentTime(text('to'))}`;
   if (kind === 'meeting_cancelled') return text('reason');
+  if (kind === 'phone_changed') {
+    const number = (key: string) => (text(key) ? `+${text(key)}` : 'no number');
+    return [`${number('previous')} → ${number('phone')}`, data.restored ? 'the LMS/Aptem number again' : '', text('note')].filter(Boolean).join(' · ');
+  }
   if (kind === 'outcome_call_linked' || kind === 'feedback_call_linked') return `Zoom: ${callResult(text('result'))}`;
   if (kind === 'outcome_call_mismatch') return `Saved as ${human(text('outcome'))}, but Zoom reports ${callResult(text('result'))}`;
   if (kind === 'feedback_call_mismatch') return `Zoom reports ${callResult(text('result'))}`;

@@ -391,6 +391,23 @@ class LmsBookingTests(SimpleTestCase):
         slots = self.slots(datetime(2026, 10, 5, 9, 30, tzinfo=LONDON), day=date(2026, 10, 5))
         self.assertEqual([s.strftime('%H:%M') for s in slots], ['11:00', '12:00', '13:00', '14:00', '15:00', '16:00'])
 
+    def test_about_three_months_ahead_asked_of_outlook_in_parts_it_accepts(self):
+        now = datetime(2026, 11, 11, 8, tzinfo=LONDON)
+        starts = lms_booking.slot_starts(now)
+        self.assertEqual(starts[0].date(), date(2026, 11, 11))
+        self.assertEqual(starts[-1].date(), date(2027, 2, 10))   # 92 days, the last a working day
+        lms = mock.MagicMock()
+        lms.cursor.return_value.__enter__.return_value.description = []
+        lms.cursor.return_value.__enter__.return_value.fetchall.return_value = []
+        with mock.patch.object(lms_booking, 'outlook_busy', return_value=[]) as outlook, \
+                mock.patch.object(lms_booking, 'connections', {lms_booking.LMS: lms}):
+            lms_booking.coach_busy('coach@example.com', starts[0], starts[-1] + timedelta(hours=1))
+        parts = [call.args[1:] for call in outlook.call_args_list]
+        self.assertEqual(len(parts), 2)
+        self.assertTrue(all(end - start <= timedelta(days=lms_booking.SCHEDULE_DAYS) for start, end in parts))
+        self.assertEqual((parts[0][0], parts[-1][1]), (starts[0], starts[-1] + timedelta(hours=1)))
+        self.assertEqual(parts[0][1], parts[1][0])   # no gap between the parts
+
     def test_no_weekends_or_bank_holidays_and_unknown_years_fail_closed(self):
         now = datetime(2026, 10, 1, 8, tzinfo=LONDON)
         self.assertEqual(self.slots(now, day=date(2026, 10, 3)), [])

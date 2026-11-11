@@ -21,6 +21,7 @@ from . import aptem_summaries as summaries
 from . import learners
 from . import identity
 from . import lms_reviews
+from . import phone_numbers
 from .db import APTEM, DB, LMS
 from .models import CaseTicket, CycleState, TicketEvent
 from .rules import (LONDON, MISSED_LECTURES_SINCE, PAUSED_CATEGORIES, REVIEW_CATEGORIES, due_at, email_key, missed_lectures_ready_until, next_workday,
@@ -68,7 +69,7 @@ def profiles():
     aptem = get_source('aptem_learners', lambda: rows(APTEM, learners.APTEM_LEARNERS_SQL))
     if lms is None and aptem is None:
         raise RuntimeError('Neither learner source is available.')
-    people = learners.merge(lms or [], aptem or [], _staff())
+    people = phone_numbers.apply(learners.merge(lms or [], aptem or [], _staff()))
     people.sources_complete = lms is not None and aptem is not None
     return people
 
@@ -85,7 +86,7 @@ def learner_directory():
             loaded.append(None)
     if all(item is None for item in loaded):
         raise DatabaseError('Neither learner source is available.')
-    people = learners.merge(*(item or [] for item in loaded), _staff())
+    people = phone_numbers.apply(learners.merge(*(item or [] for item in loaded), _staff()))
     people.sources_complete = all(item is not None for item in loaded)
     return people
 
@@ -97,7 +98,7 @@ def unified_directory():
         rows(LMS, identity.APTEM_SQL), rows(LMS, learners.STAFF_SQL),
         rows(LMS, identity.PROFILES_SQL), rows(LMS, identity.MAP_SQL), rows(LMS, identity.ACCOUNTS_SQL))
     people.loaded_at = timezone.now().isoformat()
-    return people
+    return phone_numbers.apply(people)
 
 
 DIRECTORY_REFRESH_SECONDS = 300
@@ -131,9 +132,14 @@ def cached_directory():
             if _cached['complete']:
                 return _cached['directory']
             aptem = None
-        _cached['directory'] = learners.merge(lms, aptem or [], _staff())
+        _cached['directory'] = phone_numbers.apply(learners.merge(lms, aptem or [], _staff()))
         _cached['complete'] = aptem is not None
     return _cached['directory']
+
+
+def reload_directory():
+    """Load the directory again on the next ask (a director changed a phone number)."""
+    _cached['next_refresh'] = 0.0
 
 
 def on_break_emails():
