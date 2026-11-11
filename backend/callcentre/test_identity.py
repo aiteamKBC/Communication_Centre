@@ -158,7 +158,8 @@ class IdentityTests(SimpleTestCase):
             if sql == identity.APTEM_SQL:
                 return [aptem()]
             return []
-        with patch.object(sources, 'rows', side_effect=read) as query, patch.object(sources, 'source_health') as health:
+        with patch.object(sources, 'rows', side_effect=read) as query, patch.object(sources, 'source_health') as health, \
+                patch('callcentre.phone_numbers.numbers', return_value={}):
             p = sources.unified_directory()
         self.assertTrue(p.sources_complete)
         self.assertEqual(query.call_count, 6)

@@ -641,6 +641,25 @@ class DoNotCall(Retained):
         managed = False
 
 
+class PhoneNumberChange(Retained):
+    """A number a director set for a learner or a line manager (``phone_numbers``), used instead of the one in the LMS
+    or Aptem. Every change is a new row: the latest for a person is in force, and an empty ``phone`` puts the LMS or
+    Aptem number back. Nothing is written to the LMS or Aptem."""
+    role = models.CharField(max_length=10)   # learner or employer (the line manager)
+    email = models.EmailField()
+    name = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=32, blank=True)
+    # The LMS/Aptem number for this person when the change was made, for the history and the card.
+    previous_phone = models.CharField(max_length=32, blank=True)
+    note = models.TextField(blank=True)
+    changed_by = models.CharField(max_length=255)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_phone_number_change'
+        managed = False
+
+
 class AttendanceEdit(Retained):
     """A correction to a learner's lecture attendance made on a missed-lecture call (``attendance_edits``). The change
     is written to the LMS's own tables; this row keeps who made it, why, what it replaced and the AI's check."""

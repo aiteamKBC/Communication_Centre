@@ -25,7 +25,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import attendance_edits, booking_links, delegation, do_not_call, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
+from . import attendance_edits, booking_links, delegation, do_not_call, phone_numbers, email_settings, employer_desk, mailer, zoom_accounts, zoom_lines
 from .access import is_director
 from .allocation import owners
 from .call_scope import system_calls
@@ -318,6 +318,40 @@ def employer_specialists(request):
         'open_employer_cases': CaseTicket.objects.open().filter(source_type=employer_desk.EMPLOYER).count(),
         'history': employer_desk.history(),
     })
+
+
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def phone_numbers_view(request):
+    """Director card: change any learner's or line manager's number for the call centre (the LMS and Aptem are not
+    changed), or put the LMS/Aptem number back; with the history."""
+    require_manager(request.user)
+    if request.method == 'POST':
+        data = body(request)
+        role, email = data.get('role'), email_key(data.get('email'))
+        people = learner_directory()
+        if role == 'learner':
+            person = people.resolve(email=email) if hasattr(people, 'resolve') else None
+            profile = person['profile'] if person else people.get(email)
+            if not profile:
+                raise ValueError('Choose a learner from the list.')
+            main = email_key(profile['learner_email'])
+            emails = set(person['emails']) if person else {email, main, *(alias for alias, to in people.aliases.items() if to == main)}
+            name, current, email = profile['learner_name'], profile['learner_phone'], profile['learner_email']
+        elif role == 'employer':
+            if email not in people.managers:
+                raise ValueError('Choose a line manager from the list.')
+            first = people[people.managers[email][0]]
+            emails, name, current = {email}, first.get('manager_name') or email, people.manager_phones.get(email, '')
+        else:
+            raise ValueError('Choose a learner or a line manager.')
+        change, cases = phone_numbers.set_number(role, email, emails, name, data.get('phone'), current, data.get('note'),
+                                                 request.user.get_username())
+        payload = phone_numbers.listing(learner_directory())
+        payload['saved'] = {**phone_numbers.change_json(change), 'cases': cases}
+        return JsonResponse(payload)
+    return JsonResponse(phone_numbers.listing(learner_directory()))
 
 
 @authenticated

@@ -15,6 +15,7 @@ import Desk from './engagement/Desk';
 import { CallsPage, ScorecardsPage } from './engagement/Director';
 import DirectorHome from './engagement/DirectorHome';
 import DoNotCall from './engagement/DoNotCall';
+import PhoneNumbers from './engagement/PhoneNumbers';
 import EmployerSpecialists from './engagement/EmployerSpecialists';
 import EventAllocation from './engagement/EventAllocation';
 import Imports from './engagement/Imports';
@@ -222,6 +223,7 @@ export default function CallCentrePage() {
             <>
               <EmployerSpecialists session={session} onChanged={refresh} notify={notify} />
               <DoNotCall session={session} onChanged={refresh} notify={notify} />
+              <PhoneNumbers session={session} onChanged={refresh} notify={notify} />
               <Allocation csrf={config.data?.csrf_token || ''} employerSpecialists={team} onWorkspace={id => setParam({ view: 'operator', operator: String(id) })} />
             </>
           ) : view === 'event-allocation' ? (
