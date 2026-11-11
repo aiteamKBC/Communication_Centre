@@ -15,6 +15,8 @@ const STATES: Record<AbsenceState, [string, string]> = {
 
 const lectureLabel = (lecture: Pick<UpcomingLecture, 'starts_at' | 'module'> & { session_number?: number | null }) =>
   `${appointmentTime(lecture.starts_at)} · ${lecture.module || 'Lecture'}${lecture.session_number ? ` (session ${lecture.session_number})` : ''}`;
+/** A lecture already under way (or over) stays on offer until its register comes in. */
+const started = (lecture: Pick<UpcomingLecture, 'starts_at'>) => Date.parse(lecture.starts_at) <= Date.now();
 
 /** A lecture in the next two weeks the learner said they will miss: when the register shows them absent, its
  * missed-lecture case closes as soon as it is made. */
@@ -79,12 +81,12 @@ export default function AuthorisedAbsences({ learner, target, days, reasons, set
         </p>
       ) : (
         <fieldset disabled={busy} className="cc-form">
-          <label>Lecture they will miss (next {days} days)
+          <label>Lecture they will miss (next {days} days, or started with no register yet)
             <select name="session_ref" value={session} onChange={event => setSession(event.target.value)}>
               <option value="">Choose a lecture</option>
               {learner.upcoming.map(lecture => (
                 <option key={lecture.ref} value={lecture.ref} disabled={marked.has(lecture.ref)}>
-                  {lectureLabel(lecture)}{marked.has(lecture.ref) ? ' · already marked' : ''}
+                  {lectureLabel(lecture)}{started(lecture) ? ' · started, register not in yet' : ''}{marked.has(lecture.ref) ? ' · already marked' : ''}
                 </option>
               ))}
             </select>

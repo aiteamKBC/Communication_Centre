@@ -16,6 +16,10 @@ by the cycle straight after the cases are made), so nobody calls about it and th
 * a learner with more than one enrolment row for their emails is offered nothing;
 * each module's live sessions, following the LMS's shared-series owner (``teams_shared_source_module_id``), active and
   starting in the next ``WINDOW``. A recurring series offers only its real occurrences.
+* a lecture that has started stays on offer until its register is in (``curriculum.live_session_learner_attendance``,
+  written when the Teams attendance report syncs), so a learner who apologises during or just after it can still be
+  marked; at most ``REGISTER_WAIT`` after it started. Once the register is in, the missed-lecture case can be made, so
+  the lecture is no longer offered.
 
 **Matching the case**: a case from the LMS live register names its register row, whose occurrence is compared with the
 absence's; any other case (the legacy register) matches on the learner, the lecture date and the module, and only
@@ -44,6 +48,8 @@ WINDOW = timedelta(days=14)
 INACTIVE = {'cancelled', 'canceled', 'completed', 'deleted', 'failed', 'superseded', 'awaiting-signature'}
 # After this many days with no missed-lecture case, the learner most likely attended.
 NO_CASE_AFTER = timedelta(days=7)
+# How long a started lecture whose register has not come in stays on offer.
+REGISTER_WAIT = timedelta(days=7)
 
 
 def ready():
@@ -163,8 +169,8 @@ def session_json(row):
 
 
 def upcoming(learners, emails, now=None):
-    """{main email: the learner's lectures starting in the next ``WINDOW``}, for these learners ({main email: profile});
-    ``emails`` maps every email of theirs to the main one."""
+    """{main email: the learner's lectures starting in the next ``WINDOW``, and those started whose register is not in
+    yet}, for these learners ({main email: profile}); ``emails`` maps every email of theirs to the main one."""
     now = now or timezone.now()
     found = enrolments(emails)
     if not found:
@@ -176,15 +182,23 @@ def upcoming(learners, emails, now=None):
     wanted = sorted({module for ids in modules.values() for module in ids})
     if not wanted:
         return {}
-    bounds = [moment.astimezone(dt_timezone.utc).replace(tzinfo=None) for moment in (now, now + WINDOW)]
-    by_module = defaultdict(dict)
+    bounds = [moment.astimezone(dt_timezone.utc).replace(tzinfo=None) for moment in (now - REGISTER_WAIT, now + WINDOW)]
+    sessions = []
     for row in rows(LMS, SESSIONS_SQL, [wanted, *bounds]):
         if not active(row['series_status']) or (row['occurrence_id'] and not active(row['status'])):
             continue
         # Recurring dates come from real occurrences only; never made up from the pattern.
         if not row['occurrence_id'] and text(row['repeat_pattern']) not in ('', 'none'):
             continue
-        session = session_json(row)
+        sessions.append(session_json(row))
+    started = sorted({s['occurrence_id'] for s in sessions if s['starts_at'] <= now and s['occurrence_id']})
+    registered = {text(row['occurrence_id']) for row in rows(LMS, '''SELECT DISTINCT occurrence_id
+        FROM curriculum.live_session_learner_attendance WHERE occurrence_id = ANY(%s)''', [started])} if started else set()
+    by_module = defaultdict(dict)
+    for session in sessions:
+        # Started: still on offer while its register is not in (a one-off without an occurrence has no register).
+        if session['starts_at'] <= now and (not session['occurrence_id'] or session['occurrence_id'] in registered):
+            continue
         by_module[session['module_id']][session['ref']] = session
     result = {}
     for main, ids in modules.items():

@@ -98,7 +98,7 @@ export default function MeetingTools({ c, session, notify, onChanged }: {
           <div className="ec-form">
             <label>Day
               <select value={day} onChange={event => { setDay(event.target.value); setStart(''); }} disabled={!times}>
-                <option value="">{!times ? 'Finding the coach’s free times…' : days.length ? 'Choose a day…' : 'No free times in the next 2 weeks'}</option>
+                <option value="">{!times ? 'Finding the coach’s free times…' : days.length ? 'Choose a day…' : 'No free times in the next 3 months'}</option>
                 {days.map(value => <option key={value} value={value}>{dayLabel(value)}</option>)}
               </select>
             </label>

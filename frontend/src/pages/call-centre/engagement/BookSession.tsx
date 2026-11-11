@@ -115,7 +115,7 @@ function BookingForm({ caseId, session, notify, onDone }: { caseId: number; sess
       <label>Coach<input value={options.coach.name} readOnly /></label>
       <label>Date
         <select value={day} onChange={event => { setDay(event.target.value); setStart(''); }}>
-          <option value="">{days.length ? 'Choose a date…' : 'No free times in the next 2 weeks'}</option>
+          <option value="">{days.length ? 'Choose a date…' : 'No free times in the next 3 months'}</option>
           {days.map(([value, count]) => <option key={value} value={value}>{dayLabel(value)} ({count} free)</option>)}
         </select>
       </label>

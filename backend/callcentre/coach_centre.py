@@ -280,14 +280,15 @@ def lift(email, actor, entry_id, note, role='coach'):
 
 @transaction.atomic(using=DB)
 def mark_absent(email, actor, learner_email, session_ref, reason, note, role='coach'):
-    """Mark one of the learner's lectures in the next two weeks as an authorised absence. The lecture must be one the
-    LMS assigns them now (``authorised_absence.upcoming``): nothing the browser sends is taken as a lecture."""
+    """Mark one of the learner's lectures (the next two weeks, or started with no register yet) as an authorised absence.
+    The lecture must be one the LMS assigns them now (``authorised_absence.upcoming``): nothing the browser sends is
+    taken as a lecture."""
     learner, emails = chosen_learner(email, learner_email, role)
     own = {alias: main for alias, main in emails.items() if main == learner['learner_email']}
     sessions = authorised_absence.upcoming({learner['learner_email']: learner}, own).get(learner['learner_email'], [])
     session = next((item for item in sessions if item['ref'] == str(session_ref or '')), None)
     if session is None:
-        raise ValueError('Choose one of the learner’s lectures in the next two weeks. Reload the page if it has started.')
+        raise ValueError('Choose one of the learner’s lectures in the list. Reload the page: its register may have come in.')
     absence = authorised_absence.add(learner, email, session, reason, note, actor, role)
     log(email, actor, role, 'absence_added', learner['learner_email'], learner['learner_name'],
         {'absence_id': absence.pk, 'date': session['date'].isoformat(), 'starts_at': session['starts_at'].isoformat(),

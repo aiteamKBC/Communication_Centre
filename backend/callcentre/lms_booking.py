@@ -29,7 +29,10 @@ TITLES = {CATCH_UP: 'Catch-up Session', SUPPORT: 'Student Support'}
 DURATION = 60
 FIRST_HOUR, LAST_HOUR = 9, 16          # whole hour-long slots inside 09:00-17:00 UK
 LEAD = timedelta(minutes=60)
-DAYS_AHEAD = 14
+# How far ahead a session can be booked or a review moved (review_meetings reads the calendars as far): about 3 months.
+DAYS_AHEAD = 92
+# Outlook answers free/busy for at most 62 days per request (getSchedule), so longer ranges are asked in parts.
+SCHEDULE_DAYS = 62
 REASONS = {
     'illness': 'Illness or medical appointment',
     'work': 'Work commitment',
@@ -205,8 +208,8 @@ def _utc(value):
     return datetime.fromisoformat(str(value)[:19]).replace(tzinfo=dt_timezone.utc)
 
 
-def coach_busy(coach, start, end):
-    """Busy periods: anything not free in Outlook, plus the coach's live LMS bookings."""
+def outlook_busy(coach, start, end):
+    """What the coach's Outlook calendar shows as not free between ``start`` and ``end`` (at most SCHEDULE_DAYS)."""
     try:
         data = graph.request('POST', f'{graph.user_path(coach)}/calendar/getSchedule', {
             'schedules': [coach],
@@ -219,8 +222,17 @@ def coach_busy(coach, start, end):
     schedule = next((s for s in data.get('value') or [] if email_key(s.get('scheduleId')) == coach), None)
     if not schedule or schedule.get('error'):
         raise Unavailable('The coach’s calendar could not be read, so no times can be offered.')
-    busy = [(_utc(item['start']['dateTime']), _utc(item['end']['dateTime']))
+    return [(_utc(item['start']['dateTime']), _utc(item['end']['dateTime']))
             for item in schedule.get('scheduleItems') or [] if str(item.get('status', '')).lower() != 'free']
+
+
+def coach_busy(coach, start, end):
+    """Busy periods: anything not free in Outlook, plus the coach's live LMS bookings."""
+    busy, part = [], start
+    while part < end:
+        stop = min(end, part + timedelta(days=SCHEDULE_DAYS))
+        busy.extend(outlook_busy(coach, part, stop))
+        part = stop
     with connections[LMS].cursor() as cursor:
         booked = _fetch(cursor, '''SELECT scheduled_date, scheduled_time, duration_minutes FROM "Coach".coach_calendar_event
             WHERE lower(owner_email) = %s AND scheduled_date BETWEEN %s AND %s AND scheduled_time IS NOT NULL

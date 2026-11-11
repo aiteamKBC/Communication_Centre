@@ -48,10 +48,10 @@ class PlanTests(SimpleTestCase):
 
 
 class UpcomingTests(SimpleTestCase):
-    def run_upcoming(self, sessions, plan=None, profiles=None, preset=None):
+    def run_upcoming(self, sessions, plan=None, profiles=None, preset=None, registers=None):
         enrolment = [{'id': 7, 'email': 'amy@x.uk', 'Training_plan': json.dumps(plan) if plan is not None else None,
                       'Learning_plan': None}]
-        answers = [enrolment, profiles or [], *([preset, []] if preset else []), sessions]
+        answers = [enrolment, profiles or [], *([preset, []] if preset else []), sessions, *([registers] if registers is not None else [])]
         with patch('callcentre.authorised_absence.rows', side_effect=answers) as read:
             result = aa.upcoming({'amy@x.uk': {}}, {'amy@x.uk': 'amy@x.uk'}, NOW)
         return result, read
@@ -67,7 +67,19 @@ class UpcomingTests(SimpleTestCase):
         self.assertEqual([s['ref'] for s in sessions], ['occurrence:o1', 'series:s9'])
         self.assertEqual(sessions[0]['date'], date(2026, 11, 7))
         modules, start, end = read.call_args.args[2]
-        self.assertEqual((modules, end - start), (['m1'], timedelta(days=14)))
+        self.assertEqual(modules, ['m1'])
+        self.assertEqual((start, end), ((NOW - aa.REGISTER_WAIT).replace(tzinfo=None), (NOW + timedelta(days=14)).replace(tzinfo=None)))
+
+    def test_a_started_lecture_stays_until_its_register_is_in(self):
+        result, read = self.run_upcoming([
+            session_row(occurrence='done', start=NOW - timedelta(hours=3)),      # register in: the case can be made
+            session_row(occurrence='live', start=NOW - timedelta(minutes=20)),   # under way, no register yet
+            session_row(occurrence=None, repeat='none', series='s9', start=None)
+            | {'start_datetime': (NOW - timedelta(hours=1)).replace(tzinfo=None)},  # a one-off has no register to wait for
+            session_row(occurrence='next', start=NOW + timedelta(days=1)),
+        ], plan=[{'moduleId': 'm1', 'assignmentMode': 'explicit'}], registers=[{'occurrence_id': 'done'}])
+        self.assertEqual([s['ref'] for s in result['amy@x.uk']], ['occurrence:live', 'occurrence:next'])
+        self.assertEqual(read.call_args.args[2], [['done', 'live']])   # only started lectures are looked up
 
     def test_a_learner_without_a_plan_or_an_exact_group_gets_nothing(self):
         result, read = self.run_upcoming([session_row()])
@@ -119,7 +131,7 @@ class MarkAbsentTests(SimpleTestCase):
                 patch('callcentre.coach_centre.authorised_absence.upcoming', return_value={'amy@learners.uk': [session]}) as upcoming, \
                 patch('callcentre.coach_centre.authorised_absence.add', return_value=SimpleNamespace(pk=4, note='')) as add, \
                 patch('callcentre.coach_centre.log') as log:
-            with self.assertRaisesMessage(ValueError, 'lectures in the next two weeks'):
+            with self.assertRaisesMessage(ValueError, 'lectures in the list'):
                 coach_centre.mark_absent.__wrapped__('sara@kbc.uk', 'Sara', 'amy@learners.uk', 'occurrence:other', 'work', '')
             with self.assertRaisesMessage(ValueError, 'one of your learners'):
                 coach_centre.mark_absent.__wrapped__('sara@kbc.uk', 'Sara', 'ben@learners.uk', 'occurrence:o1', 'work', '')
