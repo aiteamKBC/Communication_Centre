@@ -20,10 +20,19 @@ from .models import Agent, CaseTicket, CycleState, SatisfactionAI, SatisfactionI
 AI_ON = dict(CALLCENTRE_AI_ENABLED=True, OPENAI_API_KEY='test-key', OPENAI_MODEL='test-model')
 
 
-def reading(review_id, sentiment='positive', praise=('coach_support',), concerns=(), follow_up=False):
+def reading(review_id, sentiment='positive', praise=('coach_support',), concerns=(), follow_up=False, about='coach'):
     return {'id': review_id, 'sentiment': sentiment, 'follow_up': follow_up, 'summary': 'Learner is happy.',
-            'praise': [{'theme': theme, 'point': 'Good coach'} for theme in praise],
-            'concerns': [{'theme': theme, 'point': 'LMS is hard', 'severity': severity} for theme, severity in concerns]}
+            'praise': [{'theme': theme, 'point': 'Good coach', 'quote': 'feedback', 'about': about} for theme in praise],
+            'concerns': [{'theme': theme, 'point': 'LMS is hard', 'quote': 'LMS', 'about': 'college', 'severity': severity}
+                         for theme, severity in concerns]}
+
+
+def coach_answer(ids, **changes):
+    return {'verdict': 'Learners value this coach.', 'confidence': 0.7, 'weaknesses': [], 'not_the_coach': [],
+            'strengths': [{'title': 'Supportive', 'detail': 'Replies quickly.', 'review_ids': ids}], **changes}
+
+
+TEXT = {'feedback': 'The LMS  is hard,to use. Coach replies on WhatsApp.', 'issue': 'None', 'action': 'Step by step guide'}
 
 
 def overall(ids, **changes):
@@ -65,13 +74,26 @@ class WordingTests(SimpleTestCase):
 
     def test_a_review_reading_is_checked(self):
         good = reading(1, concerns=[('lms_platform', 'medium')])
-        self.assertEqual(insights.validate_review(good)['sentiment'], 'positive')
+        checked = insights.validate_review(good, TEXT)
+        self.assertEqual((checked['sentiment'], checked['version']), ('positive', insights.READING_VERSION))
+        self.assertEqual(checked['concerns'][0]['at'], {'field': 'feedback', 'start': 4, 'end': 7})
+        self.assertNotIn('quote', checked['concerns'][0])
+        self.assertIsNone(checked['praise'][0]['at'])   # "feedback" is not in the learner's words
+        point = good['praise'][0]
         for bad in ({**good, 'sentiment': 'happy'}, {**good, 'extra': 1}, {**good, 'follow_up': 'no'},
-                    {**good, 'praise': [{'theme': 'made_up', 'point': 'x'}]},
-                    {**good, 'concerns': [{'theme': 'lms_platform', 'point': 'x', 'severity': 'critical'}]},
+                    {**good, 'praise': [{**point, 'theme': 'made_up'}]}, {**good, 'praise': [{**point, 'about': 'tutor'}]},
+                    {**good, 'praise': [{k: v for k, v in point.items() if k != 'quote'}]},
+                    {**good, 'concerns': [{**good['concerns'][0], 'severity': 'critical'}]},
                     {**good, 'summary': ''}):
             with self.assertRaises(ValueError):
-                insights.validate_review(bad)
+                insights.validate_review(bad, TEXT)
+
+    def test_quotes_are_found_word_for_word_only(self):
+        self.assertEqual(insights.locate('lms is hard to use', TEXT), {'field': 'feedback', 'start': 4, 'end': 23})
+        self.assertEqual(insights.locate('coach replies on WhatsApp', TEXT)['field'], 'feedback')
+        self.assertEqual(insights.locate('step-by-step guide', TEXT), {'field': 'action', 'start': 0, 'end': 18})
+        for quote in ('LMS is difficult', 'LM', '', None, 'use. Step by step'):
+            self.assertIsNone(insights.locate(quote, TEXT), quote)
 
     def test_the_overall_analysis_cites_only_reviews_it_was_given(self):
         value = overall([1, 2, 999])
@@ -206,8 +228,7 @@ class DashboardTests(TestCase):
         self.assertTrue(ai['insight']['up_to_date'])
         issue = ai['insight']['common_issues'][0]
         self.assertEqual(issue['count'], 3)
-        self.assertEqual(issue['evidence'][0]['score'], 2)   # the lowest score is quoted first
-        self.assertEqual(issue['evidence'][0]['quote'], 'ben feedback text')
+        self.assertEqual(issue['review_ids'], ids)   # every cited review, not a sample
         self.assertEqual(ai['insight']['watch_list'][0]['case_id'], {e.pk: e.ticket_id for e in events}[ids[0]])
         lms = next(row for row in page['concern_themes'] if row['theme'] == 'lms_platform')
         self.assertEqual((lms['concerns'], lms['serious']), (1, 1))
@@ -284,3 +305,65 @@ class DashboardTests(TestCase):
         self.assertTrue(insights.analysis_requested())
         CycleState.objects.filter(name=insights.LEASE).update(locked_until=self.now + timedelta(minutes=5))
         self.assertEqual(insights.run(), {'skipped': 'Another satisfaction analysis is running.'})
+
+
+@unittest.skipUnless(connections['default'].vendor == 'sqlite', 'Run with check_isolated_tests.py (in-memory SQLite only).')
+class CoachTests(TestCase):
+    """Each coach judged on their own learners' reviews, on what learners say about the coach personally."""
+
+    databases = DashboardTests.databases
+    setUp, case, review, send = DashboardTests.setUp, DashboardTests.case, DashboardTests.review, DashboardTests.send
+
+    def fake(self, calls):
+        def answer(system, payload, max_tokens, **options):
+            calls.append((system, payload))
+            ids = [item['id'] for item in payload['reviews']]
+            if system == insights.COACH_PROMPT:
+                return coach_answer(ids + [99999], not_the_coach=[{'title': 'LMS', 'detail': 'Not theirs.', 'review_ids': ids[:1]}])
+            if 'figures' in payload:
+                return overall(ids)
+            return {'reviews': [reading(i) for i in ids]}
+        return answer
+
+    @override_settings(**AI_ON)
+    def test_coaches_are_judged_on_their_own_reviews_and_kept_until_they_change(self):
+        carol = [self.review(name, 4) for name in ('ann', 'ben', 'cat')]
+        self.review('dan', 2, ticket=self.case('dan', status='resolved', coach='Dave'))
+        calls = []
+        with mock.patch.object(insights, 'ask', side_effect=self.fake(calls)):
+            self.assertEqual(insights.run(), {'read': 4, 'overall': 'ready'})
+        coach_calls = [payload for system, payload in calls if system == insights.COACH_PROMPT]
+        self.assertEqual(len(coach_calls), 1)   # Dave has one review: too few to judge
+        self.assertEqual(sorted(item['id'] for item in coach_calls[0]['reviews']), sorted(e.pk for e in carol))
+        self.assertNotIn('Carol', json.dumps(calls))   # the coach is never named to the AI
+        page = self.send(self.director)[1]
+        profiles = {row['name']: row for row in page['coach_profiles']}
+        self.assertEqual((profiles['Carol']['reviews'], profiles['Carol']['coach_praise'], profiles['Carol']['coach_concerns']), (3, 3, 0))
+        judged = profiles['Carol']['ai']
+        self.assertEqual(judged['state'], 'ready')
+        self.assertEqual((judged['strengths'][0]['count'], judged['dropped']), (3, 0))   # the made-up id is not counted
+        self.assertEqual(judged['not_the_coach'][0]['count'], 1)
+        self.assertNotIn('fingerprint', judged)
+        self.assertEqual(profiles['Dave']['ai']['state'], 'too_few')
+
+        # Asked again with nothing new for Carol: her judgement is kept, not asked for again.
+        calls.clear()
+        insights.ask_for_analysis('director')
+        with mock.patch.object(insights, 'ask', side_effect=self.fake(calls)):
+            insights.run()
+        self.assertFalse([1 for system, _ in calls if system == insights.COACH_PROMPT])
+        self.review('eve', 5)
+        insights.ask_for_analysis('director2')
+        CycleState.objects.filter(name=insights.ANALYSE_REQUEST).update(last_success_at=timezone.now() + timedelta(seconds=1))
+        with mock.patch.object(insights, 'ask', side_effect=self.fake(calls)):
+            insights.run()
+        self.assertEqual(len([1 for system, _ in calls if system == insights.COACH_PROMPT]), 1)
+
+    @override_settings(**AI_ON)
+    def test_a_reading_from_an_older_version_is_read_again(self):
+        event = self.review('ann', 4)
+        SatisfactionAI.objects.create(event=event, model='old', state='ready', result={'sentiment': 'positive'})
+        calls = []
+        with mock.patch.object(insights, 'ask', side_effect=self.fake(calls)):
+            self.assertEqual(insights.run()['read'], 1)
+        self.assertEqual(SatisfactionAI.objects.get(event=event).result['version'], insights.READING_VERSION)

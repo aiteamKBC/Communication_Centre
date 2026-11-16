@@ -7,7 +7,11 @@ import Dialog from './Dialog';
 import { csvText, downloadBlob, when } from './model';
 import '../styles/satisfaction.css';
 
-type Point = { theme: string; point: string; severity?: 'low' | 'medium' | 'high' };
+type About = 'coach' | 'college' | 'employer' | 'learner';
+type TextField = 'feedback' | 'issue' | 'action';
+/** One praise or concern the AI read in a review; `at` is where its words are in the review (absent: not found word for word). */
+type Point = { theme: string; point: string; severity?: 'low' | 'medium' | 'high'; about?: About;
+  at?: { field: TextField; start: number; end: number } | null };
 type Sentiment = 'positive' | 'mixed' | 'neutral' | 'negative';
 type Review = {
   id: number; case_id: number; learner_name: string; learner_email: string; programme: string; coach: string; organisation: string;
@@ -22,19 +26,32 @@ type Figures = {
 };
 type Group = { name: string; reviews: number; average: number; dissatisfied: number; issues_raised: number; enough: boolean };
 type Theme = { theme: string; label: string; praise: number; concerns: number; serious: number };
-type Evidence = { review_id: number; case_id: number; learner_name: string; score: number; quote: string };
-type Finding = { title: string; detail: string; review_ids: number[]; count: number; evidence: Evidence[]; priority?: 'high' | 'medium' | 'low' };
+type Finding = { title: string; detail: string; review_ids: number[]; count: number; priority?: 'high' | 'medium' | 'low' };
+type CoachJudgement = {
+  state: 'ready' | 'error' | 'too_few'; reviews: number; verdict?: string; confidence?: number; dropped?: number;
+  strengths?: Finding[]; weaknesses?: Finding[]; not_the_coach?: Finding[];
+};
+type CoachProfile = {
+  name: string; reviews: number; learners: number; average: number; margin: number | null; median: number;
+  distribution: Record<string, number>; satisfied_pct: number; dissatisfied: number; issues_raised: number;
+  coach_praise: number; coach_concerns: number; themes: Theme[]; review_ids: number[]; ai: CoachJudgement | null | undefined;
+};
+/** Which points of a review to show and highlight: praise or concerns, of one theme, about the coach or not. */
+type Pick = { kind: 'praise' | 'concerns'; theme?: string; about?: 'coach' | 'not_coach' };
+/** The reviews behind a number or an AI point, opened in a window. */
+type Lens = { title: string; note?: string; ids: number[]; pick?: Pick };
 type Insight = {
   id: number; state: 'ready' | 'error'; created_at: string; model: string; review_count: number; requested_by: string; error: string;
   up_to_date: boolean; headline?: string; verdict?: string; confidence?: number; dropped?: number;
   common_issues?: Finding[]; strengths?: Finding[]; weaknesses?: Finding[]; recommendations?: Finding[];
   watch_list?: { review_id: number; reason: string; case_id: number; learner_name: string; score: number }[];
+  coaches?: Record<string, CoachJudgement>;
 };
 type Dashboard = {
   period: string; generated_at: string; first_review_at: string | null;
   figures: Figures; all_time: Figures;
   months: { month: string; reviews: number; average: number; satisfied_pct: number; dissatisfied: number; issues_raised: number }[];
-  programmes: Group[]; coaches: Group[];
+  programmes: Group[]; coaches: Group[]; coach_profiles: CoachProfile[]; coach_min: number;
   coverage: {
     done_this_quarter: number; closed_this_quarter: number; remaining: number; overdue: number; first_review: number;
     not_eligible: number; coverage_pct: number | null; closed_reasons: { reason: string; label: string; count: number }[];
@@ -48,7 +65,10 @@ type Dashboard = {
 };
 type Filters = { query: string; score: string; sentiment: string; theme: string; only: string };
 
-const TABS: [string, string][] = [['overview', 'Overview'], ['ai', 'AI analysis'], ['reviews', 'Reviews'], ['groups', 'Programmes & coaches'], ['coverage', 'Coverage']];
+const TABS: [string, string][] = [['overview', 'Overview'], ['ai', 'AI analysis'], ['coaches', 'Coaches'], ['reviews', 'Reviews'],
+  ['groups', 'Programmes'], ['coverage', 'Coverage']];
+const FIELD_LABEL: Record<TextField, string> = { feedback: 'Feedback', issue: 'Issue raised', action: 'Agreed action' };
+const ABOUT_LABEL: Record<About, string> = { coach: 'about the coach', college: 'about the college', employer: 'about the employer', learner: 'about their own situation' };
 const PERIODS: [string, string][] = [['all', 'All time'], ['365', '12 months'], ['90', '3 months'], ['30', '30 days']];
 const DAYS: Record<string, number | null> = { all: null, 365: 365, 90: 90, 30: 30 };
 // A diverging scale (validated): dissatisfied red, a grey midpoint at 3, satisfied teal.
@@ -283,7 +303,92 @@ function Overview({ data, period, onTab, onOpen, onFilter }: {
   );
 }
 
-function Finding({ item, onOpen }: { item: Finding; onOpen: (id: number) => void }) {
+/** The points of a review a lens is about: praise or concerns, of one theme, about the coach or about anyone else. */
+function pointsFor(review: Review, pick: Pick | undefined): Point[] {
+  if (!pick || !review.ai) return [];
+  const ofTheme = review.ai[pick.kind].filter(p => !pick.theme || p.theme === pick.theme);
+  const ofWhom = ofTheme.filter(p => !pick.about || (pick.about === 'coach' ? p.about === 'coach' : p.about !== 'coach'));
+  // The coach judgement can cite a review whose points were tagged otherwise: then show all its points of this kind.
+  return ofWhom.length ? ofWhom : ofTheme;
+}
+
+/** A review's own words with the parts the AI based its points on highlighted. */
+function Marked({ text, points, kind }: { text: string; points: Point[]; kind: Pick['kind'] }) {
+  const spans = points.flatMap(p => (p.at ? [p.at] : [])).sort((a, b) => a.start - b.start);
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  spans.forEach((at, index) => {
+    if (at.start < cursor || at.end > text.length) return;   // overlapping, or no longer matching the text: left plain
+    parts.push(text.slice(cursor, at.start), <mark key={index} className={kind}>{text.slice(at.start, at.end)}</mark>);
+    cursor = at.end;
+  });
+  parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
+/** Every review behind a number or an AI point, ten at a time, with the learner's words behind each point highlighted. */
+function EvidenceWindow({ lens, byId, onClose, onLearner, onOpenCase }: {
+  lens: Lens | null; byId: Map<number, Review>; onClose: () => void; onLearner: (id: number) => void; onOpenCase: (id: number) => void;
+}) {
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [lens]);
+  const praise = lens?.pick?.kind === 'praise';
+  const list = (lens?.ids || []).flatMap(id => (byId.has(id) ? [byId.get(id) as Review] : []))
+    .sort((a, b) => (praise ? b.score - a.score : a.score - b.score) || Date.parse(b.completed_at) - Date.parse(a.completed_at));
+  const size = 10;
+  const pages = Math.max(1, Math.ceil(list.length / size));
+  const current = Math.min(page, pages);
+  return (
+    <Dialog open={!!lens} onClose={onClose} title={lens?.title || 'Reviews'} className="sat-dialog">
+      {lens && (
+        <>
+          {lens.note && <p className="sat-lens-note">{lens.note}</p>}
+          <p className="sat-muted">{plural(list.length, 'review')}, {praise ? 'highest' : 'lowest'} score first.
+            {lens.pick && <> The learner’s own words behind each point are <mark className={lens.pick.kind}>highlighted</mark>.</>}</p>
+          <ol className="sat-evidence">
+            {list.slice((current - 1) * size, current * size).map(review => {
+              const points = pointsFor(review, lens.pick);
+              return (
+                <li key={review.id}>
+                  <header>
+                    <Score score={review.score} />
+                    <strong>{review.learner_name}</strong>
+                    <span className="sat-muted">{day(review.completed_at)}</span>
+                    <span className="sat-muted">{[review.programme, review.coach && `Coach: ${review.coach}`].filter(Boolean).join(', ')}</span>
+                  </header>
+                  {points.length > 0 && (
+                    <ul className={`sat-found ${lens.pick?.kind}`}>
+                      {points.map((p, index) => (
+                        <li key={index}>{p.point}{p.about && <small>{ABOUT_LABEL[p.about]}</small>}
+                          {!p.at && <small>exact words not found in the review</small>}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <dl>
+                    {(Object.keys(FIELD_LABEL) as TextField[]).filter(field => review[field].trim()).map(field => (
+                      <div key={field}>
+                        <dt>{FIELD_LABEL[field]}</dt>
+                        <dd><Marked text={review[field]} points={points.filter(p => p.at?.field === field)} kind={lens.pick?.kind || 'concerns'} /></dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <footer>
+                    <button type="button" className="sat-link" onClick={() => onLearner(review.id)}>All reviews of this learner</button>
+                    <button type="button" className="sat-link" onClick={() => onOpenCase(review.case_id)}>Open case</button>
+                  </footer>
+                </li>
+              );
+            })}
+            {!list.length && <li className="sat-empty">None of these reviews is listed any more.</li>}
+          </ol>
+          {pages > 1 && <Pages page={current} pages={pages} size={size} total={list.length} onPage={setPage} />}
+        </>
+      )}
+    </Dialog>
+  );
+}
+
+function Finding({ item, onLens }: { item: Finding; onLens: (item: Finding) => void }) {
   const [open, setOpen] = useState(false);
   return (
     <li>
@@ -293,62 +398,57 @@ function Finding({ item, onOpen }: { item: Finding; onOpen: (id: number) => void
       </div>
       {item.priority && <span className={`sat-priority ${item.priority}`}>{item.priority} priority</span>}
       {open && <p>{item.detail}</p>}
-      <button type="button" className="sat-link sat-more" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? 'Less' : item.evidence.length ? `Details and what ${plural(item.evidence.length, 'learner')} said` : 'Details'}
-      </button>
-      {item.evidence.length > 0 && (
-        <>
-          {open && (
-            <ul className="sat-quotes">
-              {item.evidence.map(quote => (
-                <li key={quote.review_id}>
-                  <button type="button" onClick={() => onOpen(quote.review_id)}>
-                    <Score score={quote.score} /><span className="sat-list-text"><q>{quote.quote}</q><small>{quote.learner_name}</small></span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
+      <div className="sat-finding-actions">
+        <button type="button" className="sat-link" onClick={() => onLens(item)}>See all {plural(item.count, 'review')}</button>
+        <button type="button" className="sat-link sat-quiet" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide why' : 'Why'}</button>
+      </div>
     </li>
   );
 }
 
-function Findings({ title, items, empty, tone, onOpen, className = '' }: {
-  title: string; items: Finding[] | undefined; empty: string; tone: string; onOpen: (id: number) => void; className?: string;
+function Findings({ title, note, items, empty, tone, pick, onLens, className = '' }: {
+  title: string; note?: string; items: Finding[] | undefined; empty: string; tone: string; pick: Pick; onLens: (lens: Lens) => void; className?: string;
 }) {
+  const open = (item: Finding) => onLens({ title: item.title, note: item.detail, ids: item.review_ids, pick });
   return (
-    <Panel title={title} className={`sat-findings ${tone} ${className}`}>
-      {!items?.length ? <p className="sat-empty">{empty}</p> : <ul>{items.map(item => <Finding key={item.title} item={item} onOpen={onOpen} />)}</ul>}
+    <Panel title={title} note={note} className={`sat-findings ${tone} ${className}`}>
+      {!items?.length ? <p className="sat-empty">{empty}</p> : <ul>{items.map(item => <Finding key={item.title} item={item} onLens={open} />)}</ul>}
     </Panel>
   );
 }
 
-/** Each theme: reviews that praise it (left, teal) against reviews with a concern (right; dark red for medium or high). */
-function ThemeBalance({ themes }: { themes: Theme[] }) {
+/** Each theme: reviews that praise it (left, teal) against reviews with a concern (right; dark red for medium or high).
+ * Each count opens those reviews with the words highlighted. */
+function ThemeBalance({ themes, reviews, onLens, about }: { themes: Theme[]; reviews: Review[]; onLens: (lens: Lens) => void; about?: string }) {
   if (!themes.length) return <p className="sat-empty">The AI has not read any reviews in this period yet.</p>;
   const rows = [...themes].sort((a, b) => (b.praise + b.concerns) - (a.praise + a.concerns));
   const most = Math.max(1, ...rows.map(row => Math.max(row.praise, row.concerns)));
+  const open = (row: Theme, kind: Pick['kind']) => onLens({
+    title: `${kind === 'praise' ? 'Praised' : 'Concern'}: ${row.label}`, note: about,
+    ids: reviews.filter(r => r.ai?.[kind].some(p => p.theme === row.theme)).map(r => r.id), pick: { kind, theme: row.theme },
+  });
   return (
     <>
       <ul className="sat-legend">
         <li><i style={{ background: '#1b6869' }} aria-hidden="true" />Praised</li>
         <li><i style={{ background: '#8f3341' }} aria-hidden="true" />Serious concern (medium or high)</li>
         <li><i style={{ background: '#c4707a' }} aria-hidden="true" />Minor concern</li>
+        <li className="sat-muted">Click a number to read those reviews.</li>
       </ul>
       <table className="sat-balance">
         <thead><tr><th className="num">Praised in</th><th>Theme</th><th>Concern in</th></tr></thead>
         <tbody>
           {rows.map(row => (
             <tr key={row.theme}>
-              <td><span className="sat-balance-side pro"><b>{row.praise || ''}</b>
-                <i style={{ width: `${(row.praise / most) * 100}%` }} title={`${row.praise} reviews praise ${row.label}`} /></span></td>
+              <td><span className="sat-balance-side pro">
+                {row.praise > 0 && <button type="button" onClick={() => open(row, 'praise')} aria-label={`${row.praise} reviews praise ${row.label}`}>{row.praise}</button>}
+                <i style={{ width: `${(row.praise / most) * 100}%` }} /></span></td>
               <th scope="row">{row.label}</th>
               <td><span className="sat-balance-side con">
                 <i className="serious" style={{ width: `${(row.serious / most) * 100}%` }} title={`${row.serious} serious concerns`} />
                 <i className="minor" style={{ width: `${((row.concerns - row.serious) / most) * 100}%` }} title={`${row.concerns - row.serious} minor concerns`} />
-                <b>{row.concerns || ''}</b></span></td>
+                {row.concerns > 0 && <button type="button" onClick={() => open(row, 'concerns')} aria-label={`${row.concerns} reviews raise a concern about ${row.label}`}>{row.concerns}</button>}
+              </span></td>
             </tr>
           ))}
         </tbody>
@@ -357,7 +457,90 @@ function ThemeBalance({ themes }: { themes: Theme[] }) {
   );
 }
 
-function Analysis({ data, csrf, onAsked, onOpen }: { data: Dashboard; csrf: string; onAsked: () => void; onOpen: (id: number) => void }) {
+const STATE_NOTE: Record<string, string> = {
+  error: 'The AI could not judge this coach last time; it tries again at the next analysis.',
+};
+
+/** One coach at a time: their learners' scores, what learners say about the coach personally, and the AI's fair
+ * judgement (the coach is never blamed for the college's systems, the employer or the learner's circumstances). */
+function Coaches({ data, reviews, selected, onSelect, onLens }: {
+  data: Dashboard; reviews: Review[]; selected: string | null; onSelect: (name: string) => void; onLens: (lens: Lens) => void;
+}) {
+  const profiles = data.coach_profiles;
+  if (!profiles.length) return <p className="sat-empty">No review in this period names a coach.</p>;
+  const coach = profiles.find(p => p.name === selected) || profiles[0];
+  const mine = reviews.filter(r => coach.review_ids.includes(r.id));
+  const judged = coach.ai;
+  const lens = (title: string, kind: Pick['kind'], about: 'coach' | 'not_coach') => onLens({
+    title: `${coach.name}: ${title}`, pick: { kind, about },
+    ids: mine.filter(r => r.ai?.[kind].some(p => (about === 'coach' ? p.about === 'coach' : p.about !== 'coach'))).map(r => r.id),
+  });
+  return (
+    <div className="sat-coaches">
+      <nav className="sat-coach-list" aria-label="Coaches">
+        <p className="sat-muted">Weakest average first. <span className="good">+</span> learners praising the coach, <span className="bad">−</span> with a concern about them.</p>
+        {profiles.map(p => (
+          <button key={p.name} type="button" aria-current={p.name === coach.name ? 'true' : undefined} onClick={() => onSelect(p.name)}>
+            <span className="sat-list-text"><strong>{p.name}</strong><small>{plural(p.reviews, 'review')}{p.reviews < data.coach_min ? ', too few to judge' : ''}</small></span>
+            <span className="sat-coach-avg" style={{ color: p.average < 3.5 ? '#8f3341' : undefined }}>{fixed(p.average)}</span>
+            <span className="sat-coach-marks"><b className="good">+{p.coach_praise}</b><b className={p.coach_concerns ? 'bad' : 'sat-muted'}>−{p.coach_concerns}</b></span>
+          </button>
+        ))}
+      </nav>
+      <div className="sat-grid sat-coach-detail">
+        <header className="sat-coach-head sat-span-3">
+          <div>
+            <h2>{coach.name}</h2>
+            <p className="sat-muted">{plural(coach.reviews, 'review')} from {plural(coach.learners, 'learner')} in this period.</p>
+          </div>
+          <button type="button" onClick={() => onLens({ title: `${coach.name}: all reviews`, ids: mine.map(r => r.id) })}>Read all their reviews</button>
+        </header>
+        <section className="sat-tiles wide sat-span-3" aria-label="Figures">
+          <Tile label="Average" value={`${fixed(coach.average)} / 5`} note={coach.margin !== null ? `±${fixed(coach.margin)} (95% confidence)` : 'Too few reviews for a margin'}
+            tone={coach.average < 3.5 ? 'bad' : undefined} />
+          <Tile label="Satisfied" value={pct(coach.satisfied_pct)} note="Scored 4 or 5" />
+          <Tile label="Scored 1 or 2" value={coach.dissatisfied} tone={coach.dissatisfied ? 'bad' : undefined} />
+          <Tile label="Praise the coach" value={coach.coach_praise} note="Learners who say something good about them" tone="good"
+            onClick={coach.coach_praise ? () => lens('praise about the coach', 'praise', 'coach') : undefined} />
+          <Tile label="Concerns about the coach" value={coach.coach_concerns} note="About the coach personally" tone={coach.coach_concerns ? 'bad' : undefined}
+            onClick={coach.coach_concerns ? () => lens('concerns about the coach', 'concerns', 'coach') : undefined} />
+        </section>
+        <Panel title="How their learners scored" className="sat-span-3">
+          <Segmented label="Reviews per score" parts={[5, 4, 3, 2, 1].map(score => ({
+            key: String(score), label: `Scored ${score}`, value: coach.distribution[String(score)] || 0, colour: SCORE_COLOUR[score],
+          }))} />
+        </Panel>
+        {!judged ? (
+          <p className="sat-empty sat-span-3">The AI judges this coach at the next analysis.</p>
+        ) : judged.state === 'too_few' ? (
+          <p className="sat-empty sat-span-3">Only {plural(judged.reviews, 'review')}: too few for a fair judgement (the AI needs at least {data.coach_min}).</p>
+        ) : judged.state !== 'ready' ? (
+          <p className="ec-alert sat-span-3">{STATE_NOTE[judged.state]}</p>
+        ) : (
+          <>
+            <section className="sat-verdict sat-span-3" aria-label="AI judgement">
+              <p className="sat-muted">The AI’s judgement of all {plural(judged.reviews, 'review')} of this coach (all time), confidence {Math.round((judged.confidence || 0) * 100)}%.</p>
+              <p>{judged.verdict}</p>
+            </section>
+            <Findings title="What learners value" note="About the coach personally." tone="pro" items={judged.strengths} empty="Nothing stands out yet."
+              pick={{ kind: 'praise', about: 'coach' }} onLens={onLens} />
+            <Findings title="To improve" note="About the coach personally." tone="con" items={judged.weaknesses} empty="Learners raise nothing about the coach personally."
+              pick={{ kind: 'concerns', about: 'coach' }} onLens={onLens} />
+            <Findings title="Not the coach’s doing" note="The college’s systems, the employer, or the learner’s circumstances." tone="issue"
+              items={judged.not_the_coach} empty="Nothing else raised." pick={{ kind: 'concerns', about: 'not_coach' }} onLens={onLens} />
+          </>
+        )}
+        <Panel title="Themes in their reviews" note="Praise and concerns of any kind in this coach’s reviews, in the chosen period." className="sat-span-3">
+          <ThemeBalance themes={coach.themes} reviews={mine} onLens={onLens} about={`From ${coach.name}’s reviews.`} />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function Analysis({ data, reviews, csrf, onAsked, onOpen, onLens }: {
+  data: Dashboard; reviews: Review[]; csrf: string; onAsked: () => void; onOpen: (id: number) => void; onLens: (lens: Lens) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const { ai } = data;
@@ -419,10 +602,10 @@ function Analysis({ data, csrf, onAsked, onOpen }: { data: Dashboard; csrf: stri
             <h2>{insight.headline}</h2>
             <p>{insight.verdict}</p>
           </section>
-          <Findings title="Most common issues" tone="issue" items={insight.common_issues} empty="No common issue stands out." onOpen={onOpen} />
-          <Findings title="Biggest pros" tone="pro" items={insight.strengths} empty="No strength stands out." onOpen={onOpen} />
-          <Findings title="Biggest cons" tone="con" items={insight.weaknesses} empty="No weakness stands out." onOpen={onOpen} />
-          <Findings title="Recommended actions" tone="action" items={insight.recommendations} empty="No action recommended." onOpen={onOpen} className="sat-span-2" />
+          <Findings title="Most common issues" tone="issue" items={insight.common_issues} empty="No common issue stands out." pick={{ kind: 'concerns' }} onLens={onLens} />
+          <Findings title="Biggest pros" tone="pro" items={insight.strengths} empty="No strength stands out." pick={{ kind: 'praise' }} onLens={onLens} />
+          <Findings title="Biggest cons" tone="con" items={insight.weaknesses} empty="No weakness stands out." pick={{ kind: 'concerns' }} onLens={onLens} />
+          <Findings title="Recommended actions" tone="action" items={insight.recommendations} empty="No action recommended." pick={{ kind: 'concerns' }} onLens={onLens} className="sat-span-2" />
           <Panel title="Learners to follow up" note="Picked by the AI from their reviews.">
             {!insight.watch_list?.length ? <p className="sat-empty">Nobody needs a follow-up.</p> : (
               <ul className="sat-list">
@@ -438,7 +621,7 @@ function Analysis({ data, csrf, onAsked, onOpen }: { data: Dashboard; csrf: stri
           </Panel>
           <Panel title="Pros and cons by theme" note="How many reviews praise each theme, and how many raise a concern about it. Counted from the AI’s reading of each review in the chosen period."
             className="sat-span-3">
-            <ThemeBalance themes={data.themes} />
+            <ThemeBalance themes={data.themes} reviews={reviews} onLens={onLens} />
           </Panel>
           {(insight.dropped || 0) > 0 && <p className="sat-note sat-span-3">{insight.dropped} AI point(s) were left out because they cited no real review.</p>}
         </>
@@ -448,7 +631,7 @@ function Analysis({ data, csrf, onAsked, onOpen }: { data: Dashboard; csrf: stri
 }
 
 function Pages({ page, pages, size, total, onPage, onSize }: {
-  page: number; pages: number; size: number; total: number; onPage: (page: number) => void; onSize: (size: number) => void;
+  page: number; pages: number; size: number; total: number; onPage: (page: number) => void; onSize?: (size: number) => void;
 }) {
   const numbers = Array.from({ length: pages }, (_, index) => index + 1)
     .filter(n => n === 1 || n === pages || Math.abs(n - page) <= 1);
@@ -466,11 +649,13 @@ function Pages({ page, pages, size, total, onPage, onSize }: {
         ))}
         <button type="button" disabled={page === pages} onClick={() => onPage(page + 1)} aria-label="Next page">›</button>
       </div>
-      <label>Rows
-        <select value={size} onChange={event => onSize(Number(event.target.value))}>
-          {[15, 25, 50, 100].map(value => <option key={value} value={value}>{value}</option>)}
-        </select>
-      </label>
+      {onSize ? (
+        <label>Rows
+          <select value={size} onChange={event => onSize(Number(event.target.value))}>
+            {[15, 25, 50, 100].map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+      ) : <span />}
     </nav>
   );
 }
@@ -715,6 +900,7 @@ export default function Satisfaction({ csrf, onOpenCase }: { csrf: string; onOpe
   const period = PERIODS.some(([key]) => key === params.get('period')) ? params.get('period') as string : 'all';
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [lens, setLens] = useState<Lens | null>(null);
   const { data, error, loading, refresh } = useCallCentre<Dashboard>(`satisfaction-dashboard/?period=${period}`);
   const working = !!(data?.ai.running || data?.ai.requested);
   useEffect(() => {
@@ -735,7 +921,8 @@ export default function Satisfaction({ csrf, onOpenCase }: { csrf: string; onOpe
     go({ tab: 'reviews' });
   };
 
-  const count = data ? data.reviews.filter(r => inPeriod(r, data, period)).length : 0;
+  const periodReviews = useMemo(() => (data ? data.reviews.filter(r => inPeriod(r, data, period)) : []), [data, period]);
+  const count = periodReviews.length;
   return (
     <div className="sat">
       <div className="sat-bar">
@@ -761,17 +948,19 @@ export default function Satisfaction({ csrf, onOpenCase }: { csrf: string; onOpe
       {!data ? <p className="sat-empty" role="status">{loading ? 'Loading the satisfaction reviews…' : ''}</p> : (
         <div className={`sat-body${loading ? ' sat-stale' : ''}`} role="tabpanel">
           {tab === 'overview' && <Overview data={data} period={period} onTab={key => go({ tab: key })} onOpen={setOpenId} onFilter={filterReviews} />}
-          {tab === 'ai' && <Analysis data={data} csrf={csrf} onAsked={refresh} onOpen={setOpenId} />}
+          {tab === 'ai' && <Analysis data={data} reviews={periodReviews} csrf={csrf} onAsked={refresh} onOpen={setOpenId} onLens={setLens} />}
+          {tab === 'coaches' && <Coaches data={data} reviews={periodReviews} selected={params.get('coach')} onSelect={name => go({ coach: name })} onLens={setLens} />}
           {tab === 'reviews' && <Reviews data={data} period={period} filters={filters} onFilters={setFilters} onOpen={setOpenId} />}
           {tab === 'groups' && (
             <div className="sat-grid sat-halves">
               <GroupTable title="By programme" label="Programme" rows={data.programmes} />
-              <GroupTable title="By coach" label="Coach" rows={data.coaches} />
             </div>
           )}
           {tab === 'coverage' && <Coverage data={data} onFilter={filterReviews} />}
         </div>
       )}
+      <EvidenceWindow lens={lens} byId={byId} onClose={() => setLens(null)} onLearner={id => { setLens(null); setOpenId(id); }}
+        onOpenCase={id => { setLens(null); onOpenCase(id); }} />
       <Dialog open={!!opened} onClose={() => setOpenId(null)} title={opened ? `${opened.learner_name}: satisfaction reviews` : 'Reviews'} className="sat-dialog">
         {opened && data && <LearnerReviews review={opened} all={data.reviews} onOpenCase={id => { setOpenId(null); onOpenCase(id); }} />}
       </Dialog>

@@ -248,7 +248,62 @@
 .kbc-portals .sat-points.pro li::marker { color: var(--sat-good); }
 .kbc-portals .sat-points.con li::marker { color: var(--sat-bad); }
 
+/* ---- Findings: every cited review is one click away ---- */
+.kbc-portals .sat-finding-actions { display: flex; gap: 1rem; margin-top: .3rem; }
+.kbc-portals .workspace-app .ec .sat .sat-quiet { color: var(--sat-muted); font-weight: 500; }
+
+/* ---- The review window: every review behind a point, the learner's words highlighted ---- */
+.kbc-portals .sat mark { padding: 0 .1em; border-radius: 3px; color: inherit; }
+.kbc-portals .sat mark.concerns { background: #f6d7da; box-shadow: inset 0 -2px 0 #c4707a; }
+.kbc-portals .sat mark.praise { background: #d3ebe8; box-shadow: inset 0 -2px 0 #5aa29c; }
+.kbc-portals .sat-lens-note { margin: 0 0 .4rem; font-size: .95rem; line-height: 1.5; }
+.kbc-portals .sat-evidence { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .7rem; }
+.kbc-portals .sat-evidence > li { border: 1px solid var(--sat-line); border-radius: 10px; padding: .75rem .9rem; }
+.kbc-portals .sat-evidence header { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .7rem; margin-bottom: .5rem; }
+.kbc-portals .sat-evidence dl { margin: 0; display: grid; gap: .35rem; font-size: .92rem; }
+.kbc-portals .sat-evidence dl > div { display: grid; grid-template-columns: 7.5rem 1fr; gap: .8rem; }
+.kbc-portals .sat-evidence dt { color: var(--sat-muted); font-weight: 600; }
+.kbc-portals .sat-evidence dd { margin: 0; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
+.kbc-portals .sat-evidence footer { display: flex; gap: 1.2rem; margin-top: .5rem; }
+.kbc-portals .sat-found { list-style: none; margin: 0 0 .5rem; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem; }
+.kbc-portals .sat-found li { font-size: .82rem; font-weight: 600; padding: .2rem .55rem; border-radius: 6px; }
+.kbc-portals .sat-found.concerns li { background: #f9e7e8; color: var(--sat-bad); }
+.kbc-portals .sat-found.praise li { background: #e3f1ef; color: var(--sat-good); }
+.kbc-portals .sat-found small { font-weight: 500; margin-left: .35rem; opacity: .8; }
+
+/* The theme table's counts open their reviews. */
+.kbc-portals .workspace-app .ec .sat .sat-balance-side button {
+  min-width: 1.9rem; padding: .05rem .35rem; border: 1px solid transparent; border-radius: 6px; background: none;
+  font-size: .85rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--sat-ink); text-decoration: underline; text-underline-offset: 3px;
+}
+.kbc-portals .workspace-app .ec .sat .sat-balance-side button:hover { border-color: var(--sat-purple); background: var(--sat-soft); }
+
+/* ---- Coaches: the list, and one coach ---- */
+.kbc-portals .sat-coaches { display: grid; grid-template-columns: 1fr; gap: 1rem; align-items: start; }
+@media (min-width: 980px) { .kbc-portals .sat-coaches { grid-template-columns: 300px minmax(0, 1fr); } }
+.kbc-portals .sat-coach-list {
+  display: grid; gap: .15rem; padding: .7rem; background: var(--sat-surface); border: 1px solid var(--sat-line); border-radius: 12px;
+}
+@media (min-width: 980px) { .kbc-portals .sat-coach-list { position: sticky; top: 7.5rem; max-height: calc(100vh - 9rem); overflow-y: auto; } }
+.kbc-portals .sat-coach-list > p { margin: .1rem .3rem .5rem; font-size: .8rem; }
+.kbc-portals .workspace-app .ec .sat .sat-coach-list button {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .6rem; width: 100%; margin: 0;
+  padding: .55rem .6rem; border: 0; border-left: 3px solid transparent; border-radius: 8px; background: transparent; text-align: left; font: inherit; color: inherit;
+}
+.kbc-portals .workspace-app .ec .sat .sat-coach-list button:hover { background: var(--sat-soft); }
+.kbc-portals .workspace-app .ec .sat .sat-coach-list button[aria-current="true"] { background: #efe8f8; border-left-color: var(--sat-purple); }
+.kbc-portals .sat-coach-list strong { font-size: .92rem; }
+.kbc-portals .sat-coach-list small { font-size: .78rem; color: var(--sat-muted); }
+.kbc-portals .sat-coach-avg { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kbc-portals .sat-coach-marks { display: grid; gap: .05rem; text-align: right; font-size: .78rem; font-variant-numeric: tabular-nums; }
+.kbc-portals .sat-coach-detail { min-width: 0; }
+.kbc-portals .sat-coach-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.kbc-portals .sat-coach-head h2 { margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -.01em; }
+.kbc-portals .sat-coach-head p { margin: .15rem 0 0; }
+@media (min-width: 1240px) { .kbc-portals .sat-coach-detail.sat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
 @media (max-width: 640px) {
+  .kbc-portals .sat-evidence dl > div { grid-template-columns: 1fr; gap: .1rem; }
   .kbc-portals .sat-history dl { grid-template-columns: 1fr; }
   .kbc-portals .sat-ranked li { grid-template-columns: 1fr 5.5rem; }
   .kbc-portals .sat-ranked-track { display: none; }
