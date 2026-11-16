@@ -989,6 +989,23 @@ def satisfaction_report(request):
                       .annotate(average=Avg('score'), responses=Count('id')).order_by('quarter', 'organisation'))})
 
 
+@authenticated
+@require_http_methods(['GET', 'POST'])
+@csrf_protect
+def satisfaction_dashboard_view(request):
+    """The director's satisfaction dashboard (GET ``period``: all, 30, 90 or 365 days); POST asks the worker for a new AI
+    analysis of every review."""
+    from . import satisfaction_insights
+    if not is_director(request.user):
+        raise PermissionDenied('Only managers can see the satisfaction dashboard.')
+    if request.method == 'POST':
+        if not satisfaction_insights.ai_enabled():
+            raise ValueError('AI analysis is switched off on the server (CALLCENTRE_AI_ENABLED and an OpenAI key).')
+        asked = satisfaction_insights.ask_for_analysis(request.user.get_username())
+        return JsonResponse({'ok': True, 'asked': asked})
+    return JsonResponse(satisfaction_insights.dashboard(request.GET.get('period', 'all')))
+
+
 @never_cache
 @require_http_methods(['GET', 'POST'])
 @csrf_protect

@@ -316,5 +316,9 @@ def run_cycle(*, skip_zoom=False, skip_ai=False, skip_emails=False):
             step(result, 'emails_processed', process_emails)
         # The Events hub has no worker: this cycle sends it the specialists and runs its Eventbrite import.
         step(result, 'events_hub', sync_events_hub)
+        if not skip_ai:
+            # Last, so nothing else waits on it: reads new satisfaction reviews, and analyses them all at most hourly.
+            from .satisfaction_insights import run as analyse_satisfaction
+            step(result, 'satisfaction_analysis', analyse_satisfaction)
         CycleState.objects.filter(name='cycle', token=token).update(last_success_at=timezone.now(), details=result)
         return result

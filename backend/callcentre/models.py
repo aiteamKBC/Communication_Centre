@@ -743,3 +743,36 @@ class CoachLog(Retained):
         if not self._state.adding:
             raise ValidationError('The coach log is append-only.')
         super().save(*args, **kwargs)
+
+
+class SatisfactionAI(Retained):
+    """The AI's reading of one completed learner satisfaction review (satisfaction_insights.py).
+    See docs/callcentre-port/satisfaction_insights.sql."""
+    event = models.OneToOneField(TicketEvent, on_delete=models.PROTECT, related_name='satisfaction_ai')
+    model = models.CharField(max_length=128)
+    state = models.CharField(max_length=12)
+    result = models.JSONField(default=dict)
+    error = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'callcenter_satisfaction_ai'
+        managed = False
+
+
+class SatisfactionInsight(Retained):
+    """One AI analysis of all completed learner satisfaction reviews; every run is kept."""
+    model = models.CharField(max_length=128)
+    state = models.CharField(max_length=12)
+    review_count = models.IntegerField()
+    last_event_id = models.BigIntegerField(null=True)
+    fingerprint = models.CharField(max_length=64)
+    result = models.JSONField(default=dict)
+    error = models.CharField(max_length=200, blank=True, default='')
+    requested_by = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'callcenter_satisfaction_insight'
+        managed = False

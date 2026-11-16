@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from callcentre.cycle import run_call_sync, run_cycle, run_recording_sync, run_zoom_check
 from callcentre.cycle_requests import RECORDING_SYNC_REQUEST, ZOOM_CHECK_REQUEST, call_sync_requested, requested
+from callcentre.satisfaction_insights import analysis_requested, run as analyse_satisfaction
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,14 @@ class Command(BaseCommand):
 
     def wait(self, interval):
         """Sleep until the next cycle. A finished call (in the page, or Zoom's webhook) brings a quick call sync forward;
-        a recording Zoom says is ready brings the recordings forward; another Zoom change, the check of the numbers."""
+        a recording Zoom says is ready brings the recordings forward; another Zoom change, the check of the numbers; a
+        director asking for a new satisfaction analysis, that analysis."""
         deadline = time.monotonic() + interval
-        since = {'call': timezone.now(), 'recording': timezone.now(), 'check': timezone.now()}
+        since = {'call': timezone.now(), 'recording': timezone.now(), 'check': timezone.now(), 'satisfaction': timezone.now()}
         jobs = (('call', call_sync_requested, 'call_sync', run_call_sync),
                 ('recording', lambda moment: requested(RECORDING_SYNC_REQUEST, moment), 'recording_sync', run_recording_sync),
-                ('check', lambda moment: requested(ZOOM_CHECK_REQUEST, moment), 'zoom_check', run_zoom_check))
+                ('check', lambda moment: requested(ZOOM_CHECK_REQUEST, moment), 'zoom_check', run_zoom_check),
+                ('satisfaction', analysis_requested, 'satisfaction_analysis', analyse_satisfaction))
         while time.monotonic() < deadline:
             time.sleep(min(5, max(0, deadline - time.monotonic())))
             for name, asked, label, job in jobs:

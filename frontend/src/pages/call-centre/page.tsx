@@ -25,6 +25,7 @@ import { deskCases, deskLayout, deskSection, deskTopics, failingSources, human, 
 import MissedCalls from './engagement/MissedCalls';
 import RequestCall from './engagement/RequestCall';
 import ReviewMeetings from './engagement/ReviewMeetings';
+import Satisfaction from './engagement/Satisfaction';
 import Settings from './engagement/Settings';
 import TaskDelegation from './engagement/TaskDelegation';
 import Shell from './engagement/Shell';
@@ -41,7 +42,7 @@ import './styles/full-case.css';
 // The director's dashboard: watching the team, the calls and cases themselves, and setting things up.
 const DIRECTOR_NAV: [string, [string, string, string][]][] = [
   ['Monitor', [['director', 'Overview', 'grid'], ['specialists', 'Specialists', 'people'], ['coaches', 'Coaches', 'people'],
-    ['scorecards', 'Scorecards', 'chart'],
+    ['scorecards', 'Scorecards', 'chart'], ['satisfaction', 'Satisfaction', 'star'],
     ['meetings', 'Review meetings', 'calendar']]],
   ['Calls', [['calls', 'Calls', 'clock'], ['missed', 'Missed calls & voicemails', 'message'], ['attendance', 'Attendance edits', 'check'],
     ['delegation', 'Task delegation', 'people'],
@@ -50,7 +51,7 @@ const DIRECTOR_NAV: [string, [string, string, string][]][] = [
     ['settings', 'Settings', 'check']]],
 ];
 const TITLES: Record<string, string> = {
-  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', coaches: 'Coaches', scorecards: 'Scorecards', calls: 'Calls',
+  director: 'Overview', specialists: 'Specialists', specialist: 'Specialists', coaches: 'Coaches', scorecards: 'Scorecards', satisfaction: 'Learner satisfaction', calls: 'Calls',
   bookings: 'Coach booking links', allocations: 'Learner allocation', 'event-allocation': 'Event allocation',
   phone: 'Zoom Phone', settings: 'Settings', meetings: 'Review meetings', missed: 'Missed calls & voicemails',
   delegation: 'Task delegation', attendance: 'Attendance edits',
@@ -250,6 +251,7 @@ export default function CallCentrePage() {
                   <SpecialistPage overview={overview} agentId={specialistId} live={live} now={now} go={go}
                     onOpenCase={openCase} onPreview={id => setParam({ view: 'operator', operator: String(id), section: null, agent: null })} />
                 ) : view === 'scorecards' ? <ScorecardsPage overview={overview} />
+                  : view === 'satisfaction' ? <Satisfaction csrf={config.data?.csrf_token || ''} onOpenCase={openCase} />
                   : view === 'meetings' ? <ReviewMeetings today={overview.today} />
                   : view === 'delegation' ? <TaskDelegation overview={overview} csrf={config.data?.csrf_token || ''} onChanged={refresh} notify={notify} />
                   : view === 'missed' ? <MissedCalls session={session} revision={overview.generated_at} onOpenCase={openCase} />

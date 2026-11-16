@@ -37,6 +37,7 @@ urlpatterns = [
     path('call-reviews/', views.my_call_reviews),
     path('review-meetings/', views.review_meetings_view),
     path('satisfaction/', views.satisfaction_report),
+    path('satisfaction-dashboard/', views.satisfaction_dashboard_view),
     path('survey/<str:token>/', views.survey),
     path('agents/', manage_views.agents),
     path('agents/<int:pk>/', manage_views.agent_detail),

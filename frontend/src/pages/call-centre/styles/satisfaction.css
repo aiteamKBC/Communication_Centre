@@ -1,0 +1,260 @@
+/* Learner satisfaction (engagement/Satisfaction.tsx), on the director dashboard's tokens (director.css). */
+
+/* The whole width of the window: this page is a dashboard, not a column of text. */
+.workspace-app:has(.sat) .workspace-content { max-width: none; }
+
+.kbc-portals .sat {
+  --sat-ink: #202139; --sat-muted: #66677b; --sat-line: #e4e3ec; --sat-soft: #f5f2fa; --sat-surface: #fff;
+  --sat-purple: #60359a; --sat-good: #1b6869; --sat-bad: #8f3341;
+  color: var(--sat-ink);
+}
+.kbc-portals .sat .bad { color: var(--sat-bad); }
+.kbc-portals .sat .good { color: var(--sat-good); }
+.kbc-portals .sat-muted { color: var(--sat-muted); font-size: .88rem; }
+.kbc-portals .sat-empty { color: var(--sat-muted); margin: .5rem 0; font-size: .92rem; }
+.kbc-portals .sat-note { color: var(--sat-muted); font-size: .85rem; margin: 0; }
+.kbc-portals .sat .num { text-align: right; font-variant-numeric: tabular-nums; }
+.kbc-portals .sat .nowrap { white-space: nowrap; }
+
+/* ---- The control bar: period, refresh and the views, always in reach ---- */
+.kbc-portals .sat-bar {
+  position: sticky; top: 0; z-index: 5; margin: 0 0 1.1rem; padding: .7rem 0 0;
+  background: color-mix(in srgb, var(--workspace-bg, #f7f6fb) 92%, transparent); backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--sat-line);
+}
+.kbc-portals .sat-bar-top { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.kbc-portals .sat-bar-top .sat-muted { margin-left: auto; }
+.kbc-portals .workspace-app .ec .sat .sat-bar-top > button { padding: .45rem .9rem; }
+.kbc-portals .sat-periods { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: #ebe7f2; }
+.kbc-portals .workspace-app .ec .sat .sat-periods button {
+  white-space: nowrap; border: 0; border-radius: 8px; background: transparent; padding: .4rem .85rem; font-size: .88rem; font-weight: 600; color: var(--sat-muted);
+}
+.kbc-portals .workspace-app .ec .sat .sat-periods button[aria-checked="true"] { background: var(--sat-surface); color: var(--sat-ink); box-shadow: 0 1px 3px rgba(41, 22, 61, .15); }
+.kbc-portals .sat-tabs { display: flex; gap: .2rem; margin-top: .55rem; overflow-x: auto; scrollbar-width: thin; }
+.kbc-portals .workspace-app .ec .sat .sat-tabs button {
+  display: inline-flex; align-items: center; gap: .45rem; flex-shrink: 0; border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+  background: transparent; padding: .6rem .9rem .7rem; font-size: .95rem; font-weight: 600; color: var(--sat-muted);
+}
+.kbc-portals .workspace-app .ec .sat .sat-tabs button:hover { color: var(--sat-ink); }
+.kbc-portals .workspace-app .ec .sat .sat-tabs button[aria-selected="true"] { color: var(--sat-purple); border-bottom-color: var(--sat-purple); }
+.kbc-portals .sat-tabs b { font-size: .75rem; font-weight: 700; padding: .05rem .45rem; border-radius: 99px; background: #ebe7f2; color: var(--sat-ink); }
+.kbc-portals .sat-tabs b.sat-working { background: #fff1d7; color: #80561e; }
+.kbc-portals .sat-body { transition: opacity .2s; }
+.kbc-portals .sat-stale { opacity: .6; }
+@media (prefers-reduced-motion: reduce) { .kbc-portals .sat-body { transition: none; } }
+
+/* ---- The grid every view sits on ---- */
+.kbc-portals .sat-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; align-items: start; }
+@media (min-width: 820px) {
+  .kbc-portals .sat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kbc-portals .sat-span-2, .kbc-portals .sat-span-3 { grid-column: 1 / -1; }
+}
+@media (min-width: 1240px) {
+  .kbc-portals .sat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kbc-portals .sat-span-2 { grid-column: span 2; }
+  .kbc-portals .sat-span-3 { grid-column: 1 / -1; }
+  .kbc-portals .sat-grid.sat-halves { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.kbc-portals .sat-panel { background: var(--sat-surface); border: 1px solid var(--sat-line); border-radius: 12px; padding: 1rem 1.15rem 1.1rem; min-width: 0; }
+.kbc-portals .sat-panel > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: .6rem; }
+.kbc-portals .sat-panel h3 { margin: 0; font-size: 1.02rem; font-weight: 700; }
+.kbc-portals .sat-panel > header p { margin: .15rem 0 0; font-size: .85rem; color: var(--sat-muted); max-width: 70ch; }
+.kbc-portals .workspace-app .ec .sat .sat-link {
+  border: 0; background: none; padding: .1rem 0; font-size: .88rem; font-weight: 600; color: var(--sat-purple); white-space: nowrap;
+}
+.kbc-portals .workspace-app .ec .sat .sat-link:hover { text-decoration: underline; text-underline-offset: 3px; background: none; }
+.kbc-portals .sat-chart { width: 100%; }
+
+/* ---- Overview: the score, the figures ---- */
+.kbc-portals .sat-hero {
+  background: var(--sat-surface); border: 1px solid var(--sat-line); border-radius: 12px; padding: 1.3rem 1.4rem;
+  display: grid; gap: .9rem; align-content: start;
+}
+.kbc-portals .sat-hero-number { display: flex; align-items: baseline; gap: .6rem; }
+.kbc-portals .sat-hero-number strong { font-size: clamp(3rem, 6vw, 4.6rem); font-weight: 700; line-height: .95; letter-spacing: -.03em; color: var(--sat-purple); }
+.kbc-portals .sat-hero-number span { font-size: 1.15rem; font-weight: 600; color: var(--sat-muted); }
+.kbc-portals .sat-hero-note { margin: 0; font-size: .92rem; color: var(--sat-muted); max-width: 72ch; }
+.kbc-portals .workspace-app .ec .sat .sat-headline {
+  display: grid; gap: .2rem; text-align: left; border: 0; border-left: 3px solid var(--sat-purple); border-radius: 0 8px 8px 0;
+  background: var(--sat-soft); padding: .7rem .9rem; font-size: 1rem; font-weight: 600; line-height: 1.45; color: var(--sat-ink);
+}
+.kbc-portals .workspace-app .ec .sat .sat-headline:hover { background: #ede6f7; }
+.kbc-portals .sat-headline span { font-size: .8rem; font-weight: 600; color: var(--sat-purple); }
+
+.kbc-portals .sat-segmented { display: grid; gap: .55rem; }
+.kbc-portals .sat-segmented-bar { display: flex; gap: 2px; height: 46px; border-radius: 8px; overflow: hidden; }
+.kbc-portals .sat-segmented-bar span {
+  flex-basis: 0; min-width: 4px; display: flex; flex-direction: column; justify-content: center; padding: 0 .55rem; color: #fff; overflow: hidden;
+}
+.kbc-portals .sat-segmented-bar b { font-size: 1rem; line-height: 1.1; }
+.kbc-portals .sat-segmented-bar small { font-size: .74rem; opacity: .92; }
+.kbc-portals .sat-legend { list-style: none; margin: 0 0 .5rem; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem 1.1rem; font-size: .85rem; }
+.kbc-portals .sat-legend li { display: inline-flex; align-items: center; gap: .4rem; }
+.kbc-portals .sat-legend i { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+.kbc-portals .sat-legend b { font-variant-numeric: tabular-nums; }
+.kbc-portals .sat-legend small { color: var(--sat-muted); }
+
+.kbc-portals .sat-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+.kbc-portals .sat-tiles.wide { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.kbc-portals .sat-tile, .kbc-portals .workspace-app .ec .sat button.sat-tile {
+  display: grid; align-content: start; gap: .15rem; text-align: left; padding: .8rem .95rem; margin: 0;
+  background: var(--sat-surface); border: 1px solid var(--sat-line); border-radius: 12px; font: inherit; color: inherit;
+}
+.kbc-portals .workspace-app .ec .sat button.sat-tile:hover { border-color: var(--sat-purple); background: #fcfbfe; }
+.kbc-portals .sat-tile > span { font-size: .82rem; font-weight: 600; color: var(--sat-muted); }
+.kbc-portals .sat-tile strong { font-size: 1.75rem; font-weight: 700; line-height: 1.15; letter-spacing: -.01em; }
+.kbc-portals .sat-tile small { font-size: .78rem; line-height: 1.35; color: var(--sat-muted); }
+.kbc-portals .sat-tile.bad strong { color: var(--sat-bad); }
+.kbc-portals .sat-tile.good strong { color: var(--sat-good); }
+
+.kbc-portals .sat-ranked { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.kbc-portals .sat-ranked li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(80px, 1fr) 6.5rem; gap: .9rem; align-items: center; font-size: .92rem; }
+.kbc-portals .sat-ranked-track { height: 10px; border-radius: 99px; background: #f0edf5; overflow: hidden; }
+.kbc-portals .sat-ranked-track i { display: block; height: 100%; border-radius: inherit; background: var(--sat-purple); }
+.kbc-portals .sat-ranked b { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Lists of reviews (lowest scores, follow-ups, quotes). */
+.kbc-portals .sat-score {
+  display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 7px; color: #fff; font-size: .88rem; font-weight: 700; flex-shrink: 0;
+}
+.kbc-portals .sat-list, .kbc-portals .sat-quotes { list-style: none; margin: 0; padding: 0; display: grid; gap: .1rem; }
+.kbc-portals .workspace-app .ec .sat .sat-list button, .kbc-portals .workspace-app .ec .sat .sat-quotes button {
+  display: flex; align-items: flex-start; gap: .7rem; width: 100%; margin: 0; padding: .5rem .45rem; border: 0; border-radius: 8px;
+  background: transparent; text-align: left; font: inherit; font-weight: 400; color: inherit;
+}
+.kbc-portals .workspace-app .ec .sat .sat-list button:hover, .kbc-portals .workspace-app .ec .sat .sat-quotes button:hover { background: var(--sat-soft); }
+.kbc-portals .sat-list-text { display: grid; gap: .1rem; min-width: 0; flex: 1; }
+.kbc-portals .sat-list strong { font-size: .92rem; }
+.kbc-portals .sat-list small, .kbc-portals .sat-quotes small { font-size: .82rem; color: var(--sat-muted); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kbc-portals .sat-list time { font-size: .8rem; color: var(--sat-muted); white-space: nowrap; }
+.kbc-portals .sat-quotes { margin-top: .4rem; padding-left: .2rem; border-left: 2px solid var(--sat-line); }
+.kbc-portals .sat-quotes q { font-size: .88rem; font-style: italic; overflow-wrap: anywhere; }
+
+/* ---- AI analysis ---- */
+.kbc-portals .sat-ai-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0;
+  background: var(--sat-surface); border: 1px solid var(--sat-line); border-radius: 12px; overflow: hidden;
+}
+.kbc-portals .sat-ai-strip > div { display: grid; gap: .2rem; align-content: start; padding: .9rem 1.1rem; border-left: 1px solid var(--sat-line); }
+.kbc-portals .sat-ai-strip > div:first-child { border-left: 0; }
+.kbc-portals .sat-ai-strip span:first-child { font-size: .82rem; font-weight: 600; color: var(--sat-muted); }
+.kbc-portals .sat-ai-strip strong { font-size: 1.3rem; font-weight: 700; }
+.kbc-portals .sat-ai-strip small { font-size: .8rem; color: var(--sat-muted); }
+.kbc-portals .sat-ai-strip .sat-ai-action { align-content: center; justify-items: start; background: var(--sat-soft); }
+.kbc-portals .sat-progress { display: block; height: 6px; border-radius: 99px; background: #ebe7f2; overflow: hidden; margin: .15rem 0; }
+.kbc-portals .sat-progress i { display: block; height: 100%; background: var(--sat-good); border-radius: inherit; }
+.kbc-portals .sat-verdict { padding: .2rem .2rem .3rem; }
+.kbc-portals .sat-verdict h2 { margin: 0 0 .5rem; font-size: 1.45rem; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; max-width: 60ch; }
+.kbc-portals .sat-verdict p { margin: 0; font-size: 1rem; line-height: 1.65; max-width: 80ch; color: #3a3b52; }
+.kbc-portals .sat-findings { border-top: 4px solid var(--sat-purple); }
+.kbc-portals .sat-findings.issue { border-top-color: #bb8a32; }
+.kbc-portals .sat-findings.pro { border-top-color: var(--sat-good); }
+.kbc-portals .sat-findings.con { border-top-color: var(--sat-bad); }
+.kbc-portals .sat-findings > ul { list-style: none; margin: 0; padding: 0; display: grid; }
+.kbc-portals .workspace-app .ec .sat .sat-more { display: block; margin-top: .25rem; font-size: .82rem; }
+.kbc-portals .sat-findings > ul > li { padding: .6rem 0; border-top: 1px solid var(--sat-line); }
+.kbc-portals .sat-findings > ul > li:first-child { border-top: 0; padding-top: .1rem; }
+.kbc-portals .sat-findings.action > ul { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); column-gap: 1.5rem; }
+.kbc-portals .sat-findings.action > ul > li:nth-child(2) { border-top: 0; padding-top: .1rem; }
+.kbc-portals .sat-finding-head { display: flex; align-items: baseline; justify-content: space-between; gap: .7rem; }
+.kbc-portals .sat-finding-head strong { font-size: .95rem; line-height: 1.35; }
+.kbc-portals .sat-pill { flex-shrink: 0; font-size: .78rem; font-weight: 600; color: var(--sat-purple); background: var(--sat-soft); padding: .1rem .5rem; border-radius: 99px; white-space: nowrap; }
+.kbc-portals .sat-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kbc-portals .sat-findings p { margin: .3rem 0 .35rem; font-size: .88rem; line-height: 1.5; color: #3a3b52; }
+.kbc-portals .sat-priority { display: inline-block; margin-top: .3rem; font-size: .75rem; font-weight: 700; padding: .05rem .45rem; border-radius: 5px; background: #eeeaf6; color: #58398b; }
+.kbc-portals .sat-priority.high { background: #f9e7e8; color: var(--sat-bad); }
+.kbc-portals .sat-priority.medium { background: #fff1d7; color: #80561e; }
+
+/* Pros and cons by theme: praise grows left from the theme, concerns grow right. */
+.kbc-portals .sat-balance { width: 100%; border-collapse: collapse; font-size: .9rem; table-layout: fixed; }
+.kbc-portals .sat-balance th, .kbc-portals .sat-balance td { padding: .3rem .5rem; border: 0; background: none; }
+.kbc-portals .sat-balance thead th { font-size: .8rem; color: var(--sat-muted); font-weight: 600; }
+.kbc-portals .ec .sat-balance thead th:nth-child(2), .kbc-portals .ec .sat-balance tbody th { width: 17rem; text-align: center; font-weight: 500; white-space: normal; line-height: 1.3; }
+.kbc-portals .sat-balance tbody tr:hover { background: var(--sat-soft); }
+.kbc-portals .sat-balance-side { display: flex; align-items: center; gap: 2px; }
+.kbc-portals .sat-balance-side.pro { justify-content: flex-end; }
+.kbc-portals .sat-balance-side i { display: block; height: 14px; min-width: 0; }
+.kbc-portals .sat-balance-side.pro i { background: var(--sat-good); border-radius: 4px 0 0 4px; }
+.kbc-portals .sat-balance-side.con i.serious { background: var(--sat-bad); }
+.kbc-portals .sat-balance-side.con i.minor { background: #c4707a; }
+.kbc-portals .sat-balance-side.con i:last-of-type { border-radius: 0 4px 4px 0; }
+.kbc-portals .sat-balance-side b { min-width: 1.6rem; padding: 0 .35rem; font-size: .85rem; font-variant-numeric: tabular-nums; text-align: center; }
+
+/* ---- Tables, filters, pages ---- */
+.kbc-portals .sat-reviews-panel { padding: 0; overflow: hidden; }
+.kbc-portals .sat-filters { display: flex; flex-wrap: wrap; gap: .6rem; padding: 1rem 1.1rem .6rem; }
+.kbc-portals .workspace-app .ec .sat .sat-filters input { flex: 1 1 280px; max-width: 460px; }
+.kbc-portals .workspace-app .ec .sat .sat-filters select { width: auto; flex: 0 1 auto; }
+.kbc-portals .workspace-app .ec .sat .sat-filters > button { margin-left: auto; }
+.kbc-portals .sat-chips { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: 0 1.1rem .9rem; border-bottom: 1px solid var(--sat-line); }
+.kbc-portals .workspace-app .ec .sat .sat-chips button:not(.sat-link) {
+  display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .75rem; border-radius: 99px; font-size: .85rem; font-weight: 600;
+}
+.kbc-portals .workspace-app .ec .sat .sat-chips button[aria-pressed="true"] { background: var(--sat-purple); border-color: var(--sat-purple); color: #fff; }
+.kbc-portals .sat-chips b { font-size: .78rem; font-variant-numeric: tabular-nums; opacity: .8; }
+.kbc-portals .sat-table-wrap { overflow-x: auto; }
+.kbc-portals .ec table.sat-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.kbc-portals .ec .sat-table th, .kbc-portals .ec .sat-table td { padding: .6rem .8rem; border-bottom: 1px solid var(--sat-line); vertical-align: top; text-align: left; }
+.kbc-portals .ec .sat-table th.num, .kbc-portals .ec .sat-table td.num { text-align: right; }
+.kbc-portals .ec .sat-table thead th { position: sticky; top: 0; background: #faf9fc; font-size: .82rem; color: var(--sat-muted); white-space: nowrap; }
+.kbc-portals .ec .sat-table td small { display: block; font-size: .8rem; color: var(--sat-muted); }
+.kbc-portals .workspace-app .ec .sat .sat-sort {
+  display: inline-flex; align-items: center; gap: .3rem; border: 0; padding: 0; background: none; font: inherit; font-weight: 600; color: inherit;
+}
+.kbc-portals .workspace-app .ec .sat .sat-sort:hover { color: var(--sat-ink); background: none; }
+.kbc-portals .sat-sort span { font-size: .7rem; opacity: .7; }
+.kbc-portals .sat-review-table .sat-row { cursor: pointer; }
+.kbc-portals .ec .sat-review-table tbody tr:hover { background: var(--sat-soft); }
+.kbc-portals .workspace-app .ec .sat .sat-name { border: 0; padding: 0; background: none; font: inherit; font-weight: 600; color: var(--sat-ink); text-align: left; }
+.kbc-portals .workspace-app .ec .sat .sat-name:hover { color: var(--sat-purple); text-decoration: underline; background: none; }
+.kbc-portals .sat-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; min-width: 12rem; }
+.kbc-portals .sat-clip { max-width: 14rem; }
+.kbc-portals .sat-sentiment-tag { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; }
+.kbc-portals .sat-sentiment-tag i { width: 9px; height: 9px; border-radius: 50%; }
+.kbc-portals .sat-pages { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .8rem; padding: .8rem 1.1rem; font-size: .88rem; color: var(--sat-muted); }
+.kbc-portals .sat-pages > div { display: flex; align-items: center; gap: .25rem; }
+.kbc-portals .sat-pages em { padding: 0 .25rem; font-style: normal; }
+.kbc-portals .workspace-app .ec .sat .sat-pages button { min-width: 2.2rem; padding: .35rem .55rem; font-size: .88rem; }
+.kbc-portals .workspace-app .ec .sat .sat-pages button[aria-current="page"] { background: var(--sat-purple); border-color: var(--sat-purple); color: #fff; }
+.kbc-portals .sat-pages label { display: inline-flex; align-items: center; gap: .45rem; font-weight: 500; }
+.kbc-portals .workspace-app .ec .sat .sat-pages select { width: auto; padding: .3rem .5rem; }
+.kbc-portals .sat-avg { display: flex; align-items: center; gap: .6rem; }
+.kbc-portals .sat-avg b { width: 2.4rem; font-variant-numeric: tabular-nums; }
+.kbc-portals .sat-avg-track { flex: 1; min-width: 60px; height: 8px; border-radius: 99px; background: #f0edf5; overflow: hidden; }
+.kbc-portals .sat-avg-track i { display: block; height: 100%; background: var(--sat-purple); border-radius: inherit; }
+.kbc-portals .sat-check { display: inline-flex; align-items: center; gap: .4rem; font-size: .82rem; font-weight: 500; white-space: nowrap; }
+.kbc-portals .workspace-app .ec .sat .sat-check input { width: auto; margin: 0; }
+
+/* ---- Coverage ---- */
+.kbc-portals .sat-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: .1rem; }
+.kbc-portals .sat-checks li { display: grid; grid-template-columns: 3rem 1fr auto; align-items: center; gap: .8rem; padding: .6rem 0; border-top: 1px solid var(--sat-line); font-size: .92rem; }
+.kbc-portals .sat-checks li:first-child { border-top: 0; }
+.kbc-portals .sat-checks strong { font-size: 1.5rem; font-weight: 700; text-align: right; }
+.kbc-portals .workspace-app .ec .sat .sat-checks button { padding: .4rem .8rem; font-size: .85rem; }
+
+/* ---- One learner's reviews ---- */
+.kbc-portals .ec dialog.sat-dialog { max-width: 860px; }
+.kbc-portals .sat-history { list-style: none; padding: 0; margin: 0; display: grid; gap: .8rem; }
+.kbc-portals .sat-history > li { border: 1px solid var(--sat-line); border-radius: 10px; padding: .8rem 1rem; }
+.kbc-portals .sat-history > li.current { border-color: var(--sat-purple); box-shadow: 0 0 0 1px var(--sat-purple); }
+.kbc-portals .sat-history header { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: .6rem; }
+.kbc-portals .workspace-app .ec .sat .sat-history header button { margin-left: auto; padding: .4rem .8rem; font-size: .85rem; }
+.kbc-portals .sat-history dl { display: grid; grid-template-columns: 8rem 1fr; gap: .4rem .9rem; margin: 0; font-size: .92rem; }
+.kbc-portals .sat-history dt { color: var(--sat-muted); font-weight: 600; }
+.kbc-portals .sat-history dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.kbc-portals .sat-points { margin: .35rem 0 0; padding-left: 1.1rem; white-space: normal; }
+.kbc-portals .sat-points.pro li::marker { color: var(--sat-good); }
+.kbc-portals .sat-points.con li::marker { color: var(--sat-bad); }
+
+@media (max-width: 640px) {
+  .kbc-portals .sat-history dl { grid-template-columns: 1fr; }
+  .kbc-portals .sat-ranked li { grid-template-columns: 1fr 5.5rem; }
+  .kbc-portals .sat-ranked-track { display: none; }
+  .kbc-portals .sat-balance thead th:nth-child(2), .kbc-portals .sat-balance tbody th { width: 8rem; }
+  .kbc-portals .sat-bar-top .sat-muted { display: none; }
+  .kbc-portals .workspace-app .ec .sat .sat-periods button { padding: .4rem .6rem; font-size: .82rem; }
+  .kbc-portals .sat-checks li { grid-template-columns: 2.5rem 1fr; }
+  .kbc-portals .sat-checks li button { grid-column: 2; justify-self: start; }
+}
