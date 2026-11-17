@@ -5871,6 +5871,29 @@ def aptem_learners(request):
 	return JsonResponse({'items': learners, 'subprogramme': subprogramme})
 
 
+def training_plan_learner_exports(request):
+	if request.method != 'GET':
+		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
+
+	exports: dict[tuple[str, str], dict] = {}
+	for mapping in ModuleLearnerMapping.objects.filter(selected_state=True).order_by(
+		'cohort_id', 'module_block_id', 'subprogramme', 'sort_order', 'learner_name', 'id',
+	):
+		key = (mapping.cohort_id, mapping.module_block_id)
+		entry = exports.setdefault(key, {
+			'cohortId': mapping.cohort_id,
+			'moduleBlockId': mapping.module_block_id,
+			'subprogrammes': [],
+			'learnerNames': [],
+		})
+		if mapping.subprogramme and mapping.subprogramme not in entry['subprogrammes']:
+			entry['subprogrammes'].append(mapping.subprogramme)
+		if mapping.learner_name and mapping.learner_name not in entry['learnerNames']:
+			entry['learnerNames'].append(mapping.learner_name)
+
+	return JsonResponse({'items': list(exports.values())})
+
+
 def training_plan_module_assignment_learners(request, cohort_id: str, module_block_id: str):
 	row, module_catalogue_id, error = validate_module_assignment_scope(cohort_id, module_block_id)
 	if error:

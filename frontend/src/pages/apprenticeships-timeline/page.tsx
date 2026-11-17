@@ -23,6 +23,7 @@ import { buildTutorProfilesFromGroups, profileIdForTutorName, tutorDisplayName }
 import { buildCoachProfilesFromGroups } from './coachProfiles';
 import { rankAptemSubprogrammeOptions, loadAptemSubprogrammesForModule, readApiErrorMessage } from './aptemLearnerMapping';
 import { timelineCohortOrder, timelineProgrammeOrder, verifyTimelineUndo, type TimelineUndoEntry } from './timelineUndo';
+import { fetchWithTimeout } from '../../utils/fetchWithTimeout';
 
 const ModuleComparisonModal = lazy(() => import('./components/ModuleComparisonModal'));
 const CohortModal = lazy(() => import('./components/CohortModal'));
@@ -900,7 +901,21 @@ function missingSiblingCohortIds(items: TrainingPlanItem[], programmeId: string,
   return siblingCohortIds.filter(cohortId => !activeCohorts.has(cohortId));
 }
 
-function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]): Array<Record<string, string | number>> {
+type TrainingPlanLearnerExport = {
+  subprogramme: string;
+  learnerNames: string;
+};
+
+function learnerExportKey(cohortId: string, moduleBlockId: string): string {
+  return `${cohortId}::${moduleBlockId}`;
+}
+
+function buildTrainingPlanExportRows(
+  groups: ProgrammeGroup[],
+  customModules: CustomModule[],
+  ksbProfiles: KsbProfile[],
+  learnerExports: Map<string, TrainingPlanLearnerExport> = new Map(),
+): Array<Record<string, string | number>> {
   const profileNameById = new Map(ksbProfiles.map(profile => [profile.id, profile.name]));
   return groups.flatMap(group =>
     group.rows.flatMap(row =>
@@ -909,6 +924,8 @@ function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: Cu
         const knowledgeCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.knowledgeCodes))).join(' | ');
         const skillCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.skillCodes))).join(' | ');
         const behaviourCodes = Array.from(new Set(ksbMappings.flatMap(mapping => mapping.behaviourCodes))).join(' | ');
+
+        const learnerExport = learnerExports.get(learnerExportKey(row.id, block.id));
 
         return {
           Programme: toProgrammeLabel(group),
@@ -929,6 +946,8 @@ function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: Cu
           'Knowledge Codes': knowledgeCodes,
           'Skill Codes': skillCodes,
           'Behaviour Codes': behaviourCodes,
+          Subprogramme: learnerExport?.subprogramme || '',
+          'Student Names': learnerExport?.learnerNames || '',
           Notes: block.notes || '',
         };
       }),
@@ -936,35 +955,58 @@ function buildTrainingPlanExportRows(groups: ProgrammeGroup[], customModules: Cu
   );
 }
 
-async function downloadTrainingPlanWorkbook(filename: string, groups: ProgrammeGroup[], customModules: CustomModule[], ksbProfiles: KsbProfile[]) {
+async function downloadTrainingPlanWorkbook(
+  filename: string,
+  groups: ProgrammeGroup[],
+  customModules: CustomModule[],
+  ksbProfiles: KsbProfile[],
+  learnerExports: Map<string, TrainingPlanLearnerExport>,
+) {
   const XLSX = await import('xlsx');
-  const rows = buildTrainingPlanExportRows(groups, customModules, ksbProfiles);
+  const rows = buildTrainingPlanExportRows(groups, customModules, ksbProfiles, learnerExports);
   const worksheet = XLSX.utils.json_to_sheet(rows);
-  worksheet['!cols'] = [
-    { wch: 16 },
-    { wch: 20 },
-    { wch: 14 },
-    { wch: 14 },
-    { wch: 22 },
-    { wch: 18 },
-    { wch: 28 },
-    { wch: 18 },
-    { wch: 14 },
-    { wch: 14 },
-    { wch: 10 },
-    { wch: 18 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 24 },
-    { wch: 24 },
-    { wch: 24 },
-    { wch: 24 },
-    { wch: 36 },
-  ];
+  const headers = Object.keys(rows[0] || {});
+  worksheet['!cols'] = headers.map(header => ({
+    // Excel supports widths up to 255 characters. Leave a small margin so
+    // the longest value, including learner names, is visible on export.
+    wch: Math.min(255, Math.max(header.length, ...rows.map(row => String(row[header] ?? '').length)) + 2),
+  }));
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Training Plan');
   XLSX.writeFile(workbook, filename, { compression: true });
+}
+
+async function loadTrainingPlanLearnerExports(groups: ProgrammeGroup[]): Promise<Map<string, TrainingPlanLearnerExport>> {
+  const scopes = new Set(groups.flatMap(group =>
+    group.rows.flatMap(row => row.blks.map(block => learnerExportKey(row.id, block.id))),
+  ));
+
+  try {
+    const response = await fetchWithTimeout('/api/training-plan/learner-exports/', {
+      cache: 'no-store',
+      timeoutMs: 8000,
+    });
+    if (!response.ok) return new Map();
+
+    const payload = await response.json() as {
+      items?: Array<{ cohortId?: string; moduleBlockId?: string; subprogrammes?: string[]; learnerNames?: string[] }>;
+    };
+    return new Map((Array.isArray(payload.items) ? payload.items : [])
+      .map(item => {
+        const key = learnerExportKey(item.cohortId || '', item.moduleBlockId || '');
+        return [
+          key,
+          {
+            subprogramme: Array.isArray(item.subprogrammes) ? item.subprogrammes.join(' | ') : '',
+            learnerNames: Array.isArray(item.learnerNames) ? item.learnerNames.join(' | ') : '',
+          },
+        ] as const;
+      })
+      .filter(([key]) => scopes.has(key)));
+  } catch {
+    return new Map();
+  }
 }
 
 function parseLocalDate(value: string): Date {
@@ -6636,7 +6678,23 @@ export default function ApprenticeshipTimeline() {
 
     const today = new Date();
     const stamp = `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, '0')}-${`${today.getDate()}`.padStart(2, '0')}`;
-    await downloadTrainingPlanWorkbook(`training-plan-${stamp}.xlsx`, exportGroups, exportCustomModules, exportKsbProfiles);
+    try {
+      const learnerExports = await loadTrainingPlanLearnerExports(exportGroups);
+      await downloadTrainingPlanWorkbook(
+        `training-plan-${stamp}.xlsx`,
+        exportGroups,
+        exportCustomModules,
+        exportKsbProfiles,
+        learnerExports,
+      );
+    } catch (error) {
+      void kbcSwal.fire({
+        title: 'Export Failed',
+        text: error instanceof Error ? error.message : 'Could not create the Excel file. Please try again.',
+        icon: 'error',
+        confirmButtonText: 'OK',
+      });
+    }
   };
   const selectedProgram = programModal.open && programModal.mode === 'edit'
     ? (() => {
