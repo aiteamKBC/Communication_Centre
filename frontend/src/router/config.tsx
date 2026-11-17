@@ -17,6 +17,7 @@ const MicrosoftPopupCallbackPage = lazy(() => import("../pages/login/microsoft-p
 const UrgentNoticePage = lazy(() => import("../pages/urgent-notice/page"));
 const LeadershipMessagePage = lazy(() => import("../pages/leadership-message/page"));
 const UserActivityPage = lazy(() => import("../pages/user-activity/page"));
+const AdministrationPage = lazy(() => import("../pages/administration/page"));
 const CallCentrePage = lazy(() => import("../pages/call-centre/page"));
 const CoachCentrePage = lazy(() => import("../pages/coach-centre/page"));
 
@@ -63,6 +64,10 @@ const routes: RouteObject[] = [
   {
     path: "/user-activity",
     element: routeElement(UserActivityPage),
+  },
+  {
+    path: "/administration",
+    element: routeElement(AdministrationPage),
   },
   {
     path: "/risk-register",

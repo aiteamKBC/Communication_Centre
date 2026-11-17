@@ -11,6 +11,8 @@ interface Props {
   coachProfiles?: CoachProfile[];
   holidays?: Holiday[];
   canEdit?: boolean;
+  canAdd?: boolean;
+  canDelete?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
   onCreateCoachProfile?: (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }) => Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }>;
   onUpdateCoachProfile?: (id: string, profile: Partial<CoachProfile> & { confirmSave?: boolean }) => Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }>;
@@ -265,7 +267,7 @@ function ModuleList({
   );
 }
 
-export default function CoachProfiles({ groups, coachProfiles = [], holidays = [], canEdit = false, onEditTrainingPlan, onCreateCoachProfile, onUpdateCoachProfile, onDeleteCoachProfile, onForceDeleteCoachProfile }: Props) {
+export default function CoachProfiles({ groups, coachProfiles = [], holidays = [], canEdit = false, canAdd = canEdit, canDelete = canEdit, onEditTrainingPlan, onCreateCoachProfile, onUpdateCoachProfile, onDeleteCoachProfile, onForceDeleteCoachProfile }: Props) {
   const now = useMemo(() => new Date(), []);
   const profiles = useMemo(() => buildCoachProfilesFromGroups(groups, coachProfiles), [coachProfiles, groups]);
   const [selectedId, setSelectedId] = useState('');
@@ -477,7 +479,7 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
               <p className="mt-1 text-sm font-extrabold text-kbc-navy">{profiles.length} profile{profiles.length === 1 ? '' : 's'}</p>
               {inactiveCount > 0 && <p className="mt-0.5 text-xs font-semibold text-gray-400">{activeCount} active, {inactiveCount} inactive</p>}
             </div>
-            {canEdit && (
+            {canAdd && onCreateCoachProfile && (
               <button type="button" onClick={startCreate} className="rounded-lg bg-kbc-navy px-2.5 py-1.5 text-xs font-extrabold text-white">
                 Add
               </button>
@@ -553,12 +555,12 @@ export default function CoachProfiles({ groups, coachProfiles = [], holidays = [
                   {activeProfile.email && <p className="mt-1 text-xs font-semibold text-gray-400">{activeProfile.email}</p>}
                   <p className="mt-1 text-sm text-gray-500">{assignedSessionCount} assigned sessions, {coverageRequiredSessions.length} coverage required, {coverageSessions.length} covering sessions</p>
                 </div>
-                {canEdit && (
+                {(canEdit || canDelete || (canAdd && isLegacyProfile(activeProfile))) && (
                   <div className="flex gap-2">
-                    {onUpdateCoachProfile && !activeProfile.isActive && <button type="button" onClick={() => void activateActiveProfile()} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-extrabold text-emerald-700">Activate</button>}
+                    {canEdit && onUpdateCoachProfile && !activeProfile.isActive && <button type="button" onClick={() => void activateActiveProfile()} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-extrabold text-emerald-700">Activate</button>}
                     {(onUpdateCoachProfile || (isLegacyProfile(activeProfile) && onCreateCoachProfile)) && <button type="button" onClick={() => startEdit(activeProfile)} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">Edit Profile</button>}
-                    {onDeleteCoachProfile && activeProfile.isActive && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
-                    {onForceDeleteCoachProfile && <button type="button" onClick={() => void forceDeleteActiveProfile()} className="rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-extrabold text-red-700">Delete</button>}
+                    {canDelete && onDeleteCoachProfile && (!isLegacyProfile(activeProfile) || canAdd) && activeProfile.isActive && <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">Deactivate</button>}
+                    {onForceDeleteCoachProfile && (!isLegacyProfile(activeProfile) || canAdd) && <button type="button" onClick={() => void forceDeleteActiveProfile()} className="rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-extrabold text-red-700">Delete</button>}
                   </div>
                 )}
               </div>

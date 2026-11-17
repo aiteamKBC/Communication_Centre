@@ -84,7 +84,10 @@ function NewsGridSkeleton() {
 
 export default function NewsPage() {
   const { items, loading, error, addNews, updateNews, deleteNews } = useNews();
-  const { canManageNews } = useAccessControl();
+  const { can } = useAccessControl();
+  const canAdd = can('add_news');
+  const canEdit = can('change_news');
+  const canDelete = can('delete_news');
   const [dept, setDept] = useState('');
   const [search, setSearch] = useState('');
   const [adminOpen, setAdminOpen] = useState(false);
@@ -137,11 +140,13 @@ export default function NewsPage() {
   };
 
   const openCreateModal = () => {
+    if (!canAdd) return;
     setEditingItem(null);
     setAdminOpen(true);
   };
 
   const openEditModal = (item: NewsItem) => {
+    if (!canEdit) return;
     setSelectedItem(null);
     setEditingItem(item);
     setAdminOpen(true);
@@ -152,6 +157,7 @@ export default function NewsPage() {
   };
 
   const handleDeleteNews = async (item: NewsItem) => {
+    if (!canDelete) return;
     const result = await kbcSwal.fire({
       title: 'Delete News Article?',
       html: `The article <strong>${item.title}</strong> will be removed from the database.`,
@@ -190,7 +196,7 @@ export default function NewsPage() {
       <TopNav />
 
       {/* Add News Modal */}
-      {canManageNews && adminOpen && (
+      {(editingItem ? canEdit : canAdd) && adminOpen && (
         <AddNewsModal
           onClose={closeAdminModal}
           initialArticle={editingItem}
@@ -206,9 +212,9 @@ export default function NewsPage() {
         <NewsDetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
-          canManageNews={canManageNews}
-          onEdit={openEditModal}
-          onDelete={handleDeleteNews}
+          canManageNews={canEdit || canDelete}
+          onEdit={canEdit ? openEditModal : undefined}
+          onDelete={canDelete ? handleDeleteNews : undefined}
         />
       )}
 
@@ -230,7 +236,7 @@ export default function NewsPage() {
                 <p className="text-gray-400 text-xs mt-0.5">Critical institutional alerts and updates for KBC staff.</p>
               </div>
             </div>
-            {canManageNews && (
+            {canAdd && (
               <button
                 onClick={openCreateModal}
                 className="flex items-center gap-2 bg-kbc-amber text-kbc-navy text-xs font-bold px-4 py-2.5 rounded-lg cursor-pointer hover:bg-yellow-400 transition-colors whitespace-nowrap"
@@ -329,9 +335,9 @@ export default function NewsPage() {
                         </p>
                         <div className="flex items-center gap-2 mt-2.5 flex-wrap">
                           <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full whitespace-nowrap transition-colors duration-300 group-hover:bg-gray-200">{item.department}</span>
-                          {canManageNews && (
+                          {(canEdit || canDelete) && (
                             <div className="flex items-center gap-1">
-                              <button
+                              {canEdit && <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
@@ -341,8 +347,8 @@ export default function NewsPage() {
                               >
                                 <i className="ri-edit-line text-xs" />
                                 Edit
-                              </button>
-                              <button
+                              </button>}
+                              {canDelete && <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
@@ -352,7 +358,7 @@ export default function NewsPage() {
                               >
                                 <i className="ri-delete-bin-line text-xs" />
                                 Delete
-                              </button>
+                              </button>}
                             </div>
                           )}
                           <span className="text-xs text-gray-400 ml-auto whitespace-nowrap">{item.date}</span>
@@ -416,9 +422,9 @@ export default function NewsPage() {
                       <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                         <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{item.department}</span>
                         <div className="flex items-center gap-2">
-                          {canManageNews && (
+                          {(canEdit || canDelete) && (
                             <>
-                              <button
+                              {canEdit && <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
@@ -428,8 +434,8 @@ export default function NewsPage() {
                               >
                                 <i className="ri-edit-line text-sm" />
                                 Edit
-                              </button>
-                              <button
+                              </button>}
+                              {canDelete && <button
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
@@ -439,7 +445,7 @@ export default function NewsPage() {
                               >
                                 <i className="ri-delete-bin-line text-sm" />
                                 Delete
-                              </button>
+                              </button>}
                             </>
                           )}
                           <button

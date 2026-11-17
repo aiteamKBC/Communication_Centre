@@ -8,6 +8,9 @@ import { kbcSwal } from '@/components/feature/sweetAlert';
 import { loadAptemSubprogrammesForModule, rankAptemSubprogrammeOptions, readApiErrorMessage } from '../aptemLearnerMapping';
 
 interface Props {
+  canAdd?: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
   comparisonGroups?: ProgrammeGroup[];
   customModules?: CustomModule[];
   holidays?: Holiday[];
@@ -477,14 +480,14 @@ function KsbSessionMappingRows({
   );
 }
 
-export default function ManageModulesModal({ modules, ksbProfiles = [], comparisonGroups = [], customModules = [], holidays = [], tutorProfiles = [], onSaveLmsMatch, onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
+export default function ManageModulesModal({ canAdd = true, canEdit = true, canDelete = true, modules, ksbProfiles = [], comparisonGroups = [], customModules = [], holidays = [], tutorProfiles = [], onSaveLmsMatch, onAdd, onUpdate, onDelete, onClose, initialEditModuleId = null }: Props) {
   const ksbTemplateInputRef = useRef<HTMLInputElement | null>(null);
   const [editing, setEditing] = useState<EditState | null>(() => {
-    const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
+    const target = !canEdit || initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
     return target ? editStateFromModule(target) : null;
   });
   const [editingSnapshot, setEditingSnapshot] = useState(() => {
-    const target = initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
+    const target = !canEdit || initialEditModuleId === null ? undefined : modules.find(module => module.id === initialEditModuleId);
     return target ? JSON.stringify(editStateFromModule(target)) : '';
   });
   const [saving, setSaving] = useState(false);
@@ -526,6 +529,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
   };
 
   const openEdit = (m: CatalogModule) => {
+    if (!canEdit) return;
     const next = editStateFromModule(m);
     setEditing(next);
     setEditingSnapshot(JSON.stringify(next));
@@ -813,6 +817,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
   };
 
   const handleDelete = async (m: CatalogModule) => {
+    if (!canDelete) return;
     const result = await kbcSwal.fire({
       title: 'Delete Module?',
       html: `<strong>${m.name}</strong> will be permanently removed from the catalogue.`,
@@ -840,7 +845,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
   };
 
   const handleSave = async () => {
-    if (!editing) return;
+    if (!editing || (editing.id === null ? !canAdd : !canEdit)) return;
     if (!editing.name.trim()) { setError('Module name is required'); return; }
     if (editing.id === undefined) {
       setError('This module is missing its catalogue ID. Reload the module catalogue before saving.');
@@ -923,7 +928,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
                 </span>
                 <button
                   onClick={() => openEdit(m)}
-                  disabled={isDeleting}
+                  disabled={isDeleting || !canEdit}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer transition-all hover:opacity-90 disabled:opacity-40"
                   style={{ background: '#1B2A4A' }}
                 >
@@ -931,7 +936,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
                 </button>
                 <button
                   onClick={() => void handleDelete(m)}
-                  disabled={isDeleting}
+                  disabled={isDeleting || !canDelete}
                   className="w-8 h-8 flex items-center justify-center rounded-lg cursor-pointer transition-all disabled:opacity-40"
                   style={isDeleting ? { color: '#EF4444', background: '#FEF2F2' } : { color: '#D1D5DB' }}
                   onMouseEnter={e => { if (!isDeleting) { (e.currentTarget as HTMLButtonElement).style.color = '#EF4444'; (e.currentTarget as HTMLButtonElement).style.background = '#FEF2F2'; } }}
@@ -973,7 +978,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
               Close
             </button>
             <button
-              onClick={() => { const next = emptyEdit(); setEditing(next); setEditingSnapshot(JSON.stringify(next)); setError(''); }}
+              disabled={!canAdd} onClick={() => { if (!canAdd) return; const next = emptyEdit(); setEditing(next); setEditingSnapshot(JSON.stringify(next)); setError(''); }}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold text-white cursor-pointer transition-all hover:opacity-90"
               style={{ background: '#1B2A4A' }}
             >
@@ -984,7 +989,7 @@ export default function ManageModulesModal({ modules, ksbProfiles = [], comparis
       </div>
 
       {/* Edit / Add panel */}
-      {editing && (
+      {editing && (editing.id === null ? canAdd : canEdit) && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/20" onClick={() => { void closeEditing(); }} />
           <div className="relative bg-white rounded-xl w-full shadow-2xl overflow-hidden flex flex-col" style={{ maxWidth: 920, maxHeight: '92vh' }}>

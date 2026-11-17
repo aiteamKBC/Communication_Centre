@@ -4,6 +4,8 @@ import { formatDate } from '../utils';
 import { kbcSwal } from '@/components/feature/sweetAlert';
 
 interface Props {
+  canAdd?: boolean;
+  canDelete?: boolean;
   program: CustomProgram;
   group: ProgrammeGroup;
   onSave: (program: CustomProgram) => void;
@@ -52,6 +54,8 @@ function getCohortRange(group: ProgrammeGroup, rowIdx: number): { start: string;
 }
 
 export default function ManageProgramModal({
+  canAdd = true,
+  canDelete = true,
   program,
   group,
   onSave,
@@ -87,6 +91,7 @@ export default function ManageProgramModal({
   };
 
   const handleDeleteCohortRequest = async (rowIdx: number) => {
+    if (!canDelete) return;
     const row = group.rows[rowIdx];
     const result = await kbcSwal.fire({
       title: 'Delete Cohort?',
@@ -184,7 +189,7 @@ export default function ManageProgramModal({
                 )}
               </div>
               <button
-                onClick={onAddCohort}
+                disabled={!canAdd} onClick={onAddCohort}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white cursor-pointer transition-all hover:opacity-90"
                 style={{ background: '#1B2A4A' }}
               >
@@ -229,7 +234,7 @@ export default function ManageProgramModal({
                         Edit Cohort
                       </button>
                       <button
-                        onClick={() => { void handleDeleteCohortRequest(rowIdx); }}
+                        disabled={!canDelete} onClick={() => { void handleDeleteCohortRequest(rowIdx); }}
                         className="group flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all border bg-white text-gray-400 border-gray-300 hover:bg-red-50 hover:text-red-600 hover:border-red-200"
                       >
                         <i className="ri-delete-bin-line" />
@@ -251,7 +256,7 @@ export default function ManageProgramModal({
 
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
           <button
-            onClick={onDeleteProgram}
+            disabled={!canDelete} onClick={onDeleteProgram}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-red-600 hover:bg-red-50 cursor-pointer transition-colors"
           >
             <i className="ri-delete-bin-line" />

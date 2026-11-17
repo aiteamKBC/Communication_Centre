@@ -3,6 +3,9 @@ import { AUTH_STORAGE_KEY, clearAuthStorage, readStoredAuthUser, type StoredAuth
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface AccessControl {
+  /** Effective server permissions. Backend checks remain authoritative. */
+  permissions: string[];
+  can: (permission: string) => boolean;
   adminAccess: boolean;
   eventManagerAccess: boolean;
   operationsAccess: boolean;
@@ -25,6 +28,8 @@ export interface AccessControl {
 }
 
 const EMPTY_ACCESS: AccessControl = {
+  permissions: [],
+  can: () => false,
   adminAccess: false,
   eventManagerAccess: false,
   operationsAccess: false,
@@ -58,6 +63,8 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
 
   const access = user?.access || {};
   const groups = new Set((Array.isArray(user?.groups) ? user.groups : []).map(item => String(item).trim()));
+  const hasPermissionData = Array.isArray(access.permissions);
+  const permissions = hasPermissionData ? (access.permissions as unknown[]).filter((item): item is string => typeof item === 'string') : [];
   const hasGroupData = groups.size > 0;
 
   const adminAccess = hasGroupData
@@ -82,19 +89,35 @@ function deriveAccessFromUser(user: StoredAuthUser | null | undefined): AccessCo
 
   const superuser = Boolean(user.isSuperuser) || Boolean(access.isSuperuser);
   const callCentreAgent = hasGroupData ? groups.has('Call Centre Agent Access') : Boolean(access.callCentreAgentAccess);
-  const callCentreDirector = superuser
+  const callCentreDirector = typeof access.callCentreDirectorAccess === 'boolean' ? access.callCentreDirectorAccess : superuser
     || (hasGroupData ? groups.has('Call Centre Director Access') : Boolean(access.callCentreDirectorAccess));
   const callCentreCoach = hasGroupData ? groups.has('Call Centre Coach Access') : Boolean(access.callCentreCoachAccess);
 
+  // Older cached sessions keep their existing controls until refreshed. Once
+  // the server supplies permissions, group names cannot override that list.
+  const can = (permission: string): boolean => {
+    const qualified = permission.includes('.') ? permission : `login.${permission}`;
+    if (hasPermissionData) return permissions.includes(qualified);
+    if (superuser || adminAccess) return true;
+    if (qualified === 'login.view_user_activity') return itAccess;
+    if (qualified.endsWith('_news')) return qualified.startsWith('login.view_') || itAccess || marketingAccess;
+    if (qualified.endsWith('_events')) return qualified.startsWith('login.view_') || eventManagerAccess;
+    if (qualified.endsWith('_training_plan')) return qualified.startsWith('login.view_') || operationsAccess;
+    return qualified.startsWith('login.view_');
+  };
+  const canManage = (resource: string) => ['add', 'change', 'delete'].some(action => can(`${action}_${resource}`));
+
   return {
+    permissions,
+    can,
     adminAccess,
     eventManagerAccess,
     operationsAccess,
     itAccess,
     marketingAccess,
-    canManageEvents: eventManagerAccess,
-    canManageCohorts: operationsAccess,
-    canManageNews: adminAccess || itAccess || marketingAccess,
+    canManageEvents: canManage('events'),
+    canManageCohorts: canManage('training_plan'),
+    canManageNews: canManage('news'),
     callCentreAgent,
     callCentreDirector,
     callCentreAccess: callCentreAgent || callCentreDirector,
@@ -203,6 +226,7 @@ export default function useAccessControl(): AccessControl {
     };
 
     const handleFocus = () => {
+      sharedAccessFetchedAt = 0;
       syncFromStorage();
       void syncFromServer();
     };

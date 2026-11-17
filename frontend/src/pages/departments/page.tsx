@@ -50,8 +50,8 @@ function subtreeWidth(node: TreeNode): number {
 function OrgCard({ emp, editMode, onEdit, onDelete }: {
   emp: Employee;
   editMode: boolean;
-  onEdit: (e: Employee) => void;
-  onDelete: (id: string) => void;
+  onEdit?: (e: Employee) => void;
+  onDelete?: (id: string) => void;
 }) {
   const color = getDeptColor(emp.department);
   return (
@@ -87,14 +87,14 @@ function OrgCard({ emp, editMode, onEdit, onDelete }: {
       </div>
       {editMode && (
         <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={() => onEdit(emp)}
+          {onEdit && <button onClick={() => onEdit(emp)}
             className="w-6 h-6 flex items-center justify-center rounded-lg bg-white shadow border border-gray-100 text-gray-400 hover:text-blue-600 hover:border-blue-200 transition-colors">
             <i className="ri-edit-line" style={{ fontSize: '10px' }} />
-          </button>
-          <button onClick={() => onDelete(emp.id)}
+          </button>}
+          {onDelete && <button onClick={() => onDelete(emp.id)}
             className="w-6 h-6 flex items-center justify-center rounded-lg bg-white shadow border border-gray-100 text-gray-400 hover:text-red-500 hover:border-red-200 transition-colors">
             <i className="ri-delete-bin-line" style={{ fontSize: '10px' }} />
-          </button>
+          </button>}
         </div>
       )}
     </div>
@@ -106,8 +106,8 @@ function OrgCard({ emp, editMode, onEdit, onDelete }: {
 function OrgNode({ node, editMode, onEdit, onDelete }: {
   node: TreeNode;
   editMode: boolean;
-  onEdit: (e: Employee) => void;
-  onDelete: (id: string) => void;
+  onEdit?: (e: Employee) => void;
+  onDelete?: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const color = getDeptColor(node.emp.department);
@@ -241,7 +241,10 @@ function OrgChartSkeleton() {
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function DepartmentsPage() {
-  const { adminAccess } = useAccessControl();
+  const { can } = useAccessControl();
+  const canAdd = can('add_employees');
+  const canEdit = can('change_employees');
+  const canDelete = can('delete_employees');
   const { employees, loading, error, addEmployee, updateEmployee, deleteEmployee } = useEmployees();
   const [editMode,   setEditMode]   = useState(false);
   const [modalOpen,  setModalOpen]  = useState(false);
@@ -268,6 +271,7 @@ export default function DepartmentsPage() {
   const roots = useMemo(() => buildTree(filtered), [filtered]);
 
   const handleSave = async (emp: Employee) => {
+    if (editTarget ? !canEdit : !canAdd) return;
     setSaving(true);
     try {
       const { id, avatar, ...fields } = emp;
@@ -348,7 +352,7 @@ export default function DepartmentsPage() {
               }}
             />
 
-            {adminAccess && (
+            {(canEdit || canDelete) && (
               <button onClick={() => setEditMode(m => !m)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all"
                 style={editMode
@@ -359,7 +363,7 @@ export default function DepartmentsPage() {
               </button>
             )}
 
-            {adminAccess && (
+            {canAdd && (
               <button onClick={openAdd}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white hover:opacity-90 shadow-sm"
                 style={{ background: '#1B2A4A' }}>
@@ -412,8 +416,8 @@ export default function DepartmentsPage() {
             <div style={{ padding: 48, display: 'flex', gap: 64, justifyContent: 'center', alignItems: 'flex-start', minWidth: 'max-content', margin: '0 auto' }}>
               {roots.map(root => (
                 <OrgNode key={root.emp.id} node={root} editMode={editMode}
-                  onEdit={openEdit}
-                  onDelete={id => { void deleteEmployee(id); }} />
+                  onEdit={canEdit ? openEdit : undefined}
+                  onDelete={canDelete ? id => { void deleteEmployee(id); } : undefined} />
               ))}
             </div>
           )}

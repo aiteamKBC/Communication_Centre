@@ -14,6 +14,8 @@ interface Props {
   catalogModules?: CatalogModule[];
   holidays?: Holiday[];
   canEdit?: boolean;
+  canAdd?: boolean;
+  canDelete?: boolean;
   onEditTrainingPlan?: (groupIdx: number, rowIdx: number, blockId: string) => void;
   onAddModuleForTutor?: (tutorProfileId: string, moduleValue: ModuleValue) => void;
   onCreateTutorProfile?: (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }) => Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }>;
@@ -445,7 +447,7 @@ function ModuleList({
       <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-extrabold text-kbc-navy">{title}</p>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {canEdit && onAddModuleForTutor && activeTutorProfileId && !activeTutorProfileId.startsWith('legacy:') && moduleOptions.length > 0 && (
+          {onAddModuleForTutor && activeTutorProfileId && !activeTutorProfileId.startsWith('legacy:') && moduleOptions.length > 0 && (
             <div className="w-64 max-w-full">
               <SelectField
                 value=""
@@ -517,7 +519,7 @@ function ModuleList({
   );
 }
 
-export default function TutorProfiles({ groups, tutorProfiles = [], catalogModules = [], holidays = [], canEdit = false, onEditTrainingPlan, onAddModuleForTutor, onCreateTutorProfile, onUpdateTutorProfile, onDeleteTutorProfile }: Props) {
+export default function TutorProfiles({ groups, tutorProfiles = [], catalogModules = [], holidays = [], canEdit = false, canAdd = canEdit, canDelete = canEdit, onEditTrainingPlan, onAddModuleForTutor, onCreateTutorProfile, onUpdateTutorProfile, onDeleteTutorProfile }: Props) {
   const now = useMemo(() => new Date(), []);
   const profileList = useMemo(() => buildTutorProfilesFromGroups(groups, tutorProfiles), [groups, tutorProfiles]);
   const sessions = useMemo(() => collectTutorSessions(groups, catalogModules, holidays, now, profileList), [groups, catalogModules, holidays, now, profileList]);
@@ -991,7 +993,7 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
               <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Tutors</p>
               <p className="mt-1 text-sm font-extrabold text-kbc-navy">{tutorProfileIds.length} profile{tutorProfileIds.length === 1 ? '' : 's'}</p>
             </div>
-            {canEdit && onCreateTutorProfile && (
+            {canAdd && onCreateTutorProfile && (
               <button type="button" onClick={openAddProfile} className="rounded-lg bg-kbc-navy px-2.5 py-1.5 text-xs font-extrabold text-white">
                 Add
               </button>
@@ -1072,14 +1074,14 @@ export default function TutorProfiles({ groups, tutorProfiles = [], catalogModul
                 Choose tutors
                 {plannerTargetTutorIds.length > 0 && <span className="rounded-full bg-[#6d42c4] px-1.5 py-0.5 text-[10px] text-white">{plannerTargetTutorIds.length}</span>}
               </button>
-              {canEdit && activeTutorProfile && !activeTutorProfile.id.startsWith('legacy:') && (
+              {(canEdit || canDelete) && activeTutorProfile && !activeTutorProfile.id.startsWith('legacy:') && (
                 <>
-                  {onUpdateTutorProfile && (
+                  {canEdit && onUpdateTutorProfile && (
                     <button type="button" onClick={openEditProfile} className="rounded-lg bg-kbc-navy px-3 py-2 text-xs font-extrabold text-white">
                       Edit Profile
                     </button>
                   )}
-                  {onDeleteTutorProfile && (
+                  {canDelete && onDeleteTutorProfile && (
                     <button type="button" onClick={() => void deleteActiveProfile()} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700">
                       Delete
                     </button>

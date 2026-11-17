@@ -409,7 +409,9 @@ const statusLabel: Record<NonNullable<DashboardLink['status']>, string> = {
 };
 
 export default function DashboardPage() {
-  const { adminAccess, callCentreAccess, callCentreCoach } = useAccessControl();
+  const { adminAccess, callCentreAccess, callCentreCoach, can } = useAccessControl();
+  const canAddCards = can('add_dashboard_cards');
+  const canEditCards = can('change_dashboard_cards');
   const [cards, setCards] = useState<DashboardLink[]>(() => dashboardLinks.map(withVisualDefaults));
   const [editingCard, setEditingCard] = useState<DashboardDraft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -452,6 +454,7 @@ export default function DashboardPage() {
   const saveCard = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingCard) return;
+    if (editingCard.id ? !canEditCards : !canAddCards) return;
     setSaving(true);
     setError('');
     const { id } = editingCard;
@@ -502,7 +505,7 @@ export default function DashboardPage() {
   const access = { adminAccess, callCentreAccess, callCentreCoach };
   // While arranging, admins see every card (including ones only call-centre staff or coaches can open) so the order covers them all.
   const activeDashboardLinks = cards.filter(link => link.status !== 'hidden' && (arranging || canSeeCard(link, access))).sort(bySortOrder);
-  const hiddenDashboardLinks = adminAccess ? cards.filter(link => link.status === 'hidden').sort(bySortOrder) : [];
+  const hiddenDashboardLinks = canEditCards ? cards.filter(link => link.status === 'hidden').sort(bySortOrder) : [];
   const tabLinks = dashboardTab === 'hidden' ? hiddenDashboardLinks : activeDashboardLinks;
   const normalizedSearch = searchTerm.trim().toLowerCase();
   // The status filter only applies to the Active tab; every card in the Hidden tab has the hidden status.
@@ -514,9 +517,10 @@ export default function DashboardPage() {
     const matchesStatus = effectiveStatusFilter === 'all' || link.status === effectiveStatusFilter;
     return matchesSearch && matchesStatus;
   });
-  const canArrange = adminAccess && cardsFromServer && activeDashboardLinks.length > 1;
+  const canArrange = canEditCards && cardsFromServer && activeDashboardLinks.length > 1;
 
   const startArranging = () => {
+    if (!canArrange) return;
     setDashboardTab('active');
     setOrderError('');
     setOrderState('idle');
@@ -524,6 +528,7 @@ export default function DashboardPage() {
   };
 
   const moveCard = async (index: number, delta: number) => {
+    if (!canEditCards) return;
     const target = index + delta;
     if (target < 0 || target >= activeDashboardLinks.length) return;
     const ordered = [...activeDashboardLinks];
@@ -566,11 +571,11 @@ export default function DashboardPage() {
             <div className="flex items-center gap-2 text-gray-400 text-xs mb-2"><a href="/" className="hover:text-kbc-navy cursor-pointer">Home</a><span>/</span><span className="text-kbc-navy font-medium">Internal Dashboard</span></div>
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3"><div className="w-9 h-9 bg-kbc-navy rounded flex items-center justify-center shrink-0"><i className="ri-dashboard-line text-white text-base" /></div><div><h1 className="text-lg font-bold text-kbc-navy">Internal Dashboard</h1><p className="text-gray-500 text-sm mt-0.5">Quick access to your internal service dashboards for tutors, operations, employers, and admin teams.</p></div></div>
-              {adminAccess && <div className="flex shrink-0 items-center gap-2">
-                {arranging
+              {(canAddCards || canEditCards) && <div className="flex shrink-0 items-center gap-2">
+                {canEditCards && (arranging
                   ? <button type="button" onClick={() => setArranging(false)} className="rounded-xl bg-[#39206d] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#24164f]"><i className="ri-check-line mr-1" /> Done arranging</button>
-                  : <button type="button" onClick={startArranging} disabled={!canArrange} title={canArrange ? 'Change the order cards appear in for everyone' : 'Cards can be arranged once they are loaded from the server'} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-[#39206d] shadow-sm hover:border-[#39206d]/40 hover:bg-[#f7f4ff] disabled:cursor-not-allowed disabled:opacity-50"><i className="ri-drag-move-2-line mr-1" /> Arrange</button>}
-                {!arranging && <button type="button" disabled={!cardsFromServer} title={cardsFromServer ? undefined : 'Cards can be added once they are loaded from the server'} onClick={() => { setError(''); setEditingCard(draftFromCard()); }} className="disabled:cursor-not-allowed disabled:opacity-50 rounded-xl bg-[#39206d] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#24164f]"><i className="ri-add-line mr-1" /> Add card</button>}
+                  : <button type="button" onClick={startArranging} disabled={!canArrange} title={canArrange ? 'Change the order cards appear in for everyone' : 'Cards can be arranged once they are loaded from the server'} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-[#39206d] shadow-sm hover:border-[#39206d]/40 hover:bg-[#f7f4ff] disabled:cursor-not-allowed disabled:opacity-50"><i className="ri-drag-move-2-line mr-1" /> Arrange</button>)}
+                {canAddCards && !arranging && <button type="button" disabled={!cardsFromServer} title={cardsFromServer ? undefined : 'Cards can be added once they are loaded from the server'} onClick={() => { setError(''); setEditingCard(draftFromCard()); }} className="disabled:cursor-not-allowed disabled:opacity-50 rounded-xl bg-[#39206d] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#24164f]"><i className="ri-add-line mr-1" /> Add card</button>}
               </div>}
             </div>
           </div>
@@ -588,7 +593,7 @@ export default function DashboardPage() {
             </span>
           </div>}
 
-          {adminAccess && !arranging && <div className="mb-5 flex flex-wrap items-center gap-2" role="tablist" aria-label="Dashboard card views">
+          {canEditCards && !arranging && <div className="mb-5 flex flex-wrap items-center gap-2" role="tablist" aria-label="Dashboard card views">
             <button type="button" role="tab" aria-selected={dashboardTab === 'active'} onClick={() => setDashboardTab('active')} className={`rounded-xl px-4 py-2 text-xs font-bold transition ${dashboardTab === 'active' ? 'bg-[#39206d] text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:border-[#39206d]/30'}`}><i className="ri-dashboard-line mr-1" />Active dashboards ({activeDashboardLinks.length})</button>
             <button type="button" role="tab" aria-selected={dashboardTab === 'hidden'} onClick={() => setDashboardTab('hidden')} className={`rounded-xl px-4 py-2 text-xs font-bold transition ${dashboardTab === 'hidden' ? 'bg-[#39206d] text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:border-[#39206d]/30'}`}><i className="ri-eye-off-line mr-1" />Hidden cards ({hiddenDashboardLinks.length})</button>
           </div>}
@@ -618,7 +623,7 @@ export default function DashboardPage() {
               const destinationType = link.internalPath ? 'Internal' : 'External';
               const interactive = !disabled && !arranging;
               const cardClassName = `group relative flex flex-col overflow-hidden rounded-2xl border bg-white px-5 pb-4 pt-6 shadow-sm transition duration-300 ${arranging ? 'border-[#d9cff5]' : 'border-slate-200'} ${interactive ? 'hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg' : 'cursor-default'}`;
-              const editButton = adminAccess && cardsFromServer && Boolean(link.id) && !arranging && <button type="button" title={`Edit ${link.title} (${destinationType})`} aria-label={`Edit ${link.title}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(''); setEditingCard(draftFromCard(link)); }} className="flex h-9 items-center gap-1.5 rounded-xl bg-[#f4f0ff] px-3 text-xs font-bold text-[#39206d] ring-1 ring-[#39206d]/20 transition hover:bg-[#39206d] hover:text-white focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"><i className="ri-edit-2-line text-sm" />Edit</button>;
+              const editButton = canEditCards && cardsFromServer && Boolean(link.id) && !arranging && <button type="button" title={`Edit ${link.title} (${destinationType})`} aria-label={`Edit ${link.title}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setError(''); setEditingCard(draftFromCard(link)); }} className="flex h-9 items-center gap-1.5 rounded-xl bg-[#f4f0ff] px-3 text-xs font-bold text-[#39206d] ring-1 ring-[#39206d]/20 transition hover:bg-[#39206d] hover:text-white focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"><i className="ri-edit-2-line text-sm" />Edit</button>;
               const statusPill = <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${tone.pill}`}>{tone.icon ? <i className={`${tone.icon} text-sm`} /> : <span className={`h-2 w-2 rounded-full ${tone.dot}`} />}{statusLabel[status]}</span>;
               const arrowButton = (label: string, icon: string, delta: number, enabled: boolean) => <button type="button" aria-label={`Move ${link.title} ${label}`} title={`Move ${label}`} disabled={!enabled || orderState === 'saving'} onClick={() => void moveCard(index, delta)} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#d9cff5] bg-white text-[#39206d] transition hover:border-[#39206d] hover:bg-[#39206d] hover:text-white disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-50 disabled:text-slate-300"><i className={`${icon} text-sm`} /></button>;
               const canUp = index - gridColumns >= 0;

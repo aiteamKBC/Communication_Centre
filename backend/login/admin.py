@@ -229,4 +229,8 @@ class LoginDBUserAdmin(LoginDBAdminMixin, UserAdmin):
 
 @admin.register(Group)
 class LoginDBGroupAdmin(LoginDBAdminMixin, GroupAdmin):
-	pass
+	def get_form(self, request, obj=None, **kwargs):
+		# The console and Django admin edit the same native permission rows.
+		from .permissions import ensure_permission_catalog
+		ensure_permission_catalog(self.using)
+		return super().get_form(request, obj, **kwargs)

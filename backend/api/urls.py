@@ -1,4 +1,5 @@
 from django.urls import path
+from .permissions import protect_api_view
 from .training_plan_lms_reference import training_plan_lms_reference, training_plan_lms_tutors, training_plan_lms_cohorts, training_plan_lms_session_counts, training_plan_lms_holidays
 
 from .views import dashboard_card_detail, dashboard_cards, dashboard_cards_reorder
@@ -75,3 +76,7 @@ urlpatterns = [
     path('user-activity/', user_activity, name='user-activity'),
     path('audit-logs/', audit_logs, name='audit-logs'),
 ]
+
+# Every API callback passes through the same server-side permission policy.
+for pattern in urlpatterns:
+    pattern.callback = protect_api_view(pattern.callback, pattern.name)

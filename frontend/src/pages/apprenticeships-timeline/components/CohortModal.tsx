@@ -13,6 +13,8 @@ import { normalizeTutorName, profileIdForTutorName } from '../tutorProfiles';
 import { buildAptemSubprogrammeScope, readApiErrorMessage } from '../aptemLearnerMapping';
 
 interface Props {
+  canAddBlocks?: boolean;
+  canDeleteBlocks?: boolean;
   mode: 'add' | 'edit';
   groups: ProgrammeGroup[];
   holidays: Holiday[];
@@ -1043,6 +1045,8 @@ function groupBlocksForForm(blocks: ModuleBlock[], catalogModules: CatalogModule
 }
 
 export default function CohortModal({
+  canAddBlocks = true,
+  canDeleteBlocks = true,
   mode,
   groups,
   holidays,
@@ -1382,6 +1386,7 @@ export default function CohortModal({
   };
 
   const openAddGroup = () => {
+    if (!canAddBlocks) return;
     setGroupDraftDirty(false);
     setGroupDraft({ group: newFormGroup() });
   };
@@ -1396,6 +1401,7 @@ export default function CohortModal({
   };
 
   const openAddModule = (parentGroupId: string) => {
+    if (!canAddBlocks) return;
     setKsbEditorOpen(false);
     setModuleDraftDirty(false);
     setModuleDraft({ parentGroupId, module: newFormModule() });
@@ -1904,6 +1910,7 @@ export default function CohortModal({
   };
 
   const removeGroup = async (groupId: string) => {
+    if (mode === 'edit' && !canDeleteBlocks) return;
     const target = data.groups.find(group => group.id === groupId);
     if (!target) {
       return;
@@ -1950,6 +1957,7 @@ export default function CohortModal({
   };
 
   const duplicateGroup = (groupId: string) => {
+    if (!canAddBlocks) return;
     const source = data.groups.find(group => group.id === groupId);
     if (!source) return;
     markUserEdited();
@@ -2023,6 +2031,7 @@ export default function CohortModal({
   };
 
   const removeModule = async (groupId: string, moduleId: string) => {
+    if (mode === 'edit' && !canDeleteBlocks) return;
     const parentGroup = data.groups.find(group => group.id === groupId);
     const target = parentGroup?.modules.find(item => item.id === moduleId);
     if (!parentGroup || !target) {
@@ -2473,7 +2482,7 @@ export default function CohortModal({
                 <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-[0.14em]">Groups</label>
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{data.groups.length} groups</span>
               </div>
-              <button onClick={openAddGroup} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-lg cursor-pointer transition-all" style={{ background: '#1B2A4A', color: '#fff' }}>
+              <button disabled={!canAddBlocks} onClick={openAddGroup} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-lg cursor-pointer transition-all" style={{ background: '#1B2A4A', color: '#fff' }}>
                 <i className="ri-add-line" /> Add Group
               </button>
             </div>
@@ -2523,10 +2532,10 @@ export default function CohortModal({
                       <span className="text-sm text-gray-500 hidden md:block">{group.modules.length} module{group.modules.length === 1 ? '' : 's'}</span>
                       {group.coachName && <span className="text-sm text-gray-400 hidden sm:block">{group.coachName}</span>}
                       {groupStartDate && groupEndDate && <span className="text-sm text-gray-400 hidden lg:block">{formatDate(groupStartDate)} {'->'} {formatDate(groupEndDate)}</span>}
-                      <button onClick={e => { e.stopPropagation(); duplicateGroup(group.id); }} title="Duplicate group" className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-blue-500 hover:bg-blue-50 cursor-pointer transition-all">
+                      <button disabled={!canAddBlocks} onClick={e => { e.stopPropagation(); duplicateGroup(group.id); }} title="Duplicate group" className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-blue-500 hover:bg-blue-50 cursor-pointer transition-all">
                         <i className="ri-file-copy-line text-xs" />
                       </button>
-                      <button onClick={e => { e.stopPropagation(); void removeGroup(group.id); }} className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-all">
+                      <button disabled={mode === "edit" && !canDeleteBlocks} onClick={e => { e.stopPropagation(); void removeGroup(group.id); }} className="w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-all">
                         <i className="ri-delete-bin-line text-xs" />
                       </button>
                       {isExpanded ? <i className="ri-arrow-up-s-line text-gray-400 text-sm" /> : <i className="ri-arrow-down-s-line text-gray-400 text-sm" />}
@@ -2570,7 +2579,7 @@ export default function CohortModal({
                             </div>
                             <p className="text-sm text-gray-400 mt-1">Add modules inside this group.</p>
                           </div>
-                          <button type="button" onClick={() => openAddModule(group.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white cursor-pointer transition-all hover:opacity-90" style={{ background: groupAccent }}>
+                          <button type="button" disabled={!canAddBlocks} onClick={() => openAddModule(group.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white cursor-pointer transition-all hover:opacity-90" style={{ background: groupAccent }}>
                             <i className="ri-add-line" />
                             Add Module
                           </button>
@@ -2606,7 +2615,7 @@ export default function CohortModal({
                                   <i className="ri-edit-line" />
                                   Edit
                                 </button>
-                                <button type="button" onClick={() => void removeModule(group.id, moduleItem.id)} className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-all">
+                                <button type="button" disabled={mode === "edit" && !canDeleteBlocks} onClick={() => void removeModule(group.id, moduleItem.id)} className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 cursor-pointer transition-all">
                                   <i className="ri-delete-bin-line" />
                                 </button>
                               </div>

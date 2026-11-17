@@ -30,7 +30,10 @@ function isFinishedEvent(event: CalendarEvent): boolean {
 
 export default function EventsPage() {
   const { events: allEvents, loading, error, addEvent, updateEvent, deleteEvent } = useSharedEvents();
-  const { canManageEvents } = useAccessControl();
+  const { can } = useAccessControl();
+  const canAdd = can('add_events');
+  const canEdit = can('change_events');
+  const canDelete = can('delete_events');
   const [addEventOpen, setAddEventOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [editingEvent, setEditingEvent]   = useState<CalendarEvent | null>(null);
@@ -43,7 +46,7 @@ export default function EventsPage() {
   };
 
   const handleEventAdded = async (event: CalendarEvent) => {
-    if (!canManageEvents) return;
+    if (!canAdd) return;
     await addEvent(event);
     const parts = event.date.split(' ');
     const month = monthAbbrMap[parts[1]] ?? 0;
@@ -52,12 +55,12 @@ export default function EventsPage() {
   };
 
   const handleEventUpdated = async (event: CalendarEvent) => {
-    if (!canManageEvents) return;
+    if (!canEdit) return;
     await updateEvent(event);
   };
 
   const handleDeleteEvent = async (id: string) => {
-    if (!canManageEvents) return;
+    if (!canDelete) return;
     const event = allEvents.find(item => item.id === id);
     const confirmed = await confirmDeleteEvent(event?.title ?? 'this event');
     if (!confirmed) return;
@@ -120,12 +123,12 @@ export default function EventsPage() {
             events={allEvents}
             onEventClick={setSelectedEvent}
             onAddEvent={() => {
-              if (!canManageEvents) {
+              if (!canAdd) {
                 return;
               }
               setAddEventOpen(true);
             }}
-            canManageEvents={canManageEvents}
+            canManageEvents={canAdd}
             jumpTo={calendarJump}
           />
         </section>
@@ -238,23 +241,23 @@ export default function EventsPage() {
                       </div>
 
                       <div className="mt-auto flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
-                        {canManageEvents && (
+                        {(canEdit || canDelete) && (
                           <>
-                            <button
+                            {canEdit && <button
                               onClick={e => { e.stopPropagation(); setEditingEvent(event); }}
                               className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-kbc-navy/20 hover:bg-slate-50 hover:text-kbc-navy"
                               title="Edit event"
                             >
                               <i className="ri-edit-line text-xs" />
-                            </button>
-                            <button
+                            </button>}
+                            {canDelete && <button
                               onClick={e => { e.stopPropagation(); void handleDeleteEvent(event.id); }}
                               disabled={deletingId === event.id}
                               className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-100 bg-white text-red-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
                               title="Delete event"
                             >
                               <i className="ri-delete-bin-line text-xs" />
-                            </button>
+                            </button>}
                           </>
                         )}
                         <button
@@ -287,17 +290,17 @@ export default function EventsPage() {
       <EventDetailModal
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}
-        canManage={canManageEvents}
-        onEdit={event => { setSelectedEvent(null); setEditingEvent(event); }}
-        onDelete={id => void handleDeleteEvent(id)}
+        canManage={canEdit || canDelete}
+        onEdit={canEdit ? event => { setSelectedEvent(null); setEditingEvent(event); } : undefined}
+        onDelete={canDelete ? id => void handleDeleteEvent(id) : undefined}
       />
       <AddEventModal
-        open={canManageEvents && addEventOpen}
+        open={canAdd && addEventOpen}
         onClose={() => setAddEventOpen(false)}
         onEventAdded={handleEventAdded}
       />
       <EditEventModal
-        event={canManageEvents ? editingEvent : null}
+        event={canEdit ? editingEvent : null}
         onClose={() => setEditingEvent(null)}
         onEventUpdated={handleEventUpdated}
       />

@@ -26,6 +26,7 @@ from django.utils.dateparse import parse_date
 from .models import AptemAutoExtracting, AuditLog, CoachProfile, Employee, EventData, Feedback, KsbProfile, LeadershipMessage, Module, ModuleLearnerMapping, News, RiskRegisterItem, SupportTicket, TrainingPlan, TrainingPlanHoliday, TrainingPlanModuleDefinition, TrainingPlanProgramConfig, TutorProfile, UrgentNotice, UserActivitySession
 from dashboard_cards.models import DashboardCard
 from login.access import get_user_access_payload
+from login.permissions import get_effective_permissions
 from .realtime import REALTIME_RESOURCE_ENTITIES, emit_realtime_resource_change_on_commit, realtime_resource_versions, resources_for_entity
 
 
@@ -84,8 +85,13 @@ def _dashboard_card_access(request) -> dict:
 		return {}
 
 
-def _dashboard_card_is_admin(request) -> bool:
-	return bool(_dashboard_card_access(request).get('adminAccess'))
+def _dashboard_card_can_manage(request, action=None) -> bool:
+	access = _dashboard_card_access(request)
+	if access.get('adminAccess'):
+		return True
+	permissions = access.get('permissions', [])
+	actions = (action,) if action else ('add', 'change', 'delete')
+	return any(f'login.{item}_dashboard_cards' in permissions for item in actions)
 
 
 def _dashboard_card_visible_to(card: DashboardCard, access: dict) -> bool:
@@ -232,16 +238,16 @@ def _dashboard_card_payload(payload: dict, card: DashboardCard | None = None) ->
 
 def dashboard_cards(request):
 	access = _dashboard_card_access(request)
-	_is_admin = bool(access.get('adminAccess'))
+	_can_manage = _dashboard_card_can_manage(request)
 	if request.method == 'GET':
 		_seed_dashboard_cards()
 		cards = DashboardCard.objects.all()
-		if not _is_admin:
+		if not _can_manage:
 			cards = [card for card in cards.exclude(status=DashboardCard.STATUS_HIDDEN) if _dashboard_card_visible_to(card, access)]
 		return JsonResponse([serialize_dashboard_card(card, access) for card in cards], safe=False)
 
-	if not _is_admin:
-		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	if not _dashboard_card_can_manage(request, 'add'):
+		return JsonResponse({'detail': 'Add dashboard cards permission is required.'}, status=403)
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
 	try:
@@ -260,8 +266,8 @@ def dashboard_cards_reorder(request):
 	"""Persist the admin's arranged order. Body: {"ids": [3, 1, 2, ...]} in display order."""
 	if request.method != 'POST':
 		return JsonResponse({'detail': 'Method not allowed.'}, status=405)
-	if not _dashboard_card_is_admin(request):
-		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	if not _dashboard_card_can_manage(request, 'change'):
+		return JsonResponse({'detail': 'Edit dashboard cards permission is required.'}, status=403)
 	try:
 		payload = json.loads(request.body.decode('utf-8') or '{}')
 		ids = [int(item) for item in (payload.get('ids') or [])]
@@ -300,11 +306,11 @@ def dashboard_card_detail(request, card_id: int):
 
 	if request.method == 'GET':
 		access = _dashboard_card_access(request)
-		if not access.get('adminAccess') and (card.status == DashboardCard.STATUS_HIDDEN or not _dashboard_card_visible_to(card, access)):
+		if not _dashboard_card_can_manage(request) and (card.status == DashboardCard.STATUS_HIDDEN or not _dashboard_card_visible_to(card, access)):
 			return JsonResponse({'detail': 'Not found.'}, status=404)
 		return JsonResponse(serialize_dashboard_card(card, access))
-	if not _dashboard_card_is_admin(request):
-		return JsonResponse({'detail': 'Admin Access is required to manage dashboard cards.'}, status=403)
+	if not _dashboard_card_can_manage(request, 'delete' if request.method == 'DELETE' else 'change'):
+		return JsonResponse({'detail': 'Permission to manage this dashboard card is required.'}, status=403)
 	if request.method == 'DELETE':
 		before = serialize_dashboard_card(card)
 		card.delete()
@@ -3325,6 +3331,18 @@ def training_plan_cohort_detail(request, cohort_id: str):
 		missing_ids = sorted(scope_ids - submitted_ids)
 		if missing_ids and not allow_block_membership_changes:
 			return JsonResponse({'detail': 'Cohort edit is missing rows from the requested cohort scope.', 'missingIds': missing_ids}, status=400)
+		# A cohort edit may also create or archive module blocks. Check its actual
+		# locked membership delta, so Edit cannot silently confer Add or Delete.
+		required_permissions = set()
+		if new_block_payloads:
+			required_permissions.add('login.add_training_plan')
+		if missing_ids:
+			required_permissions.add('login.delete_training_plan')
+		if not required_permissions.issubset(get_effective_permissions(request.user)):
+			return JsonResponse({
+				'detail': 'Adding or removing cohort modules requires the corresponding Training Plan permission.',
+				'requiredPermissions': sorted(required_permissions),
+			}, status=403)
 
 		missing_id_set = set(missing_ids)
 		before = [
@@ -5199,7 +5217,7 @@ def training_plan_holiday_types(request):
 			if conflict is not None:
 				return conflict
 
-			record, created = TrainingPlanHoliday.objects.update_or_create(
+			record, created = TrainingPlanHoliday.objects.get_or_create(
 				type=type_value,
 				label=f'{TRAINING_PLAN_HOLIDAY_TYPE_MARKER}{label}',
 				defaults={
@@ -5208,6 +5226,14 @@ def training_plan_holiday_types(request):
 					'color': color,
 				},
 			)
+			if not created:
+				if 'login.change_training_plan' not in get_effective_permissions(request.user):
+					return JsonResponse({'detail': 'Editing an existing holiday type requires Edit Training Plan permission.',
+						'requiredPermissions': ['login.change_training_plan']}, status=403)
+				record.start_date = TRAINING_PLAN_HOLIDAY_TYPE_DATE
+				record.end_date = TRAINING_PLAN_HOLIDAY_TYPE_DATE
+				record.color = color
+				record.save(update_fields=['start_date', 'end_date', 'color'])
 			serialized = serialize_training_plan_holiday_type(record)
 			_audit_log(request, action='create' if created else 'update', entity='TrainingPlanHolidayType', object_id=record.id, object_label=label, after=serialized, metadata={'partialUpdate': True})
 		return training_plan_holiday_types_response(serialized, status=201)

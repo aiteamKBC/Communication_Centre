@@ -1,0 +1,303 @@
+<div id="kbc-admin-preview" aria-label="KBC administration design preview">
+  <header class="ka-header">
+    <div class="ka-brand"><span class="ka-crest"><i data-lucide="shield-check" aria-hidden="true"></i></span><div><strong>Kent Business College</strong><span>Communication Centre</span></div></div>
+    <div class="ka-header-section"><i data-lucide="settings-2" aria-hidden="true"></i> Administration</div>
+  </header>
+  <div class="ka-workspace">
+    <aside class="ka-sidebar" aria-label="Administration navigation">
+      <div class="ka-nav-label">WORKSPACE</div>
+      <nav>
+        <button type="button" data-view="users" class="ka-nav-item is-current" aria-current="page"><i data-lucide="users" aria-hidden="true"></i><span>Users &amp; access</span></button>
+        <button type="button" data-view="roles" class="ka-nav-item"><i data-lucide="shield" aria-hidden="true"></i><span>Roles</span></button>
+        <button type="button" data-view="history" class="ka-nav-item"><i data-lucide="history" aria-hidden="true"></i><span>Change history</span></button>
+      </nav>
+      <div class="ka-sidebar-bottom"><span class="ka-account-avatar">AD</span><div><strong>Administrator</strong><span>Administration access</span></div></div>
+    </aside>
+    <main class="ka-main">
+      <div class="ka-breadcrumb"><span>Administration <span aria-hidden="true">/</span> <span id="ka-current-section">Users &amp; access</span></span><span class="ka-demo">Preview · Sample users</span></div>
+      <div id="ka-notice" class="ka-notice" role="status" aria-live="polite" hidden></div>
+      <section id="ka-users-view">
+        <div class="ka-title-row"><div><h1>Users &amp; access</h1><p>Manage your team and what each person can access.</p></div><span class="ka-total">6 people</span></div>
+        <div class="ka-toolbar">
+          <label class="ka-search"><i data-lucide="search" aria-hidden="true"></i><input id="ka-search" type="search" aria-label="Search name or email" placeholder="Search name or email"></label>
+          <label class="ka-filter"><span class="ka-sr-only">Filter by assigned role</span><select id="ka-filter"><option value="">All roles</option></select><i data-lucide="chevron-down" aria-hidden="true"></i></label>
+        </div>
+        <div class="ka-user-list" role="table" aria-label="Sample users and their roles">
+          <div class="ka-table-head" role="row"><span role="columnheader">TEAM MEMBER</span><span role="columnheader">ASSIGNED ROLES</span><span role="columnheader">STATUS</span><span class="ka-sr-only" role="columnheader">Actions</span></div>
+          <div id="ka-user-rows" role="rowgroup"></div>
+        </div>
+        <div class="ka-list-footer"><span id="ka-list-count" aria-live="polite">Showing 6 people</span><span><i data-lucide="lock-keyhole" aria-hidden="true"></i> Only administrators can change access</span></div>
+      </section>
+      <section id="ka-editor-view" hidden aria-labelledby="ka-edit-title">
+        <button type="button" class="ka-back" id="ka-back"><i data-lucide="arrow-left" aria-hidden="true"></i> All users</button>
+        <div class="ka-title-row ka-edit-heading"><div><h1 id="ka-edit-title">Manage access</h1><p>Choose the roles this person needs for their work.</p></div></div>
+        <div id="ka-person" class="ka-person"></div>
+        <div class="ka-access-columns">
+          <section class="ka-role-section" aria-labelledby="ka-community-title"><div class="ka-section-heading"><i data-lucide="building-2" aria-hidden="true"></i><h2 id="ka-community-title">Communication Centre</h2></div><div id="ka-community-roles"></div></section>
+          <section class="ka-role-section" aria-labelledby="ka-engagement-title"><div class="ka-section-heading"><i data-lucide="headset" aria-hidden="true"></i><h2 id="ka-engagement-title">Engagement Centre</h2></div><div id="ka-engagement-roles"></div><div class="ka-job-note"><i data-lucide="info" aria-hidden="true"></i><span>These job roles are assigned separately from Communication Centre admin.</span></div></section>
+        </div>
+        <footer class="ka-save-bar"><div id="ka-change-summary" aria-live="polite">No changes yet</div><div class="ka-save-actions"><button type="button" class="ka-button ka-secondary" id="ka-cancel">Cancel</button><button type="button" class="ka-button ka-primary" id="ka-save" disabled><i data-lucide="check" aria-hidden="true"></i> Save changes</button></div></footer>
+      </section>
+      <section id="ka-roles-view" hidden aria-labelledby="ka-roles-title"><div class="ka-title-row"><div><h1 id="ka-roles-title">Roles</h1><p>A clear overview of the roles available to your team.</p></div><span class="ka-total">10 roles</span></div><div id="ka-role-directory"></div></section>
+      <section id="ka-history-view" hidden aria-labelledby="ka-history-title"><div class="ka-title-row"><div><h1 id="ka-history-title">Change history</h1><p>See who changed access and what was updated.</p></div></div><div id="ka-history-list"></div></section>
+    </main>
+  </div>
+</div>
+<style>
+  #kbc-admin-preview { --ka-navy:light-dark(#1b2a4a,#c4d4fa); --ka-amber:light-dark(#9d6800,#f6c764); --ka-bg:light-dark(#f6f7fa,#121722); --ka-surface:light-dark(#ffffff,#1b2330); --ka-soft:light-dark(#f8f9fc,#202b3c); --ka-text:light-dark(#25314a,#e2e9f4); --ka-muted:light-dark(#6f7a8b,#a0adbf); --ka-line:light-dark(#e7eaf0,#344052); --ka-accent-bg:light-dark(#fff5df,#3a3020); --ka-green:light-dark(#247553,#9dd7b8); --ka-green-bg:light-dark(#ecf7f0,#233b31); --ka-action:light-dark(#1b2a4a,#b7cdf9); --ka-action-text:light-dark(#ffffff,#15233d); --ka-radius:14px; --ka-row-padding:19px; color:var(--ka-text); background:var(--ka-bg); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:13px; line-height:1.5; border:1px solid var(--ka-line); border-radius:var(--ka-radius); overflow:clip; width:100%; box-sizing:border-box; }
+  #kbc-admin-preview * { box-sizing:border-box; }
+  #kbc-admin-preview [hidden] { display:none!important; }
+  #kbc-admin-preview button,#kbc-admin-preview input,#kbc-admin-preview select { font:inherit; }
+  #kbc-admin-preview button { cursor:pointer; }
+  #kbc-admin-preview button:focus-visible,#kbc-admin-preview input:focus-visible,#kbc-admin-preview select:focus-visible { outline:2px solid var(--ka-navy); outline-offset:3px; }
+  #kbc-admin-preview button:disabled { cursor:default; opacity:.46; }
+  #kbc-admin-preview svg { width:17px; height:17px; flex:none; }
+  #kbc-admin-preview h1,#kbc-admin-preview h2,#kbc-admin-preview p { margin:0; }
+  #kbc-admin-preview h1 { font-size:25px; font-weight:650; letter-spacing:-.7px; color:var(--ka-navy); }
+  #kbc-admin-preview h2 { font-size:13px; font-weight:650; }
+  #kbc-admin-preview strong { font-weight:600; }
+  #kbc-admin-preview .ka-header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 100px 18px 22px; background:var(--ka-surface); border-bottom:1px solid var(--ka-line); }
+  #kbc-admin-preview .ka-brand { display:flex; align-items:center; gap:10px; }
+  #kbc-admin-preview .ka-brand strong { display:block; color:var(--ka-navy); font-size:13px; }
+  #kbc-admin-preview .ka-brand span:not(.ka-crest) { display:block; font-size:11px; color:var(--ka-muted); }
+  #kbc-admin-preview .ka-crest { display:grid; place-items:center; width:34px; height:38px; border-radius:10px; background:var(--ka-navy); color:var(--ka-bg); }
+  #kbc-admin-preview .ka-crest svg { width:22px; height:22px; }
+  #kbc-admin-preview .ka-header-section { display:flex; align-items:center; gap:7px; border-radius:24px; padding:8px 14px; color:var(--ka-navy); background:var(--ka-accent-bg); font-size:12px; font-weight:600; }
+  #kbc-admin-preview .ka-workspace { display:grid; grid-template-columns:172px minmax(0,1fr); min-height:585px; }
+  #kbc-admin-preview .ka-sidebar { display:flex; flex-direction:column; padding:25px 12px 18px; background:var(--ka-surface); border-right:1px solid var(--ka-line); }
+  #kbc-admin-preview .ka-nav-label { font-size:10px; letter-spacing:1.3px; color:var(--ka-muted); padding:0 12px 13px; }
+  #kbc-admin-preview .ka-sidebar nav { display:grid; gap:6px; }
+  #kbc-admin-preview .ka-nav-item { display:flex; align-items:center; gap:9px; border:0; background:transparent; color:var(--ka-muted); border-radius:9px; padding:11px 10px; text-align:left; font-size:12px; width:100%; }
+  #kbc-admin-preview .ka-nav-item:hover { background:var(--ka-soft); color:var(--ka-text); }
+  #kbc-admin-preview .ka-nav-item.is-current { background:var(--ka-accent-bg); color:var(--ka-navy); font-weight:600; }
+  #kbc-admin-preview .ka-sidebar-bottom { margin-top:auto; padding:30px 4px 0; display:flex; align-items:center; gap:8px; }
+  #kbc-admin-preview .ka-sidebar-bottom strong { display:block; font-size:11px; }
+  #kbc-admin-preview .ka-sidebar-bottom div>span { font-size:10px; color:var(--ka-muted); }
+  #kbc-admin-preview .ka-account-avatar { display:grid; place-items:center; width:28px; height:28px; flex:none; background:var(--ka-soft); border:1px solid var(--ka-line); border-radius:50%; font-size:10px; font-weight:600; }
+  #kbc-admin-preview .ka-main { min-width:0; padding:23px 26px 22px; }
+  #kbc-admin-preview .ka-breadcrumb { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:11px; color:var(--ka-muted); margin-bottom:22px; }
+  #kbc-admin-preview .ka-breadcrumb>span>span[aria-hidden] { padding:0 7px; color:var(--ka-muted); }
+  #kbc-admin-preview .ka-demo { color:var(--ka-amber); }
+  #kbc-admin-preview .ka-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:24px; }
+  #kbc-admin-preview .ka-title-row p { color:var(--ka-muted); font-size:12px; margin-top:5px; }
+  #kbc-admin-preview .ka-total { flex:none; padding:5px 10px; background:var(--ka-surface); border:1px solid var(--ka-line); border-radius:20px; color:var(--ka-muted); font-size:11px; }
+  #kbc-admin-preview .ka-toolbar { display:flex; gap:12px; margin-bottom:17px; }
+  #kbc-admin-preview .ka-search { display:flex; align-items:center; gap:9px; flex:1; min-width:0; background:var(--ka-surface); border:1px solid var(--ka-line); border-radius:9px; padding:10px 12px; color:var(--ka-muted); }
+  #kbc-admin-preview .ka-search input { border:0; background:transparent; color:var(--ka-text); min-width:0; width:100%; font-size:12px; }
+  #kbc-admin-preview input::placeholder { color:var(--ka-muted); opacity:1; }
+  #kbc-admin-preview .ka-filter { position:relative; display:flex; align-items:center; min-width:145px; max-width:195px; }
+  #kbc-admin-preview .ka-filter select { appearance:none; width:100%; padding:11px 32px 11px 12px; border:1px solid var(--ka-line); border-radius:9px; background:var(--ka-surface); color:var(--ka-text); font-size:12px; }
+  #kbc-admin-preview .ka-filter svg { position:absolute; right:10px; pointer-events:none; width:14px; }
+  #kbc-admin-preview .ka-user-list { border:1px solid var(--ka-line); border-radius:11px; background:var(--ka-surface); }
+  #kbc-admin-preview .ka-table-head,#kbc-admin-preview .ka-user-row { display:grid; grid-template-columns:minmax(150px,1.7fr) minmax(90px,1fr) 65px 75px; gap:13px; align-items:center; padding:12px 17px; }
+  #kbc-admin-preview .ka-table-head { font-size:9px; letter-spacing:.7px; color:var(--ka-muted); background:var(--ka-soft); border-radius:11px 11px 0 0; }
+  #kbc-admin-preview .ka-user-row { padding-top:var(--ka-row-padding); padding-bottom:var(--ka-row-padding); border-top:1px solid var(--ka-line); }
+  #kbc-admin-preview .ka-user-identity { display:flex; gap:10px; align-items:center; min-width:0; }
+  #kbc-admin-preview .ka-avatar { display:grid; place-items:center; width:34px; height:34px; flex:none; border-radius:50%; background:var(--ka-soft); color:var(--ka-navy); font-size:11px; font-weight:600; }
+  #kbc-admin-preview .ka-identity-text { min-width:0; }
+  #kbc-admin-preview .ka-identity-text strong { display:block; font-size:12px; }
+  #kbc-admin-preview .ka-email { display:block; font-size:10px; color:var(--ka-muted); overflow-wrap:anywhere; }
+  #kbc-admin-preview .ka-tags { display:flex; flex-wrap:wrap; gap:4px; }
+  #kbc-admin-preview .ka-tag { display:inline-block; padding:3px 7px; border-radius:5px; background:var(--ka-soft); color:var(--ka-navy); font-size:10px; }
+  #kbc-admin-preview .ka-tag-admin { background:var(--ka-accent-bg); color:var(--ka-amber); }
+  #kbc-admin-preview .ka-status { display:inline-flex; align-items:center; gap:4px; width:max-content; padding:3px 6px; border-radius:12px; background:var(--ka-green-bg); color:var(--ka-green); font-size:10px; }
+  #kbc-admin-preview .ka-status:before { content:""; width:4px; height:4px; border-radius:50%; background:currentColor; }
+  #kbc-admin-preview .ka-status.is-inactive { background:var(--ka-soft); color:var(--ka-muted); }
+  #kbc-admin-preview .ka-manage { display:flex; align-items:center; justify-content:flex-end; gap:3px; padding:7px 0; border:0; background:transparent; color:var(--ka-navy); font-size:11px; font-weight:600; }
+  #kbc-admin-preview .ka-manage svg { width:13px; height:13px; }
+  #kbc-admin-preview .ka-list-footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; color:var(--ka-muted); font-size:10px; margin-top:14px; }
+  #kbc-admin-preview .ka-list-footer>span:last-child { display:flex; align-items:center; gap:5px; }
+  #kbc-admin-preview .ka-list-footer svg { width:12px; height:12px; }
+  #kbc-admin-preview .ka-back { display:inline-flex; align-items:center; gap:6px; background:transparent; border:0; padding:0 0 12px; color:var(--ka-muted); font-size:11px; }
+  #kbc-admin-preview .ka-edit-heading { margin-bottom:16px; }
+  #kbc-admin-preview .ka-person { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--ka-surface); border:1px solid var(--ka-line); border-radius:10px; padding:14px 16px; margin-bottom:20px; }
+  #kbc-admin-preview .ka-access-columns { display:grid; grid-template-columns:1.1fr 1fr; gap:18px; align-items:start; }
+  #kbc-admin-preview .ka-role-section { min-width:0; background:var(--ka-surface); border:1px solid var(--ka-line); border-radius:10px; padding:15px; }
+  #kbc-admin-preview .ka-section-heading { display:flex; align-items:center; gap:7px; padding-bottom:13px; color:var(--ka-navy); }
+  #kbc-admin-preview .ka-role-option { display:flex; align-items:flex-start; gap:10px; padding:12px 0; border-top:1px solid var(--ka-line); cursor:pointer; }
+  #kbc-admin-preview .ka-role-option input { flex:none; width:16px; height:16px; margin:2px 0 0; accent-color:var(--ka-action); }
+  #kbc-admin-preview .ka-role-option strong { display:block; font-size:12px; }
+  #kbc-admin-preview .ka-role-description { display:block; margin-top:3px; color:var(--ka-muted); font-size:11px; }
+  #kbc-admin-preview .ka-inherited { display:block; margin-top:5px; font-size:10px; color:var(--ka-amber); }
+  #kbc-admin-preview .ka-job-note { display:flex; align-items:flex-start; gap:8px; margin-top:12px; padding:12px; background:var(--ka-soft); border-radius:7px; color:var(--ka-muted); font-size:11px; }
+  #kbc-admin-preview .ka-job-note svg { width:14px; height:14px; margin-top:2px; }
+  #kbc-admin-preview .ka-save-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:20px; padding-top:18px; border-top:1px solid var(--ka-line); }
+  #kbc-admin-preview #ka-change-summary { font-size:11px; color:var(--ka-muted); }
+  #kbc-admin-preview .ka-save-actions { display:flex; gap:8px; flex:none; }
+  #kbc-admin-preview .ka-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:10px 15px; border-radius:8px; border:1px solid var(--ka-line); font-size:12px; font-weight:600; }
+  #kbc-admin-preview .ka-primary { background:var(--ka-action); color:var(--ka-action-text); border-color:var(--ka-action); }
+  #kbc-admin-preview .ka-secondary { background:var(--ka-surface); color:var(--ka-text); }
+  #kbc-admin-preview .ka-notice { margin-bottom:18px; padding:12px 14px; border-radius:9px; background:var(--ka-green-bg); color:var(--ka-green); font-size:12px; }
+  #kbc-admin-preview .ka-directory-group { margin-top:22px; }
+  #kbc-admin-preview .ka-directory-group h2 { margin-bottom:10px; color:var(--ka-navy); }
+  #kbc-admin-preview .ka-directory-row { display:flex; justify-content:space-between; align-items:center; gap:15px; background:var(--ka-surface); padding:14px; border-bottom:1px solid var(--ka-line); }
+  #kbc-admin-preview .ka-directory-row strong { font-size:12px; }
+  #kbc-admin-preview .ka-directory-row .ka-total { font-size:10px; }
+  #kbc-admin-preview .ka-empty { text-align:center; padding:55px 20px; color:var(--ka-muted); font-size:12px; }
+  #kbc-admin-preview .ka-history-entry { display:flex; align-items:flex-start; gap:13px; padding:20px 0; border-bottom:1px solid var(--ka-line); }
+  #kbc-admin-preview .ka-history-entry>svg { color:var(--ka-green); }
+  #kbc-admin-preview .ka-history-entry strong { display:block; }
+  #kbc-admin-preview .ka-history-entry p { color:var(--ka-muted); font-size:12px; margin-top:4px; }
+  #kbc-admin-preview .ka-history-entry small { display:block; color:var(--ka-muted); font-size:10px; margin-top:8px; }
+  #kbc-admin-preview .ka-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  @media(max-width:850px) { #kbc-admin-preview .ka-workspace { grid-template-columns:148px minmax(0,1fr); } #kbc-admin-preview .ka-main { padding:22px 18px; } #kbc-admin-preview .ka-table-head,#kbc-admin-preview .ka-user-row { grid-template-columns:minmax(140px,1.4fr) minmax(80px,1fr) 66px; gap:9px; padding-left:12px; padding-right:12px; } #kbc-admin-preview .ka-table-head>span:nth-child(3),#kbc-admin-preview .ka-user-row>.ka-status-cell { display:none; } #kbc-admin-preview .ka-sidebar { padding-left:7px; padding-right:7px; } #kbc-admin-preview .ka-sidebar-bottom { display:none; } }
+  @media(max-width:620px) { #kbc-admin-preview .ka-header { padding:15px; flex-wrap:wrap; gap:12px; } #kbc-admin-preview .ka-header-section { font-size:11px; padding:7px 10px; } #kbc-admin-preview .ka-workspace { display:block; min-height:0; } #kbc-admin-preview .ka-sidebar { padding:10px; border-right:0; border-bottom:1px solid var(--ka-line); } #kbc-admin-preview .ka-sidebar nav { display:flex; gap:3px; } #kbc-admin-preview .ka-nav-item { padding:10px 7px; font-size:11px; width:auto; flex:1; gap:5px; justify-content:center; } #kbc-admin-preview .ka-nav-label { display:none; } #kbc-admin-preview .ka-main { padding:19px 15px; } #kbc-admin-preview .ka-access-columns { grid-template-columns:1fr; gap:14px; } #kbc-admin-preview .ka-table-head { display:none; } #kbc-admin-preview .ka-user-row { grid-template-columns:minmax(0,1fr) 66px; gap:9px 12px; } #kbc-admin-preview .ka-user-row:first-child { border-top:0; } #kbc-admin-preview .ka-user-row>.ka-tags { grid-column:1; grid-row:2; padding-left:44px; } #kbc-admin-preview .ka-user-row>.ka-action-cell { grid-column:2; grid-row:1 / 3; } #kbc-admin-preview .ka-toolbar { flex-wrap:wrap; } #kbc-admin-preview .ka-search { flex-basis:100%; } #kbc-admin-preview .ka-filter { flex:1; max-width:none; } #kbc-admin-preview .ka-save-bar { flex-wrap:wrap; } #kbc-admin-preview .ka-save-actions { width:100%; justify-content:flex-end; } #kbc-admin-preview h1 { font-size:23px; } #kbc-admin-preview .ka-list-footer { font-size:11px; } }
+  @media(prefers-reduced-motion:no-preference) { #kbc-admin-preview button { transition:background .16s ease,color .16s ease; } }
+  @media(pointer:coarse) { #kbc-admin-preview button,#kbc-admin-preview .ka-role-option { min-height:44px; } #kbc-admin-preview .ka-search input,#kbc-admin-preview select { font-size:16px; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('kbc-admin-preview');
+  const find = id => root.querySelector('#' + id);
+  const roles = [
+    {id:'admin',name:'Communication Centre admin',short:'Admin',description:'Includes all Communication Centre roles.',area:'community'},
+    {id:'events',name:'Events',short:'Events',description:'Create and manage events.',area:'community'},
+    {id:'operations',name:'Operations',short:'Operations',description:'Manage training plans and cohorts.',area:'community'},
+    {id:'it',name:'IT',short:'IT',description:'Manage news and view user activity.',area:'community'},
+    {id:'marketing',name:'Marketing',short:'Marketing',description:'Manage news and announcements.',area:'community'},
+    {id:'support',name:'Support',short:'Support',description:'Access Support features.',area:'community'},
+    {id:'coach',name:'Coach',short:'Coach',description:'Access Communication Centre coach features.',area:'community'},
+    {id:'agent',name:'Specialist',short:'Specialist',description:'Work from their own calling desk.',area:'engagement'},
+    {id:'director',name:'Director',short:'Director',description:'Manage desks, allocation and settings.',area:'engagement'},
+    {id:'engagementCoach',name:'Engagement coach',short:'Engagement coach',description:'View and support assigned learners.',area:'engagement'}
+  ];
+  const initialUsers = [
+    {id:1,name:'Alex Morgan',initials:'AM',email:'alex.morgan@example.com',roles:['admin'],active:true},
+    {id:2,name:'Sarah Mitchell',initials:'SM',email:'sarah.mitchell@example.com',roles:['marketing','events'],active:true},
+    {id:3,name:'James Wilson',initials:'JW',email:'james.wilson@example.com',roles:['operations'],active:true},
+    {id:4,name:'Emma Thompson',initials:'ET',email:'emma.thompson@example.com',roles:['agent'],active:true},
+    {id:5,name:'Daniel Brooks',initials:'DB',email:'daniel.brooks@example.com',roles:['director'],active:true},
+    {id:6,name:'Olivia Taylor',initials:'OT',email:'olivia.taylor@example.com',roles:['engagementCoach'],active:false}
+  ];
+  let users = initialUsers.map(user => ({...user,roles:[...user.roles]}));
+  let view = 'users';
+  let selectedId = null;
+  let draft = [];
+  let changes = [];
+  const escape = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+  const roleName = id => roles.find(role => role.id === id)?.name || id;
+  const refreshIcons = () => { if (globalThis.lucide) globalThis.lucide.createIcons({attrs:{width:17,height:17}}); };
+  function persist() {
+    if (window.openai?.setWidgetState) {
+      Promise.resolve(window.openai.setWidgetState({
+        modelContent:{preview:'KBC Django administration concept. Sample users only; no live changes.',section:view,selectedUser:users.find(user => user.id === selectedId)?.name || null},
+        privateContent:{version:1,assignments:users.map(user => ({id:user.id,roles:user.roles})),view,selectedId,draft,changes:changes.slice(0,12),query:find('ka-search').value,filter:find('ka-filter').value}
+      })).catch(() => {});
+    }
+  }
+  function identity(user) {
+    return '<div class="ka-user-identity"><span class="ka-avatar">'+escape(user.initials)+'</span><div class="ka-identity-text"><strong>'+escape(user.name)+'</strong><span class="ka-email">'+escape(user.email)+'</span></div></div>';
+  }
+  function status(user) { return '<span class="ka-status'+(user.active?'':' is-inactive')+'">'+(user.active?'Active':'Inactive')+'</span>'; }
+  function renderUsers() {
+    const query = find('ka-search').value.trim().toLowerCase();
+    const filter = find('ka-filter').value;
+    const visible = users.filter(user => (user.name+' '+user.email).toLowerCase().includes(query) && (!filter || user.roles.includes(filter)));
+    find('ka-user-rows').innerHTML = visible.map(user => '<div class="ka-user-row" role="row"><div role="cell">'+identity(user)+'</div><div class="ka-tags" role="cell">'+(user.roles.map(id => '<span class="ka-tag'+(id==='admin'?' ka-tag-admin':'')+'">'+escape(roles.find(role => role.id===id).short)+'</span>').join('') || '<span class="ka-email">No roles assigned</span>')+'</div><div class="ka-status-cell" role="cell">'+status(user)+'</div><div class="ka-action-cell" role="cell"><button class="ka-manage" type="button" data-manage="'+user.id+'" aria-label="Manage access for '+escape(user.name)+'">Manage<i data-lucide="chevron-right" aria-hidden="true"></i></button></div></div>').join('') || '<div class="ka-empty" role="row"><span role="cell">No people match your search.</span></div>';
+    find('ka-list-count').textContent = 'Showing '+visible.length+' of '+users.length+' people';
+    refreshIcons();
+  }
+  function renderDirectory() {
+    find('ka-role-directory').innerHTML = ['community','engagement'].map(area => '<section class="ka-directory-group"><h2>'+(area==='community'?'Communication Centre':'Engagement Centre')+'</h2>'+roles.filter(role => role.area===area).map(role => '<div class="ka-directory-row"><div><strong>'+escape(role.name)+'</strong><span class="ka-role-description">'+escape(role.description)+'</span></div><span class="ka-total">'+users.filter(user => user.roles.includes(role.id)).length+' assigned</span></div>').join('')+'</section>').join('');
+  }
+  function renderHistory() {
+    find('ka-history-list').innerHTML = changes.length ? changes.map(change => '<article class="ka-history-entry"><i data-lucide="shield-check" aria-hidden="true"></i><div><strong>'+escape(change.name)+'</strong><p>'+escape(change.summary)+'</p><small>Administrator · Saved in this preview</small></div></article>').join('') : '<div class="ka-empty"><strong>No changes yet</strong><p>Role changes saved in this preview will appear here.</p></div>';
+    refreshIcons();
+  }
+  function differences() {
+    const user = users.find(item => item.id===selectedId);
+    if (!user) return {added:[],removed:[]};
+    return {added:draft.filter(id => !user.roles.includes(id)),removed:user.roles.filter(id => !draft.includes(id))};
+  }
+  function changeText(diff) {
+    const parts = [];
+    if (diff.added.length) parts.push('Add '+diff.added.map(roleName).join(', '));
+    if (diff.removed.length) parts.push('Remove '+diff.removed.map(roleName).join(', '));
+    return parts.join(' · ');
+  }
+  function renderEditor() {
+    const user = users.find(item => item.id===selectedId);
+    if (!user) return;
+    find('ka-person').innerHTML = identity(user)+status(user);
+    const admin = draft.includes('admin');
+    for (const area of ['community','engagement']) {
+      find(area==='community'?'ka-community-roles':'ka-engagement-roles').innerHTML = roles.filter(role => role.area===area).map(role => {
+        const inherited = admin && area==='community' && role.id!=='admin';
+        return '<label class="ka-role-option"><input type="checkbox" data-role="'+role.id+'"'+(draft.includes(role.id)||inherited?' checked':'')+(inherited?' disabled':'')+' aria-describedby="ka-description-'+role.id+'"><span><strong>'+escape(role.name)+'</strong><span class="ka-role-description" id="ka-description-'+role.id+'">'+escape(role.description)+'</span>'+(inherited?'<span class="ka-inherited">Included with Admin</span>':'')+'</span></label>';
+      }).join('');
+    }
+    const diff = differences();
+    const lastAdmin = user.roles.includes('admin') && !draft.includes('admin') && !users.some(item => item.id!==user.id && item.active && item.roles.includes('admin'));
+    find('ka-change-summary').textContent = lastAdmin ? 'Keep at least one active Communication Centre admin.' : (changeText(diff) || 'No changes yet');
+    find('ka-save').disabled = lastAdmin || !(diff.added.length+diff.removed.length);
+    refreshIcons();
+  }
+  function setView(next) {
+    view = next;
+    for (const name of ['users','editor','roles','history']) find('ka-'+name+'-view').hidden = name!==next;
+    for (const button of root.querySelectorAll('[data-view]')) {
+      const active = button.dataset.view===(next==='editor'?'users':next);
+      button.classList.toggle('is-current',active);
+      if (active) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
+    }
+    find('ka-current-section').textContent = {users:'Users & access',editor:'Manage access',roles:'Roles',history:'Change history'}[next];
+    if (next==='users') renderUsers();
+    if (next==='editor') renderEditor();
+    if (next==='roles') renderDirectory();
+    if (next==='history') renderHistory();
+  }
+  for (const role of roles) { const option=document.createElement('option'); option.value=role.id; option.textContent=role.name; find('ka-filter').appendChild(option); }
+  root.addEventListener('click',event => {
+    const nav = event.target.closest('[data-view]');
+    if (nav) { find('ka-notice').hidden=true; selectedId=null; draft=[]; setView(nav.dataset.view); persist(); }
+    const manage = event.target.closest('[data-manage]');
+    if (manage) { selectedId=Number(manage.dataset.manage); draft=[...users.find(user => user.id===selectedId).roles]; find('ka-notice').hidden=true; setView('editor'); find('ka-back').focus({preventScroll:true}); persist(); }
+  });
+  root.addEventListener('change',event => {
+    const checkbox = event.target.closest('[data-role]');
+    if (!checkbox) return;
+    draft = checkbox.checked ? [...new Set([...draft,checkbox.dataset.role])] : draft.filter(id => id!==checkbox.dataset.role);
+    const id = checkbox.dataset.role;
+    renderEditor();
+    root.querySelector('[data-role="'+id+'"]').focus({preventScroll:true});
+    persist();
+  });
+  find('ka-search').addEventListener('input',() => {renderUsers();persist();});
+  find('ka-filter').addEventListener('change',() => {renderUsers();persist();});
+  function cancel() { const previousId=selectedId; selectedId=null; draft=[]; setView('users'); root.querySelector('[data-manage="'+previousId+'"]')?.focus({preventScroll:true}); persist(); }
+  find('ka-cancel').addEventListener('click',cancel);
+  find('ka-back').addEventListener('click',cancel);
+  find('ka-save').addEventListener('click',() => {
+    if (find('ka-save').disabled) return;
+    const user=users.find(item => item.id===selectedId);
+    changes.unshift({name:user.name,summary:changeText(differences())});
+    changes=changes.slice(0,12);
+    user.roles=[...draft];
+    find('ka-notice').textContent='Access updated for '+user.name+' in this preview.';
+    find('ka-notice').hidden=false;
+    selectedId=null; draft=[]; setView('users'); persist();
+  });
+  function restore(saved) {
+    const state=saved?.privateContent;
+    if (!state || state.version!==1) return;
+    const allowed=new Set(roles.map(role => role.id));
+    users=initialUsers.map(user => { const stored=Array.isArray(state.assignments)?state.assignments.find(item => item.id===user.id):null; return {...user,roles:Array.isArray(stored?.roles)?[...new Set(stored.roles.filter(id => allowed.has(id)))]:[...user.roles]}; });
+    selectedId=users.some(user => user.id===state.selectedId)?state.selectedId:null;
+    draft=Array.isArray(state.draft)?state.draft.filter(id => allowed.has(id)):[];
+    changes=Array.isArray(state.changes)?state.changes.filter(change => typeof change?.name==='string' && typeof change?.summary==='string').slice(0,12):[];
+    find('ka-search').value=typeof state.query==='string'?state.query:'';
+    find('ka-filter').value=allowed.has(state.filter)?state.filter:'';
+    view=['users','roles','history','editor'].includes(state.view)?state.view:'users';
+    if (view==='editor' && !selectedId) view='users';
+  }
+  restore(window.openai?.widgetState);
+  setView(view);
+  window.addEventListener('openai:set_globals',event => { if(event.detail?.globals?.widgetState) {restore(event.detail.globals.widgetState);setView(view);} });
+  if (globalThis.Tweak) {
+    const design={density:'Comfortable',corners:14};
+    const tweak=new globalThis.Tweak({container:root,onChange:() => {root.style.setProperty('--ka-row-padding',design.density==='Compact'?'12px':'19px');root.style.setProperty('--ka-radius',design.corners+'px');}});
+    tweak.addSelect(design,'density',{label:'Table spacing',options:['Comfortable','Compact']});
+    tweak.addSlider(design,'corners',{label:'Window corners',min:0,max:20,step:2,unit:'px'});
+  }
+})();
+</script>

@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.contrib.auth import get_user_model
 from django.test import Client, SimpleTestCase, TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -27,6 +28,17 @@ from .views import (
 	training_plan_holidays_version,
 	training_plan_version,
 )
+
+
+def authenticated_client():
+	"""Business-rule tests use an actual session; authorization has its own suite."""
+	user, _ = get_user_model().objects.get_or_create(
+		username='api-business-test-admin',
+		defaults={'is_active': True, 'is_staff': True, 'is_superuser': True},
+	)
+	client = Client()
+	client.force_login(user, backend='django.contrib.auth.backends.ModelBackend')
+	return client
 
 
 def serialize_training_plan_for_test(row):
@@ -95,7 +107,7 @@ class TutorProfileMatchingTests(SimpleTestCase):
 
 class UploadImageEndpointTests(TestCase):
 	def setUp(self):
-		self.client = Client()
+		self.client = authenticated_client()
 		self.media_root = tempfile.mkdtemp()
 		self.override = override_settings(MEDIA_ROOT=self.media_root)
 		self.override.enable()
@@ -171,7 +183,7 @@ class EmployeeDeleteSafetyTests(TestCase):
 	def setUp(self):
 		Employee.objects.all().delete()
 		AuditLog.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_employee(self, name, reports_to=None):
 		return Employee.objects.create(
@@ -246,7 +258,7 @@ class TutorCoachProfileDeleteSafetyTests(TestCase):
 		TutorProfile.objects.all().delete()
 		CoachProfile.objects.all().delete()
 		AuditLog.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_training_plan_row(self, **overrides):
 		values = {
@@ -420,7 +432,7 @@ class TutorCoachProfileDeleteSafetyTests(TestCase):
 class TrainingPlanHolidaySaveTests(TestCase):
 	def setUp(self):
 		TrainingPlanHoliday.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_holiday(self, label='Christmas 25', start_date=date(2025, 12, 22), end_date=date(2025, 12, 28), holiday_type='bank-holiday', color='#ECFDF5'):
 		return TrainingPlanHoliday.objects.create(
@@ -595,7 +607,7 @@ class TrainingPlanHolidayTypeSafetyTests(TestCase):
 	def setUp(self):
 		TrainingPlanHoliday.objects.all().delete()
 		AuditLog.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_type_marker(self, value='bank-holiday', label='Bank Holiday', color='#ECFDF5'):
 		return TrainingPlanHoliday.objects.create(
@@ -683,7 +695,7 @@ class TrainingPlanHolidayTypeSafetyTests(TestCase):
 class TrainingPlanModuleDefinitionScopedTests(TestCase):
 	def setUp(self):
 		TrainingPlanModuleDefinition.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_definition(self, module_id='module-a', name='Module A', default_sessions=3, bg='#111111', tx='#ffffff'):
 		return TrainingPlanModuleDefinition.objects.create(
@@ -818,7 +830,7 @@ class TrainingPlanModuleDefinitionScopedTests(TestCase):
 class TrainingPlanProgramConfigScopedTests(TestCase):
 	def setUp(self):
 		TrainingPlanProgramConfig.objects.all().delete()
-		self.client = Client()
+		self.client = authenticated_client()
 
 	def create_config(self, program_id='prog-a', name='Programme A', sub='Sub A', color='#111111'):
 		return TrainingPlanProgramConfig.objects.create(
@@ -973,7 +985,7 @@ class AptemLearnerMappingTests(TestCase):
 		super().tearDownClass()
 
 	def setUp(self):
-		self.client = Client()
+		self.client = authenticated_client()
 		Module.objects.all().delete()
 		AptemAutoExtracting.objects.all().delete()
 		ModuleLearnerMapping.objects.all().delete()
@@ -1253,10 +1265,10 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		return training_plan_version()
 
 	def patch_json(self, path, payload):
-		return Client().patch(path, data=json.dumps(payload), content_type='application/json')
+		return authenticated_client().patch(path, data=json.dumps(payload), content_type='application/json')
 
 	def post_json(self, path, payload):
-		return Client().post(path, data=json.dumps(payload), content_type='application/json')
+		return authenticated_client().post(path, data=json.dumps(payload), content_type='application/json')
 
 	def order_invariant_snapshot(self):
 		snapshot = {}
@@ -1977,9 +1989,9 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(payload['items'][0]['cohortId'], 'c2')
 		self.assertTrue(AuditLog.objects.filter(object_label='COHORT_ARCHIVE_PARTIAL_UPDATE').exists())
 
-		get_payload = Client().get('/api/training-plan/').json()
+		get_payload = authenticated_client().get('/api/training-plan/').json()
 		self.assertEqual([item['cohortId'] for item in get_payload['items']], ['c2'])
-		include_archived = Client().get('/api/training-plan/?includeArchived=1').json()
+		include_archived = authenticated_client().get('/api/training-plan/?includeArchived=1').json()
 		self.assertEqual(len(include_archived['items']), 3)
 
 	def test_cohort_archive_does_not_scope_by_legacy_name_identity(self):
@@ -2412,7 +2424,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(serialize_training_plan_for_test(other), before_other)
 		self.assertEqual(timeline_response.json()['updated_count'], 1)
 		self.assertEqual(timeline_response.json()['items'][0]['moduleName'], 'PPC End To End')
-		get_payload = Client().get('/api/training-plan/').json()
+		get_payload = authenticated_client().get('/api/training-plan/').json()
 		modules_by_id = {item['id']: item['moduleName'] for item in get_payload['items']}
 		self.assertEqual(modules_by_id[target.id], 'PPC End To End')
 		self.assertEqual(modules_by_id[other.id], 'PPC')
@@ -2712,9 +2724,9 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		before_ids = list(TrainingPlan.objects.order_by('id').values_list('id', flat=True))
 		before_snapshot = self.order_invariant_snapshot()
 
-		get_before = Client().get('/api/training-plan/').json()
+		get_before = authenticated_client().get('/api/training-plan/').json()
 		self.assertEqual([item['cohortId'] for item in get_before['items']], ['c2'])
-		include_before = Client().get('/api/training-plan/?includeArchived=1').json()
+		include_before = authenticated_client().get('/api/training-plan/?includeArchived=1').json()
 		self.assertEqual(len(include_before['items']), 4)
 
 		response = self.patch_json('/api/training-plan/cohorts/c1/restore/', {
@@ -2742,7 +2754,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		payload = response.json()
 		self.assertEqual(payload['restored_count'], 2)
 		self.assertEqual(payload['cohort_id'], 'c1')
-		get_after = Client().get('/api/training-plan/').json()
+		get_after = authenticated_client().get('/api/training-plan/').json()
 		self.assertEqual([item['cohortId'] for item in get_after['items']], ['c1', 'c1', 'c2'])
 		self.assertFalse(AuditLog.objects.filter(action='replace', object_label='Training Plan timeline').exists())
 		audit = AuditLog.objects.get(object_label='COHORT_RESTORE_PARTIAL_UPDATE')
@@ -3104,10 +3116,10 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(self.row.notes, 'Existing notes')
 
 	def test_legacy_full_save_still_works_with_existing_protections(self):
-		items = Client().get('/api/training-plan/').json()['items']
+		items = authenticated_client().get('/api/training-plan/').json()['items']
 		items[0]['notes'] = 'Legacy save still works'
 
-		response = Client().post('/api/training-plan/', data=json.dumps({
+		response = authenticated_client().post('/api/training-plan/', data=json.dumps({
 			'version': self.current_version(),
 			'items': items,
 			'confirmLegacyReplaceAll': True,
@@ -3118,9 +3130,9 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(TrainingPlan.objects.count(), len(items))
 
 	def test_legacy_full_save_requires_internal_admin_debug_flag(self):
-		items = Client().get('/api/training-plan/').json()['items']
+		items = authenticated_client().get('/api/training-plan/').json()['items']
 
-		response = Client().post('/api/training-plan/', data=json.dumps({
+		response = authenticated_client().post('/api/training-plan/', data=json.dumps({
 			'version': self.current_version(),
 			'items': items,
 			'confirmLegacyReplaceAll': True,
@@ -3131,11 +3143,11 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertEqual(TrainingPlan.objects.count(), 2)
 
 	def test_legacy_full_save_rejects_migrated_source_labels(self):
-		items = Client().get('/api/training-plan/').json()['items']
+		items = authenticated_client().get('/api/training-plan/').json()['items']
 
 		for source in sorted(MIGRATED_TRAINING_PLAN_FULL_SAVE_SOURCES):
 			with self.subTest(source=source):
-				response = Client().post('/api/training-plan/', data=json.dumps({
+				response = authenticated_client().post('/api/training-plan/', data=json.dumps({
 					'version': self.current_version(),
 					'items': items,
 					'confirmLegacyReplaceAll': True,
@@ -3147,7 +3159,7 @@ class TrainingPlanPartialUpdateTests(TestCase):
 
 	def test_scoped_migrated_flow_does_not_trigger_legacy_full_save_warning(self):
 		with patch('api.views.logger.warning') as warning:
-			response = Client().patch(f'/api/training-plan/sessions/{self.row.pk}/', data=json.dumps({
+			response = authenticated_client().patch(f'/api/training-plan/sessions/{self.row.pk}/', data=json.dumps({
 				'version': self.current_version(),
 				'notes': 'Scoped save only',
 			}), content_type='application/json', HTTP_X_KBC_TRAINING_PLAN_SAVE_SOURCE='cohort_edit')
@@ -3158,6 +3170,6 @@ class TrainingPlanPartialUpdateTests(TestCase):
 		self.assertFalse(any('LEGACY_TRAINING_PLAN_FULL_SAVE_TRIGGERED' in str(call) for call in warning.call_args_list))
 
 	def test_health_endpoint_returns_200(self):
-		response = Client().get('/api/health/')
+		response = authenticated_client().get('/api/health/')
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(response.json(), {'status': 'ok', 'service': 'communication-centre-backend'})

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import TopNav from '../../components/feature/TopNav';
+import useAccessControl from '../../hooks/useAccessControl';
 import Footer from '../../components/feature/Footer';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
@@ -78,6 +79,7 @@ function toPayload(notice: UrgentNotice): UrgentNoticePayload {
 }
 
 export default function UrgentNoticePage() {
+  const { can } = useAccessControl();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [form, setForm] = useState<UrgentNoticePayload>(emptyForm);
@@ -170,6 +172,7 @@ export default function UrgentNoticePage() {
   };
 
   const handleSave = async (saveAsNew = false) => {
+    if (!can(editingId && !saveAsNew ? 'change_news' : 'add_news')) return;
     if (!canSave || saving) {
       await kbcSwal.fire({
         title: 'Complete Required Fields',
@@ -219,6 +222,7 @@ export default function UrgentNoticePage() {
   };
 
   const handleDelete = async (notice: UrgentNotice) => {
+    if (!can('delete_news')) return;
     const result = await kbcSwal.fire({
       title: 'Delete Urgent Notice?',
       html: `The notice <strong>${notice.title}</strong> will be removed from the database.`,
@@ -258,6 +262,7 @@ export default function UrgentNoticePage() {
   };
 
   const handleShowOnHome = async (notice: UrgentNotice) => {
+    if (!can('change_news')) return;
     if (notice.isActive) {
       return;
     }
@@ -513,7 +518,7 @@ export default function UrgentNoticePage() {
               <button
                 type="button"
                 onClick={() => { void handleSave(false); }}
-                disabled={!canSave || saving}
+                disabled={!canSave || saving || !can(editingId ? 'change_news' : 'add_news')}
                 className="rounded-xl bg-kbc-red px-5 py-2.5 text-sm font-bold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {saving ? 'Saving...' : editingId ? 'Update Urgent Notice' : 'Save Urgent Notice'}
@@ -570,7 +575,7 @@ export default function UrgentNoticePage() {
                           <button
                             type="button"
                             onClick={() => { void handleShowOnHome(notice); }}
-                            disabled={Boolean(notice.isActive)}
+                            disabled={Boolean(notice.isActive) || !can('change_news')}
                             className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
                               notice.isActive
                                 ? 'cursor-default bg-emerald-50 text-emerald-700'
@@ -588,6 +593,7 @@ export default function UrgentNoticePage() {
                             }}
                             className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-kbc-navy text-white transition-opacity hover:opacity-90"
                             title="Edit urgent notice"
+                            disabled={!can('change_news')}
                           >
                             <i className="ri-edit-line text-lg" />
                           </button>
@@ -596,6 +602,7 @@ export default function UrgentNoticePage() {
                             onClick={() => { void handleDelete(notice); }}
                             className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-red-50 text-red-600 transition-colors hover:bg-red-100"
                             title="Delete urgent notice"
+                            disabled={!can('delete_news')}
                           >
                             <i className="ri-delete-bin-line text-lg" />
                           </button>

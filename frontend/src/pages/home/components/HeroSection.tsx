@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { heroNotice } from '../../../mocks/home';
 import SafeImage from '../../../components/feature/SafeImage';
 import { useSharedEvents } from '../../../hooks/useSharedEvents';
+import useAccessControl from '../../../hooks/useAccessControl';
 import { parseCalendarEventDate, CalendarEvent } from '../../../mocks/events';
 
 export type UrgentNoticeState = {
@@ -47,6 +48,7 @@ export default function HeroSection({
   initialUrgentNotice?: UrgentNoticeState | null;
   initialLeadershipMessage?: LeadershipMessageState | null;
 }) {
+  const { can } = useAccessControl();
   const [leadershipOpen, setLeadershipOpen] = useState(false);
   const [urgentNotice, setUrgentNotice] = useState<UrgentNoticeState | null>(initialUrgentNotice ?? null);
   const [leadershipMessage, setLeadershipMessage] = useState<LeadershipMessageState | null>(initialLeadershipMessage ?? null);
@@ -345,11 +347,11 @@ export default function HeroSection({
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-2">
                       {urgentNotice ? (
-                        <Link to={urgentNotice.id ? `/urgent-notice/new?edit=${urgentNotice.id}` : '/urgent-notice/new'} className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                        can('change_news') && <Link to={urgentNotice.id ? `/urgent-notice/new?edit=${urgentNotice.id}` : '/urgent-notice/new'} className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
                           Edit <i className="ri-edit-line text-sm" />
                         </Link>
                       ) : (
-                        <Link to="/urgent-notice/new" className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                        can('add_news') && <Link to="/urgent-notice/new" className="inline-flex items-center gap-1.5 border border-white/30 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
                           Add Urgent Notice <i className="ri-add-line text-sm" />
                         </Link>
                       )}
@@ -385,9 +387,9 @@ export default function HeroSection({
                             <button type="button" onClick={() => setLeadershipOpen(true)} className="inline-flex items-center gap-1.5 border border-white/50 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
                               Read Message <i className="ri-arrow-right-s-line text-sm" />
                             </button>
-                            <Link to={leadershipMessage.id ? `/leadership-message/new?edit=${leadershipMessage.id}` : '/leadership-message/new'} className="inline-flex items-center gap-1.5 border border-white/25 bg-white/5 hover:bg-white/15 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                            {can('change_news') && <Link to={leadershipMessage.id ? `/leadership-message/new?edit=${leadershipMessage.id}` : '/leadership-message/new'} className="inline-flex items-center gap-1.5 border border-white/25 bg-white/5 hover:bg-white/15 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
                               Edit <i className="ri-edit-line text-sm" />
-                            </Link>
+                            </Link>}
                           </div>
                         </>
                       ) : (
@@ -395,9 +397,9 @@ export default function HeroSection({
                           <h3 className="text-white font-bold text-base leading-snug">No CEO message published</h3>
                           <p className="text-white/70 text-xs mt-1">Add a manual leadership message to activate this panel.</p>
                           <div className="mt-4" onClick={e => e.stopPropagation()}>
-                            <Link to="/leadership-message/new" className="inline-flex items-center gap-1.5 border border-white/40 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
+                            {can('add_news') && can('change_news') && <Link to="/leadership-message/new" className="inline-flex items-center gap-1.5 border border-white/40 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded transition-colors">
                               Add CEO Message <i className="ri-add-line text-sm" />
-                            </Link>
+                            </Link>}
                           </div>
                         </>
                       )}

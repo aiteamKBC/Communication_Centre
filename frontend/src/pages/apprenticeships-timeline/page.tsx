@@ -3149,7 +3149,7 @@ function SessionScheduleSkeleton() {
 }
 
 export default function ApprenticeshipTimeline() {
-  const { canManageCohorts } = useAccessControl();
+  const { can } = useAccessControl();
   const [customModules, setCustomModules] = useState<CustomModule[]>([]);
   const [customPrograms, setCustomPrograms] = useState<CustomProgram[]>([]);
   const [catalogModules, setCatalogModules] = useState<CatalogModule[]>([]);
@@ -3632,7 +3632,12 @@ export default function ApprenticeshipTimeline() {
 
 
   const isInitialProgrammesLoading = !hasLoadedTrainingPlan || !hasLoadedProgramConfigs;
-  const canEditTrainingPlan = canManageCohorts && !trainingPlanServerUnavailable;
+  const canAddTrainingPlan = can('login.add_training_plan') && !trainingPlanServerUnavailable;
+  const canEditTrainingPlan = can('login.change_training_plan') && !trainingPlanServerUnavailable;
+  const canDeleteTrainingPlan = can('login.delete_training_plan') && !trainingPlanServerUnavailable;
+  const canManageCohorts = canAddTrainingPlan || canEditTrainingPlan || canDeleteTrainingPlan;
+  // These editors submit several kinds of changes together.
+  const canFullyManageTrainingPlan = canAddTrainingPlan && canEditTrainingPlan && canDeleteTrainingPlan;
 
   const migratedTrainingPlanFullSaveSources = new Set([
     'cohort_add',
@@ -3654,6 +3659,7 @@ export default function ApprenticeshipTimeline() {
     source = 'unknown_legacy_save',
     options: { allowLegacyReplaceAll?: boolean } = {},
   ) => {
+    if (!canFullyManageTrainingPlan) return false;
     if (migratedTrainingPlanFullSaveSources.has(source) || !options.allowLegacyReplaceAll) {
       console.error('LEGACY_TRAINING_PLAN_FULL_SAVE_BLOCKED', {
         source,
@@ -3853,6 +3859,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const persistHolidays = async (nextHolidays: Holiday[]) => {
+    if (!canFullyManageTrainingPlan) return false;
     if (!holidayVersion) {
       const reloaded = await reloadTrainingPlanHolidays();
       await kbcSwal.fire({
@@ -4011,6 +4018,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const createCustomModuleDefinition = async (module: CustomModule): Promise<CustomModule> => {
+    if (!canAddTrainingPlan) throw new Error("Adding Training Plan data is not allowed for your account.");
     if (!moduleDefinitionsVersion) {
       throw new Error('Reload latest data before saving module definitions.');
     }
@@ -4023,6 +4031,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateCustomModuleDefinition = async (module: CustomModule): Promise<CustomModule> => {
+    if (!canEditTrainingPlan) throw new Error("Editing Training Plan data is not allowed for your account.");
     if (!moduleDefinitionsVersion) {
       throw new Error('Reload latest data before saving module definitions.');
     }
@@ -4041,6 +4050,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const deleteCustomModuleDefinition = async (id: string): Promise<boolean> => {
+    if (!canDeleteTrainingPlan) return false;
     if (!moduleDefinitionsVersion) {
       throw new Error('Reload latest data before deleting module definitions.');
     }
@@ -4097,6 +4107,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const createProgramConfig = async (program: CustomProgram): Promise<CustomProgram> => {
+    if (!canAddTrainingPlan) throw new Error("Adding programmes is not allowed for your account.");
     if (!programConfigsVersion) {
       throw new Error('Reload latest data before saving programme configs.');
     }
@@ -4109,6 +4120,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateProgramConfig = async (program: CustomProgram): Promise<CustomProgram> => {
+    if (!canEditTrainingPlan) throw new Error("Editing programmes is not allowed for your account.");
     if (!programConfigsVersion) {
       throw new Error('Reload latest data before saving programme configs.');
     }
@@ -4126,6 +4138,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const deleteProgramConfig = async (id: string): Promise<boolean> => {
+    if (!canDeleteTrainingPlan) return false;
     if (!programConfigsVersion) {
       throw new Error('Reload latest data before deleting programme configs.');
     }
@@ -4150,6 +4163,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const createKsbProfile = async (profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
+    if (!canAddTrainingPlan) return null;
     try {
       const response = await fetch('/api/ksb-profiles/', {
         method: 'POST',
@@ -4167,6 +4181,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const createTutorProfile = async (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }): Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }> => {
+    if (!canAddTrainingPlan) throw new Error("Adding tutors is not allowed for your account.");
     const response = await fetch('/api/tutor-profiles/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4186,6 +4201,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateTutorProfile = async (id: string, profile: Partial<TutorProfile> & { confirmSave?: boolean }): Promise<TutorProfile | { existingProfile?: TutorProfile; possibleExistingProfile?: TutorProfile; detail?: string; score?: number }> => {
+    if (!canEditTrainingPlan) throw new Error("Editing tutors is not allowed for your account.");
     const response = await fetch(`/api/tutor-profiles/${id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -4204,6 +4220,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const deleteTutorProfile = async (id: string): Promise<boolean> => {
+    if (!canDeleteTrainingPlan) return false;
     try {
       const response = await fetch(`/api/tutor-profiles/${id}/`, { method: 'DELETE' });
       if (!response.ok) {
@@ -4238,6 +4255,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const createCoachProfile = async (profile: { name: string; email?: string; phone?: string; notes?: string; availabilityNotes?: string; isActive?: boolean; confirmCreateNew?: boolean }): Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }> => {
+    if (!canAddTrainingPlan) throw new Error("Adding coaches is not allowed for your account.");
     const response = await fetch('/api/coach-profiles/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4257,6 +4275,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateCoachProfile = async (id: string, profile: Partial<CoachProfile> & { confirmSave?: boolean }): Promise<CoachProfile | { existingProfile?: CoachProfile; possibleExistingProfile?: CoachProfile; detail?: string; score?: number }> => {
+    if (!canEditTrainingPlan) throw new Error("Editing coaches is not allowed for your account.");
     const response = await fetch(`/api/coach-profiles/${id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -4275,6 +4294,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const deleteCoachProfile = async (id: string): Promise<boolean> => {
+    if (!canDeleteTrainingPlan) return false;
     try {
       const response = await fetch(`/api/coach-profiles/${id}/`, { method: 'DELETE' });
       if (!response.ok) {
@@ -4309,6 +4329,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const forceDeleteCoachProfile = async (id: string): Promise<boolean> => {
+    if (!(canDeleteTrainingPlan && canEditTrainingPlan)) return false;
     try {
       const response = await fetch(`/api/coach-profiles/${id}/?force=1`, {
         method: 'DELETE',
@@ -4344,6 +4365,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateKsbProfile = async (id: string, profile: Omit<KsbProfile, 'id'>): Promise<KsbProfile | null> => {
+    if (!canEditTrainingPlan) return null;
     try {
       const response = await fetch(`/api/ksb-profiles/${id}/`, {
         method: 'PATCH',
@@ -4361,6 +4383,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const deleteKsbProfile = async (id: string): Promise<boolean> => {
+    if (!canDeleteTrainingPlan) return false;
     try {
       const response = await fetch(`/api/ksb-profiles/${id}/`, { method: 'DELETE' });
       if (!response.ok) throw new Error((await response.text()).trim() || `Request failed with status ${response.status}`);
@@ -4381,7 +4404,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleSave = async (groupIdx: number, row: CohortRow, prevGroupIdx?: number) => {
-    if (!canManageCohorts) {
+    if (modal.open && modal.mode === 'edit' ? !canEditTrainingPlan : !canAddTrainingPlan) {
       return false;
     }
 
@@ -4392,6 +4415,15 @@ export default function ApprenticeshipTimeline() {
       : row;
     if (modal.open && modal.mode === 'edit') {
       const pgi = prevGroupIdx ?? groupIdx;
+      const previousBlocks = groups[pgi]?.rows[modal.rowIdx]?.blks || [];
+      const previousIds = new Set(previousBlocks.map(block => block.id));
+      const nextIds = new Set(savedRow.blks.map(block => block.id));
+      const addsBlocks = savedRow.blks.some(block => !previousIds.has(block.id));
+      const removesBlocks = previousBlocks.some(block => !nextIds.has(block.id));
+      if ((addsBlocks && !canAddTrainingPlan) || (removesBlocks && !canDeleteTrainingPlan)) {
+        await kbcSwal.fire({ title: 'Access required', text: 'Adding or removing modules requires the corresponding Training Plan permission. Reload this cohort to review your changes.', icon: 'warning' });
+        return false;
+      }
       next[pgi].rows.splice(modal.rowIdx, 1);
       const insertAt = groupIdx === pgi ? modal.rowIdx : next[groupIdx].rows.length;
       next[groupIdx].rows.splice(insertAt, 0, savedRow);
@@ -4924,7 +4956,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateSessionCoverage = async (groupIdx: number, rowIdx: number, blockId: string, coverage: SessionCoverage): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5021,7 +5053,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateSessionSchedule = async (groupIdx: number, rowIdx: number, blockId: string, payload: SessionScheduleUpdatePayload): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5095,7 +5127,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateSessionKsb = async (groupIdx: number, rowIdx: number, blockId: string, sessionNumber: number, mapping: SessionKsbMapping): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5155,7 +5187,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateSessionNotes = async (groupIdx: number, rowIdx: number, blockId: string, notes: string): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5209,7 +5241,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const updateModulePartial = async (groupIdx: number, rowIdx: number, blockId: string, payload: ModulePartialUpdatePayload): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5301,6 +5333,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const saveLmsModuleMatch: SaveLmsModuleMatch = async (current, sourceModuleId) => {
+    if (!canEditTrainingPlan) return false;
     if (/[\r\n]/.test(sourceModuleId)) throw new Error('The LMS module ID is invalid.');
     const groupIdx = groups.findIndex(programme => programme.id === current.programme.id);
     const rowIdx = groups[groupIdx]?.rows.findIndex(cohort => cohort.id === current.cohort.id) ?? -1;
@@ -5317,7 +5350,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleDeleteRow = async (groupIdx: number, rowIdx: number) => {
-    if (!canManageCohorts) {
+    if (!canDeleteTrainingPlan) {
       return;
     }
 
@@ -5398,7 +5431,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleCloneCohort = async (groupIdx: number, rowIdx: number, options: { silent?: boolean; versionOverride?: string; sourceGroups?: ProgrammeGroup[] } = {}) => {
-    if (!canManageCohorts) return null;
+    if (!canAddTrainingPlan) return null;
     const sourceGroups = options.sourceGroups || groups;
     const targetGroup = sourceGroups[groupIdx];
     const sourceRow = targetGroup?.rows[rowIdx];
@@ -5460,7 +5493,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleCloneGroup = async (groupIdx: number, rowIdx: number, groupName: string) => {
-    if (!canManageCohorts) return;
+    if (!(canAddTrainingPlan && canEditTrainingPlan)) return;
     const targetGroup = groups[groupIdx];
     const targetRow = targetGroup?.rows[rowIdx];
     if (!targetGroup || !targetRow) return;
@@ -5485,7 +5518,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleCloneModule = async (groupIdx: number, rowIdx: number, blockId: string) => {
-    if (!canManageCohorts) return;
+    if (!(canAddTrainingPlan && canEditTrainingPlan)) return;
     const targetRow = groups[groupIdx]?.rows[rowIdx];
     const sourceBlock = targetRow?.blks.find(block => block.id === blockId);
     if (!targetRow || !sourceBlock) return;
@@ -5503,6 +5536,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const saveClonedBlocksToCohort = async (groupIdx: number, rowIdx: number, clonedBlocks: ModuleBlock[], successTitle: string, errorTitle: string) => {
+    if (!(canAddTrainingPlan && canEditTrainingPlan)) return false;
     const targetGroup = groups[groupIdx];
     const targetRow = targetGroup?.rows[rowIdx];
     if (!targetGroup || !targetRow || !clonedBlocks.length) return false;
@@ -5588,7 +5622,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleUndoTimelineChange = async () => {
-    if (!canManageCohorts) return;
+    if (!canEditTrainingPlan) return;
     const entry = timelineHistory[timelineHistory.length - 1];
     if (!entry) return;
     setTrainingPlanSaveState('saving');
@@ -5622,7 +5656,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleMoveModuleDates = async (groupIdx: number, rowIdx: number, blockId: string, nextStartDate: string, nextEndDate: string): Promise<boolean> => {
-    if (!canManageCohorts) return false;
+    if (!canEditTrainingPlan) return false;
     if (trainingPlanServerUnavailable) {
       await kbcSwal.fire({
         title: 'Training Plan Server Unavailable',
@@ -5708,7 +5742,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleReorderRow = async (fromGroupIdx: number, fromRowIdx: number, toGroupIdx: number, toRowIdx: number, position: 'before' | 'after' = 'before') => {
-    if (!canManageCohorts) return;
+    if (!canEditTrainingPlan) return;
     const next = groups.map(g => ({ ...g, rows: [...g.rows] }));
     const [moved] = next[fromGroupIdx].rows.splice(fromRowIdx, 1);
     if (!moved) return;
@@ -5823,7 +5857,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleReorderGroup = async (fromGroupIdx: number, toGroupIdx: number) => {
-    if (!canManageCohorts) return;
+    if (!canEditTrainingPlan) return;
     const next = [...groups];
     const [moved] = next.splice(fromGroupIdx, 1);
     const insertAt = fromGroupIdx < toGroupIdx ? toGroupIdx - 1 : toGroupIdx;
@@ -5878,7 +5912,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleEditRow = (groupIdx: number, rowIdx: number, expandedBlockId?: string, returnToChoice = false) => {
-    if (!canManageCohorts) {
+    if (!canEditTrainingPlan) {
       return;
     }
 
@@ -5888,14 +5922,14 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleEditScheduleRow = (groupIdx: number, rowIdx: number, blockId: string) => {
-    if (!canManageCohorts) {
+    if (!canEditTrainingPlan) {
       return;
     }
     handleEditRow(groupIdx, rowIdx, blockId);
   };
 
   const handleAddModuleForTutor = (tutorProfileId: string, moduleValue: ModuleValue) => {
-    if (!canManageCohorts) {
+    if (!canAddTrainingPlan) {
       return;
     }
     const firstGroupIdx = groups.findIndex(group => group.rows.length > 0);
@@ -5922,6 +5956,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const savePendingTutorModule = async () => {
+    if (!canAddTrainingPlan) return;
     if (!pendingTutorModuleAdd || pendingTutorModuleSaving) return;
     const [groupIdx, rowIdx] = pendingTutorModuleCohort.split(':').map(item => Number(item));
     const targetGroup = groups[groupIdx];
@@ -6085,6 +6120,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleAddModule = async (mod: CustomModule) => {
+    if (!canAddTrainingPlan) return;
     try {
       const saved = customModules.some(item => item.id === mod.id)
         ? await updateCustomModuleDefinition(mod)
@@ -6108,6 +6144,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleAddCatalogModule = async (mod: Omit<CatalogModule, 'id'>) => {
+    if (!canAddTrainingPlan) return;
     try {
       const response = await fetch('/api/modules/', {
         method: 'POST',
@@ -6140,6 +6177,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleUpdateCatalogModule = async (mod: CatalogModule) => {
+    if (!canEditTrainingPlan) return;
     const previousModule = catalogModules.find(item => item.id === mod.id);
     const previousName = previousModule?.name?.trim();
     const requestedName = mod.name.trim();
@@ -6299,6 +6337,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleDeleteCatalogModule = async (id: number) => {
+    if (!canDeleteTrainingPlan) return;
     const moduleName = catalogModules.find(m => m.id === id)?.name;
     let archiveReturnedItems = false;
     let isTargetBlockForDelete: ((block: ModuleBlock) => boolean) | null = null;
@@ -6382,6 +6421,7 @@ export default function ApprenticeshipTimeline() {
 
   const handleAddProgram = async (prog: CustomProgram) => {
     const existingCustom = customPrograms.some(program => program.id === prog.id);
+    if (existingCustom ? !canEditTrainingPlan : !canAddTrainingPlan) return;
     const nextGroups = existingCustom
       ? groups.map(group => group.id === prog.id ? { ...group, name: prog.name, sub: prog.sub, color: prog.color } : group)
       : groups;
@@ -6437,7 +6477,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleEditProgram = (programId: string) => {
-    if (!canManageCohorts) {
+    if (!canEditTrainingPlan) {
       return;
     }
 
@@ -6445,7 +6485,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleDeleteProgram = async (programId: string) => {
-    if (!canManageCohorts) {
+    if (!canDeleteTrainingPlan) {
       return;
     }
 
@@ -6499,7 +6539,7 @@ export default function ApprenticeshipTimeline() {
   };
 
   const handleCloneProgram = async (programId: string) => {
-    if (!canManageCohorts) return;
+    if (!canAddTrainingPlan) return;
     const sourceGroup = groups.find(item => item.id === programId);
     if (!sourceGroup) return;
     const result = await kbcSwal.fire({
@@ -6846,7 +6886,7 @@ export default function ApprenticeshipTimeline() {
                 <div className="hidden xl:flex items-center gap-2 ml-auto">
                   {showHiddenCohortActions && canManageCohorts && (
                     <button
-                      onClick={() => setShowHolidayMgr(true)}
+                      disabled={!canFullyManageTrainingPlan} title={!canFullyManageTrainingPlan ? "Requires add, edit and delete Training Plan access" : undefined} onClick={() => setShowHolidayMgr(true)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
                       style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
                       <i className="ri-calendar-event-line" />
@@ -6903,7 +6943,7 @@ export default function ApprenticeshipTimeline() {
               <div className="tp-header-secondary-actions training-plan-action-row mt-3 xl:hidden">
                 {canManageCohorts && (
                   <button
-                    onClick={() => setShowHolidayMgr(true)}
+                    disabled={!canFullyManageTrainingPlan} title={!canFullyManageTrainingPlan ? "Requires add, edit and delete Training Plan access" : undefined} onClick={() => setShowHolidayMgr(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
                     style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
                     <i className="ri-calendar-event-line" />
@@ -6912,7 +6952,7 @@ export default function ApprenticeshipTimeline() {
                 )}
                 {canManageCohorts && (
                   <button
-                    onClick={() => setShowAddCatalogModule(true)}
+                    disabled={!canAddTrainingPlan} onClick={() => setShowAddCatalogModule(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-85 border"
                     style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
                     <i className="ri-puzzle-line" />
@@ -6933,7 +6973,7 @@ export default function ApprenticeshipTimeline() {
                 )}
                 {canManageCohorts && (
                   <button
-                    onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                    disabled={!canAddTrainingPlan} onClick={() => setProgramModal({ open: true, mode: 'add' })}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-85"
                     style={{ background: '#1B2A4A' }}>
                     <i className="ri-add-circle-line" />
@@ -7087,14 +7127,14 @@ export default function ApprenticeshipTimeline() {
           {canManageCohorts && (
             <div className="tp-management-actions training-plan-action-row lg:overflow-visible lg:pb-0">
               <button
-                onClick={() => setShowHolidayMgr(true)}
+                disabled={!canFullyManageTrainingPlan} title={!canFullyManageTrainingPlan ? "Requires add, edit and delete Training Plan access" : undefined} onClick={() => setShowHolidayMgr(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
                 style={{ background: '#FFF8E0', color: '#C49A00', borderColor: '#F7A800' }}>
                 <i className="ri-calendar-event-line" />
                 Holidays
               </button>
               <button
-                onClick={() => setShowAddCatalogModule(true)}
+                disabled={!canAddTrainingPlan} onClick={() => setShowAddCatalogModule(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
                 style={{ background: '#F0F7FF', color: '#1D6FA4', borderColor: '#93C5FD' }}>
                 <i className="ri-puzzle-line" />
@@ -7111,14 +7151,14 @@ export default function ApprenticeshipTimeline() {
                 View Added Modules
               </button>
               <button
-                onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                disabled={!canAddTrainingPlan} onClick={() => setProgramModal({ open: true, mode: 'add' })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white cursor-pointer whitespace-nowrap transition-all hover:opacity-90"
                 style={{ background: '#1B2A4A' }}>
                 <i className="ri-add-circle-line" />
                 Add Programme
               </button>
               <button
-                onClick={() => setShowKsbProfiles(true)}
+                disabled={!canFullyManageTrainingPlan} title={!canFullyManageTrainingPlan ? "Requires add, edit and delete Training Plan access" : undefined} onClick={() => setShowKsbProfiles(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer whitespace-nowrap transition-all hover:opacity-90 border"
                 style={{ background: '#F8FAFC', color: '#7C3AED', borderColor: '#DDD6FE' }}>
                 <i className="ri-links-line" />
@@ -7131,7 +7171,7 @@ export default function ApprenticeshipTimeline() {
         <Suspense fallback={<TrainingPlanPanelSkeleton />}>
         {/* GANTT CARD */}
         {activeTab === 'gantt' && (
-          <LmsReference canCapture={canManageCohorts} currentProgrammes={groups} customModules={customModules}
+          <LmsReference canCapture={canEditTrainingPlan} currentProgrammes={groups} customModules={customModules}
             view={trainingPlanSource} onViewChange={setTrainingPlanSource}
             onManualMerge={() => setShowModuleComparison(true)}
             manualMergeDisabled={isInitialProgrammesLoading}
@@ -7164,16 +7204,16 @@ export default function ApprenticeshipTimeline() {
                   tutorProfiles={resolvedTutorProfiles}
                   zoom={zoom}
                   onZoomChange={setZoom}
-                  toolbarControls={canManageCohorts && <button type="button" aria-label="Undo timeline move"
+                  toolbarControls={canEditTrainingPlan && <button type="button" aria-label="Undo timeline move"
                     title={timelineHistory.length ? `Undo: ${timelineHistory[timelineHistory.length - 1].label}` : 'Move a module, cohort or programme to enable Undo. History is kept until you reload.'}
                     disabled={!timelineHistory.length || timelineBusy || trainingPlanSaveState === 'saving' || trainingPlanServerUnavailable}
                     onClick={() => void runTimelineMutation(handleUndoTimelineChange)}
                     className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-kbc-navy hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">
                     <Undo2 size={15} aria-hidden="true" />{timelineBusy && trainingPlanSaveMessage === 'Undoing timeline move...' ? 'Undoing…' : 'Undo'}
                   </button>}
-                  onManageHolidays={() => setShowHolidayMgr(true)}
+                  onManageHolidays={canFullyManageTrainingPlan ? () => setShowHolidayMgr(true) : undefined}
                   onAddRow={(gi) => {
-                    if (!canManageCohorts) {
+                    if (!canAddTrainingPlan) {
                       return;
                     }
                     setModal({ open: true, mode: 'add', defaultGroupIdx: gi, lockGroupSelection: true });
@@ -7189,16 +7229,18 @@ export default function ApprenticeshipTimeline() {
                   onDeleteRow={handleDeleteRow}
                   onEditProgram={handleEditProgram}
                   onDeleteProgram={handleDeleteProgram}
-                  onCloneProgram={handleCloneProgram}
-                  onCloneRow={handleCloneCohort}
-                  onCloneGroup={handleCloneGroup}
-                  onCloneModule={handleCloneModule}
+                  onCloneProgram={canAddTrainingPlan ? handleCloneProgram : undefined}
+                  onCloneRow={canAddTrainingPlan ? handleCloneCohort : undefined}
+                  onCloneGroup={canAddTrainingPlan && canEditTrainingPlan ? handleCloneGroup : undefined}
+                  onCloneModule={canAddTrainingPlan && canEditTrainingPlan ? handleCloneModule : undefined}
                   onMoveModuleDates={(...args) => runTimelineMutation(() => handleMoveModuleDates(...args)).then(result => result ?? false)}
                   onReorderRow={(...args) => { void runTimelineMutation(() => handleReorderRow(...args)); }}
                   onReorderGroup={(...args) => { void runTimelineMutation(() => handleReorderGroup(...args)); }}
                   onExportExcel={exportTrainingPlanExcel}
                   exportExcelDisabled={isInitialProgrammesLoading || exportRowCount === 0}
                   canManageCohorts={canEditTrainingPlan && !timelineBusy && trainingPlanSaveState !== 'saving'}
+                  canAddCohorts={canAddTrainingPlan && !timelineBusy && trainingPlanSaveState !== 'saving'}
+                  canDeleteCohorts={canDeleteTrainingPlan && !timelineBusy && trainingPlanSaveState !== 'saving'}
                 />
               </div>
               <div data-training-plan-overview>
@@ -7216,7 +7258,7 @@ export default function ApprenticeshipTimeline() {
               </p>
               {canManageCohorts && (
                 <button
-                  onClick={() => setProgramModal({ open: true, mode: 'add' })}
+                  disabled={!canAddTrainingPlan} onClick={() => setProgramModal({ open: true, mode: 'add' })}
                   className="mt-5 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white transition-all hover:opacity-90"
                   style={{ background: '#1B2A4A' }}>
                   <i className="ri-add-circle-line" />
@@ -7246,8 +7288,8 @@ export default function ApprenticeshipTimeline() {
               onUpdateSessionSchedule={updateSessionSchedule}
               onUpdateSessionKsb={updateSessionKsb}
               onUpdateSessionNotes={updateSessionNotes}
-              onCreateTutorProfile={createTutorProfile}
-              onCreateCoachProfile={createCoachProfile}
+              onCreateTutorProfile={canAddTrainingPlan ? createTutorProfile : undefined}
+              onCreateCoachProfile={canAddTrainingPlan ? createCoachProfile : undefined}
             />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
@@ -7262,16 +7304,18 @@ export default function ApprenticeshipTimeline() {
             <SessionScheduleSkeleton />
           ) : groups.length ? (
             <TutorProfiles
+              canAdd={canAddTrainingPlan}
+              canDelete={canDeleteTrainingPlan}
               groups={groups}
               tutorProfiles={resolvedTutorProfiles}
               catalogModules={catalogModules}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
-              onAddModuleForTutor={handleAddModuleForTutor}
-              onCreateTutorProfile={createTutorProfile}
-              onUpdateTutorProfile={updateTutorProfile}
-              onDeleteTutorProfile={deleteTutorProfile}
+              onAddModuleForTutor={canAddTrainingPlan ? handleAddModuleForTutor : undefined}
+              onCreateTutorProfile={canAddTrainingPlan ? createTutorProfile : undefined}
+              onUpdateTutorProfile={canEditTrainingPlan ? updateTutorProfile : undefined}
+              onDeleteTutorProfile={canDeleteTrainingPlan ? deleteTutorProfile : undefined}
             />
           ) : (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
@@ -7286,15 +7330,17 @@ export default function ApprenticeshipTimeline() {
             <SessionScheduleSkeleton />
           ) : (
             <CoachProfiles
+              canAdd={canAddTrainingPlan}
+              canDelete={canDeleteTrainingPlan}
               groups={groups}
               coachProfiles={resolvedCoachProfiles}
               holidays={holidays}
               canEdit={canEditTrainingPlan}
               onEditTrainingPlan={handleEditScheduleRow}
-              onCreateCoachProfile={createCoachProfile}
-              onUpdateCoachProfile={updateCoachProfile}
-              onDeleteCoachProfile={deleteCoachProfile}
-              onForceDeleteCoachProfile={forceDeleteCoachProfile}
+              onCreateCoachProfile={canAddTrainingPlan ? createCoachProfile : undefined}
+              onUpdateCoachProfile={canEditTrainingPlan ? updateCoachProfile : undefined}
+              onDeleteCoachProfile={canDeleteTrainingPlan ? deleteCoachProfile : undefined}
+              onForceDeleteCoachProfile={canDeleteTrainingPlan && canEditTrainingPlan ? forceDeleteCoachProfile : undefined}
             />
           )
         )}
@@ -7474,7 +7520,7 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canEditTrainingPlan && pendingTutorModuleAdd && (
+      {canAddTrainingPlan && pendingTutorModuleAdd && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-950/45 backdrop-blur-[4px]" />
           <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -7785,8 +7831,10 @@ export default function ApprenticeshipTimeline() {
       )}
 
       <Suspense fallback={<div role="status" className="fixed bottom-4 right-4 z-[60] rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-kbc-navy shadow-lg">Loading…</div>}>
-      {canEditTrainingPlan && modal.open && (
+      {modal.open && (modal.mode === 'add' ? canAddTrainingPlan : canEditTrainingPlan) && (
         <CohortModal
+          canAddBlocks={canAddTrainingPlan}
+          canDeleteBlocks={canDeleteTrainingPlan}
           mode={modal.mode}
           groups={groups}
           holidays={holidays}
@@ -7804,9 +7852,9 @@ export default function ApprenticeshipTimeline() {
           lockGroupSelection={modal.open && modal.mode === 'add' && 'lockGroupSelection' in modal ? modal.lockGroupSelection : false}
           onSave={handleSave}
           onUpdateModulePartial={modal.open && modal.mode === 'edit' ? (blockId, payload) => updateModulePartial(modal.groupIdx, modal.rowIdx, blockId, payload) : undefined}
-          onSaveLmsMatch={saveLmsModuleMatch}
-          onCreateTutorProfile={createTutorProfile}
-          onManageHolidays={() => setShowHolidayMgr(true)}
+          onSaveLmsMatch={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
+          onCreateTutorProfile={canAddTrainingPlan ? createTutorProfile : undefined}
+          onManageHolidays={canFullyManageTrainingPlan ? () => setShowHolidayMgr(true) : undefined}
           onBackToPreviousStep={() => {
             setModal({ open: false });
             if (returnEditChoice) {
@@ -7821,7 +7869,7 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canEditTrainingPlan && showHolidayMgr && (
+      {canFullyManageTrainingPlan && showHolidayMgr && (
         <HolidayManager
           holidays={holidays}
           onSave={persistHolidays}
@@ -7829,7 +7877,7 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canEditTrainingPlan && showKsbProfiles && (
+      {canFullyManageTrainingPlan && showKsbProfiles && (
         <KsbProfilesManager
           profiles={ksbProfiles}
           programmeOptions={groups.map(group => group.name.replace(/\s+/g, ' ').trim()).filter(Boolean)}
@@ -7840,21 +7888,21 @@ export default function ApprenticeshipTimeline() {
         />
       )}
 
-      {canEditTrainingPlan && showAddModule && (
+      {canAddTrainingPlan && showAddModule && (
         <AddModuleModal
           onSave={handleAddModule}
           onClose={() => setShowAddModule(false)}
         />
       )}
 
-      {canEditTrainingPlan && showAddCatalogModule && (
+      {canAddTrainingPlan && showAddCatalogModule && (
         <AddModuleCatalogModal
           onSave={handleAddCatalogModule}
           onClose={() => setShowAddCatalogModule(false)}
         />
       )}
 
-      {canEditTrainingPlan && programModal.open && (
+      {programModal.open && (programModal.mode === 'add' ? canAddTrainingPlan : canEditTrainingPlan) && (
         programModal.mode === 'add' ? (
           <AddProgramModal
             onSave={handleAddProgram}
@@ -7863,6 +7911,8 @@ export default function ApprenticeshipTimeline() {
         ) : (
           selectedProgram && selectedProgramGroup && (
             <ManageProgramModal
+              canAdd={canAddTrainingPlan}
+              canDelete={canDeleteTrainingPlan}
               program={selectedProgram}
               group={selectedProgramGroup}
               onSave={handleAddProgram}
@@ -7899,17 +7949,20 @@ export default function ApprenticeshipTimeline() {
 
       {showModuleComparison && <ModuleComparisonModal groups={groups} customModules={customModules} holidays={holidays}
         tutorProfiles={tutorProfiles} onClose={() => setShowModuleComparison(false)}
-        onSave={canManageCohorts ? saveLmsModuleMatch : undefined}
+        onSave={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
         onViewMerge={() => { setShowModuleComparison(false); setActiveTab('gantt'); setTrainingPlanSource('merged'); }} />}
 
-      {canEditTrainingPlan && showManageModules && (
+      {canManageCohorts && showManageModules && (
         <ManageModulesModal
+          canAdd={canAddTrainingPlan}
+          canEdit={canEditTrainingPlan}
+          canDelete={canDeleteTrainingPlan}
           modules={catalogModules}
           comparisonGroups={groups}
           customModules={customModules}
           holidays={holidays}
           tutorProfiles={tutorProfiles}
-          onSaveLmsMatch={saveLmsModuleMatch}
+          onSaveLmsMatch={canEditTrainingPlan ? saveLmsModuleMatch : undefined}
           ksbProfiles={ksbProfiles}
           onAdd={handleAddCatalogModule}
           onUpdate={handleUpdateCatalogModule}

@@ -642,6 +642,8 @@ interface Props {
   onExportExcel?: () => void;
   exportExcelDisabled?: boolean;
   canManageCohorts?: boolean;
+  canAddCohorts?: boolean;
+  canDeleteCohorts?: boolean;
   referenceSource?: 'LMS';
   mergedSources?: boolean;
 }
@@ -1162,11 +1164,14 @@ function TimelineCanvas({
   groups, holidays, customModules = EMPTY_CUSTOM_MODULES, catalogModules = EMPTY_CATALOG_MODULES, tutorProfiles = EMPTY_TUTOR_PROFILES, zoom, onZoomChange,
   onManageHolidays, onAddRow, onEditRow, onDeleteRow, onEditProgram, onDeleteProgram,
   onCloneProgram, onCloneRow, onCloneGroup, onCloneModule,
-  onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true,
+  onEditCatalogModule, onViewMonthlyBreakdown, onMoveModuleDates, onReorderRow, onReorderGroup, onExportExcel, exportExcelDisabled = false, canManageCohorts: allowManagement = true, canAddCohorts: allowAdding = allowManagement, canDeleteCohorts: allowDeleting = allowManagement,
   referenceSource, mergedSources = false, showZoomControls = true, toolbarControls, beforeTimeline,
   dates, onDatesChange: setDates, dateResultCounts,
 }: Props & { dates: DateRangeValue; onDatesChange: (value: DateRangeValue) => void; dateResultCounts: { shown: number; total: number } }) {
   const canManageCohorts = allowManagement && !referenceSource && !mergedSources;
+  const canAddCohorts = allowAdding && !referenceSource && !mergedSources;
+  const canDeleteCohorts = allowDeleting && !referenceSource && !mergedSources;
+  const canManageAny = canManageCohorts || canAddCohorts || canDeleteCohorts;
   const fitModules = Boolean(referenceSource) || mergedSources;
   const dateFilterLabel = referenceSource ? 'LMS timeline' : mergedSources ? 'Merged timeline' : 'Programme timeline';
   const cohortHeaderHeight = COHORT_H;
@@ -1961,6 +1966,7 @@ function TimelineCanvas({
   }, [dayGridSize, isZoomedGrid, zoom]);
 
   const handleDeleteRequest = useCallback(async (groupIdx: number, rowIdx: number, cohortLabel: string) => {
+    if (!canDeleteCohorts) return;
     const result = await kbcSwal.fire({
       title: 'Delete Cohort?',
       html: `The cohort <strong>${cohortLabel}</strong> will be archived and hidden from the normal Training Plan view. It can be recovered by an administrator.`,
@@ -2000,7 +2006,7 @@ function TimelineCanvas({
         confirmButtonText: 'OK',
       });
     }
-  }, [onDeleteRow]);
+  }, [onDeleteRow, canDeleteCohorts]);
 
   const holidayPositions = useMemo(() =>
     holidays.map(h => ({ h, pos: getBlockPosition(h.startDate, h.endDate, cols) }))
@@ -3099,7 +3105,7 @@ function TimelineCanvas({
           onEditRow(groupIdx, rowIdx, blk.id);
         }}
       >
-        {canManageCohorts && onCloneModule && pos.width > 42 && (
+        {canAddCohorts && onCloneModule && pos.width > 42 && (
           <button
             type="button"
             onClick={event => {
@@ -3912,34 +3918,28 @@ function TimelineCanvas({
                         {mergedSources ? `${programmeSources.length ? programmeSources.join(' + ') : 'Current'} Training Plan${programmeSources.length > 1 ? 's' : ''}` : referenceSource ? `${new Set(grp.rows.flatMap(row => row.blks.map(block => block.moduleCatalogueId))).size} LMS modules` : `${grp.rows.length} cohort${grp.rows.length !== 1 ? 's' : ''}`}
                       </p>
                     </div>
-                    {canManageCohorts && (
+                    {canManageAny && (
                       <div className="flex items-center gap-1 shrink-0">
-                        {onEditProgram && onDeleteProgram && (
-                          <>
-                            <button onClick={() => onEditProgram?.(grp.id)} title={`Edit ${grp.name.replace('\n', ' ')}`}
-                              className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
-                              style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
-                              <i className="ri-edit-line" style={{ fontSize: '9px' }} />
-                            </button>
-                            {onCloneProgram && (
-                              <button onClick={() => onCloneProgram?.(grp.id)} title={`Clone ${grp.name.replace('\n', ' ')}`}
-                                className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
-                                style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
-                                <i className="ri-file-copy-line" style={{ fontSize: '9px' }} />
-                              </button>
-                            )}
-                            <button onClick={() => void onDeleteProgram?.(grp.id)} title={`Delete ${grp.name.replace('\n', ' ')}`}
-                              className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
-                              style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
-                              <i className="ri-delete-bin-line" style={{ fontSize: '9px' }} />
-                            </button>
-                          </>
-                        )}
-                        <button onClick={() => onAddRow(gi)} title={`Add cohort to ${grp.name.replace('\n', ' ')}`}
+                        {canManageCohorts && onEditProgram && <button onClick={() => onEditProgram(grp.id)} title={`Edit ${grp.name.replace('\n', ' ')}`}
+                          className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
+                          style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
+                          <i className="ri-edit-line" style={{ fontSize: '9px' }} />
+                        </button>}
+                        {canAddCohorts && onCloneProgram && <button onClick={() => onCloneProgram(grp.id)} title={`Clone ${grp.name.replace('\n', ' ')}`}
+                          className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
+                          style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
+                          <i className="ri-file-copy-line" style={{ fontSize: '9px' }} />
+                        </button>}
+                        {canDeleteCohorts && onDeleteProgram && <button onClick={() => void onDeleteProgram(grp.id)} title={`Delete ${grp.name.replace('\n', ' ')}`}
+                          className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
+                          style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}>
+                          <i className="ri-delete-bin-line" style={{ fontSize: '9px' }} />
+                        </button>}
+                        {canAddCohorts && <button onClick={() => onAddRow(gi)} title={`Add cohort to ${grp.name.replace('\n', ' ')}`}
                           className="w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
                           style={{ background: 'rgba(255,255,255,0.22)', color: '#fff' }}>
                           <i className="ri-add-line" style={{ fontSize: '9px' }} />
-                        </button>
+                        </button>}
                       </div>
                     )}
                   </div>
@@ -4227,25 +4227,25 @@ function TimelineCanvas({
                             </span>
                           </div>
                         </div>
-                        {canManageCohorts && (
+                        {canManageAny && (
                           <div className="flex items-center gap-1 ml-1 shrink-0">
-                            <button onClick={() => onEditRow(gi, ri)} title="Edit cohort"
+                            {canManageCohorts && <button onClick={() => onEditRow(gi, ri)} title="Edit cohort"
                               className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
                               style={{ background: rowColor, color: '#fff' }}>
                               <i className="ri-edit-line" style={{ fontSize: '8px' }} />
-                            </button>
-                            {onCloneRow && (
+                            </button>}
+                            {canAddCohorts && onCloneRow && (
                               <button onClick={() => onCloneRow(gi, ri)} title="Clone cohort"
                                 className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110"
                                 style={{ background: rowColor, color: '#fff' }}>
                                 <i className="ri-file-copy-line" style={{ fontSize: '8px' }} />
                               </button>
                             )}
-                            <button onClick={() => { void handleDeleteRequest(gi, ri, row.label); }} title="Delete cohort"
+                            {canDeleteCohorts && <button onClick={() => { void handleDeleteRequest(gi, ri, row.label); }} title="Delete cohort"
                               className="w-5 h-5 flex items-center justify-center rounded cursor-pointer transition-all hover:scale-110 bg-gray-100 text-gray-400 hover:bg-red-50 hover:text-red-600"
                               >
                               <i className="ri-delete-bin-line" style={{ fontSize: '8px' }} />
-                            </button>
+                            </button>}
                           </div>
                         )}
                       </div>
@@ -4286,7 +4286,7 @@ function TimelineCanvas({
                                   <p className="mt-1 text-gray-400 leading-tight" style={{ fontSize: referenceSource ? '9px' : '7.5px' }}>{entry.meta}</p>
                                 )}
                               </div>
-                              {canManageCohorts && onCloneGroup && entry.label && (
+                              {canAddCohorts && onCloneGroup && entry.label && (
                                 <button
                                   type="button"
                                   onClick={() => onCloneGroup(gi, ri, entry.label)}
@@ -4429,7 +4429,7 @@ function TimelineCanvas({
                     <span className="text-xs text-gray-300 italic pl-4">No cohorts yet</span>
                   </div>
                   <div className="flex-1 flex items-center justify-center">
-                    {canManageCohorts ? (
+                    {canAddCohorts ? (
                       <button onClick={() => onAddRow(gi)}
                         className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-all border-2 border-dashed"
                         style={{ color: grp.color, borderColor: `${grp.color}50` }}>

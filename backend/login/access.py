@@ -43,8 +43,14 @@ def ensure_access_groups(using: str = 'login_db') -> None:
 
 
 def get_user_access_payload(user) -> dict:
+    from .permissions import get_effective_permissions
+
     using = getattr(getattr(user, '_state', None), 'db', None) or 'login_db'
     group_names = set(user.groups.using(using).values_list('name', flat=True))
+    permissions = get_effective_permissions(user)
+
+    def can_manage(resource):
+        return any(f'login.{action}_{resource}' in permissions for action in ('add', 'change', 'delete'))
 
     # App access is controlled by explicit access groups, not by Django superuser flag.
     admin_access = ACCESS_GROUPS['access_admin'] in group_names
@@ -72,7 +78,11 @@ def get_user_access_payload(user) -> dict:
         'callCentreDirectorAccess': call_centre_director_access,
         'callCentreCoachAccess': call_centre_coach_access,
         'isSuperuser': bool(user.is_superuser),
-        'canManageEvents': event_manager_access,
-        'canManageCohorts': operations_access,
-        'canManageNews': admin_access or it_access or marketing_access,
+        'permissions': sorted(permissions),
+        'canManageEvents': can_manage('events'),
+        'canManageCohorts': can_manage('training_plan'),
+        'canManageNews': can_manage('news'),
+        'canManageDashboardCards': can_manage('dashboard_cards'),
+        'canManageEmployees': can_manage('employees'),
+        'canViewUserActivity': 'login.view_user_activity' in permissions,
     }

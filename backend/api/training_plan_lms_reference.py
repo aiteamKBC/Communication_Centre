@@ -288,7 +288,8 @@ def training_plan_lms_reference(request):
         return response
     if request.method == 'POST':
         access = get_user_access_payload(user)
-        if not (access.get('operationsAccess') or access.get('adminAccess')):
+        if not ('login.add_training_plan' in access.get('permissions', []) or
+                access.get('operationsAccess') or access.get('adminAccess')):
             return JsonResponse({'detail': 'Training Plan management permission is required to capture the LMS reference.'}, status=403)
         try:
             body = json.loads(request.body or b'{}')

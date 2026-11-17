@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import Footer from '../../components/feature/Footer';
 import SafeImage from '../../components/feature/SafeImage';
 import TopNav from '../../components/feature/TopNav';
+import useAccessControl from '../../hooks/useAccessControl';
 import { kbcSuccessSwal, kbcSwal } from '../../components/feature/sweetAlert';
 import { useRealtimeResource } from '../../hooks/useRealtimeUpdates';
 
@@ -95,6 +96,7 @@ function toPayload(message: LeadershipMessage): LeadershipMessagePayload {
 }
 
 export default function LeadershipMessagePage() {
+  const { can } = useAccessControl();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [form, setForm] = useState<LeadershipMessagePayload>(emptyForm);
@@ -234,6 +236,7 @@ export default function LeadershipMessagePage() {
   };
 
   const handleSave = async () => {
+    if (!can('change_news') || (!editingId && !can('add_news'))) return;
     if (!canSave || saving) {
       await kbcSwal.fire({
         title: 'Complete Required Fields',
@@ -286,6 +289,7 @@ export default function LeadershipMessagePage() {
   };
 
   const handleDelete = async (message: LeadershipMessage) => {
+    if (!can('delete_news')) return;
     const result = await kbcSwal.fire({
       title: 'Delete CEO Message?',
       html: `The message <strong>${message.cardTitle}</strong> will be removed from the database.`,
@@ -325,6 +329,7 @@ export default function LeadershipMessagePage() {
   };
 
   const handleShowOnHome = async (message: LeadershipMessage) => {
+    if (!can('change_news')) return;
     if (message.isActive) {
       return;
     }
@@ -698,7 +703,7 @@ export default function LeadershipMessagePage() {
               <button
                 type="button"
                 onClick={() => { void handleSave(); }}
-                disabled={!canSave || saving}
+                disabled={!canSave || saving || !can('change_news') || (!editingId && !can('add_news'))}
                 className="rounded-xl bg-kbc-navy px-5 py-2.5 text-sm font-bold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {saving ? 'Saving...' : editingId ? 'Update CEO Message' : 'Save CEO Message'}
@@ -758,7 +763,7 @@ export default function LeadershipMessagePage() {
                           <button
                             type="button"
                             onClick={() => { void handleShowOnHome(message); }}
-                            disabled={message.isActive}
+                            disabled={message.isActive || !can('change_news')}
                             className={`inline-flex h-10 items-center justify-center rounded-xl px-3 text-xs font-bold transition-colors ${
                               message.isActive
                                 ? 'cursor-default bg-emerald-50 text-emerald-600'
@@ -773,6 +778,7 @@ export default function LeadershipMessagePage() {
                             onClick={() => applyEditMessage(message)}
                             className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-kbc-navy text-white transition-opacity hover:opacity-90"
                             title="Edit CEO message"
+                            disabled={!can('change_news')}
                           >
                             <i className="ri-edit-line text-lg" />
                           </button>
@@ -781,6 +787,7 @@ export default function LeadershipMessagePage() {
                             onClick={() => { void handleDelete(message); }}
                             className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-red-50 text-red-600 transition-colors hover:bg-red-100"
                             title="Delete CEO message"
+                            disabled={!can('delete_news')}
                           >
                             <i className="ri-delete-bin-line text-lg" />
                           </button>

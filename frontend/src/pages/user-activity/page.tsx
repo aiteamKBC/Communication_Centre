@@ -1924,7 +1924,7 @@ function TrainingPlanAuditDetails({ log, ksbProfiles }: { log: AuditLog; ksbProf
 
 export default function UserActivityPage() {
   const access = useAccessControl();
-  const canView = access.adminAccess || access.itAccess;
+  const canView = access.can('view_user_activity');
   const [currentDateValue, setCurrentDateValue] = useState(() => dateInputValue(new Date()));
   const [payload, setPayload] = useState<ActivityPayload>(emptyPayload);
   const [auditPayload, setAuditPayload] = useState<AuditPayload>(emptyAuditPayload);
