@@ -16,6 +16,7 @@ export type AdministrationRole = {
   groupName: string;
   assignedCount: number;
   permissions: string[];
+  djangoPermissions?: string[];
   isSystem: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -31,7 +32,8 @@ export type PermissionSection = {
   permissions: { id: string; name: string; action: string; baseline?: boolean }[];
 };
 
-export type RolesResponse = { roles: AdministrationRole[]; permissionSections: PermissionSection[] };
+export type NativeDjangoPermission = { id: string; name: string; appLabel: string; model: string };
+export type RolesResponse = { roles: AdministrationRole[]; permissionSections: PermissionSection[]; djangoPermissionCatalog?: NativeDjangoPermission[] };
 export type RoleMutationResponse = { role: AdministrationRole; warnings?: string[] };
 
 export type AdministrationUser = {
@@ -45,6 +47,7 @@ export type AdministrationUser = {
   isStaff: boolean;
   isSuperuser: boolean;
   roles: string[];
+  directPermissions?: string[];
   otherGroups: string[];
   lastLogin: string | null;
   dateJoined: string | null;

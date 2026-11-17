@@ -4,7 +4,7 @@ import { AlertCircle, ArrowRight, Building2, ChevronLeft, ChevronRight, External
 import TopNav from '../../components/feature/TopNav';
 import AccountEditor from './AccountEditor';
 import RoleEditor from './RoleEditor';
-import { adminRequest, AdministrationError, displayDate, errorMessage, type AdministrationRole, type AdministrationSession, type AdministrationUser, type HistoryResponse, type PermissionSection, type RoleMutationResponse, type RolesResponse, type UsersResponse } from './api';
+import { adminRequest, AdministrationError, displayDate, errorMessage, type AdministrationRole, type AdministrationSession, type AdministrationUser, type HistoryResponse, type NativeDjangoPermission, type PermissionSection, type RoleMutationResponse, type RolesResponse, type UsersResponse } from './api';
 import './administration.css';
 
 type Section = 'users' | 'roles' | 'history';
@@ -14,6 +14,15 @@ const PAGE_SIZE = 15;
 function Initials({ user }: { user: AdministrationUser }) {
   const names = (user.displayName || user.username).trim().split(/\s+/);
   return <span className="adm-avatar" aria-hidden="true">{names.map(name => name.charAt(0)).slice(0, 2).join('').toUpperCase()}</span>;
+}
+
+function RoleGrants({ role, sections }: { role: AdministrationRole; sections: PermissionSection[] }) {
+  const granted = new Set(role.permissions);
+  const areas = sections
+    .map(section => ({ name: section.name, actions: section.permissions.filter(permission => !permission.baseline && granted.has(permission.id)).map(permission => permission.name) }))
+    .filter(area => area.actions.length > 0);
+  if (!areas.length) return <p>No additional access has been selected for this role yet.</p>;
+  return <ul className="adm-role-grants">{areas.map(area => <li key={area.name}><strong>{area.name}</strong><span>{area.actions.join(', ')}</span></li>)}</ul>;
 }
 
 function Pagination({ page, total, pageSize, busy, onPage }: { page: number; total: number; pageSize: number; busy: boolean; onPage: (page: number) => void }) {
@@ -29,6 +38,7 @@ export default function AdministrationPage() {
   const [section, setSection] = useState<Section>('users');
   const [roles, setRoles] = useState<AdministrationRole[]>([]);
   const [permissionSections, setPermissionSections] = useState<PermissionSection[]>([]);
+  const [djangoPermissionCatalog, setDjangoPermissionCatalog] = useState<NativeDjangoPermission[]>([]);
   const [roleEditor, setRoleEditor] = useState<{ role: AdministrationRole | null } | null>(null);
   const [roleEditorLoading, setRoleEditorLoading] = useState<string | null>(null);
   const [roleError, setRoleError] = useState('');
@@ -53,7 +63,7 @@ export default function AdministrationPage() {
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const deny = useCallback((state: 'denied' | 'unauthenticated' = 'unauthenticated') => {
-    setAccessState(state); setSession(null); setEditor(null); setRoleEditor(null); setUsers({ users: [], total: 0, page: 1, pageSize: PAGE_SIZE }); setHistory({ entries: [], total: 0, page: 1, pageSize: PAGE_SIZE }); setRoles([]); setPermissionSections([]); setDirty(false);
+    setAccessState(state); setSession(null); setEditor(null); setRoleEditor(null); setUsers({ users: [], total: 0, page: 1, pageSize: PAGE_SIZE }); setHistory({ entries: [], total: 0, page: 1, pageSize: PAGE_SIZE }); setRoles([]); setPermissionSections([]); setDjangoPermissionCatalog([]); setDirty(false);
   }, []);
   const handleReadError = useCallback((error: unknown, target: (message: string) => void) => {
     if (error instanceof AdministrationError && (error.status === 401 || error.status === 403)) deny(error.status === 401 ? 'unauthenticated' : 'denied');
@@ -94,7 +104,7 @@ export default function AdministrationPage() {
     const controller = new AbortController();
     setRolesLoading(true); setRoleError('');
     adminRequest<RolesResponse>('roles/', { signal: controller.signal })
-      .then(result => { if (!controller.signal.aborted) { setRoles(result.roles); setPermissionSections(result.permissionSections || []); if (roleFilter && !result.roles.some(role => role.id === roleFilter)) setRoleFilter(''); } })
+      .then(result => { if (!controller.signal.aborted) { setRoles(result.roles); setPermissionSections(result.permissionSections || []); setDjangoPermissionCatalog(result.djangoPermissionCatalog || []); if (roleFilter && !result.roles.some(role => role.id === roleFilter)) setRoleFilter(''); } })
       .catch(error => { if (!controller.signal.aborted) handleReadError(error, setRoleError); })
       .finally(() => { if (!controller.signal.aborted) setRolesLoading(false); });
     return () => controller.abort();
@@ -163,7 +173,7 @@ export default function AdministrationPage() {
       <aside className="adm-sidebar"><div className="adm-workspace-brand"><span><ShieldCheck size={22} /></span><div><strong>Administration</strong><small>Communication Centre</small></div></div><div className="adm-nav-label">WORKSPACE</div><nav aria-label="Administration sections">{navigation.map(item => <button key={item.id} type="button" className={`adm-nav-item ${section === item.id ? 'is-current' : ''}`} aria-current={section === item.id ? 'page' : undefined} onClick={() => switchSection(item.id)}><item.icon size={18} /><span>{item.label}</span></button>)}</nav><div className="adm-sidebar-bottom"><LockKeyhole size={16} /><span>Administrator access</span></div></aside>
       <main className="adm-main"><div className="adm-breadcrumb"><Link to="/">Home</Link><span>/</span><span>Administration</span><span>/</span><strong>{editor ? editor.user ? 'Manage user' : 'Add user' : navigation.find(item => item.id === section)?.label}</strong></div>
         {notice && <div className="adm-notices"><div className="adm-alert adm-alert-success" role="status"><ShieldCheck size={18} /><span>{notice.message}</span></div>{notice.warnings.map((warning, index) => <div key={index} className="adm-alert adm-alert-warning" role="alert"><Info size={18} /><span>{warning}</span></div>)}</div>}
-        {editor ? <AccountEditor key={editor.user?.id ?? 'new'} user={editor.user} roles={roles} session={session} onClose={() => { setEditor(null); setDirty(false); }} onSaved={saved} onDirty={setDirty} onUnauthorized={status => deny(status === 403 ? 'denied' : 'unauthenticated')} /> : <>
+        {editor ? <AccountEditor key={editor.user?.id ?? 'new'} user={editor.user} roles={roles} session={session} djangoPermissionCatalog={djangoPermissionCatalog} onClose={() => { setEditor(null); setDirty(false); }} onSaved={saved} onDirty={setDirty} onUnauthorized={status => deny(status === 403 ? 'denied' : 'unauthenticated')} /> : <>
           <div className="adm-page-heading"><div><span className="adm-eyebrow">{section === 'history' ? 'ACCOUNTABILITY' : 'PEOPLE & PERMISSIONS'}</span><h1 ref={heading}>{section === 'users' ? 'Users & access' : section === 'roles' ? 'Roles' : 'Change history'}</h1><p>{section === 'users' ? 'Manage your team and what each person can access.' : section === 'roles' ? 'Create roles and choose what your team can do.' : 'See who changed an account or role, what changed and when.'}</p></div>{section === 'users' && <button type="button" className="adm-button adm-button-primary" onClick={() => { setNotice(null); setEditor({ user: null }); }} disabled={rolesLoading || Boolean(roleError)}><Plus size={18} /> Add user</button>}{section === 'roles' && <button type="button" className="adm-button adm-button-primary" onClick={() => { setNotice(null); setRoleEditor({ role: null }); }} disabled={rolesLoading || Boolean(roleError) || !permissionSections.length}><Plus size={18} /> Add role</button>}</div>
           {roleError && <div className="adm-alert adm-alert-error" role="alert"><AlertCircle size={18} /><span>{roleError}</span><button type="button" className="adm-button adm-button-secondary" onClick={() => setRevision(value => value + 1)}>Retry</button></div>}
           {listError && <div className="adm-alert adm-alert-error" role="alert"><AlertCircle size={18} /><span>{listError}</span><button type="button" className="adm-button adm-button-secondary" onClick={() => setRevision(value => value + 1)}>Retry</button></div>}
@@ -175,11 +185,29 @@ export default function AdministrationPage() {
               <Pagination page={page} total={users.total} pageSize={users.pageSize} busy={loading} onPage={setPage} />
             </div><p className="adm-data-note"><ShieldCheck size={15} /> Changes are saved to the same user accounts and roles used by Django administration.</p>
           </>}
-          {section === 'roles' && <div className="adm-role-directory">{rolesLoading && <div className="adm-loading-label" role="status"><LoaderCircle size={17} className="adm-spin" /> Loading roles</div>}{(['custom', 'communication', 'engagement'] as const).map(group => <section className="adm-panel" key={group}><div className="adm-panel-heading">{group === 'custom' ? <ShieldCheck size={20} /> : group === 'communication' ? <Building2 size={20} /> : <Headphones size={20} />}<h2>{group === 'custom' ? 'Custom roles' : group === 'communication' ? 'Communication Centre' : 'Engagement Centre'}</h2>{group !== 'custom' && <span className="adm-badge">Built-in</span>}</div>{group === 'custom' && !roles.some(role => role.section === 'custom') && !rolesLoading && <div className="adm-role-empty"><h3>Give each team the access they need</h3><p>Create a role such as News editor, choose its permissions, then assign it to people.</p></div>}{roles.filter(role => role.section === group).map(role => <div className="adm-directory-row" key={role.id}><div className="adm-directory-details"><h3>{role.name}{Boolean(role.unmanagedPermissions?.length) && <LockKeyhole size={13} aria-label="Includes protected permissions" />}</h3><p>{role.description}</p></div><div className="adm-directory-actions"><button type="button" className="adm-assigned-button" aria-label={`View people assigned ${role.name}`} onClick={() => { setRoleFilter(role.id); setStatusFilter(''); setSearch(''); setQuery(''); setPage(1); setSection('users'); }}>{role.assignedCount} assigned<ChevronRight size={15} /></button><button type="button" className="adm-role-edit-button" aria-label={`${role.canEdit ? 'Edit' : 'View'} role ${role.name}`} onClick={() => void editRole(role)} disabled={Boolean(roleEditorLoading) || rolesLoading || !permissionSections.length}>{roleEditorLoading === role.id ? <LoaderCircle size={16} className="adm-spin" /> : role.canEdit ? <Pencil size={15} /> : <ShieldCheck size={15} />}{role.canEdit ? 'Edit' : 'View access'}</button></div></div>)}</section>)}<p className="adm-inline-note"><Info size={17} /><span>Roles are shared with Django administration. Assign them from Users & access. Built-in roles keep their existing access.</span></p></div>}
+          {section === 'roles' && <div className="adm-role-directory">{rolesLoading && <div className="adm-loading-label" role="status"><LoaderCircle size={17} className="adm-spin" /> Loading roles</div>}
+            <section className="adm-panel">
+              <div className="adm-panel-heading"><ShieldCheck size={20} /><h2>All roles</h2></div>
+              <p className="adm-panel-note">Ready-made roles come with the system. Custom roles are created here. Assign either type to people from Users &amp; access.</p>
+              {!roles.length && !rolesLoading && <div className="adm-role-empty"><h3>No roles available</h3><p>Create a custom role for your team, or check that the system roles have loaded.</p></div>}
+              {roles.map(role => <div className="adm-directory-row" key={role.id}>
+                <div className="adm-directory-details">
+                  <h3>{role.name}<span className={`adm-badge ${role.isSystem ? 'adm-badge-system' : 'adm-badge-custom'}`}>{role.isSystem ? 'Ready-made' : 'Custom'}</span>{role.section !== 'custom' && <span className="adm-badge">{role.section === 'communication' ? <><Building2 size={12} />Communication Centre</> : <><Headphones size={12} />Engagement Centre</>}</span>}{Boolean(role.unmanagedPermissions?.length) && <LockKeyhole size={13} aria-label="Includes extra system permissions" />}</h3>
+                  {role.isSystem ? <p>{role.description}</p> : permissionSections.length ? <RoleGrants role={role} sections={permissionSections} /> : <p>Custom access for your team.</p>}
+                  {Boolean(role.unmanagedPermissions?.length) && <p className="adm-native-summary">Extra system permissions: {role.unmanagedPermissions.map(permission => permission.name).join(', ')}</p>}
+                </div>
+                <div className="adm-directory-actions">
+                  <button type="button" className="adm-assigned-button" aria-label={`View the ${role.assignedCount} ${role.assignedCount === 1 ? 'person' : 'people'} assigned ${role.name}`} onClick={() => { setRoleFilter(role.id); setStatusFilter(''); setSearch(''); setQuery(''); setPage(1); setSection('users'); }}><Users size={14} />{role.assignedCount} {role.assignedCount === 1 ? 'person' : 'people'}<ChevronRight size={15} /></button>
+                  <button type="button" className="adm-role-edit-button" aria-label={`${role.canEdit ? 'Edit' : 'View'} role ${role.name}`} onClick={() => void editRole(role)} disabled={Boolean(roleEditorLoading) || rolesLoading || !permissionSections.length}>{roleEditorLoading === role.id ? <LoaderCircle size={16} className="adm-spin" /> : role.canEdit ? <Pencil size={15} /> : <ShieldCheck size={15} />}{role.canEdit ? 'Edit' : 'View access'}</button>
+                </div>
+              </div>)}
+            </section>
+            <p className="adm-inline-note"><Info size={17} /><span>Each role gives people the access shown beside it. You can change custom roles here; the main access for ready-made roles is set by the system.</span></p>
+          </div>}
           {section === 'history' && <div className="adm-table-surface"><div className="adm-list-heading"><h2>Account & role changes</h2>{loading && <span className="adm-loading-label" role="status"><LoaderCircle size={15} className="adm-spin" /> Loading</span>}</div>{history.entries.length ? <ol className="adm-history-list">{history.entries.map(entry => <li key={entry.id}><span className="adm-history-icon"><History size={18} /></span><div className="adm-history-content"><div className="adm-history-title"><strong>{entry.objectLabel}</strong><span className="adm-badge">{entry.action}</span></div><p>{entry.summary}</p><div className="adm-history-meta"><span>{entry.actor}</span><span>·</span><time dateTime={entry.createdAt}>{displayDate(entry.createdAt)}</time></div></div></li>)}</ol> : <div className="adm-empty"><History size={28} /><h3>{loading ? 'Loading changes…' : listError ? 'History could not be loaded' : 'No changes yet'}</h3><p>{listError ? 'Use Retry to load the history.' : 'Changes to accounts and roles will appear here.'}</p></div>}<Pagination page={historyPage} total={history.total} pageSize={history.pageSize} busy={loading} onPage={setHistoryPage} /></div>}
           {session.djangoAdminUrl && <div className="adm-advanced-link"><div><strong>More administration tools</strong><p>Open the original Django panel to manage other registered data and permissions.</p></div><a className="adm-button adm-button-secondary" href={session.djangoAdminUrl} target="_blank" rel="noreferrer">Django administration<ExternalLink size={15} /></a></div>}
         </>}
-        {roleEditor && <RoleEditor key={roleEditor.role?.id || 'new-role'} role={roleEditor.role} sections={permissionSections} onClose={() => { setRoleEditor(null); setDirty(false); }} onSaved={saved} onDirty={setDirty} onUnauthorized={status => deny(status === 403 ? 'denied' : 'unauthenticated')} />}
+        {roleEditor && <RoleEditor key={roleEditor.role?.id || 'new-role'} role={roleEditor.role} sections={permissionSections} djangoPermissionCatalog={djangoPermissionCatalog} canManageNativePermissions={Boolean(session.canManagePrivilegedAccounts)} onClose={() => { setRoleEditor(null); setDirty(false); }} onSaved={saved} onDirty={setDirty} onUnauthorized={status => deny(status === 403 ? 'denied' : 'unauthenticated')} />}
       </main>
     </div>}
   </div></>;

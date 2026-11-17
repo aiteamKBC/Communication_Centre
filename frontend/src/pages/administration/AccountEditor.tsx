@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowLeft, Building2, Check, Headphones, Info, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
-import { adminRequest, AdministrationError, displayDate, errorMessage, type AdministrationRole, type AdministrationSession, type AdministrationUser, type UserMutationResponse } from './api';
+import { ArrowLeft, Check, Info, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
+import { adminRequest, AdministrationError, displayDate, errorMessage, type AdministrationRole, type AdministrationSession, type AdministrationUser, type NativeDjangoPermission, type UserMutationResponse } from './api';
+import RolesPicker from './RolesPicker';
+import DjangoPermissionsPicker from './DjangoPermissionsPicker';
 
-type FormValues = { username: string; email: string; firstName: string; lastName: string; isActive: boolean; isStaff: boolean; isSuperuser: boolean; roles: string[]; password: string; confirmPassword: string };
-type Props = { user: AdministrationUser | null; roles: AdministrationRole[]; session: AdministrationSession; onClose: () => void; onSaved: (message: string, warnings?: string[]) => void; onDirty: (dirty: boolean) => void; onUnauthorized: (status?: number) => void };
+type FormValues = { username: string; email: string; firstName: string; lastName: string; isActive: boolean; isStaff: boolean; isSuperuser: boolean; roles: string[]; directPermissions: string[]; password: string; confirmPassword: string };
+type Props = { user: AdministrationUser | null; roles: AdministrationRole[]; session: AdministrationSession; djangoPermissionCatalog: NativeDjangoPermission[]; onClose: () => void; onSaved: (message: string, warnings?: string[]) => void; onDirty: (dirty: boolean) => void; onUnauthorized: (status?: number) => void };
 
 function initialValues(user: AdministrationUser | null): FormValues {
-  return { username: user?.username || '', email: user?.email || '', firstName: user?.firstName || '', lastName: user?.lastName || '', isActive: user?.isActive ?? true, isStaff: user?.isStaff ?? false, isSuperuser: user?.isSuperuser ?? false, roles: [...(user?.roles || [])], password: '', confirmPassword: '' };
+  return { username: user?.username || '', email: user?.email || '', firstName: user?.firstName || '', lastName: user?.lastName || '', isActive: user?.isActive ?? true, isStaff: user?.isStaff ?? false, isSuperuser: user?.isSuperuser ?? false, roles: [...(user?.roles || [])], directPermissions: [...(user?.directPermissions || [])], password: '', confirmPassword: '' };
 }
 
-function fingerprint(value: FormValues) { return JSON.stringify({ ...value, roles: [...value.roles].sort() }); }
+function fingerprint(value: FormValues) { return JSON.stringify({ ...value, roles: [...value.roles].sort(), directPermissions: [...value.directPermissions].sort() }); }
 
 function Dialog({ title, onClose, busy, children }: { title: string; onClose: () => void; busy: boolean; children: ReactNode }) {
   const element = useRef<HTMLDialogElement>(null);
@@ -20,7 +22,7 @@ function Dialog({ title, onClose, busy, children }: { title: string; onClose: ()
   </dialog>;
 }
 
-export default function AccountEditor({ user: originalUser, roles, session, onClose, onSaved, onDirty, onUnauthorized }: Props) {
+export default function AccountEditor({ user: originalUser, roles, session, djangoPermissionCatalog, onClose, onSaved, onDirty, onUnauthorized }: Props) {
   const [user, setUser] = useState(originalUser);
   const [form, setForm] = useState(() => initialValues(originalUser));
   const [baseline, setBaseline] = useState(() => fingerprint(initialValues(originalUser)));
@@ -48,6 +50,7 @@ export default function AccountEditor({ user: originalUser, roles, session, onCl
     const parts = [...(added.length ? [`Add ${added.join(', ')}`] : []), ...(removed.length ? [`Remove ${removed.join(', ')}`] : [])];
     if (form.isActive !== user.isActive) parts.push(form.isActive ? 'Activate account' : 'Deactivate account');
     if (form.isStaff !== user.isStaff || form.isSuperuser !== user.isSuperuser) parts.push('Update advanced access');
+    if (JSON.stringify([...form.directPermissions].sort()) !== JSON.stringify([...(user.directPermissions || [])].sort())) parts.push('Update direct Django permissions');
     if (['username', 'email', 'firstName', 'lastName'].some(key => form[key] !== user[key])) parts.push('Update account details');
     return parts.join(' · ') || 'No unsaved changes';
   }, [form, user, roles]);
@@ -78,12 +81,14 @@ export default function AccountEditor({ user: originalUser, roles, session, onCl
     setError(null); setLocalNotice('');
     if (!user && form.password !== form.confirmPassword) { setError(new AdministrationError('The passwords do not match.', 400, { confirmPassword: 'Enter the same password in both fields.' })); return; }
     setSaving(true);
-    const values = { username: form.username.trim(), email: form.email.trim(), firstName: form.firstName.trim(), lastName: form.lastName.trim(), isActive: form.isActive, roles: form.roles, ...(session.canManagePrivilegedAccounts ? { isStaff: form.isStaff, isSuperuser: form.isSuperuser } : {}) };
+    const values = { username: form.username.trim(), email: form.email.trim(), firstName: form.firstName.trim(), lastName: form.lastName.trim(), isActive: form.isActive, roles: form.roles, ...(session.canManagePrivilegedAccounts ? { isStaff: form.isStaff, isSuperuser: form.isSuperuser, directPermissions: form.directPermissions } : {}) };
     // Send only intentional edits. Existing accounts can carry legacy values
     // that should not block an unrelated role change or be overwritten.
     const body = user
       ? { ...Object.fromEntries(Object.entries(values).filter(([key]) => key === 'roles'
         ? JSON.stringify([...form.roles].sort()) !== JSON.stringify([...user.roles].sort())
+        : key === 'directPermissions'
+          ? JSON.stringify([...form.directPermissions].sort()) !== JSON.stringify([...(user.directPermissions || [])].sort())
         : form[key] !== user[key])), revision: user.revision }
       : { ...values, password: form.password };
     try {
@@ -143,16 +148,18 @@ export default function AccountEditor({ user: originalUser, roles, session, onCl
           </div>
           <label className="adm-check-line"><input type="checkbox" checked={form.isActive} onChange={event => update('isActive', event.target.checked)} disabled={ownAccount} /><span><strong>Account active</strong><small>{ownAccount ? 'You cannot deactivate your own account.' : 'Allow this person to sign in. Turn off to suspend access while keeping their history.'}</small></span></label>
         </section>
-        <div className="adm-access-columns">{(['communication', 'engagement', 'custom'] as const).filter(section => section !== 'custom' || roles.some(role => role.section === 'custom')).map(section => <section className={`adm-panel adm-role-panel ${section === 'custom' ? 'adm-custom-role-panel' : ''}`} key={section}>
-          <div className="adm-panel-heading">{section === 'communication' ? <Building2 size={19} /> : section === 'engagement' ? <Headphones size={19} /> : <ShieldCheck size={19} />}<h2>{section === 'communication' ? 'Communication Centre' : section === 'engagement' ? 'Engagement Centre' : 'Custom roles'}</h2></div>
-          <div className="adm-role-options">{roles.filter(role => role.section === section).map(role => {
-            const inherited = section === 'communication' && role.id !== 'access_admin' && adminSelected;
+        <section className="adm-panel adm-user-roles-panel">
+          <div className="adm-panel-heading"><ShieldCheck size={19} /><h2>Django groups &amp; roles</h2></div>
+          <p className="adm-help">Each role here is backed by a Django Group. Assigning or removing one updates the user’s group membership.</p>
+          <RolesPicker selected={form.roles} onChange={value => update('roles', value)} disabled={saving || loading || readOnly} invalid={Boolean(error?.errors.roles)} options={roles.map(role => {
+            const inherited = role.section === 'communication' && role.id !== 'access_admin' && adminSelected;
             const ownAdmin = ownAccount && role.id === 'access_admin' && user?.roles.includes('access_admin');
             const superDirector = form.isSuperuser && !form.roles.includes('access_call_centre_agent') && role.id === 'access_call_centre_director';
             const assignmentProtected = role.canAssign === false || (Boolean(role.unmanagedPermissions?.length) && !session.canManagePrivilegedAccounts);
-            return <label className={`adm-role-choice ${inherited || superDirector || assignmentProtected ? 'is-inherited' : ''}`} key={role.id}><input type="checkbox" checked={form.roles.includes(role.id) || inherited || superDirector} disabled={inherited || ownAdmin || superDirector || assignmentProtected} onChange={event => update('roles', event.target.checked ? [...form.roles, role.id] : form.roles.filter(id => id !== role.id))} /><span><strong>{role.name}</strong><small>{role.description}</small>{inherited && <em>Included with Admin</em>}{superDirector && <em>Included with super administrator access</em>}{ownAdmin && <em>Your own administrator access is protected</em>}{assignmentProtected && <em>A super administrator manages this role</em>}</span></label>;
-          })}</div>{section === 'engagement' && <p className="adm-inline-note"><Info size={16} /><span>These job roles are separate from Communication Centre admin.</span></p>}
-        </section>)}</div>
+            return { ...role, included: inherited || superDirector, locked: Boolean(ownAdmin || assignmentProtected), note: ownAdmin ? 'Your own administrator access is protected' : inherited ? 'Included with Admin' : superDirector ? 'Included with super administrator access' : assignmentProtected ? 'A super administrator manages this role' : undefined };
+          })} />
+          {adminSelected && <p className="adm-inline-note"><Info size={16} /><span>Admin includes Events, Operations, IT, Marketing, Support and Coach. Engagement roles can be selected separately.</span></p>}
+        </section>
         {fieldError('roles')}
         {Boolean(unmappedGroups.length) && <div className="adm-inline-note"><Info size={16} /><span>Other groups: {unmappedGroups.join(', ')}. These memberships stay unchanged.</span></div>}
         {session.canManagePrivilegedAccounts && <details className="adm-panel adm-advanced">
@@ -167,6 +174,8 @@ export default function AccountEditor({ user: originalUser, roles, session, onCl
             <span><strong>Django super administrator</strong><small>Grant full Django permissions, including management of protected accounts. This also enables Django administration access.</small></span>
           </label>
           {fieldError('isStaff')}{fieldError('isSuperuser')}
+          <DjangoPermissionsPicker permissions={djangoPermissionCatalog} selected={form.directPermissions} onChange={value => update('directPermissions', value)} disabled={saving || loading || readOnly} label="Direct user permissions" help="These Django permissions are assigned directly to this account and are separate from its Groups." />
+          {fieldError('directPermissions')}
         </details>}
       </fieldset>
       {!readOnly && <div className="adm-save-bar"><p aria-live="polite">{changeSummary}</p><div className="adm-button-row"><button type="button" className="adm-button adm-button-secondary" onClick={close} disabled={saving || loading}>Cancel</button><button type="submit" className="adm-button adm-button-primary" disabled={saving || loading || Boolean(user && !dirty)}>{saving ? <LoaderCircle size={17} className="adm-spin" /> : <Check size={17} />}{saving ? 'Saving…' : user ? 'Save changes' : 'Create user'}</button></div></div>}

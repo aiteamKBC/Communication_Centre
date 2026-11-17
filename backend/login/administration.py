@@ -93,6 +93,20 @@ def _safe_permission(permission):
             and f'login.{permission.codename}' in SAFE_PERMISSION_CODES)
 
 
+def _permission_code(permission):
+    return f'{permission.content_type.app_label}.{permission.content_type.model}.{permission.codename}'
+
+
+def _django_permission_catalog():
+    return [
+        {'id': _permission_code(permission), 'name': permission.name,
+         'appLabel': permission.content_type.app_label,
+         'model': permission.content_type.model}
+        for permission in Permission.objects.using(DB).select_related('content_type').order_by(
+            'content_type__app_label', 'content_type__model', 'codename')
+    ]
+
+
 def _unsafe_group_permissions(group):
     return [permission for permission in group.permissions.all() if not _safe_permission(permission)]
 
@@ -241,7 +255,7 @@ def _serialize_user(user, actor, *, other_superusers=None):
                         else _users().filter(is_superuser=True, is_active=True).exclude(pk=user.pk).exists())
         if not alternatives:
             can_delete = False
-    return {
+    result = {
         'id': user.pk, 'username': user.username, 'email': user.email,
         'firstName': user.first_name, 'lastName': user.last_name,
         'displayName': user.get_full_name().strip() or user.username or user.email,
@@ -251,6 +265,11 @@ def _serialize_user(user, actor, *, other_superusers=None):
         'dateJoined': user.date_joined.isoformat() if user.date_joined else None,
         'revision': _revision(user), 'canEdit': can_edit, 'canDelete': can_delete,
     }
+    if actor.is_superuser:
+        direct = (user._administration_permissions if hasattr(user, '_administration_permissions')
+                  else user.user_permissions.using(DB).select_related('content_type'))
+        result['directPermissions'] = sorted(_permission_code(permission) for permission in direct)
+    return result
 
 
 @contextmanager
@@ -273,11 +292,13 @@ def _mutation(request, target_id=None):
 
 
 def _validate_payload(payload, actor, user, *, creating=False):
-    allowed = set(USER_FIELDS) | {'roles', 'password'} | (set() if creating else {'revision'})
+    allowed = set(USER_FIELDS) | {'roles', 'password', 'directPermissions'} | (set() if creating else {'revision'})
     if set(payload) - allowed:
         raise AdministrationError('The request contains unsupported fields.')
     if not actor.is_superuser and ({'isStaff', 'isSuperuser'} & set(payload)):
         raise AdministrationError('Only a Django superuser can change Django administration privileges.', 403)
+    if not actor.is_superuser and 'directPermissions' in payload:
+        raise AdministrationError('Only a Django superuser can change direct Django permissions.', 403)
     errors = {}
     values = {}
     required = {'username', 'email', 'password'} if creating else set()
@@ -343,7 +364,21 @@ def _validate_payload(payload, actor, user, *, creating=False):
                 errors['password'] = error.messages
     if errors:
         raise AdministrationError('Check the highlighted fields.', errors=errors)
-    return values, roles, password
+    direct_permissions = None
+    if 'directPermissions' in payload:
+        codes = payload.get('directPermissions')
+        if not isinstance(codes, list) or any(not isinstance(code, str) for code in codes):
+            errors['directPermissions'] = ['Select valid Django permissions.']
+            codes = []
+        permission_map = {_permission_code(permission): permission for permission in
+                          Permission.objects.using(DB).select_related('content_type')}
+        unknown = sorted(set(codes) - set(permission_map))
+        if unknown:
+            errors['directPermissions'] = ['One or more selected Django permissions no longer exist.']
+        direct_permissions = [permission_map[code] for code in dict.fromkeys(codes) if code in permission_map]
+    if errors:
+        raise AdministrationError('Check the highlighted fields.', errors=errors)
+    return values, roles, password, direct_permissions
 
 
 def _protect_administrators(actor, user, values, roles, *, deleting=False):
@@ -385,6 +420,10 @@ def _set_roles(user, roles, actor):
         user.groups.add(*selected)
 
 
+def _set_direct_permissions(user, permissions):
+    user.user_permissions.set(permissions)
+
+
 def _sync_specialist(user, was_agent=False):
     enabled = user.is_active and AGENT_ROLE in _role_ids(user)
     if not enabled and not was_agent:
@@ -407,7 +446,7 @@ def _log(actor, user, flag, summary):
     )
 
 
-def _change_summary(before, values, old_roles, roles, password):
+def _change_summary(before, values, old_roles, roles, password, old_direct_permissions=None, direct_permissions=None):
     labels = [FIELD_LABELS[key] for key, field in USER_FIELDS.items() if field in values and before[field] != values[field]]
     parts = ['Changed '+', '.join(labels)+'.'] if labels else []
     added = [_role_label(role) for role in roles if role not in old_roles]
@@ -418,6 +457,11 @@ def _change_summary(before, values, old_roles, roles, password):
         parts.append('Removed roles: '+', '.join(removed)+'.')
     if password is not None:
         parts.append('Changed password.')
+    if direct_permissions is not None:
+        old_codes = set(old_direct_permissions or ())
+        new_codes = {_permission_code(permission) for permission in direct_permissions}
+        if old_codes != new_codes:
+            parts.append('Updated direct Django permissions.')
     return ' '.join(parts)
 
 
@@ -451,7 +495,7 @@ def _serialize_role(group, actor):
     key = _role_key(group)
     is_system = key in ACCESS_GROUPS
     unsafe = _unsafe_group_permissions(group)
-    can_manage = bool(not is_system and (actor.is_superuser or not unsafe))
+    can_manage = bool(actor.is_superuser or (not is_system and not unsafe))
     permission_codes = {f'login.{permission.codename}' for permission in group.permissions.all()
                         if _safe_permission(permission)}
     permission_codes.update(legacy_role_permissions(group.name, include_baseline=True))
@@ -462,10 +506,12 @@ def _serialize_role(group, actor):
         'section': ROLE_DETAILS[key][2] if is_system else 'custom',
         'groupName': group.name, 'assignedCount': len(_role_member_ids(group)),
         'permissions': sorted(permission_codes), 'isSystem': is_system,
-        'canEdit': can_manage, 'canDelete': can_manage,
+        'djangoPermissions': sorted(_permission_code(permission) for permission in group.permissions.all()
+                                    if not _safe_permission(permission)),
+        'canEdit': can_manage, 'canDelete': bool(can_manage and not is_system),
         'canAssign': bool(actor.is_superuser or not unsafe),
         'revision': _role_revision(group),
-        'unmanagedPermissions': [{'id': f'{permission.content_type.app_label}.{permission.codename}',
+        'unmanagedPermissions': [{'id': _permission_code(permission),
                                   'name': permission.name} for permission in unsafe],
     }
 
@@ -476,15 +522,18 @@ def _missing_system_role(key, actor):
         'description': ROLE_DETAILS[key][1], 'section': ROLE_DETAILS[key][2],
         'groupName': ACCESS_GROUPS[key], 'assignedCount': 0,
         'permissions': sorted(legacy_role_permissions(ACCESS_GROUPS[key], include_baseline=True)),
+        'djangoPermissions': [],
         'isSystem': True, 'canEdit': False, 'canDelete': False, 'canAssign': True,
         'revision': '', 'unmanagedPermissions': [],
     }
 
 
-def _validate_role_payload(payload, group=None):
-    allowed = {'name', 'permissions'} | ({'revision'} if group else set())
+def _validate_role_payload(payload, actor, group=None):
+    allowed = {'name', 'permissions', 'djangoPermissions'} | ({'revision'} if group else set())
     if set(payload) - allowed:
         raise AdministrationError('The request contains unsupported fields.')
+    if 'djangoPermissions' in payload and not actor.is_superuser:
+        raise AdministrationError('Only a Django superuser can change native Django group permissions.', 403)
     errors = {}
     name = payload.get('name', group.name if group else '')
     if not isinstance(name, str) or not name.strip():
@@ -506,17 +555,32 @@ def _validate_role_payload(payload, group=None):
     ):
         errors['permissions'] = ['Select only permissions shown in this console.']
         permissions = []
+    django_permissions = payload.get('djangoPermissions')
+    if django_permissions is None:
+        django_permissions = ([_permission_code(permission) for permission in group.permissions.all()
+                               if not _safe_permission(permission)] if group else [])
+    available = {_permission_code(permission): permission for permission in
+                 Permission.objects.using(DB).select_related('content_type')}
+    if not isinstance(django_permissions, list) or any(
+        not isinstance(code, str) or code not in available or _safe_permission(available[code])
+        for code in django_permissions
+    ):
+        errors['djangoPermissions'] = ['Select valid native Django permissions.']
+        django_permissions = []
     if errors:
         raise AdministrationError('Check the highlighted fields.', errors=errors)
-    return name, set(permissions)
+    return name, set(permissions), set(django_permissions)
 
 
-def _set_role_permissions(group, codes):
+def _set_role_permissions(group, codes, django_codes=None):
     catalog = ensure_permission_catalog(DB)
-    # This console owns only the application catalog; advanced permissions stay
-    # attached to the same native group even when a superuser edits its role.
-    preserved = _unsafe_group_permissions(group)
-    group.permissions.set([*preserved, *(catalog[code] for code in sorted(codes))])
+    if django_codes is None:
+        native = _unsafe_group_permissions(group)
+    else:
+        permission_map = {_permission_code(permission): permission for permission in
+                          Permission.objects.using(DB).select_related('content_type')}
+        native = [permission_map[code] for code in sorted(django_codes)]
+    group.permissions.set([*native, *(catalog[code] for code in sorted(codes))])
 
 
 @administrator_view(['GET', 'POST'])
@@ -530,13 +594,17 @@ def roles_view(request, actor):
         roles = [_serialize_role(by_name[name], actor) if name in by_name else _missing_system_role(key, actor)
                  for key, name in ACCESS_GROUPS.items()]
         roles.extend(_serialize_role(group, actor) for group in groups if group.name not in ACCESS_GROUPS.values())
-        return JsonResponse({'roles': roles, 'permissionSections': permission_catalog()})
+        return JsonResponse({'roles': roles, 'permissionSections': permission_catalog(),
+                             'djangoPermissionCatalog': _django_permission_catalog() if actor.is_superuser else []})
     payload = _body(request)
     with _mutation(request) as (actor, _):
-        name, codes = _validate_role_payload(payload)
+        name, codes, django_codes = _validate_role_payload(payload, actor)
         group = Group.objects.using(DB).create(name=name)
-        _set_role_permissions(group, codes)
-        _log(actor, group, ADDITION, 'Created role. Assigned application permissions: '+(', '.join(sorted(codes)) or 'none')+'.')
+        _set_role_permissions(group, codes, django_codes if actor.is_superuser else None)
+        summary = 'Created role. Assigned application permissions: '+(', '.join(sorted(codes)) or 'none')+'.'
+        if django_codes:
+            summary += ' Assigned native Django permissions: '+', '.join(sorted(django_codes))+'.'
+        _log(actor, group, ADDITION, summary)
         result = _serialize_role(group, actor)
     return JsonResponse({'role': result, 'warnings': []}, status=201)
 
@@ -553,13 +621,34 @@ def role_view(request, actor, group_id):
         group = Group.objects.using(DB).select_for_update().filter(pk=group_id).first()
         if group is None:
             raise AdministrationError('This role no longer exists.', 404)
-        if group.name in ACCESS_GROUPS.values():
-            raise AdministrationError('System roles are protected. Create a custom role instead.', 403)
-        if not actor.is_superuser and _unsafe_group_permissions(group):
+        is_system = group.name in ACCESS_GROUPS.values()
+        if request.method == 'DELETE' and is_system:
+            raise AdministrationError('System groups cannot be deleted. Their names are used by the application.', 403)
+        if not actor.is_superuser and (is_system or _unsafe_group_permissions(group)):
             raise AdministrationError('Only a Django superuser can change roles with advanced Django permissions.', 403)
         revision = payload.get('revision')
         if not isinstance(revision, str) or not revision or not constant_time_compare(revision, _role_revision(group)):
             raise AdministrationError('This role or its members have changed. Refresh it before saving your changes.', 409)
+        if is_system:
+            if set(payload) - {'revision', 'djangoPermissions'}:
+                raise AdministrationError('Built-in groups keep their system name and application access; only native Django permissions can be changed.')
+            codes = payload.get('djangoPermissions')
+            available = {_permission_code(permission): permission for permission in
+                         Permission.objects.using(DB).select_related('content_type')}
+            if not isinstance(codes, list) or any(
+                not isinstance(code, str) or code not in available or _safe_permission(available[code])
+                for code in codes
+            ):
+                raise AdministrationError('Select valid native Django permissions.', errors={'djangoPermissions': ['Select valid native Django permissions.']})
+            selected = list(dict.fromkeys(codes))
+            old_codes = {_permission_code(permission) for permission in group.permissions.all()
+                         if not _safe_permission(permission)}
+            if set(selected) != old_codes:
+                safe = [permission for permission in group.permissions.all() if _safe_permission(permission)]
+                group.permissions.set([*safe, *(available[code] for code in selected)])
+                _log(actor, group, CHANGE, 'Updated native Django permissions for the built-in group.')
+            result = _serialize_role(group, actor)
+            return JsonResponse({'role': result, 'warnings': []})
         if request.method == 'DELETE':
             if set(payload) - {'revision', 'confirmName'}:
                 raise AdministrationError('The request contains unsupported fields.')
@@ -569,18 +658,22 @@ def role_view(request, actor, group_id):
             _log(actor, group, DELETION, f'Deleted role and removed it from {count} user(s). Other roles and direct permissions were preserved.')
             group.delete(using=DB)
             return JsonResponse({'deleted': True})
-        name, codes = _validate_role_payload(payload, group)
+        name, codes, django_codes = _validate_role_payload(payload, actor, group)
         old_name = group.name
         old_codes = {f'login.{permission.codename}' for permission in group.permissions.all() if _safe_permission(permission)}
-        if name != old_name or codes != old_codes:
+        old_django_codes = {_permission_code(permission) for permission in group.permissions.all()
+                            if not _safe_permission(permission)}
+        if name != old_name or codes != old_codes or django_codes != old_django_codes:
             group.name = name
             group.save(using=DB, update_fields=['name'])
-            _set_role_permissions(group, codes)
+            _set_role_permissions(group, codes, django_codes if actor.is_superuser else None)
             parts = [f'Renamed role from {old_name} to {name}.'] if name != old_name else []
             if codes - old_codes:
                 parts.append('Added permissions: '+', '.join(sorted(codes - old_codes))+'.')
             if old_codes - codes:
                 parts.append('Removed permissions: '+', '.join(sorted(old_codes - codes))+'.')
+            if django_codes != old_django_codes:
+                parts.append('Updated native Django permissions.')
             _log(actor, group, CHANGE, ' '.join(parts))
         result = _serialize_role(group, actor)
     return JsonResponse({'role': result, 'warnings': []})
@@ -624,16 +717,20 @@ def users_view(request, actor):
     payload = _body(request)
     with _mutation(request) as (actor, _):
         user = get_user_model()(is_active=True, is_staff=False, is_superuser=False)
-        values, roles, password = _validate_payload(payload, actor, user, creating=True)
+        values, roles, password, direct_permissions = _validate_payload(payload, actor, user, creating=True)
         for field, value in values.items():
             setattr(user, field, value)
         user.set_password(password)
         user.save(using=DB)
         _set_roles(user, roles, actor)
+        if direct_permissions is not None:
+            _set_direct_permissions(user, direct_permissions)
         warnings = _sync_specialist(user)
         summary = 'Created user.'
         if roles:
             summary += ' Assigned roles: '+', '.join(_role_label(role) for role in roles)+'.'
+        if direct_permissions:
+            summary += ' Assigned direct Django permissions: '+', '.join(sorted(_permission_code(permission) for permission in direct_permissions))+'.'
         _log(actor, user, ADDITION, summary)
         result = _serialize_user(user, actor)
     return JsonResponse({'user': result, 'warnings': warnings}, status=201)
@@ -667,9 +764,11 @@ def user_view(request, actor, user_id):
             return JsonResponse({'deleted': True})
         before = {field: getattr(user, field) for field in USER_FIELDS.values()}
         old_roles = _role_ids(user)
-        values, roles, password = _validate_payload(payload, actor, user)
+        old_direct_permissions = {_permission_code(permission) for permission in
+                                  user.user_permissions.using(DB).select_related('content_type')}
+        values, roles, password, direct_permissions = _validate_payload(payload, actor, user)
         _protect_administrators(actor, user, values, roles)
-        summary = _change_summary(before, values, old_roles, roles, password)
+        summary = _change_summary(before, values, old_roles, roles, password, old_direct_permissions, direct_permissions)
         for field, value in values.items():
             setattr(user, field, value)
         if password is not None:
@@ -678,6 +777,8 @@ def user_view(request, actor, user_id):
         if summary:
             user.save(using=DB)
             _set_roles(user, roles, actor)
+            if direct_permissions is not None:
+                _set_direct_permissions(user, direct_permissions)
             warnings = _sync_specialist(user, AGENT_ROLE in old_roles)
             _log(actor, user, CHANGE, summary)
         else:
@@ -699,7 +800,7 @@ def password_view(request, actor, user_id):
     with _mutation(request, user_id) as (actor, user):
         _require_edit(actor, user)
         _check_revision(user, payload)
-        _, _, password = _validate_payload(payload, actor, user)
+        _, _, password, _ = _validate_payload(payload, actor, user)
         user.set_password(password)
         user.save(using=DB, update_fields=['password'])
         _log(actor, user, CHANGE, 'Changed password.')
