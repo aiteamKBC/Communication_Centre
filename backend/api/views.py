@@ -5885,7 +5885,9 @@ def training_plan_learner_exports(request):
 			'moduleBlockId': mapping.module_block_id,
 			'subprogrammes': [],
 			'learnerNames': [],
+			'learnerCount': 0,
 		})
+		entry['learnerCount'] += 1
 		if mapping.subprogramme and mapping.subprogramme not in entry['subprogrammes']:
 			entry['subprogrammes'].append(mapping.subprogramme)
 		if mapping.learner_name and mapping.learner_name not in entry['learnerNames']:

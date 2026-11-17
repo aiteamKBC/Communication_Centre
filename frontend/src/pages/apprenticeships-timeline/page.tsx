@@ -904,6 +904,7 @@ function missingSiblingCohortIds(items: TrainingPlanItem[], programmeId: string,
 type TrainingPlanLearnerExport = {
   subprogramme: string;
   learnerNames: string;
+  learnerCount: number;
 };
 
 function learnerExportKey(cohortId: string, moduleBlockId: string): string {
@@ -948,6 +949,7 @@ function buildTrainingPlanExportRows(
           'Behaviour Codes': behaviourCodes,
           Subprogramme: learnerExport?.subprogramme || '',
           'Student Names': learnerExport?.learnerNames || '',
+          'Student Count': learnerExport?.learnerCount || 0,
           Notes: block.notes || '',
         };
       }),
@@ -990,7 +992,7 @@ async function loadTrainingPlanLearnerExports(groups: ProgrammeGroup[]): Promise
     if (!response.ok) return new Map();
 
     const payload = await response.json() as {
-      items?: Array<{ cohortId?: string; moduleBlockId?: string; subprogrammes?: string[]; learnerNames?: string[] }>;
+      items?: Array<{ cohortId?: string; moduleBlockId?: string; subprogrammes?: string[]; learnerNames?: string[]; learnerCount?: number }>;
     };
     return new Map((Array.isArray(payload.items) ? payload.items : [])
       .map(item => {
@@ -1000,6 +1002,7 @@ async function loadTrainingPlanLearnerExports(groups: ProgrammeGroup[]): Promise
           {
             subprogramme: Array.isArray(item.subprogrammes) ? item.subprogrammes.join(' | ') : '',
             learnerNames: Array.isArray(item.learnerNames) ? item.learnerNames.join(' | ') : '',
+            learnerCount: Number.isFinite(item.learnerCount) ? item.learnerCount : 0,
           },
         ] as const;
       })
